@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+Date: Wed, 03 Jun 2026 23:46:11 GMT
+Server: Apache
+Vary: Cookie
+Expires: Thu, 19 Nov 1981 08:52:00 GMT
+Cache-Control: no-store, no-cache, must-revalidate
+Pragma: no-cache
+Set-Cookie: DokuWiki=57c2f8036af32fd039a4ffde1ec625d5; path=/wiki/; secure; HttpOnly; SameSite=Lax
+Set-Cookie: DWd6fcb57a725757b22fe830cccebe05e6=deleted; expires=Thu, 01-Jan-1970 00:00:01 GMT; Max-Age=0; path=/wiki/; secure; HttpOnly
+Transfer-Encoding: chunked
+Content-Type: text/html; charset=utf-8
+

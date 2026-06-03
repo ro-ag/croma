@@ -1,0 +1,45 @@
+==== The abc standard ====
+
+This is the home page for the abc standard, the (semi-formal) description of the rules of abc. It contains links to different versions of the standard and to development work.
+
+If you wish to link to the standard, it is recommended that you link to this page, [[abc:standard|abcnotation.com/wiki/abc:standard]], rather than to a specific version.
+
+=== Draft version ===
+The new draft version of the standard is at
+  * [[abc:standard:v2.2|abcnotation.com/wiki/abc:standard:v2.2]] - abc standard 2.2
+
+=== Current version ===
+The current version of the standard is at:
+  * ** [[abc:standard:v2.1|abcnotation.com/wiki/abc:standard:v2.1]] - abc standard 2.1 (Dec 2011) **
+
+=== Development work ===
+See the following pages:
+  * [[abc:standard:route-map|abcnotation.com/wiki/abc:standard:route-map]] - a route map of proposed developments to the standard
+  * [[abc:standard:updating|abcnotation.com/wiki/abc:standard:updating]] - the process for proposing changes
+  * [[abc:standard:v2.1:proposals|abcnotation.com/wiki/abc:standard:v2.1:proposals]] - draft proposals for possible inclusion in subsequent standards 
+  * [[abc:standard:v2.0-v2.1|abcnotation.com/wiki/abc:standard:v2.0-v2.1]] - changes between abc 2.0 and abc 2.1
+
+=== Older versions ===
+A number of older versions are available:
+  * [[abc:standard:v2.0|abcnotation.com/wiki/abc:standard:v2.0]] - abc standard 2.0 (Dec 2010) - adopted whilst discussions on abc 2.1 were taking place
+  * http://abc.sourceforge.net/standard/abc2-draft.html - abc draft standard 2.0 (Aug 2003) - working draft version at abc.sourceforge.net
+  * [[https://abcnotation.com/standard/abc_v1.7.6-draft.txt|abcnotation.com/standard/abc_v1.7.6-draft.txt]] - abc draft standard 1.7.6 (May 2000)
+  * [[https://abcnotation.com/standard/abc_v1.6.txt|abcnotation.com/standard/abc_v1.6.txt]] - abc standard 1.6 - the previous standard (Jan 1997)
+
+=== Formal specifications ===
+Henrik Norbeck has provided formal specifications of the standard in Backus-Naur Format. They have now disappeared from his website, but archives are available at:
+
+  * https://web.archive.org/web/20120814155205/http://www.norbeck.nu/abc/bnf/abc20bnf.htm - abc draft standard 2.0
+  * https://web.archive.org/web/20130106185241/http://www.norbeck.nu/abc/abcbnf.htm - abc standard 1.6
+
+=== Other developments ===
+Other developmental work on abc notation can also be found at:
+  * http://abcplus.sourceforge.net/ - AbcPlus, an enhanced version of abc based on developments implemented in abcm2ps and abcMIDI
+  * http://abc.sourceforge.net/standard/
+
+=== Discussion ===
+Changes to the standard tend to be discussed at the abcusers mail list or occasionally in the discussion forum:
+  * http://groups.yahoo.com/group/abcusers/ - abcusers mail list
+  * [[https://abcnotation.com/forums/viewforum.php?f=7|abc standard discussion forum]]
+
+
