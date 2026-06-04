@@ -9,12 +9,18 @@ pub mod model;
 pub mod musicxml;
 pub mod options;
 pub mod parser;
+pub mod source;
 pub mod surface;
 
-pub use diagnostic::{Diagnostic, Severity, Span};
+pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
 pub use model::{Event, Tune};
-pub use options::{AbcSpecVersion, ExportOptions, ParseMode};
+pub use options::{AbcSpecVersion, ExportOptions, ParseMode, ParseOptions};
+pub use parser::{AbcDocument, ParseReport};
+pub use source::{LineColumn, LineColumnSpan, LineEnding, SourceLine, SourceText};
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MusicXmlExport {
@@ -30,15 +36,35 @@ pub fn export_musicxml(source: &str) -> Result<MusicXmlExport> {
     export_musicxml_with_options(source, ExportOptions::default())
 }
 
+pub fn parse_document(source: &str, options: ParseOptions) -> ParseReport<AbcDocument> {
+    parser::parse_document(source, options)
+}
+
 pub fn export_musicxml_with_options(
     source: &str,
     options: ExportOptions,
 ) -> Result<MusicXmlExport> {
-    let surface = surface::analyze(source);
-    let tune = parser::parse_tune(source, &surface, options)?;
+    let parse_report = parse_document(source, options.parse_options());
+    if parse_report.has_errors() {
+        return Err(CromaError::from_diagnostics(parse_report.diagnostics));
+    }
+
+    let surface = surface::analyze_source(&parse_report.value.source);
+    let tune_report = parser::parse_tune_report(
+        &parse_report.value.source,
+        &surface,
+        options.parse_options(),
+    );
+    let mut diagnostics = parse_report.diagnostics;
+    diagnostics.extend(tune_report.diagnostics);
+
+    let Some(tune) = tune_report.value else {
+        return Err(CromaError::from_diagnostics(diagnostics));
+    };
+
     Ok(MusicXmlExport {
         musicxml: musicxml::write_score_partwise(&tune),
-        diagnostics: Vec::new(),
+        diagnostics,
     })
 }
 
@@ -62,5 +88,31 @@ mod tests {
     #[test]
     fn defaults_to_abc_21() {
         assert_eq!(ExportOptions::default().spec, AbcSpecVersion::V21);
+        assert_eq!(ParseOptions::default().spec, AbcSpecVersion::V21);
+    }
+
+    #[test]
+    fn export_errors_expose_exact_empty_input_diagnostic_span() {
+        let error = export_musicxml("").expect_err("empty input should fail");
+        let diagnostic = error
+            .diagnostics()
+            .first()
+            .expect("expected parse diagnostic");
+
+        assert_eq!(diagnostic.code, "abc.file.empty");
+        assert_eq!(diagnostic.span, Span::new(0, 0));
+    }
+
+    #[test]
+    fn export_errors_expose_exact_missing_key_diagnostic_span() {
+        let source = SourceText::new("X:1\nT:No Key\n");
+        let error = export_musicxml(source.as_str()).expect_err("missing key should fail");
+        let diagnostic = error
+            .diagnostics()
+            .first()
+            .expect("expected parse diagnostic");
+
+        assert_eq!(diagnostic.code, "abc.file.missing_k");
+        assert_eq!(diagnostic.span, Span::new(source.len(), source.len()));
     }
 }

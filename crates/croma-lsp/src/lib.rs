@@ -12,14 +12,22 @@ pub fn analyze_document(source: &str) -> DocumentAnalysis {
             diagnostics: export.diagnostics,
             can_export_musicxml: true,
         },
-        Err(error) => DocumentAnalysis {
-            diagnostics: vec![Diagnostic {
-                severity: croma_core::Severity::Error,
-                code: "export_error",
-                message: error.to_string(),
-                span: croma_core::Span::default(),
-            }],
-            can_export_musicxml: false,
-        },
+        Err(error) => {
+            let diagnostics = if error.diagnostics().is_empty() {
+                vec![Diagnostic::new(
+                    croma_core::Severity::Error,
+                    "export_error",
+                    error.to_string(),
+                    croma_core::Span::default(),
+                )]
+            } else {
+                error.diagnostics().to_vec()
+            };
+
+            DocumentAnalysis {
+                diagnostics,
+                can_export_musicxml: false,
+            }
+        }
     }
 }
