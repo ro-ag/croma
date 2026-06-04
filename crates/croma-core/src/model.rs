@@ -1,4 +1,4 @@
-use crate::Span;
+use crate::{Diagnostic, Span};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tune {
@@ -10,7 +10,322 @@ pub struct Tune {
     pub events: Vec<Event>,
     pub voices: Vec<VoiceTimeline>,
     pub score_directives: Vec<ScoreDirectiveModel>,
+    pub preserved_directives: Vec<PreservedDirective>,
     pub post_tune_lyrics: Vec<TextLine>,
+    pub score: Score,
+}
+
+/// Rational duration used by semantic lowering before MusicXML divisions are
+/// selected.
+pub type Rational = Fraction;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Score {
+    pub metadata: ScoreMetadata,
+    pub parts: Vec<Part>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub divisions: u32,
+    pub source_span: Span,
+    pub accidental_policy: AccidentalPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoreMetadata {
+    pub reference: TextLine,
+    pub title: Option<TextLine>,
+    pub meter: Option<MeterModel>,
+    pub key: Option<KeySignatureModel>,
+    pub directives: Vec<ScoreDirectiveModel>,
+    pub preserved_directives: Vec<PreservedDirective>,
+    pub post_tune_lyrics: Vec<TextLine>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreservedDirective {
+    pub name: TextLine,
+    pub value: TextLine,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeterModel {
+    pub display: String,
+    pub duration: Option<Rational>,
+    pub free_meter: bool,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeySignatureModel {
+    pub display: String,
+    pub fifths: i8,
+    pub explicit_accidentals: Vec<KeyAccidentalModel>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyAccidentalModel {
+    pub step: char,
+    pub accidental: Accidental,
+    pub source_span: Span,
+}
+
+/// ABC accidentals are source-significant. Croma records the written accidental
+/// exactly when present, applies it to following matching pitches in the same
+/// measure, and clears that measure-local state at each barline. When the key
+/// signature or syntax leaves behavior ambiguous, diagnostics keep the policy
+/// decision source-spanned instead of silently changing notation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccidentalPolicy {
+    pub preserve_explicit_accidentals: bool,
+    pub reset_at_barlines: bool,
+    pub scope: AccidentalScope,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccidentalScope {
+    PitchAndOctave,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub id: PartId,
+    pub name: Option<TextLine>,
+    pub staves: Vec<Staff>,
+    pub voices: Vec<Voice>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartId {
+    pub value: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staff {
+    pub id: StaffId,
+    pub voices: Vec<VoiceId>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StaffId {
+    pub value: u32,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Voice {
+    pub id: VoiceId,
+    pub staff: StaffId,
+    pub properties: VoicePropertiesModel,
+    pub measures: Vec<Measure>,
+    pub events: Vec<TimedEvent>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasureId {
+    pub index: u32,
+    pub number: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measure {
+    pub id: MeasureId,
+    pub source_span: Span,
+    pub expected_duration: Option<Rational>,
+    pub actual_duration: Rational,
+    pub pickup: bool,
+    pub complete: bool,
+    pub barlines: Vec<MeasureBarline>,
+    pub repeat_endings: Vec<RepeatEndingModel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeasureBarline {
+    pub kind: BarlineKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepeatEndingModel {
+    pub span: Span,
+    pub endings: Vec<RepeatEndingPartModel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatEndingPartModel {
+    Single(u32),
+    Range { start: u32, end: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimedEvent {
+    pub measure: MeasureId,
+    pub onset: Rational,
+    pub duration: Rational,
+    pub source: Span,
+    pub kind: TimedEventKind,
+    pub attachments: EventAttachments,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimedEventKind {
+    Note(NoteEvent),
+    Chord(ChordEvent),
+    Rest(RestEvent),
+    Spacer,
+    Barline(MeasureBarline),
+    RepeatEnding(RepeatEndingModel),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteEvent {
+    pub pitch: Pitch,
+    pub written_accidental: Option<AccidentalMark>,
+    pub chord_member: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChordEvent {
+    pub members: Vec<ChordMemberEvent>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChordMemberEvent {
+    pub pitch: Pitch,
+    pub duration: Rational,
+    pub written_accidental: Option<AccidentalMark>,
+    pub source_span: Span,
+    pub attachments: EventAttachments,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestEvent {
+    pub visibility: RestVisibility,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pitch {
+    pub step: char,
+    pub alter: i8,
+    pub octave: i8,
+    pub spelling_source: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccidentalMark {
+    pub kind: Accidental,
+    pub explicit: bool,
+    pub courtesy: bool,
+    pub source: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EventAttachments {
+    pub grace_groups: Vec<GraceGroupAttachment>,
+    pub chord_symbols: Vec<TextAttachment>,
+    pub annotations: Vec<TextAttachment>,
+    pub decorations: Vec<DecorationAttachment>,
+    pub lyrics: Vec<AlignedLyric>,
+    pub symbols: Vec<AlignedSymbol>,
+    pub ties: Vec<TieAttachment>,
+    pub slurs: Vec<SlurAttachment>,
+}
+
+impl EventAttachments {
+    pub fn is_empty(&self) -> bool {
+        self.grace_groups.is_empty()
+            && self.chord_symbols.is_empty()
+            && self.annotations.is_empty()
+            && self.decorations.is_empty()
+            && self.lyrics.is_empty()
+            && self.symbols.is_empty()
+            && self.ties.is_empty()
+            && self.slurs.is_empty()
+    }
+
+    pub(crate) fn extend(&mut self, other: EventAttachments) {
+        self.grace_groups.extend(other.grace_groups);
+        self.chord_symbols.extend(other.chord_symbols);
+        self.annotations.extend(other.annotations);
+        self.decorations.extend(other.decorations);
+        self.lyrics.extend(other.lyrics);
+        self.symbols.extend(other.symbols);
+        self.ties.extend(other.ties);
+        self.slurs.extend(other.slurs);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraceGroupAttachment {
+    pub span: Span,
+    pub slash: Option<Span>,
+    pub note_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAttachment {
+    pub text: String,
+    pub span: Span,
+    pub placement: Option<AnnotationPlacementModel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationPlacementModel {
+    Above,
+    Below,
+    Left,
+    Right,
+    Free,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecorationAttachment {
+    pub name: String,
+    pub span: Span,
+    pub source_kind: DecorationSourceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecorationSourceKind {
+    Named,
+    LegacyNamed,
+    Shorthand,
+    UserDefined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TieAttachment {
+    pub pair_id: u32,
+    pub role: TieRole,
+    pub span: Span,
+    pub dotted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TieRole {
+    Start,
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlurAttachment {
+    pub pair_id: u32,
+    pub role: SlurRole,
+    pub span: Span,
+    pub dotted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlurRole {
+    Start,
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +416,7 @@ pub struct VoiceTimedEvent {
     pub source_order: u32,
     pub alignable: bool,
     pub kind: TimelineEventKind,
+    pub attachments: EventAttachments,
     pub lyrics: Vec<AlignedLyric>,
     pub symbols: Vec<AlignedSymbol>,
 }
@@ -111,6 +427,8 @@ pub enum TimelineEventKind {
         step: char,
         octave: i8,
         accidental: Option<Accidental>,
+        effective_accidental: Option<Accidental>,
+        accidental_source: Option<Span>,
         chord: bool,
     },
     Rest {
@@ -119,6 +437,9 @@ pub enum TimelineEventKind {
     Spacer,
     Barline {
         kind: BarlineKind,
+    },
+    VariantEnding {
+        endings: Vec<RepeatEndingPartModel>,
     },
 }
 
@@ -245,17 +566,19 @@ pub enum BarlineKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TimedEvent {
-    pub kind: TimedEventKind,
+pub(crate) struct LoweredEventAtom {
+    pub kind: LoweredEventAtomKind,
     pub duration: Fraction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TimedEventKind {
+pub(crate) enum LoweredEventAtomKind {
     Note {
         step: char,
         octave: i8,
         accidental: Option<Accidental>,
+        effective_accidental: Option<Accidental>,
+        accidental_source: Option<Span>,
         chord: bool,
         span: Span,
     },
@@ -265,14 +588,16 @@ pub(crate) enum TimedEventKind {
     },
 }
 
-impl TimedEvent {
+impl LoweredEventAtom {
     pub(crate) fn into_event(self, divisions: u32) -> Event {
         let duration = self.duration.to_divisions(divisions);
         match self.kind {
-            TimedEventKind::Note {
+            LoweredEventAtomKind::Note {
                 step,
                 octave,
                 accidental,
+                effective_accidental: _,
+                accidental_source: _,
                 chord,
                 span,
             } => Event::Note {
@@ -283,7 +608,7 @@ impl TimedEvent {
                 duration,
                 span,
             },
-            TimedEventKind::Rest { visibility, span } => Event::Rest {
+            LoweredEventAtomKind::Rest { visibility, span } => Event::Rest {
                 visibility,
                 duration,
                 span,
