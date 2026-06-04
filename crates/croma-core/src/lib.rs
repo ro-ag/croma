@@ -5,6 +5,7 @@
 
 pub mod diagnostic;
 pub mod error;
+pub mod fields;
 pub mod model;
 pub mod musicxml;
 pub mod options;
@@ -14,6 +15,7 @@ pub mod surface;
 
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
+pub use fields::{DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField};
 pub use model::{Event, Tune};
 pub use options::{AbcSpecVersion, ExportOptions, ParseMode, ParseOptions};
 pub use parser::{AbcDocument, ParseReport};
@@ -53,8 +55,7 @@ pub fn export_musicxml_with_options(
         value: document,
         mut diagnostics,
     } = parse_report;
-    let tune_report =
-        parser::parse_tune_report(&document.source, &document.surface, options.parse_options());
+    let tune_report = parser::parse_tune_report_from_document(&document);
     diagnostics.extend(tune_report.diagnostics);
 
     let Some(tune) = tune_report.value else {
