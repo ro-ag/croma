@@ -7,15 +7,16 @@ use crate::fields::{
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric, AlignedSymbol,
     AlignedSymbolKind, AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent,
-    DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction,
-    GraceGroupAttachment, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom,
-    LoweredEventAtomKind, LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, NoteEvent,
-    OverlaySegment, Part, PartId, Pitch, PreservedDirective, RepeatEndingModel,
-    RepeatEndingPartModel, RestEvent, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurAttachment,
-    SlurRole, Staff, StaffId, StemDirectionModel, TextAttachment, TextLine, TieAttachment, TieRole,
-    TimedEvent, TimedEventKind, TimelineEventKind, Voice, VoiceId, VoiceMeasureTimeline,
-    VoicePropertiesModel, VoiceTimedEvent, VoiceTimeline, lcm,
+    DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
+    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
+    LoweredEventAtom, LoweredEventAtomKind, LyricControl, Measure, MeasureBarline, MeasureId,
+    MeterModel, NoteEvent, OverlaySegment, Part, PartId, Pitch, PreservedDirective,
+    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
+    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
+    SlurAttachment, SlurRole, Staff, StaffId, StemDirectionModel, TextAttachment, TextLine,
+    TieAttachment, TieRole, TimedEvent, TimedEventKind, TimelineEventKind, TupletAttachment,
+    TupletRole, Voice, VoiceId, VoiceMeasureTimeline, VoicePropertiesModel, VoiceTimedEvent,
+    VoiceTimeline, lcm,
 };
 use crate::options::ParseMode;
 use crate::parser::ParseReport;
@@ -1985,6 +1986,11 @@ fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
                     .count()
                     .try_into()
                     .unwrap_or(u32::MAX),
+                events: grace
+                    .elements
+                    .iter()
+                    .filter_map(grace_event_model)
+                    .collect(),
             })
             .collect(),
         chord_symbols: bundle
@@ -2040,6 +2046,54 @@ fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
         symbols: Vec::new(),
         ties: Vec::new(),
         slurs: Vec::new(),
+        tuplets: Vec::new(),
+    }
+}
+
+fn grace_event_model(element: &GraceElementSyntax) -> Option<GraceEvent> {
+    match element {
+        GraceElementSyntax::Note(note) => Some(GraceEvent {
+            source_span: note.span,
+            kind: GraceEventKind::Note(grace_note_event_model(note)),
+        }),
+        GraceElementSyntax::Rest(rest) => Some(GraceEvent {
+            source_span: rest.span,
+            kind: GraceEventKind::Rest(RestEvent {
+                visibility: rest.visibility,
+            }),
+        }),
+        GraceElementSyntax::Chord(chord) => Some(GraceEvent {
+            source_span: chord.span,
+            kind: GraceEventKind::Chord(
+                chord
+                    .members
+                    .iter()
+                    .map(|member| grace_note_event_model(&member.note))
+                    .collect(),
+            ),
+        }),
+        GraceElementSyntax::Malformed(_) => None,
+    }
+}
+
+fn grace_note_event_model(note: &NoteSyntax) -> GraceNoteEvent {
+    let accidental = note.accidental.map(|accidental| accidental.sign);
+    GraceNoteEvent {
+        pitch: Pitch {
+            step: note.pitch.step.to_ascii_uppercase(),
+            alter: accidental.map(Accidental::alter).unwrap_or(0),
+            octave: lowered_octave(note),
+            spelling_source: note.pitch.span,
+        },
+        written_accidental: accidental.map(|kind| AccidentalMark {
+            kind,
+            explicit: true,
+            courtesy: false,
+            source: note
+                .accidental
+                .map(|accidental| accidental.span)
+                .unwrap_or(note.span),
+        }),
     }
 }
 
@@ -2119,6 +2173,8 @@ fn repeat_ending_parts_model(parts: &[VariantEndingPart]) -> Vec<RepeatEndingPar
 pub(crate) struct ScoreModelInput<'a> {
     pub reference: TextLine,
     pub title: Option<TextLine>,
+    pub composers: Vec<TextLine>,
+    pub tempo: Option<TextLine>,
     pub source_span: Span,
     pub field_state: &'a FieldState,
     pub voices: &'a [VoiceTimeline],
@@ -2149,6 +2205,8 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
         metadata: ScoreMetadata {
             reference: input.reference,
             title: input.title.clone(),
+            composers: input.composers,
+            tempo: input.tempo,
             meter: input.field_state.meter.as_ref().map(meter_model),
             key: input.field_state.key.as_ref().map(key_signature_model),
             directives: input.score_directives.to_vec(),
@@ -2256,6 +2314,7 @@ fn semantic_measure_from_timeline(
         complete,
         barlines,
         repeat_endings,
+        overlays: measure.overlays.clone(),
     }
 }
 
@@ -2881,11 +2940,24 @@ struct LoweredTimedEvent {
     attachments: EventAttachments,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ActiveTuplet {
+    pair_id: u32,
     span: Span,
     remaining: u32,
+    actual_notes: u32,
+    normal_notes: u32,
     multiplier: Fraction,
+    groups: Vec<Vec<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletedTuplet {
+    pair_id: u32,
+    span: Span,
+    actual_notes: u32,
+    normal_notes: u32,
+    groups: Vec<Vec<usize>>,
 }
 
 #[derive(Debug)]
@@ -2906,6 +2978,7 @@ struct LoweringState {
     pending_slur_starts: Vec<OpenSlur>,
     open_slurs: Vec<OpenSlur>,
     next_slur_id: u32,
+    next_tuplet_id: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2968,6 +3041,7 @@ impl LoweringState {
             pending_slur_starts: Vec::new(),
             open_slurs: Vec::new(),
             next_slur_id: 1,
+            next_tuplet_id: 1,
         }
     }
 
@@ -3110,6 +3184,7 @@ impl LoweringState {
         if let Some(pending) = pending_broken {
             self.apply_pending_broken_rhythm(&pending, &group);
         }
+        self.record_tuplet_group(&group);
         self.attach_pending_slur_starts(&group);
         self.finish_pending_tie_if_possible(&group);
         self.time_groups.push(group);
@@ -3122,14 +3197,36 @@ impl LoweringState {
             multiplier = multiplier.checked_mul(pending.right_multiplier);
         }
 
-        for tuplet in &mut self.active_tuplets {
+        for tuplet in &self.active_tuplets {
             if tuplet.remaining > 0 {
                 multiplier = multiplier.checked_mul(tuplet.multiplier);
-                tuplet.remaining -= 1;
+            }
+        }
+        (multiplier, pending_broken)
+    }
+
+    fn record_tuplet_group(&mut self, group: &[usize]) {
+        let mut completed = Vec::new();
+        for tuplet in &mut self.active_tuplets {
+            if tuplet.remaining == 0 {
+                continue;
+            }
+            tuplet.groups.push(group.to_vec());
+            tuplet.remaining -= 1;
+            if tuplet.remaining == 0 {
+                completed.push(CompletedTuplet {
+                    pair_id: tuplet.pair_id,
+                    span: tuplet.span,
+                    actual_notes: tuplet.actual_notes,
+                    normal_notes: tuplet.normal_notes,
+                    groups: tuplet.groups.clone(),
+                });
             }
         }
         self.active_tuplets.retain(|tuplet| tuplet.remaining > 0);
-        (multiplier, pending_broken)
+        for tuplet in completed {
+            self.attach_completed_tuplet(tuplet);
+        }
     }
 
     fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
@@ -3176,10 +3273,16 @@ impl LoweringState {
             self.diagnostics.push(invalid_tuplet_warning(tuplet.span));
             return;
         }
+        let pair_id = self.next_tuplet_id;
+        self.next_tuplet_id = self.next_tuplet_id.saturating_add(1);
         self.active_tuplets.push(ActiveTuplet {
+            pair_id,
             span: tuplet.span,
             remaining: r,
+            actual_notes: p,
+            normal_notes: q,
             multiplier: Fraction::new(q, p),
+            groups: Vec::new(),
         });
     }
 
@@ -3426,6 +3529,38 @@ impl LoweringState {
                 role,
                 span: marker.span,
                 dotted: marker.dotted,
+            });
+        }
+    }
+
+    fn attach_completed_tuplet(&mut self, tuplet: CompletedTuplet) {
+        let groups_len = tuplet.groups.len();
+        for (index, group) in tuplet.groups.iter().enumerate() {
+            let role = if index == 0 {
+                TupletRole::Start
+            } else if index + 1 == groups_len {
+                TupletRole::Stop
+            } else {
+                TupletRole::Continue
+            };
+            if let Some(event_index) = group
+                .iter()
+                .copied()
+                .find(|index| lowered_timed_note(self.lowered.get(*index)).is_some())
+            {
+                self.attach_tuplet(event_index, &tuplet, role);
+            }
+        }
+    }
+
+    fn attach_tuplet(&mut self, event_index: usize, tuplet: &CompletedTuplet, role: TupletRole) {
+        if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index) {
+            timed.attachments.tuplets.push(TupletAttachment {
+                pair_id: tuplet.pair_id,
+                actual_notes: tuplet.actual_notes,
+                normal_notes: tuplet.normal_notes,
+                role,
+                span: tuplet.span,
             });
         }
     }
