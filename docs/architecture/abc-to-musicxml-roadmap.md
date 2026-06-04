@@ -18,7 +18,8 @@ Read this with:
 First product surface:
 
 - `croma-core`: source model, parser, semantic score lowering, diagnostics, and
-  MusicXML writer.
+  MusicXML writer. This is the primary publishable Rust library crate and must
+  remain compatible with crates.io and docs.rs.
 - `croma-cli`: thin wrapper over `croma-core`.
 
 Later product surfaces:
@@ -66,6 +67,49 @@ pub fn export_musicxml_with_options(
 - Parse and lowering summaries.
 - Optional timing or feature counts for corpus runs.
 
+## Crates.io Compatibility
+
+`croma-core` must be designed as a normal library dependency for downstream
+Cargo users, not only as an implementation detail of this workspace.
+
+Manifest and packaging requirements:
+
+- Keep package metadata ready for crates.io: `name`, `version`, `description`,
+  `license`, `repository`, `readme`, `keywords`, and categories.
+- Keep the crate buildable from its packaged `.crate`, not only from the
+  workspace checkout.
+- Run `cargo package -p croma-core --list` before release to inspect packaged
+  files.
+- Run `cargo publish -p croma-core --dry-run` before release.
+- Keep package size small; do not include the real corpus, generated reference
+  MusicXML, or private `docs/untracked/` material.
+- Any dependency used by `croma-core` must be available from crates.io unless it
+  is a dev-only local tool that is not required by the published package.
+- If later publishable workspace crates depend on `croma-core` with a local
+  `path`, also provide a matching `version` so the published crate resolves
+  through crates.io.
+
+Public API requirements:
+
+- Treat exported types and functions as SemVer commitments once published.
+- Keep experimental parser internals private or gate them behind explicitly
+  named unstable features until they are ready.
+- Prefer feature flags for optional integrations such as corpus comparison,
+  MusicXML validation helpers, or future LSP support.
+- Keep the default feature set suitable for ordinary library consumers.
+- Provide useful rustdoc examples for the simple export path and diagnostic
+  path.
+- Avoid requiring network access, external converters, local corpora, or system
+  tools to compile the library.
+
+Release readiness checks:
+
+- `cargo test -p croma-core`
+- `cargo clippy -p croma-core --all-targets -- -D warnings`
+- `cargo doc -p croma-core --no-deps`
+- `cargo package -p croma-core --list`
+- `cargo publish -p croma-core --dry-run`
+
 ## Phase 0: Lock Design Decisions
 
 Deliverables:
@@ -74,6 +118,7 @@ Deliverables:
 - Add a small parser decision log when implementation decisions become
   irreversible.
 - Keep `docs/untracked/` private and ignored.
+- Keep `croma-core` packaging checks in the release checklist.
 
 Acceptance:
 

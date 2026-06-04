@@ -40,6 +40,10 @@ of that library.
 4. `croma-lsp`: diagnostics, semantic tokens, formatting, and code actions from
    the same model.
 
+`croma-core` is the publishable Rust library. It must stay compatible with
+normal crates.io packaging, docs.rs builds, SemVer versioning, and downstream
+Cargo dependency use.
+
 ## Design Documents
 
 - `docs/architecture/abc-parser-design-analysis.md`
@@ -54,6 +58,8 @@ of that library.
 - ABC 2.1 is the stable default.
 - ABC 2.2 features are explicit draft-mode compatibility.
 - Every diagnostic carries a source span.
+- `croma-core` remains crates.io-publishable; no parser feature may depend on
+  local private paths, untracked corpus data, or CLI-only behavior.
 - Full-corpus runs validate a coherent change; they are not a substitute for
   small fixtures.
 - Mismatches end as a fixed Croma bug, a documented reference artifact, or a
