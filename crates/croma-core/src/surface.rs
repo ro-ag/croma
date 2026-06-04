@@ -1,4 +1,5 @@
 use crate::Span;
+use crate::source::SourceText;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SurfaceMap {
@@ -28,12 +29,20 @@ pub enum SurfaceKind {
 }
 
 pub fn analyze(source: &str) -> SurfaceMap {
-    let mut tokens = Vec::new();
-    let mut offset = 0;
+    analyze_source(&SourceText::new(source))
+}
 
-    for line in source.lines() {
-        analyze_line(line, offset, &mut tokens);
-        offset += line.len() + 1;
+pub fn analyze_source(source: &SourceText) -> SurfaceMap {
+    let mut tokens = Vec::new();
+
+    for index in 0..source.line_count() {
+        let Some(line) = source.line(index) else {
+            continue;
+        };
+        let Some(line_text) = source.line_text(index) else {
+            continue;
+        };
+        analyze_line(line_text, line.start(), &mut tokens);
     }
 
     SurfaceMap { tokens }
@@ -102,5 +111,19 @@ mod tests {
         assert_eq!(surface.tokens_of_kind(SurfaceKind::Note).count(), 1);
         assert_eq!(surface.tokens_of_kind(SurfaceKind::Barline).count(), 1);
         assert_eq!(surface.tokens_of_kind(SurfaceKind::Rest).count(), 1);
+    }
+
+    #[test]
+    fn records_spans_after_crlf_line_endings() {
+        let source = SourceText::new("X:1\r\nK:C\r\nC|z");
+        let surface = analyze_source(&source);
+
+        let note = surface
+            .tokens_of_kind(SurfaceKind::Note)
+            .next()
+            .expect("expected note token");
+
+        assert_eq!(note.span, Span::new(10, 11));
+        assert_eq!(source.slice(note.span), Some("C"));
     }
 }
