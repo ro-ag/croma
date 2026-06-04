@@ -3,7 +3,7 @@ use crate::error::{CromaError, Result};
 use crate::model::{Event, Fraction, Tune};
 use crate::options::ParseOptions;
 use crate::source::SourceText;
-use crate::surface::SurfaceMap;
+use crate::surface::{LineContext, LineKind, SurfaceMap, analyze_source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseReport<T> {
@@ -27,6 +27,7 @@ impl<T> ParseReport<T> {
 pub struct AbcDocument {
     pub source: SourceText,
     pub options: ParseOptions,
+    pub surface: SurfaceMap,
 }
 
 pub fn parse_document(source: &str, options: ParseOptions) -> ParseReport<AbcDocument> {
@@ -38,8 +39,16 @@ pub fn parse_document_source(
     options: ParseOptions,
 ) -> ParseReport<AbcDocument> {
     let diagnostics = source_level_diagnostics(&source);
+    let surface = analyze_source(&source);
 
-    ParseReport::new(AbcDocument { source, options }, diagnostics)
+    ParseReport::new(
+        AbcDocument {
+            source,
+            options,
+            surface,
+        },
+        diagnostics,
+    )
 }
 
 pub fn parse_tune(
@@ -55,63 +64,87 @@ pub fn parse_tune(
 
 pub fn parse_tune_report(
     source: &SourceText,
-    _surface: &SurfaceMap,
+    surface: &SurfaceMap,
     _options: ParseOptions,
 ) -> ParseReport<Option<Tune>> {
     if source.content().trim().is_empty() {
         return ParseReport::new(None, source_level_diagnostics(source));
     }
 
+    let fallback_surface;
+    let surface = if surface.line_map.lines.is_empty() && source.line_count() > 0 {
+        fallback_surface = analyze_source(source);
+        &fallback_surface
+    } else {
+        surface
+    };
+
     let mut reference = String::new();
     let mut title = String::new();
     let mut meter = String::from("4/4");
     let mut unit = Fraction::new(1, 8);
     let mut key = String::new();
-    let mut in_body = false;
     let mut events = Vec::new();
     let mut body_start = None;
 
-    for index in 0..source.line_count() {
-        let Some(source_line) = source.line(index) else {
-            continue;
+    let Some(tune) = surface.line_map.tunes.first() else {
+        return ParseReport::new(None, vec![missing_key_diagnostic(source)]);
+    };
+
+    for line in &surface.line_map.lines {
+        let is_header_field = match line.context {
+            LineContext::FileHeader => true,
+            LineContext::TuneHeader { tune_index } => tune_index == tune.index,
+            LineContext::Preamble
+            | LineContext::BetweenBlocks
+            | LineContext::FreeText
+            | LineContext::TypesetText
+            | LineContext::TuneBody { .. }
+            | LineContext::TuneTerminator { .. } => false,
         };
-        let Some(line) = source.line_text(index) else {
-            continue;
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('%') {
-            continue;
-        }
-        if !in_body {
-            if let Some(value) = trimmed.strip_prefix("X:") {
-                reference = value.trim().to_owned();
+
+        if is_header_field {
+            let Some(field) = line.field else {
                 continue;
-            }
-            if let Some(value) = trimmed.strip_prefix("T:") {
-                title = value.trim().to_owned();
+            };
+            let Some(value) = source.slice(field.value_span) else {
                 continue;
-            }
-            if let Some(value) = trimmed.strip_prefix("M:") {
-                meter = value.trim().to_owned();
-                continue;
-            }
-            if let Some(value) = trimmed.strip_prefix("L:") {
-                if let Some(parsed) = Fraction::parse(value.trim()) {
-                    unit = parsed;
+            };
+            let value = strip_comment(value).trim();
+            match field.code {
+                'X' if line.context != LineContext::FileHeader => reference = value.to_owned(),
+                'T' if line.context != LineContext::FileHeader && title.is_empty() => {
+                    title = value.to_owned();
                 }
-                continue;
+                'M' => meter = value.to_owned(),
+                'L' => {
+                    if let Some(parsed) = Fraction::parse(value) {
+                        unit = parsed;
+                    }
+                }
+                'K' if line.context != LineContext::FileHeader => {
+                    key = value.to_owned();
+                    body_start = Some(line.span.end);
+                }
+                _ => {}
             }
-            if let Some(value) = trimmed.strip_prefix("K:") {
-                key = value.trim().to_owned();
-                in_body = true;
-                body_start = Some(source_line.end());
-                continue;
-            }
+        }
+    }
+
+    for line in &surface.line_map.lines {
+        if line.kind != LineKind::MusicCode
+            || line.context
+                != (LineContext::TuneBody {
+                    tune_index: tune.index,
+                })
+        {
+            continue;
         }
 
-        if in_body {
-            parse_music_line(trimmed, unit, &mut events);
-        }
+        let Some(line_text) = source.slice(line.text_span) else {
+            continue;
+        };
+        parse_music_line(line_text.trim(), unit, &mut events);
     }
 
     if key.is_empty() {
@@ -132,6 +165,28 @@ pub fn parse_tune_report(
         }),
         Vec::new(),
     )
+}
+
+fn strip_comment(value: &str) -> &str {
+    for (offset, ch) in value.char_indices() {
+        if ch == '%' && !is_escaped(value, offset) {
+            return &value[..offset];
+        }
+    }
+
+    value
+}
+
+fn is_escaped(text: &str, offset: usize) -> bool {
+    let mut slash_count = 0;
+    for byte in text[..offset].bytes().rev() {
+        if byte == b'\\' {
+            slash_count += 1;
+        } else {
+            break;
+        }
+    }
+    slash_count % 2 == 1
 }
 
 fn source_level_diagnostics(source: &SourceText) -> Vec<Diagnostic> {
