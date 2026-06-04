@@ -9,6 +9,8 @@ are built on that library API instead of maintaining separate parsers.
 - Primary: ABC -> MusicXML from Rust library code.
 - Next: thin CLI over the library.
 - Later: formatter and language server using the same parse/surface model.
+- Packaging: the core library must remain publishable as a normal crates.io
+  Rust crate.
 - Out of initial scope: PDF rendering, MusicXML -> ABC, broad engraving layout.
 
 ## Specification Target

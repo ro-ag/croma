@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Library-first ABC to MusicXML exporter"
+readme = "../../README.md"
+keywords = ["abc", "musicxml", "music", "notation"]
+categories = ["parser-implementations"]
 
 [lib]
 path = "src/lib.rs"
