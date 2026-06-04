@@ -134,6 +134,8 @@ fn parse_tune_report_with_fields(
     };
     let mut title = String::new();
     let mut title_line = None;
+    let mut composers = Vec::new();
+    let mut tempo_line = None;
     let mut meter = String::from("4/4");
     let mut key = String::new();
     let mut has_key = false;
@@ -177,6 +179,18 @@ fn parse_tune_report_with_fields(
                         span: value.span,
                     });
                 }
+                ParsedFieldKind::TextMetadata(metadata) if metadata.code == 'C' => {
+                    composers.push(TextLine {
+                        text: metadata.value.value.clone(),
+                        span: metadata.value.span,
+                    });
+                }
+                ParsedFieldKind::Tempo(value) if tempo_line.is_none() => {
+                    tempo_line = Some(TextLine {
+                        text: value.value.clone(),
+                        span: value.span,
+                    });
+                }
                 ParsedFieldKind::Key(value) => {
                     has_key = true;
                     key = if value.value.raw.is_empty() {
@@ -206,6 +220,8 @@ fn parse_tune_report_with_fields(
         score = Some(build_score_model(ScoreModelInput {
             reference: reference_line.clone(),
             title: title_line.clone(),
+            composers: composers.clone(),
+            tempo: tempo_line.clone(),
             source_span: tune.span,
             field_state,
             voices: &voices,
@@ -252,6 +268,8 @@ fn empty_score(span: Span, diagnostics: Vec<Diagnostic>) -> Score {
                 span,
             },
             title: None,
+            composers: Vec::new(),
+            tempo: None,
             meter: None,
             key: None,
             directives: Vec::new(),

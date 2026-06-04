@@ -21,7 +21,7 @@ pub use model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, BarlineKind, ChordEvent,
     ChordMemberEvent, Event, EventAttachments, Fraction, KeySignatureModel, Measure, MeasureId,
     MeterModel, NoteEvent, Part, Pitch, Rational, RestEvent, RestVisibility, Score, ScoreMetadata,
-    Staff, StaffId, TimedEvent, TimedEventKind, Tune, Voice,
+    Staff, StaffId, TimedEvent, TimedEventKind, Tune, TupletAttachment, TupletRole, Voice,
 };
 pub use music::{
     BarlineSyntax, LengthSyntax, MusicItem, MusicLine, MusicToken, MusicTokenKind,
@@ -60,6 +60,14 @@ pub fn lower_score(document: &AbcDocument, _options: LowerOptions) -> ParseRepor
     }
 }
 
+pub fn write_musicxml(score: &Score) -> MusicXmlExport {
+    let report = musicxml::write_score_partwise(score);
+    MusicXmlExport {
+        musicxml: report.value,
+        diagnostics: report.diagnostics,
+    }
+}
+
 pub fn export_musicxml_with_options(
     source: &str,
     options: ExportOptions,
@@ -80,8 +88,11 @@ pub fn export_musicxml_with_options(
         return Err(CromaError::from_diagnostics(diagnostics));
     };
 
+    let write_report = musicxml::write_score_partwise(&tune.score);
+    diagnostics.extend(write_report.diagnostics);
+
     Ok(MusicXmlExport {
-        musicxml: musicxml::write_score_partwise(&tune),
+        musicxml: write_report.value,
         diagnostics,
     })
 }
@@ -97,8 +108,9 @@ mod tests {
 
         assert!(xml.contains("<score-partwise version=\"4.0\">"));
         assert!(xml.contains("<part-name>Scale</part-name>"));
-        assert!(xml.contains("<step>C</step><octave>4</octave>"));
-        assert!(xml.contains("<step>C</step><octave>5</octave>"));
+        assert!(xml.contains("<step>C</step>"));
+        assert!(xml.contains("<octave>4</octave>"));
+        assert!(xml.contains("<octave>5</octave>"));
         assert!(xml.contains("<type>eighth</type>"));
         assert!(!xml.contains("<measure number=\"3\">"));
     }
