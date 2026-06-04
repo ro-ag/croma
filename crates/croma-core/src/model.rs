@@ -33,6 +33,8 @@ pub struct Score {
 pub struct ScoreMetadata {
     pub reference: TextLine,
     pub title: Option<TextLine>,
+    pub composers: Vec<TextLine>,
+    pub tempo: Option<TextLine>,
     pub meter: Option<MeterModel>,
     pub key: Option<KeySignatureModel>,
     pub directives: Vec<ScoreDirectiveModel>,
@@ -143,6 +145,7 @@ pub struct Measure {
     pub complete: bool,
     pub barlines: Vec<MeasureBarline>,
     pub repeat_endings: Vec<RepeatEndingModel>,
+    pub overlays: Vec<OverlaySegment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +239,7 @@ pub struct EventAttachments {
     pub symbols: Vec<AlignedSymbol>,
     pub ties: Vec<TieAttachment>,
     pub slurs: Vec<SlurAttachment>,
+    pub tuplets: Vec<TupletAttachment>,
 }
 
 impl EventAttachments {
@@ -248,6 +252,7 @@ impl EventAttachments {
             && self.symbols.is_empty()
             && self.ties.is_empty()
             && self.slurs.is_empty()
+            && self.tuplets.is_empty()
     }
 
     pub(crate) fn extend(&mut self, other: EventAttachments) {
@@ -259,6 +264,7 @@ impl EventAttachments {
         self.symbols.extend(other.symbols);
         self.ties.extend(other.ties);
         self.slurs.extend(other.slurs);
+        self.tuplets.extend(other.tuplets);
     }
 }
 
@@ -267,6 +273,26 @@ pub struct GraceGroupAttachment {
     pub span: Span,
     pub slash: Option<Span>,
     pub note_count: u32,
+    pub events: Vec<GraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraceEvent {
+    pub source_span: Span,
+    pub kind: GraceEventKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraceEventKind {
+    Note(GraceNoteEvent),
+    Rest(RestEvent),
+    Chord(Vec<GraceNoteEvent>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraceNoteEvent {
+    pub pitch: Pitch,
+    pub written_accidental: Option<AccidentalMark>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,6 +351,22 @@ pub struct SlurAttachment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlurRole {
     Start,
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TupletAttachment {
+    pub pair_id: u32,
+    pub actual_notes: u32,
+    pub normal_notes: u32,
+    pub role: TupletRole,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TupletRole {
+    Start,
+    Continue,
     Stop,
 }
 
