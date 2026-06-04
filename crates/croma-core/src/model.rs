@@ -8,6 +8,9 @@ pub struct Tune {
     pub key: String,
     pub divisions: u32,
     pub events: Vec<Event>,
+    pub voices: Vec<VoiceTimeline>,
+    pub score_directives: Vec<ScoreDirectiveModel>,
+    pub post_tune_lyrics: Vec<TextLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +50,147 @@ impl Event {
     pub(crate) fn is_time_bearing(&self) -> bool {
         matches!(self, Self::Note { .. } | Self::Rest { .. })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceTimeline {
+    pub id: VoiceId,
+    pub properties: VoicePropertiesModel,
+    pub measures: Vec<VoiceMeasureTimeline>,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceId {
+    pub value: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VoicePropertiesModel {
+    pub name: Option<TextLine>,
+    pub nm: Option<TextLine>,
+    pub subname: Option<TextLine>,
+    pub snm: Option<TextLine>,
+    pub clef: Option<TextLine>,
+    pub stem: Option<StemDirectionModel>,
+    pub octave: Option<TextLine>,
+    pub transpose: Option<TextLine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StemDirectionModel {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceMeasureTimeline {
+    pub index: u32,
+    pub span: Span,
+    pub events: Vec<VoiceTimedEvent>,
+    pub overlays: Vec<OverlaySegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceTimedEvent {
+    pub onset: Fraction,
+    pub duration: Fraction,
+    pub span: Span,
+    pub line_index: usize,
+    pub source_order: u32,
+    pub alignable: bool,
+    pub kind: TimelineEventKind,
+    pub lyrics: Vec<AlignedLyric>,
+    pub symbols: Vec<AlignedSymbol>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimelineEventKind {
+    Note {
+        step: char,
+        octave: i8,
+        accidental: Option<Accidental>,
+        chord: bool,
+    },
+    Rest {
+        visibility: RestVisibility,
+    },
+    Spacer,
+    Barline {
+        kind: BarlineKind,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlaySegment {
+    pub id: VoiceId,
+    pub span: Span,
+    pub measure_index: u32,
+    pub expected_duration: Fraction,
+    pub actual_duration: Fraction,
+    pub events: Vec<VoiceTimedEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlignedLyric {
+    pub verse: u32,
+    pub text: String,
+    pub span: Span,
+    pub control: LyricControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LyricControl {
+    Syllable,
+    Hyphen,
+    Extender,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlignedSymbol {
+    pub layer: u32,
+    pub text: String,
+    pub span: Span,
+    pub kind: AlignedSymbolKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignedSymbolKind {
+    Decoration,
+    ChordSymbol,
+    Annotation,
+    Raw,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoreDirectiveModel {
+    pub span: Span,
+    pub value: TextLine,
+    pub tokens: Vec<ScoreDirectiveTokenModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoreDirectiveTokenModel {
+    pub span: Span,
+    pub kind: ScoreDirectiveTokenKindModel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScoreDirectiveTokenKindModel {
+    Voice(String),
+    GroupStart(char),
+    GroupEnd(char),
+    StaffSeparator,
+    MeasureSeparator,
+    FloatingVoiceMarker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextLine {
+    pub text: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +299,13 @@ pub struct Fraction {
 }
 
 impl Fraction {
+    pub fn zero() -> Self {
+        Self {
+            numerator: 0,
+            denominator: 1,
+        }
+    }
+
     pub fn new(numerator: u32, denominator: u32) -> Self {
         let denominator = denominator.max(1);
         let gcd = gcd(numerator, denominator);
@@ -180,6 +331,20 @@ impl Fraction {
 
     pub(crate) fn checked_mul_u32(self, value: u32) -> Self {
         Self::new(self.numerator.saturating_mul(value), self.denominator)
+    }
+
+    pub(crate) fn checked_add(self, other: Self) -> Self {
+        let numerator = self
+            .numerator
+            .saturating_mul(other.denominator)
+            .saturating_add(other.numerator.saturating_mul(self.denominator));
+        let denominator = self.denominator.saturating_mul(other.denominator);
+        Self::new(numerator, denominator)
+    }
+
+    pub(crate) fn less_than(self, other: Self) -> bool {
+        u64::from(self.numerator) * u64::from(other.denominator)
+            < u64::from(other.numerator) * u64::from(self.denominator)
     }
 
     pub(crate) fn divisions_requirement(self) -> u32 {
