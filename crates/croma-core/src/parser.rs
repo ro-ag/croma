@@ -1,10 +1,11 @@
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
 use crate::fields::{ParsedAbcFields, ParsedFieldKind, parse_fields};
-use crate::model::{Event, Fraction, Tune};
+use crate::model::Tune;
+use crate::music::{ParsedMusicDocument, lower_tune_music, parse_music_document};
 use crate::options::ParseOptions;
 use crate::source::SourceText;
-use crate::surface::{LineContext, LineKind, SurfaceMap, analyze_source};
+use crate::surface::{SurfaceMap, analyze_source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseReport<T> {
@@ -30,6 +31,7 @@ pub struct AbcDocument {
     pub options: ParseOptions,
     pub surface: SurfaceMap,
     pub fields: ParsedAbcFields,
+    pub music: ParsedMusicDocument,
 }
 
 pub fn parse_document(source: &str, options: ParseOptions) -> ParseReport<AbcDocument> {
@@ -44,6 +46,11 @@ pub fn parse_document_source(
     let surface = analyze_source(&source);
     let (fields, field_diagnostics) = parse_fields(&source, &surface, options);
     diagnostics.extend(field_diagnostics);
+    let ParseReport {
+        value: music,
+        diagnostics: music_diagnostics,
+    } = parse_music_document(&source, &surface);
+    diagnostics.extend(music_diagnostics);
 
     ParseReport::new(
         AbcDocument {
@@ -51,6 +58,7 @@ pub fn parse_document_source(
             options,
             surface,
             fields,
+            music,
         },
         diagnostics,
     )
@@ -84,8 +92,16 @@ pub fn parse_tune_report(
         surface
     };
 
-    let (fields, diagnostics) = parse_fields(source, surface, options);
-    parse_tune_report_with_fields(source, surface, &fields, diagnostics)
+    let (fields, mut diagnostics) = parse_fields(source, surface, options);
+    let music_report = parse_music_document(source, surface);
+    diagnostics.extend(music_report.diagnostics);
+    parse_tune_report_with_fields(
+        source,
+        surface,
+        &fields,
+        Some(&music_report.value),
+        diagnostics,
+    )
 }
 
 pub fn parse_tune_report_from_document(document: &AbcDocument) -> ParseReport<Option<Tune>> {
@@ -93,6 +109,7 @@ pub fn parse_tune_report_from_document(document: &AbcDocument) -> ParseReport<Op
         &document.source,
         &document.surface,
         &document.fields,
+        Some(&document.music),
         Vec::new(),
     )
 }
@@ -101,6 +118,7 @@ fn parse_tune_report_with_fields(
     source: &SourceText,
     surface: &SurfaceMap,
     fields: &ParsedAbcFields,
+    music: Option<&ParsedMusicDocument>,
     mut diagnostics: Vec<Diagnostic>,
 ) -> ParseReport<Option<Tune>> {
     if source.content().trim().is_empty() {
@@ -110,11 +128,12 @@ fn parse_tune_report_with_fields(
     let mut reference = String::new();
     let mut title = String::new();
     let mut meter = String::from("4/4");
-    let mut unit = Fraction::new(1, 8);
     let mut key = String::new();
     let mut has_key = false;
     let mut events = Vec::new();
+    let mut divisions = 8;
     let mut body_start = None;
+    let mut tune_field_state = None;
 
     let Some(tune) = surface.line_map.tunes.first() else {
         diagnostics.push(missing_key_diagnostic(source));
@@ -125,7 +144,7 @@ fn parse_tune_report_with_fields(
         if let Some(parsed_meter) = tune_fields.header.meter.as_ref() {
             meter = parsed_meter.value.raw.clone();
         }
-        unit = tune_fields.header.unit_note_length_fraction();
+        tune_field_state = Some(&tune_fields.header);
 
         for field_index in &tune_fields.header_field_indices {
             let Some(field) = fields.field(*field_index) else {
@@ -148,27 +167,21 @@ fn parse_tune_report_with_fields(
         }
     }
 
-    for line in &surface.line_map.lines {
-        if line.kind != LineKind::MusicCode
-            || line.context
-                != (LineContext::TuneBody {
-                    tune_index: tune.index,
-                })
-        {
-            continue;
-        }
-
-        let Some(line_text) = source.slice(line.text_span) else {
-            continue;
-        };
-        parse_music_line(line_text.trim(), unit, &mut events);
+    if let (Some(tune_music), Some(field_state)) = (
+        music.and_then(|music| music.tune(tune.index)),
+        tune_field_state,
+    ) {
+        let lower_report = lower_tune_music(tune_music, field_state);
+        diagnostics.extend(lower_report.diagnostics);
+        events = lower_report.value.events;
+        divisions = lower_report.value.divisions;
     }
 
     if !has_key {
         diagnostics.push(missing_key_diagnostic(source));
         return ParseReport::new(None, diagnostics);
     }
-    if events.iter().all(|event| matches!(event, Event::Bar)) {
+    if events.iter().all(|event| !event.is_time_bearing()) {
         diagnostics.push(no_music_diagnostic(source, body_start));
         return ParseReport::new(None, diagnostics);
     }
@@ -179,7 +192,7 @@ fn parse_tune_report_with_fields(
             title,
             meter,
             key,
-            divisions: 8,
+            divisions,
             events,
         }),
         diagnostics,
@@ -247,84 +260,6 @@ fn no_music_diagnostic(source: &SourceText, body_start: Option<usize>) -> Diagno
         Span::new(body_start.unwrap_or_else(|| source.len()), source.len()),
     )
     .with_spec_reference(abc_file_structure_reference())
-}
-
-fn parse_music_line(line: &str, unit: Fraction, events: &mut Vec<Event>) {
-    let chars: Vec<char> = line.chars().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        let ch = chars[index];
-        match ch {
-            '%' => break,
-            '|' => {
-                events.push(Event::Bar);
-                index += 1;
-            }
-            'A'..='G' | 'a'..='g' => {
-                let step = ch.to_ascii_uppercase();
-                let octave = if ch.is_ascii_lowercase() { 5 } else { 4 };
-                index += 1;
-                let (length, next) = parse_length(&chars, index);
-                events.push(Event::Note {
-                    step,
-                    octave,
-                    duration: duration_divisions(unit, length),
-                });
-                index = next;
-            }
-            'z' | 'x' => {
-                index += 1;
-                let (length, next) = parse_length(&chars, index);
-                events.push(Event::Rest {
-                    duration: duration_divisions(unit, length),
-                });
-                index = next;
-            }
-            _ => {
-                index += 1;
-            }
-        }
-    }
-}
-
-fn parse_length(chars: &[char], start: usize) -> (Fraction, usize) {
-    let mut index = start;
-    let mut numerator = String::new();
-    while index < chars.len() && chars[index].is_ascii_digit() {
-        numerator.push(chars[index]);
-        index += 1;
-    }
-
-    if index < chars.len() && chars[index] == '/' {
-        index += 1;
-        let mut denominator = String::new();
-        while index < chars.len() && chars[index].is_ascii_digit() {
-            denominator.push(chars[index]);
-            index += 1;
-        }
-        let numerator = parse_u32_or_one(&numerator);
-        let denominator = parse_u32_or_default(&denominator, 2);
-        return (Fraction::new(numerator, denominator), index);
-    }
-
-    (Fraction::new(parse_u32_or_one(&numerator), 1), index)
-}
-
-fn parse_u32_or_one(value: &str) -> u32 {
-    parse_u32_or_default(value, 1)
-}
-
-fn parse_u32_or_default(value: &str, default: u32) -> u32 {
-    value.parse::<u32>().unwrap_or(default)
-}
-
-fn duration_divisions(unit: Fraction, length: Fraction) -> u32 {
-    let numerator = 32 * unit.numerator * length.numerator;
-    let denominator = unit.denominator * length.denominator;
-    numerator
-        .checked_div(denominator)
-        .filter(|v| *v > 0)
-        .unwrap_or(1)
 }
 
 #[cfg(test)]
@@ -402,8 +337,11 @@ mod tests {
 
         assert!(report.value.is_none());
         assert!(report.has_errors());
-        assert_eq!(report.diagnostics.len(), 1);
-        assert_eq!(report.diagnostics[0].code, "abc.file.no_music");
-        assert_eq!(source.slice(report.diagnostics[0].span), Some("|||\n"));
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "abc.file.no_music")
+            .expect("expected no-music diagnostic");
+        assert_eq!(source.slice(diagnostic.span), Some("|||\n"));
     }
 }
