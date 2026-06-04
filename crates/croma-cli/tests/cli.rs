@@ -226,12 +226,209 @@ fn corpus_smoke_script_handles_failing_file_without_stopping() {
     );
 }
 
+#[test]
+fn corpus_harness_report_format_is_stable() {
+    let dir = TestDir::new("corpus-harness-format");
+    let corpus = dir.path().join("corpus");
+    create_dir(&corpus);
+    write_path(
+        &corpus.join("good.abc"),
+        "X:1\nT:Good\nM:4/4\nL:1/8\nK:C\nC D E F|\n",
+    );
+    let report_path = dir.path().join("report.json");
+    let results_path = dir.path().join("results.jsonl");
+
+    let output = run_corpus_harness([
+        os("--croma"),
+        os(env!("CARGO_BIN_EXE_croma")),
+        os("--corpus"),
+        corpus.as_os_str(),
+        os("--report"),
+        report_path.as_os_str(),
+        os("--results-jsonl"),
+        results_path.as_os_str(),
+        os("--mode"),
+        os("check"),
+    ]);
+
+    assert_success(&output);
+    let report = json_file(&report_path);
+    assert_eq!(report["schema"], json!("croma-corpus-harness-v1"));
+    assert_eq!(report["mode"], json!("check"));
+    assert_eq!(report["files_discovered"], json!(1));
+    assert_eq!(report["files_selected"], json!(1));
+    assert_eq!(report["files_attempted"], json!(1));
+    assert_eq!(report["successes"], json!(1));
+    assert_eq!(report["failures"], json!(0));
+    assert_eq!(report["music21"]["enabled"], json!(false));
+    assert!(read_file(&report_path).contains("\"label\": \"Croma bug\""));
+
+    let results = jsonl_file(&results_path);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["schema"], json!("croma-corpus-result-v1"));
+    assert_eq!(results[0]["status"], json!("success"));
+}
+
+#[test]
+fn corpus_harness_handles_failing_file_without_stopping() {
+    let dir = TestDir::new("corpus-harness-failures");
+    let corpus = dir.path().join("corpus");
+    create_dir(&corpus);
+    write_path(
+        &corpus.join("good.abc"),
+        "X:1\nT:Good\nM:4/4\nL:1/8\nK:C\nC D E F|\n",
+    );
+    write_path(&corpus.join("bad.abc"), "X:1\nT:Missing Key\n");
+    let report_path = dir.path().join("report.json");
+    let results_path = dir.path().join("results.jsonl");
+
+    let output = run_corpus_harness([
+        os("--croma"),
+        os(env!("CARGO_BIN_EXE_croma")),
+        os("--corpus"),
+        corpus.as_os_str(),
+        os("--report"),
+        report_path.as_os_str(),
+        os("--results-jsonl"),
+        results_path.as_os_str(),
+        os("--mode"),
+        os("check"),
+    ]);
+
+    assert_success(&output);
+    let stdout = stdout(&output);
+    assert!(stdout.contains("attempted: 2"));
+    assert!(stdout.contains("successes: 1"));
+    assert!(stdout.contains("failures: 1"));
+
+    let report = json_file(&report_path);
+    assert_eq!(report["files_attempted"], json!(2));
+    assert_eq!(report["successes"], json!(1));
+    assert_eq!(report["failures"], json!(1));
+    assert_eq!(
+        report["failing_files"][0]["diagnostics"][0]["code"],
+        json!("abc.file.missing_k")
+    );
+    assert_eq!(
+        report["failing_files"][0]["source_snippet"]["lines"][0]["text"],
+        json!("X:1")
+    );
+}
+
+#[test]
+fn corpus_harness_keeps_quoted_diagnostic_json_valid() {
+    let dir = TestDir::new("corpus-harness-json");
+    let corpus = dir.path().join("corpus");
+    create_dir(&corpus);
+    write_path(
+        &corpus.join("quoted.abc"),
+        "X:1\nT:Quote\nI:weird\"<x> value\nK:C\nC\n",
+    );
+    let report_path = dir.path().join("report.json");
+    let results_path = dir.path().join("results.jsonl");
+
+    let output = run_corpus_harness([
+        os("--croma"),
+        os(env!("CARGO_BIN_EXE_croma")),
+        os("--corpus"),
+        corpus.as_os_str(),
+        os("--report"),
+        report_path.as_os_str(),
+        os("--results-jsonl"),
+        results_path.as_os_str(),
+        os("--mode"),
+        os("check"),
+    ]);
+
+    assert_success(&output);
+    let report = json_file(&report_path);
+    assert_eq!(report["files_attempted"], json!(1));
+    assert_eq!(
+        report["results"][0]["diagnostics"][0]["message"],
+        json!("Unknown I: instruction `weird\"<x>` was ignored")
+    );
+    assert_eq!(
+        report["top_diagnostic_codes"][0],
+        json!({ "code": "abc.field.unknown_instruction", "count": 1 })
+    );
+}
+
+#[test]
+fn corpus_harness_classification_round_trips_through_resume_jsonl() {
+    let dir = TestDir::new("corpus-harness-classification");
+    let corpus = dir.path().join("corpus");
+    create_dir(&corpus);
+    write_path(&corpus.join("bad.abc"), "X:1\nT:Missing Key\n");
+    let classifications_path = dir.path().join("classifications.json");
+    write_path(
+        &classifications_path,
+        "{\n  \"files\": {\n    \"bad.abc\": \"malformed ABC\"\n  }\n}\n",
+    );
+    let report_path = dir.path().join("report.json");
+    let results_path = dir.path().join("results.jsonl");
+
+    let first = run_corpus_harness([
+        os("--croma"),
+        os(env!("CARGO_BIN_EXE_croma")),
+        os("--corpus"),
+        corpus.as_os_str(),
+        os("--report"),
+        report_path.as_os_str(),
+        os("--results-jsonl"),
+        results_path.as_os_str(),
+        os("--classifications"),
+        classifications_path.as_os_str(),
+    ]);
+
+    assert_success(&first);
+    let first_report = json_file(&report_path);
+    assert_eq!(
+        first_report["failing_files"][0]["classification"]["id"],
+        json!("malformed_abc")
+    );
+
+    let resumed = run_corpus_harness([
+        os("--croma"),
+        os(env!("CARGO_BIN_EXE_croma")),
+        os("--corpus"),
+        corpus.as_os_str(),
+        os("--report"),
+        report_path.as_os_str(),
+        os("--results-jsonl"),
+        results_path.as_os_str(),
+        os("--classifications"),
+        classifications_path.as_os_str(),
+        os("--resume"),
+    ]);
+
+    assert_success(&resumed);
+    let resumed_report = json_file(&report_path);
+    assert_eq!(resumed_report["files_skipped_by_resume"], json!(1));
+    assert_eq!(
+        resumed_report["failing_files"][0]["classification"]["id"],
+        json!("malformed_abc")
+    );
+    assert_eq!(jsonl_file(&results_path).len(), 1);
+}
+
 fn run_croma<I, S>(args: I) -> Output
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
     let mut command = Command::new(env!("CARGO_BIN_EXE_croma"));
+    command.args(args);
+    command.current_dir(workspace_root());
+    command_output(command)
+}
+
+fn run_corpus_harness<I, S>(args: I) -> Output
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("python3");
+    command.arg(workspace_root().join("tools/corpus_harness.py"));
     command.args(args);
     command.current_dir(workspace_root());
     command_output(command)
@@ -305,6 +502,25 @@ fn json_file(path: &Path) -> Value {
         Ok(value) => value,
         Err(error) => panic!("failed to parse {} as JSON: {error}", path.display()),
     }
+}
+
+fn jsonl_file(path: &Path) -> Vec<Value> {
+    let content = read_file(path);
+    let mut values = Vec::new();
+    for (line_index, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(line) {
+            Ok(value) => values.push(value),
+            Err(error) => panic!(
+                "failed to parse {} line {} as JSON: {error}",
+                path.display(),
+                line_index + 1
+            ),
+        }
+    }
+    values
 }
 
 fn create_dir(path: &Path) {
