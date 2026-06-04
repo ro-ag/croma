@@ -46,6 +46,9 @@ impl From<ExportOptions> for ParseOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LowerOptions;
+
 #[cfg(test)]
 mod tests {
     use super::*;
