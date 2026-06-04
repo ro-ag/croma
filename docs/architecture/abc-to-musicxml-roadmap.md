@@ -24,9 +24,11 @@ First product surface:
 
 Later product surfaces:
 
-- `croma-fmt`: formatting from the shared lossless syntax model.
+- `croma-fmt`: formatting from the shared lossless syntax model, started only
+  after parser quality is good enough on focused fixtures and the real corpus.
 - `croma-lsp`: diagnostics, semantic tokens, formatting, and code actions from
-  the same parser.
+  the same parser, started only after the parser is reliable enough for editor
+  feedback.
 
 Out of initial scope:
 
@@ -109,6 +111,27 @@ Release readiness checks:
 - `cargo doc -p croma-core --no-deps`
 - `cargo package -p croma-core --list`
 - `cargo publish -p croma-core --dry-run`
+
+## Parser Quality Gate
+
+Formatter and language-server work must not start just because enough syntax
+nodes exist. They depend on a parser that is stable, source-spanned, recoverable,
+and proven on real ABC input.
+
+Parser quality is considered good enough for formatter/LSP work only when:
+
+- Focused happy-path and no-happy-path fixtures cover the implemented grammar.
+- Real-corpus runs process the local corpus with exact attempted/success/failure
+  counts.
+- Failures and mismatches are classified as Croma bugs, reference artifacts,
+  documented policy decisions, unsupported notation, or recovery candidates.
+- The parser preserves trivia and malformed nodes well enough to round-trip
+  source for formatting.
+- Diagnostics carry spans that are useful in an editor, not just in tests.
+
+The CLI and corpus harness may be implemented before this gate because they are
+needed to prove parser quality. `croma-fmt` and `croma-lsp` should remain thin
+placeholder crates until the gate is met.
 
 ## Phase 0: Lock Design Decisions
 
@@ -370,10 +393,25 @@ Implement outside the core parser:
 
 - Feature scanner backed by parser tokens, not regex-only long term.
 - Batch export runner.
-- MusicXML-aware comparison against references.
+- MusicXML-aware comparison against references, using music21 as the key
+  structural inspection layer.
 - SQLite or JSONL result store.
 - Disposition categories: Croma bug, reference artifact, policy decision,
   unsupported notation, recovery candidate.
+
+music21 comparison requirements:
+
+- Parse Croma MusicXML output and reference MusicXML into comparable musical
+  facts instead of comparing raw XML strings.
+- Compare parts, measures, voices, pitches, octaves, accidentals, durations,
+  tuplets, ties, slurs, repeats, endings, lyrics, harmony, directions, and
+  measure alignment where music21 exposes reliable structure.
+- Keep music21 tooling outside the published `croma-core` crate; it belongs in
+  local corpus scripts, ignored reports, or optional dev tooling.
+- Treat music21 failures separately from Croma parse/export failures so tool
+  limitations do not hide parser bugs.
+- Preserve exact source file, source span, exported MusicXML location where
+  available, diagnostic code, and comparison category in reports.
 
 Tests and reports:
 
@@ -383,12 +421,13 @@ Tests and reports:
 
 Acceptance:
 
-- A corpus run can explain failures with source spans and categories.
+- A corpus run can explain failures with source spans, music21-derived
+  structural differences, and categories.
 
 ## Phase 11: Formatter Preparation
 
-Do not build the formatter until the lossless syntax layer is stable enough.
-Prepare now by preserving:
+Do not build the formatter until the parser quality gate is met. Prepare now by
+preserving:
 
 - Original whitespace and comments.
 - Field ordering.
@@ -402,6 +441,8 @@ Formatter later:
 - Formatting changes trivia and layout only.
 - Formatting never changes the semantic score unless explicitly requested.
 - `croma fmt --check` compares formatted output to input.
+- Formatter tests must include no-happy-path malformed input to prove formatting
+  preserves recoverable syntax instead of deleting it.
 
 Acceptance:
 
@@ -409,7 +450,8 @@ Acceptance:
 
 ## Phase 12: Language Server Preparation
 
-Prepare now by ensuring:
+Do not build the language server until the parser quality gate is met. Prepare
+now by ensuring:
 
 - Parser can return diagnostics without exporting MusicXML.
 - Spans convert to line/column positions cheaply.
@@ -425,6 +467,8 @@ LSP later:
 - Formatting through `croma-fmt`.
 - Code actions for common repairs, such as missing `K:`, legacy decoration
   delimiter, unmatched slur, and invalid field placement.
+- LSP tests must include no-happy-path files to prove diagnostics remain stable
+  under malformed source and incremental editing.
 
 Acceptance:
 

@@ -29,16 +29,18 @@ of that library.
    - Current crate module: `croma_core::musicxml`.
 
 5. `compare`
-   - Uses MusicXML-aware comparison for corpus work.
+   - Uses MusicXML-aware comparison for corpus work, with music21 as the key
+     structural inspection tool.
    - Reference converters are evidence, not ground truth.
 
 ## Product Order
 
 1. `croma-core`: ABC -> MusicXML library.
 2. `croma-cli`: thin command wrapper over `croma-core`.
-3. `croma-fmt`: token-preserving formatter from the shared surface model.
+3. `croma-fmt`: token-preserving formatter from the shared surface model, only
+   after the parser is reliable on fixtures and the real corpus.
 4. `croma-lsp`: diagnostics, semantic tokens, formatting, and code actions from
-   the same model.
+   the same model, only after parser quality is good enough for editor use.
 
 `croma-core` is the publishable Rust library. It must stay compatible with
 normal crates.io packaging, docs.rs builds, SemVer versioning, and downstream
@@ -62,5 +64,9 @@ Cargo dependency use.
   local private paths, untracked corpus data, or CLI-only behavior.
 - Full-corpus runs validate a coherent change; they are not a substitute for
   small fixtures.
+- Formatter and LSP work waits until parser quality is demonstrated by focused
+  fixtures, no-happy-path tests, and real-corpus comparison.
+- music21-based MusicXML structural comparison is a core corpus tool, not an
+  optional raw XML diff replacement.
 - Mismatches end as a fixed Croma bug, a documented reference artifact, or a
   documented spec/MusicXML policy decision.

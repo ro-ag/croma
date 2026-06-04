@@ -3,7 +3,7 @@
 ## Located Corpus
 
 - ABC corpus directory: `/Users/rodox/dev/rs/trd/test/real/abc`
-- ABC files discovered under that directory: `30013`
+- ABC `.abc` files discovered under that directory: `10000`
 - Directory size: `39M`
 - Indexed 10k manifest: `/Users/rodox/dev/rs/trd/test/real/manifest.jsonl`
 - Manifest rows: `10000`
@@ -113,4 +113,5 @@ own full parse/export corpus comparison.
 - Local TRD chat transcript used for project context:
   `/Users/rodox/dev/rs/trd/docs/chats/2026-06-03-traduttore-coverage-continuation.md`
 - Counts were produced with local filesystem, `sqlite3`, `find`, `wc`, and
-  `du` commands on June 3, 2026.
+  `du` commands on June 3, 2026. The `.abc` file count was re-verified from
+  the local filesystem on June 4, 2026.

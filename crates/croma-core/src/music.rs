@@ -2,7 +2,7 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference}
 use crate::fields::{
     AccidentalSign, DecorationDelimiter, DialectState, FieldState, InterpretationField, KeyMode,
     KeySignature, KeyTonicAccidental, Meter, MeterKind, ParsedAbcFields, ParsedFieldKind,
-    ScoreDirective, Spanned, StemDirection, UnitNoteLength, VoiceDefinition,
+    ScoreDirective, Spanned, StemDirection, UnitNoteLength, VoiceDefinition, parse_voice_for_music,
 };
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric, AlignedSymbol,
@@ -626,6 +626,7 @@ pub(crate) fn parse_music_document(
 
         if line.kind == LineKind::InformationField {
             if let Some(field_line) = music_field_for_line(fields, line) {
+                let same_line_voice_music = same_line_voice_music(fields, line);
                 match &field_line.kind {
                     MusicFieldLineKind::Lyric(lyric) => {
                         tune.lyric_lines.push(lyric.clone());
@@ -645,7 +646,17 @@ pub(crate) fn parse_music_document(
                     | MusicFieldLineKind::PostTuneText(_)
                     | MusicFieldLineKind::Other => {}
                 }
-                tune.body_fields.push(field_line);
+                if let Some((voice_field, code_span)) = same_line_voice_music {
+                    tune.body_fields.push(voice_field);
+                    if let Some(parsed_line) =
+                        parse_music_code_line(source, fields, tune_index, line, code_span)
+                    {
+                        diagnostics.extend(parsed_line.diagnostics);
+                        tune.lines.push(parsed_line.line);
+                    }
+                } else {
+                    tune.body_fields.push(field_line);
+                }
             }
             continue;
         }
@@ -664,50 +675,176 @@ pub(crate) fn parse_music_document(
         if line.kind != LineKind::MusicCode {
             continue;
         }
-        let Some(line_text) = source.slice(line.text_span) else {
-            continue;
-        };
-
         let code_span = music_code_span(line);
-        let Some(code_text) = source.slice(code_span) else {
-            continue;
-        };
-
-        let dialect = fields
-            .tune(tune_index)
-            .map(|tune| tune.current.dialect.clone())
-            .unwrap_or_else(|| DialectState::from_options(Default::default()));
-        let mut parser = MusicLineParser::new(code_text, code_span.start, dialect);
-        let mut parsed_line = parser.parse(line.index, line.span, code_span);
-        diagnostics.extend(parser.diagnostics);
-
-        if let ScoreLineBreak::Suppressed { marker_span } = line.score_line_break {
-            parsed_line.tokens.push(MusicToken {
-                kind: MusicTokenKind::ScoreLineBreak,
-                span: marker_span,
-            });
-        }
-        if let Some(comment_span) = line.trailing_comment {
-            parsed_line.tokens.push(MusicToken {
-                kind: MusicTokenKind::Comment,
-                span: comment_span,
-            });
-        } else if code_span.end < line.text_span.end
-            && line_text[code_span.end - line.text_span.start..]
-                .trim_start()
-                .starts_with('%')
+        if let Some(parsed_line) =
+            parse_music_code_line(source, fields, tune_index, line, code_span)
         {
-            parsed_line.tokens.push(MusicToken {
-                kind: MusicTokenKind::Comment,
-                span: Span::new(code_span.end, line.text_span.end),
-            });
+            diagnostics.extend(parsed_line.diagnostics);
+            tune.lines.push(parsed_line.line);
         }
-
-        parsed_line.tokens.sort_by_key(|token| token.span.start);
-        tune.lines.push(parsed_line);
     }
 
     ParseReport::new(ParsedMusicDocument { tunes }, diagnostics)
+}
+
+struct ParsedMusicLineWithDiagnostics {
+    line: MusicLine,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn parse_music_code_line(
+    source: &SourceText,
+    fields: &ParsedAbcFields,
+    tune_index: usize,
+    line: &crate::surface::ClassifiedLine,
+    code_span: Span,
+) -> Option<ParsedMusicLineWithDiagnostics> {
+    let line_text = source.slice(line.text_span)?;
+    let code_text = source.slice(code_span)?;
+    let dialect = fields
+        .tune(tune_index)
+        .map(|tune| tune.current.dialect.clone())
+        .unwrap_or_else(|| DialectState::from_options(Default::default()));
+    let mut parser = MusicLineParser::new(code_text, code_span.start, dialect);
+    let mut parsed_line = parser.parse(line.index, line.span, code_span);
+    let diagnostics = parser.diagnostics;
+
+    if let ScoreLineBreak::Suppressed { marker_span } = line.score_line_break {
+        parsed_line.tokens.push(MusicToken {
+            kind: MusicTokenKind::ScoreLineBreak,
+            span: marker_span,
+        });
+    }
+    if let Some(comment_span) = line.trailing_comment {
+        parsed_line.tokens.push(MusicToken {
+            kind: MusicTokenKind::Comment,
+            span: comment_span,
+        });
+    } else if code_span.end < line.text_span.end
+        && line_text[code_span.end - line.text_span.start..]
+            .trim_start()
+            .starts_with('%')
+    {
+        parsed_line.tokens.push(MusicToken {
+            kind: MusicTokenKind::Comment,
+            span: Span::new(code_span.end, line.text_span.end),
+        });
+    }
+
+    parsed_line.tokens.sort_by_key(|token| token.span.start);
+    Some(ParsedMusicLineWithDiagnostics {
+        line: parsed_line,
+        diagnostics,
+    })
+}
+
+fn same_line_voice_music(
+    fields: &ParsedAbcFields,
+    line: &crate::surface::ClassifiedLine,
+) -> Option<(MusicFieldLine, Span)> {
+    let field = fields
+        .fields
+        .iter()
+        .find(|field| field.line_index == line.index)?;
+    let ParsedFieldKind::Voice(voice) = &field.kind else {
+        return None;
+    };
+    let music = voice.value.properties.clone();
+    if !looks_like_same_line_music(&music.value) {
+        return None;
+    }
+
+    let voice_value = Spanned::new(voice.value.id.value.clone(), voice.value.id.span);
+    let voice = Spanned::new(parse_voice_for_music(voice_value.clone()), voice_value.span);
+    Some((
+        MusicFieldLine {
+            line_index: field.line_index,
+            code: field.code,
+            line_span: field.line_span,
+            marker_span: field.marker_span,
+            value: voice_value,
+            kind: MusicFieldLineKind::Voice(voice),
+        },
+        music.span,
+    ))
+}
+
+fn looks_like_same_line_music(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let first_token = trimmed
+        .split(char::is_whitespace)
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let first_token_lower = first_token.to_ascii_lowercase();
+    if first_token.contains('=')
+        || matches!(
+            first_token_lower.as_str(),
+            "name"
+                | "nm"
+                | "subname"
+                | "snm"
+                | "clef"
+                | "stem"
+                | "octave"
+                | "transpose"
+                | "merge"
+                | "up"
+                | "down"
+        )
+    {
+        return false;
+    }
+    if first_token.chars().all(|ch| ch.is_ascii_alphabetic())
+        && !first_token
+            .chars()
+            .all(|ch| matches!(ch, 'A'..='G' | 'a'..='g' | 'x' | 'X' | 'z' | 'Z' | 'y'))
+    {
+        return false;
+    }
+    let Some(ch) = trimmed.chars().next() else {
+        return false;
+    };
+    matches!(
+        ch,
+        'A'..='G'
+            | 'a'..='g'
+            | 'z'
+            | 'Z'
+            | 'x'
+            | 'X'
+            | 'y'
+            | '^'
+            | '_'
+            | '='
+            | '['
+            | '|'
+            | ']'
+            | ':'
+            | '"'
+            | '{'
+            | '('
+            | '.'
+            | '!'
+            | '+'
+            | '~'
+            | 'H'
+            | 'L'
+            | 'M'
+            | 'O'
+            | 'P'
+            | 'S'
+            | 'T'
+            | 'u'
+            | 'v'
+            | '<'
+            | '>'
+            | '&'
+            | '-'
+    )
 }
 
 fn music_field_for_line(
@@ -6394,6 +6531,97 @@ mod tests {
 
         assert_eq!(lyrics_for_voice("1"), vec!["one", "two"]);
         assert_eq!(lyrics_for_voice("2"), vec!["three", "four"]);
+    }
+
+    #[test]
+    fn body_voice_field_can_switch_voice_and_carry_same_line_music() {
+        let document = parse_document(
+            "X:1\nL:1/8\nK:C\nV:1 C D|\nV:2 E F|\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        assert!(!report.has_errors());
+        let tune = report
+            .value
+            .as_ref()
+            .expect("expected same-line voice music");
+        let notes_for_voice = |voice_id: &str| {
+            tune.voices
+                .iter()
+                .find(|voice| voice.id.value == voice_id)
+                .expect("expected voice")
+                .measures
+                .iter()
+                .flat_map(|measure| &measure.events)
+                .filter_map(|event| match &event.kind {
+                    TimelineEventKind::Note { step, .. } => Some(*step),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(notes_for_voice("1"), vec!['C', 'D']);
+        assert_eq!(notes_for_voice("2"), vec!['E', 'F']);
+    }
+
+    #[test]
+    fn body_voice_properties_are_not_treated_as_same_line_music() {
+        let document =
+            parse_document("X:1\nK:C\nV:1 clef=treble\nC D|\n", ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected following music line");
+        let voice = tune
+            .voices
+            .iter()
+            .find(|voice| voice.id.value == "1")
+            .expect("expected voice");
+
+        assert_eq!(
+            voice
+                .properties
+                .clef
+                .as_ref()
+                .map(|clef| clef.text.as_str()),
+            Some("treble")
+        );
+        assert_eq!(
+            voice.measures[0]
+                .events
+                .iter()
+                .filter(|event| matches!(event.kind, TimelineEventKind::Note { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn body_voice_property_words_are_not_treated_as_same_line_music() {
+        let document = parse_document(
+            "X:1\nK:C\nV:1 Program 1 110 alto\nC D|\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected following music line");
+        let voice = tune
+            .voices
+            .iter()
+            .find(|voice| voice.id.value == "1")
+            .expect("expected voice");
+
+        assert_eq!(
+            count_diagnostics(&report.diagnostics, "abc.music.unknown_token"),
+            0
+        );
+        assert_eq!(
+            voice.measures[0]
+                .events
+                .iter()
+                .filter(|event| matches!(event.kind, TimelineEventKind::Note { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]
