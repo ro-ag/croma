@@ -49,13 +49,12 @@ pub fn export_musicxml_with_options(
         return Err(CromaError::from_diagnostics(parse_report.diagnostics));
     }
 
-    let surface = surface::analyze_source(&parse_report.value.source);
-    let tune_report = parser::parse_tune_report(
-        &parse_report.value.source,
-        &surface,
-        options.parse_options(),
-    );
-    let mut diagnostics = parse_report.diagnostics;
+    let ParseReport {
+        value: document,
+        mut diagnostics,
+    } = parse_report;
+    let tune_report =
+        parser::parse_tune_report(&document.source, &document.surface, options.parse_options());
     diagnostics.extend(tune_report.diagnostics);
 
     let Some(tune) = tune_report.value else {

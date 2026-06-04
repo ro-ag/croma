@@ -4,13 +4,18 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   rust:
     name: Rust
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.96.0
@@ -19,3 +24,22 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace --all-targets --verbose
+
+  linux-nix:
+    name: Linux (nixos-unstable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nixos-unstable
+      - name: Build dev shell
+        run: nix build --no-link .#devShells.x86_64-linux.default
+      - run: nix develop --command cargo fmt --all --check
+      - run: nix develop --command cargo test --workspace
+      - run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+      - run: nix develop --command cargo build --workspace --all-targets --verbose
