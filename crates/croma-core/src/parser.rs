@@ -132,6 +132,9 @@ fn parse_tune_report_with_fields(
     let mut has_key = false;
     let mut events = Vec::new();
     let mut divisions = 8;
+    let mut voices = Vec::new();
+    let mut score_directives = Vec::new();
+    let mut post_tune_lyrics = Vec::new();
     let mut body_start = None;
     let mut tune_field_state = None;
 
@@ -175,6 +178,9 @@ fn parse_tune_report_with_fields(
         diagnostics.extend(lower_report.diagnostics);
         events = lower_report.value.events;
         divisions = lower_report.value.divisions;
+        voices = lower_report.value.voices;
+        score_directives = lower_report.value.score_directives;
+        post_tune_lyrics = lower_report.value.post_tune_lyrics;
     }
 
     if !has_key {
@@ -194,6 +200,9 @@ fn parse_tune_report_with_fields(
             key,
             divisions,
             events,
+            voices,
+            score_directives,
+            post_tune_lyrics,
         }),
         diagnostics,
     )
