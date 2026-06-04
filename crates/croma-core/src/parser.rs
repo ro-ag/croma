@@ -1,8 +1,10 @@
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
 use crate::fields::{ParsedAbcFields, ParsedFieldKind, parse_fields};
-use crate::model::Tune;
-use crate::music::{ParsedMusicDocument, lower_tune_music, parse_music_document};
+use crate::model::{Score, TextLine, Tune};
+use crate::music::{
+    ParsedMusicDocument, ScoreModelInput, build_score_model, lower_tune_music, parse_music_document,
+};
 use crate::options::ParseOptions;
 use crate::source::SourceText;
 use crate::surface::{SurfaceMap, analyze_source};
@@ -126,7 +128,12 @@ fn parse_tune_report_with_fields(
     }
 
     let mut reference = String::new();
+    let mut reference_line = TextLine {
+        text: String::new(),
+        span: Span::new(0, 0),
+    };
     let mut title = String::new();
+    let mut title_line = None;
     let mut meter = String::from("4/4");
     let mut key = String::new();
     let mut has_key = false;
@@ -134,7 +141,9 @@ fn parse_tune_report_with_fields(
     let mut divisions = 8;
     let mut voices = Vec::new();
     let mut score_directives = Vec::new();
+    let mut preserved_directives = Vec::new();
     let mut post_tune_lyrics = Vec::new();
+    let mut score = None;
     let mut body_start = None;
     let mut tune_field_state = None;
 
@@ -154,8 +163,20 @@ fn parse_tune_report_with_fields(
                 continue;
             };
             match &field.kind {
-                ParsedFieldKind::Reference(value) => reference = value.value.clone(),
-                ParsedFieldKind::Title(value) if title.is_empty() => title = value.value.clone(),
+                ParsedFieldKind::Reference(value) => {
+                    reference = value.value.clone();
+                    reference_line = TextLine {
+                        text: value.value.clone(),
+                        span: value.span,
+                    };
+                }
+                ParsedFieldKind::Title(value) if title.is_empty() => {
+                    title = value.value.clone();
+                    title_line = Some(TextLine {
+                        text: value.value.clone(),
+                        span: value.span,
+                    });
+                }
                 ParsedFieldKind::Key(value) => {
                     has_key = true;
                     key = if value.value.raw.is_empty() {
@@ -180,7 +201,20 @@ fn parse_tune_report_with_fields(
         divisions = lower_report.value.divisions;
         voices = lower_report.value.voices;
         score_directives = lower_report.value.score_directives;
+        preserved_directives = lower_report.value.preserved_directives;
         post_tune_lyrics = lower_report.value.post_tune_lyrics;
+        score = Some(build_score_model(ScoreModelInput {
+            reference: reference_line.clone(),
+            title: title_line.clone(),
+            source_span: tune.span,
+            field_state,
+            voices: &voices,
+            score_directives: &score_directives,
+            preserved_directives: &preserved_directives,
+            post_tune_lyrics: &post_tune_lyrics,
+            diagnostics: &diagnostics,
+            divisions,
+        }));
     }
 
     if !has_key {
@@ -202,10 +236,40 @@ fn parse_tune_report_with_fields(
             events,
             voices,
             score_directives,
+            preserved_directives,
             post_tune_lyrics,
+            score: score.unwrap_or_else(|| empty_score(tune.span, diagnostics.clone())),
         }),
         diagnostics,
     )
+}
+
+fn empty_score(span: Span, diagnostics: Vec<Diagnostic>) -> Score {
+    Score {
+        metadata: crate::model::ScoreMetadata {
+            reference: TextLine {
+                text: String::new(),
+                span,
+            },
+            title: None,
+            meter: None,
+            key: None,
+            directives: Vec::new(),
+            preserved_directives: Vec::new(),
+            post_tune_lyrics: Vec::new(),
+            source_span: span,
+        },
+        parts: Vec::new(),
+        diagnostics,
+        divisions: 1,
+        source_span: span,
+        accidental_policy: crate::model::AccidentalPolicy {
+            preserve_explicit_accidentals: true,
+            reset_at_barlines: true,
+            scope: crate::model::AccidentalScope::PitchAndOctave,
+            source_span: span,
+        },
+    }
 }
 
 fn source_level_diagnostics(source: &SourceText) -> Vec<Diagnostic> {
