@@ -112,6 +112,13 @@ pub struct UserSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserSymbolDefinition {
+    pub symbol: Spanned<char>,
+    pub replacement: Spanned<String>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MacroDefinition {
     pub name: Spanned<String>,
     pub replacement: Spanned<String>,
@@ -171,6 +178,7 @@ pub struct DialectState {
     pub charset: Option<Spanned<String>>,
     pub line_break: LineBreakMode,
     pub decoration_delimiter: DecorationDelimiter,
+    pub user_symbols: Vec<UserSymbolDefinition>,
 }
 
 impl DialectState {
@@ -182,6 +190,7 @@ impl DialectState {
             charset: None,
             line_break: LineBreakMode::default(),
             decoration_delimiter: DecorationDelimiter::Bang,
+            user_symbols: Vec::new(),
         }
     }
 }
@@ -993,6 +1002,13 @@ impl<'source> FieldParser<'source> {
                 self.apply_interpretation(field_index, scope, &mut state.dialect, interpretation);
             }
             ParsedFieldKind::UserSymbol(symbol) => {
+                if let Some(symbol_value) = symbol.symbol.clone() {
+                    state.dialect.user_symbols.push(UserSymbolDefinition {
+                        span: Span::new(symbol_value.span.start, symbol.replacement.span.end),
+                        symbol: symbol_value,
+                        replacement: symbol.replacement.clone(),
+                    });
+                }
                 self.push_transition(
                     scope,
                     Some(field_index),

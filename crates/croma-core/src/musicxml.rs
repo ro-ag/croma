@@ -36,10 +36,14 @@ pub fn write_score_partwise(tune: &Tune) -> String {
                 step,
                 octave,
                 accidental,
+                chord,
                 duration,
                 ..
             } => {
                 xml.push_str("      <note>");
+                if *chord {
+                    xml.push_str("<chord/>");
+                }
                 xml.push_str("<pitch><step>");
                 xml.push(*step);
                 xml.push_str("</step>");

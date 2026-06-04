@@ -1,8 +1,9 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
-use crate::fields::{FieldState, MeterKind};
+use crate::fields::{DecorationDelimiter, DialectState, FieldState, MeterKind, ParsedAbcFields};
 use crate::model::{
     Accidental, BarlineKind, Event, Fraction, RestVisibility, TimedEvent, TimedEventKind, lcm,
 };
+use crate::options::ParseMode;
 use crate::parser::ParseReport;
 use crate::source::SourceText;
 use crate::surface::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
@@ -50,6 +51,16 @@ pub enum MusicTokenKind {
     Rest,
     MultiMeasureRest,
     Spacer,
+    Chord,
+    GraceGroup,
+    ChordSymbol,
+    Annotation,
+    Decoration,
+    Tuplet,
+    Slur,
+    Tie,
+    BrokenRhythm,
+    RepeatEnding,
     Barline,
     InlineField,
     Unsupported,
@@ -64,6 +75,16 @@ pub enum MusicItem {
     Rest(RestSyntax),
     MultiMeasureRest(MultiMeasureRestSyntax),
     Spacer(SpacerSyntax),
+    Chord(ChordSyntax),
+    GraceGroup(GraceGroupSyntax),
+    ChordSymbol(QuotedTextSyntax),
+    Annotation(QuotedTextSyntax),
+    Decoration(DecorationSyntax),
+    Tuplet(TupletSyntax),
+    Slur(SlurSyntax),
+    Tie(TieSyntax),
+    BrokenRhythm(BrokenRhythmSyntax),
+    VariantEnding(VariantEndingSyntax),
     Barline(BarlineSyntax),
     InlineField(InlineFieldSyntax),
     Unsupported(UnsupportedSyntax),
@@ -77,6 +98,15 @@ impl MusicItem {
             Self::Rest(item) => item.span,
             Self::MultiMeasureRest(item) => item.span,
             Self::Spacer(item) => item.span,
+            Self::Chord(item) => item.span,
+            Self::GraceGroup(item) => item.span,
+            Self::ChordSymbol(item) | Self::Annotation(item) => item.span,
+            Self::Decoration(item) => item.span,
+            Self::Tuplet(item) => item.span,
+            Self::Slur(item) => item.span,
+            Self::Tie(item) => item.span,
+            Self::BrokenRhythm(item) => item.span,
+            Self::VariantEnding(item) => item.span,
             Self::Barline(item) => item.span,
             Self::InlineField(item) => item.span,
             Self::Unsupported(item) => item.span,
@@ -88,10 +118,45 @@ impl MusicItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteSyntax {
     pub span: Span,
+    pub attachments: AttachmentBundle,
     pub accidental: Option<AccidentalSyntax>,
     pub pitch: PitchSyntax,
     pub octave_marks: Vec<OctaveMarkSyntax>,
     pub length: Option<LengthSyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AttachmentBundle {
+    pub grace_groups: Vec<GraceGroupSyntax>,
+    pub chord_symbols: Vec<QuotedTextSyntax>,
+    pub annotations: Vec<QuotedTextSyntax>,
+    pub decorations: Vec<DecorationSyntax>,
+}
+
+impl AttachmentBundle {
+    pub fn is_empty(&self) -> bool {
+        self.grace_groups.is_empty()
+            && self.chord_symbols.is_empty()
+            && self.annotations.is_empty()
+            && self.decorations.is_empty()
+    }
+
+    fn span_start(&self) -> Option<usize> {
+        self.grace_groups
+            .iter()
+            .map(|item| item.span.start)
+            .chain(self.chord_symbols.iter().map(|item| item.span.start))
+            .chain(self.annotations.iter().map(|item| item.span.start))
+            .chain(self.decorations.iter().map(|item| item.span.start))
+            .min()
+    }
+
+    fn push_quoted_text(&mut self, text: QuotedTextSyntax) {
+        match text.kind {
+            QuotedTextKind::ChordSymbol => self.chord_symbols.push(text),
+            QuotedTextKind::Annotation(_) => self.annotations.push(text),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +202,7 @@ pub struct SpannedNumber {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestSyntax {
     pub span: Span,
+    pub attachments: AttachmentBundle,
     pub visibility: RestVisibility,
     pub marker_span: Span,
     pub length: Option<LengthSyntax>,
@@ -153,6 +219,145 @@ pub struct MultiMeasureRestSyntax {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpacerSyntax {
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChordSyntax {
+    pub span: Span,
+    pub attachments: AttachmentBundle,
+    pub open_span: Span,
+    pub close_span: Option<Span>,
+    pub members: Vec<ChordMemberSyntax>,
+    pub length: Option<LengthSyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChordMemberSyntax {
+    pub span: Span,
+    pub note: NoteSyntax,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraceGroupSyntax {
+    pub span: Span,
+    pub slash_span: Option<Span>,
+    pub elements: Vec<GraceElementSyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraceElementSyntax {
+    Note(NoteSyntax),
+    Chord(ChordSyntax),
+    Rest(RestSyntax),
+    Malformed(MalformedSyntax),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotedTextSyntax {
+    pub span: Span,
+    pub content_span: Span,
+    pub text: String,
+    pub kind: QuotedTextKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotedTextKind {
+    ChordSymbol,
+    Annotation(AnnotationPlacement),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationPlacement {
+    Above,
+    Below,
+    Left,
+    Right,
+    Free,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecorationSyntax {
+    pub span: Span,
+    pub name_span: Span,
+    pub name: String,
+    pub kind: DecorationKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecorationKind {
+    Named,
+    LegacyNamed,
+    Shorthand,
+    UserDefined,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TupletSyntax {
+    pub span: Span,
+    pub p: SpannedNumber,
+    pub q: Option<SpannedNumber>,
+    pub r: Option<SpannedNumber>,
+}
+
+impl TupletSyntax {
+    fn q_value(&self) -> u32 {
+        self.q
+            .map(|q| q.value)
+            .unwrap_or_else(|| default_tuplet_q(self.p.value))
+    }
+
+    fn r_value(&self) -> u32 {
+        self.r.map(|r| r.value).unwrap_or(self.p.value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlurSyntax {
+    pub span: Span,
+    pub dotted: bool,
+    pub direction: SlurDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlurDirection {
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TieSyntax {
+    pub span: Span,
+    pub dotted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrokenRhythmSyntax {
+    pub span: Span,
+    pub direction: BrokenRhythmDirection,
+    pub count: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokenRhythmDirection {
+    LeftShorter,
+    RightShorter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantEndingSyntax {
+    pub span: Span,
+    pub shorthand: bool,
+    pub endings: Vec<VariantEndingPart>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariantEndingPart {
+    Single(SpannedNumber),
+    Range {
+        start: SpannedNumber,
+        end: SpannedNumber,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,7 +409,12 @@ pub enum MalformedSyntaxKind {
     UnclosedChord,
     UnclosedGraceGroup,
     UnclosedQuotedText,
+    UnclosedSlur,
+    UnclosedDecoration,
     InvalidBarline,
+    InvalidTuplet,
+    InvalidRepeatEnding,
+    InvalidDecoration,
     UnknownToken,
 }
 
@@ -217,6 +427,7 @@ pub struct LoweredMusic {
 pub(crate) fn parse_music_document(
     source: &SourceText,
     surface: &SurfaceMap,
+    fields: &ParsedAbcFields,
 ) -> ParseReport<ParsedMusicDocument> {
     let mut diagnostics = Vec::new();
     let mut tunes = surface
@@ -250,7 +461,11 @@ pub(crate) fn parse_music_document(
             continue;
         };
 
-        let mut parser = MusicLineParser::new(code_text, code_span.start);
+        let dialect = fields
+            .tune(tune_index)
+            .map(|tune| tune.current.dialect.clone())
+            .unwrap_or_else(|| DialectState::from_options(Default::default()));
+        let mut parser = MusicLineParser::new(code_text, code_span.start, dialect);
         let mut parsed_line = parser.parse(line.index, line.span, code_span);
         diagnostics.extend(parser.diagnostics);
 
@@ -292,67 +507,73 @@ pub(crate) fn lower_tune_music(
         .meter
         .as_ref()
         .and_then(|meter| meter_duration(&meter.value.kind));
-    let mut diagnostics = Vec::new();
-    let mut lowered = Vec::new();
+    let mut state = LoweringState::new(unit);
 
     for line in &tune_music.lines {
         for item in &line.items {
             match item {
-                MusicItem::Note(note) => lowered.push(LoweredEvent::Timed(TimedEvent {
-                    kind: TimedEventKind::Note {
-                        step: note.pitch.step.to_ascii_uppercase(),
-                        octave: lowered_octave(note),
-                        accidental: note.accidental.map(|accidental| accidental.sign),
-                        span: note.span,
-                    },
-                    duration: unit.checked_mul(length_multiplier(note.length.as_ref())),
-                })),
-                MusicItem::Rest(rest) => lowered.push(LoweredEvent::Timed(TimedEvent {
-                    kind: TimedEventKind::Rest {
-                        visibility: rest.visibility,
-                        span: rest.span,
-                    },
-                    duration: unit.checked_mul(length_multiplier(rest.length.as_ref())),
-                })),
+                MusicItem::Note(note) => state.push_note_group(note),
+                MusicItem::Rest(rest) => state.push_rest_group(rest),
                 MusicItem::MultiMeasureRest(rest) => {
                     let count = rest.count.map(|count| count.value).unwrap_or(1);
                     let duration = if let Some(meter_duration) = meter_duration {
                         meter_duration.checked_mul_u32(count)
                     } else {
-                        diagnostics.push(free_meter_multirest_warning(rest.span));
+                        state
+                            .diagnostics
+                            .push(free_meter_multirest_warning(rest.span));
                         unit.checked_mul_u32(count)
                     };
-                    lowered.push(LoweredEvent::Timed(TimedEvent {
+                    state.push_time_group(vec![TimedEvent {
                         kind: TimedEventKind::Rest {
                             visibility: rest.visibility,
                             span: rest.span,
                         },
                         duration,
-                    }));
+                    }]);
                 }
-                MusicItem::Spacer(spacer) => {
-                    lowered.push(LoweredEvent::Untimed(Event::Spacer { span: spacer.span }))
-                }
+                MusicItem::Spacer(spacer) => state
+                    .lowered
+                    .push(LoweredEvent::Untimed(Event::Spacer { span: spacer.span })),
+                MusicItem::Chord(chord) => state.push_chord_group(chord),
+                MusicItem::BrokenRhythm(marker) => state.apply_broken_rhythm(*marker),
+                MusicItem::Tuplet(tuplet) => state.start_tuplet(tuplet),
+                MusicItem::Slur(slur) => state.apply_slur(*slur),
                 MusicItem::Barline(barline) => {
                     if matches!(barline.kind, BarlineKind::Dotted | BarlineKind::Invisible) {
-                        diagnostics.push(barline_export_policy_info(barline.span, barline.kind));
+                        state
+                            .diagnostics
+                            .push(barline_export_policy_info(barline.span, barline.kind));
                     }
-                    lowered.push(LoweredEvent::Untimed(Event::Barline {
+                    state.lowered.push(LoweredEvent::Untimed(Event::Barline {
                         kind: barline.kind,
                         span: barline.span,
                     }));
                 }
-                MusicItem::InlineField(_) | MusicItem::Unsupported(_) | MusicItem::Malformed(_) => {
-                }
+                MusicItem::GraceGroup(_)
+                | MusicItem::ChordSymbol(_)
+                | MusicItem::Annotation(_)
+                | MusicItem::Decoration(_)
+                | MusicItem::Tie(_)
+                | MusicItem::VariantEnding(_)
+                | MusicItem::InlineField(_)
+                | MusicItem::Unsupported(_)
+                | MusicItem::Malformed(_) => {}
             }
         }
     }
 
-    let divisions = lowered.iter().fold(8, |divisions, event| match event {
-        LoweredEvent::Timed(event) => lcm(divisions, event.duration.divisions_requirement()),
-        LoweredEvent::Untimed(_) => divisions,
-    });
-    let events = lowered
+    state.finish_open_constructs();
+
+    let divisions = state
+        .lowered
+        .iter()
+        .fold(8, |divisions, event| match event {
+            LoweredEvent::Timed(event) => lcm(divisions, event.duration.divisions_requirement()),
+            LoweredEvent::Untimed(_) => divisions,
+        });
+    let events = state
+        .lowered
         .into_iter()
         .map(|event| match event {
             LoweredEvent::Timed(event) => event.into_event(divisions),
@@ -360,13 +581,202 @@ pub(crate) fn lower_tune_music(
         })
         .collect();
 
-    ParseReport::new(LoweredMusic { events, divisions }, diagnostics)
+    ParseReport::new(LoweredMusic { events, divisions }, state.diagnostics)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoweredEvent {
     Timed(TimedEvent),
     Untimed(Event),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveTuplet {
+    remaining: u32,
+    multiplier: Fraction,
+}
+
+#[derive(Debug)]
+struct LoweringState {
+    unit: Fraction,
+    lowered: Vec<LoweredEvent>,
+    time_groups: Vec<Vec<usize>>,
+    diagnostics: Vec<Diagnostic>,
+    active_tuplets: Vec<ActiveTuplet>,
+    pending_broken: Option<(Fraction, Span)>,
+    open_slurs: Vec<SlurSyntax>,
+}
+
+impl LoweringState {
+    fn new(unit: Fraction) -> Self {
+        Self {
+            unit,
+            lowered: Vec::new(),
+            time_groups: Vec::new(),
+            diagnostics: Vec::new(),
+            active_tuplets: Vec::new(),
+            pending_broken: None,
+            open_slurs: Vec::new(),
+        }
+    }
+
+    fn push_note_group(&mut self, note: &NoteSyntax) {
+        self.push_time_group(vec![TimedEvent {
+            kind: TimedEventKind::Note {
+                step: note.pitch.step.to_ascii_uppercase(),
+                octave: lowered_octave(note),
+                accidental: note.accidental.map(|accidental| accidental.sign),
+                chord: false,
+                span: note.span,
+            },
+            duration: self
+                .unit
+                .checked_mul(length_multiplier(note.length.as_ref())),
+        }]);
+    }
+
+    fn push_rest_group(&mut self, rest: &RestSyntax) {
+        self.push_time_group(vec![TimedEvent {
+            kind: TimedEventKind::Rest {
+                visibility: rest.visibility,
+                span: rest.span,
+            },
+            duration: self
+                .unit
+                .checked_mul(length_multiplier(rest.length.as_ref())),
+        }]);
+    }
+
+    fn push_chord_group(&mut self, chord: &ChordSyntax) {
+        if chord.members.is_empty() {
+            return;
+        }
+
+        let outer_multiplier = length_multiplier(chord.length.as_ref());
+        let first_duration = chord.members.first().map(|member| {
+            length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier)
+        });
+        if let Some(first_duration) = first_duration
+            && chord.members.iter().any(|member| {
+                length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier)
+                    != first_duration
+            })
+        {
+            self.diagnostics
+                .push(variable_chord_duration_warning(chord.span));
+        }
+
+        let events = chord
+            .members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                let member_multiplier =
+                    length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
+                TimedEvent {
+                    kind: TimedEventKind::Note {
+                        step: member.note.pitch.step.to_ascii_uppercase(),
+                        octave: lowered_octave(&member.note),
+                        accidental: member.note.accidental.map(|accidental| accidental.sign),
+                        chord: index > 0,
+                        span: member.note.span,
+                    },
+                    duration: self.unit.checked_mul(member_multiplier),
+                }
+            })
+            .collect();
+        self.push_time_group(events);
+    }
+
+    fn push_time_group(&mut self, events: Vec<TimedEvent>) {
+        if events.is_empty() {
+            return;
+        }
+
+        let group_multiplier = self.consume_group_multiplier();
+        let start_index = self.lowered.len();
+        for mut event in events {
+            event.duration = event.duration.checked_mul(group_multiplier);
+            self.lowered.push(LoweredEvent::Timed(event));
+        }
+        let group = (start_index..self.lowered.len()).collect::<Vec<_>>();
+        self.time_groups.push(group);
+    }
+
+    fn consume_group_multiplier(&mut self) -> Fraction {
+        let mut multiplier = Fraction::one();
+        if let Some((broken_multiplier, _span)) = self.pending_broken.take() {
+            multiplier = multiplier.checked_mul(broken_multiplier);
+        }
+
+        for tuplet in &mut self.active_tuplets {
+            if tuplet.remaining > 0 {
+                multiplier = multiplier.checked_mul(tuplet.multiplier);
+                tuplet.remaining -= 1;
+            }
+        }
+        self.active_tuplets.retain(|tuplet| tuplet.remaining > 0);
+        multiplier
+    }
+
+    fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
+        let (left_multiplier, right_multiplier) = broken_rhythm_multipliers(marker);
+        let Some(group) = self.time_groups.last() else {
+            self.diagnostics
+                .push(broken_rhythm_without_left_warning(marker.span));
+            self.pending_broken = Some((right_multiplier, marker.span));
+            return;
+        };
+
+        for index in group {
+            if let Some(LoweredEvent::Timed(event)) = self.lowered.get_mut(*index) {
+                event.duration = event.duration.checked_mul(left_multiplier);
+            }
+        }
+        if self
+            .pending_broken
+            .replace((right_multiplier, marker.span))
+            .is_some()
+        {
+            self.diagnostics
+                .push(overlapping_broken_rhythm_warning(marker.span));
+        }
+    }
+
+    fn start_tuplet(&mut self, tuplet: &TupletSyntax) {
+        let p = tuplet.p.value;
+        let q = tuplet.q_value();
+        let r = tuplet.r_value();
+        if !(2..=9).contains(&p) || q == 0 || r == 0 {
+            self.diagnostics.push(invalid_tuplet_warning(tuplet.span));
+            return;
+        }
+        self.active_tuplets.push(ActiveTuplet {
+            remaining: r,
+            multiplier: Fraction::new(q, p),
+        });
+    }
+
+    fn apply_slur(&mut self, slur: SlurSyntax) {
+        match slur.direction {
+            SlurDirection::Start => self.open_slurs.push(slur),
+            SlurDirection::End => {
+                if self.open_slurs.pop().is_none() {
+                    self.diagnostics.push(unmatched_slur_warning(slur.span));
+                }
+            }
+        }
+    }
+
+    fn finish_open_constructs(&mut self) {
+        if let Some((_multiplier, span)) = self.pending_broken.take() {
+            self.diagnostics
+                .push(broken_rhythm_without_right_warning(span));
+        }
+        for slur in std::mem::take(&mut self.open_slurs) {
+            self.diagnostics.push(unclosed_slur_warning(slur.span));
+        }
+    }
 }
 
 fn music_code_span(line: &crate::surface::ClassifiedLine) -> Span {
@@ -419,17 +829,21 @@ struct MusicLineParser<'line> {
     text: &'line str,
     line_offset: usize,
     index: usize,
+    dialect: DialectState,
+    pending_attachments: AttachmentBundle,
     tokens: Vec<MusicToken>,
     items: Vec<MusicItem>,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl<'line> MusicLineParser<'line> {
-    fn new(text: &'line str, line_offset: usize) -> Self {
+    fn new(text: &'line str, line_offset: usize, dialect: DialectState) -> Self {
         Self {
             text,
             line_offset,
             index: 0,
+            dialect,
+            pending_attachments: AttachmentBundle::default(),
             tokens: Vec::new(),
             items: Vec::new(),
             diagnostics: Vec::new(),
@@ -456,31 +870,16 @@ impl<'line> MusicLineParser<'line> {
                 '|' | ']' => self.parse_barline(false),
                 ':' => self.parse_colon(),
                 '"' => self.parse_quoted_text(),
-                '{' => self.parse_group(
-                    '}',
-                    UnsupportedSyntaxKind::GraceGroup,
-                    MalformedSyntaxKind::UnclosedGraceGroup,
-                    "abc.music.unsupported_grace",
-                    "abc.music.unclosed_grace",
-                    "Grace groups are preserved but not lowered in this phase",
-                ),
+                '{' => self.parse_grace_group(),
                 '(' => self.parse_open_paren(),
-                ')' => self.parse_unsupported_single(
-                    UnsupportedSyntaxKind::Slur,
-                    "abc.music.unsupported_slur",
-                    "Slurs are preserved but not lowered in this phase",
-                ),
-                '<' | '>' => self.parse_unsupported_single(
-                    UnsupportedSyntaxKind::BrokenRhythm,
-                    "abc.music.unsupported_broken_rhythm",
-                    "Broken rhythm markers are preserved but not lowered in this phase",
-                ),
-                '-' => self.parse_unsupported_single(
-                    UnsupportedSyntaxKind::Tie,
-                    "abc.music.unsupported_tie",
-                    "Ties are preserved but not lowered in this phase",
-                ),
+                ')' => self.parse_slur(SlurDirection::End, false),
+                '<' | '>' => self.parse_broken_rhythm(),
+                '-' => self.parse_tie(false),
                 '!' | '+' => self.parse_decoration(ch),
+                '~' | 'H' | 'L' | 'M' | 'O' | 'P' | 'S' | 'T' | 'u' | 'v' => {
+                    self.parse_shorthand_decoration()
+                }
+                ch if self.is_user_symbol(ch) => self.parse_shorthand_decoration(),
                 '\'' | ',' => self.parse_malformed_single(
                     MalformedSyntaxKind::StandaloneOctave,
                     "abc.music.malformed_octave",
@@ -504,6 +903,8 @@ impl<'line> MusicLineParser<'line> {
                 ),
             }
         }
+
+        self.flush_pending_attachments();
 
         MusicLine {
             line_index,
@@ -531,6 +932,7 @@ impl<'line> MusicLineParser<'line> {
             return;
         }
 
+        self.flush_pending_attachments();
         self.push_malformed(
             accidental.span,
             MalformedSyntaxKind::DanglingAccidental,
@@ -540,10 +942,16 @@ impl<'line> MusicLineParser<'line> {
     }
 
     fn parse_note(&mut self, accidental: Option<AccidentalSyntax>) {
-        let start = accidental
+        let attachments = self.take_pending_attachments();
+        let core_start = accidental
             .as_ref()
             .map(|accidental| accidental.span.start - self.line_offset)
             .unwrap_or(self.index);
+        let start = attachments
+            .span_start()
+            .map(|start| start - self.line_offset)
+            .unwrap_or(core_start)
+            .min(core_start);
         let pitch_start = self.index;
         let Some(step) = self.bump_char() else {
             return;
@@ -564,6 +972,7 @@ impl<'line> MusicLineParser<'line> {
             .unwrap_or(self.index);
         let note = NoteSyntax {
             span: self.span(start, end),
+            attachments,
             accidental,
             pitch: PitchSyntax {
                 step,
@@ -616,6 +1025,7 @@ impl<'line> MusicLineParser<'line> {
     }
 
     fn parse_rest(&mut self, visibility: RestVisibility) {
+        let attachments = self.take_pending_attachments();
         let start = self.index;
         self.bump_char();
         let marker_span = self.span(start, self.index);
@@ -623,10 +1033,21 @@ impl<'line> MusicLineParser<'line> {
         let length = self.parse_length_suffix();
         let span = length
             .as_ref()
-            .map(|length| Span::new(marker_span.start, length.span.end))
-            .unwrap_or(marker_span);
+            .map(|length| {
+                Span::new(
+                    attachments.span_start().unwrap_or(marker_span.start),
+                    length.span.end,
+                )
+            })
+            .unwrap_or_else(|| {
+                Span::new(
+                    attachments.span_start().unwrap_or(marker_span.start),
+                    marker_span.end,
+                )
+            });
         self.items.push(MusicItem::Rest(RestSyntax {
             span,
+            attachments,
             visibility,
             marker_span,
             length,
@@ -634,6 +1055,7 @@ impl<'line> MusicLineParser<'line> {
     }
 
     fn parse_multi_measure_rest(&mut self, visibility: RestVisibility) {
+        self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
         let marker_span = self.span(start, self.index);
@@ -655,6 +1077,7 @@ impl<'line> MusicLineParser<'line> {
     }
 
     fn parse_spacer(&mut self) {
+        self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
         let span = self.span(start, self.index);
@@ -663,62 +1086,50 @@ impl<'line> MusicLineParser<'line> {
     }
 
     fn parse_dot(&mut self) {
+        if self.peek_next_char() == Some('-') {
+            self.parse_tie(true);
+            return;
+        }
+        if self.peek_next_char() == Some('(') {
+            self.parse_slur(SlurDirection::Start, true);
+            return;
+        }
+        if self.peek_next_char() == Some(')') {
+            self.parse_slur(SlurDirection::End, true);
+            return;
+        }
         if self.peek_next_char().is_some_and(is_barline_char) {
+            self.flush_pending_attachments();
             self.parse_barline(true);
             return;
         }
-        self.parse_unsupported_single(
-            UnsupportedSyntaxKind::Decoration,
-            "abc.music.unsupported_decoration",
-            "Decorations are preserved but not lowered in this phase",
-        );
+        self.parse_shorthand_decoration();
     }
 
     fn parse_left_bracket(&mut self) {
-        if self.starts_with("[|]") || self.peek_next_char().is_some_and(is_barline_char) {
-            self.parse_barline(false);
-            return;
-        }
-
         if self.is_inline_field_start() {
+            self.flush_pending_attachments();
             self.parse_inline_field();
             return;
         }
 
-        if self.peek_next_char().is_some_and(|ch| ch.is_ascii_digit()) {
-            let start = self.index;
-            self.bump_char();
-            while self
-                .peek_char()
-                .is_some_and(|ch| ch.is_ascii_digit() || matches!(ch, ',' | '-' | '.'))
-            {
-                self.bump_char();
-            }
-            let span = self.span(start, self.index);
-            self.push_token(MusicTokenKind::Unsupported, span);
-            self.items.push(MusicItem::Unsupported(UnsupportedSyntax {
-                span,
-                kind: UnsupportedSyntaxKind::RepeatEnding,
-            }));
-            self.push_unsupported_diagnostic(
-                span,
-                "abc.music.unsupported_repeat_ending",
-                "Repeat endings are preserved but not lowered in this phase",
-            );
+        if self.starts_with("[|]") || self.peek_next_char().is_some_and(is_barline_char) {
+            self.flush_pending_attachments();
+            self.parse_barline(false);
             return;
         }
 
-        self.parse_group(
-            ']',
-            UnsupportedSyntaxKind::Chord,
-            MalformedSyntaxKind::UnclosedChord,
-            "abc.music.unsupported_chord",
-            "abc.music.unclosed_chord",
-            "Chord groups are preserved but not lowered in this phase",
-        );
+        if self.peek_next_char().is_some_and(|ch| ch.is_ascii_digit()) {
+            self.flush_pending_attachments();
+            self.parse_variant_ending(false);
+            return;
+        }
+
+        self.parse_chord();
     }
 
     fn parse_barline(&mut self, dotted: bool) {
+        self.flush_pending_attachments();
         let start = self.index;
         if dotted {
             self.bump_char();
@@ -744,6 +1155,10 @@ impl<'line> MusicLineParser<'line> {
             dotted,
             raw,
         }));
+
+        if self.peek_char().is_some_and(|ch| ch.is_ascii_digit()) {
+            self.parse_variant_ending(true);
+        }
     }
 
     fn parse_colon(&mut self) {
@@ -755,6 +1170,7 @@ impl<'line> MusicLineParser<'line> {
             self.parse_barline(false);
             return;
         }
+        self.flush_pending_attachments();
         self.parse_malformed_single(
             MalformedSyntaxKind::InvalidBarline,
             "abc.music.invalid_barline",
@@ -797,18 +1213,29 @@ impl<'line> MusicLineParser<'line> {
             }
         }
         let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Unsupported, span);
         if closed {
-            self.items.push(MusicItem::Unsupported(UnsupportedSyntax {
+            let content_span = Span::new(span.start + 1, span.end.saturating_sub(1));
+            let text = self
+                .text
+                .get(start + 1..self.index.saturating_sub(1))
+                .unwrap_or("")
+                .to_owned();
+            let quoted = QuotedTextSyntax {
                 span,
-                kind: UnsupportedSyntaxKind::QuotedText,
-            }));
-            self.push_unsupported_diagnostic(
+                content_span,
+                kind: classify_quoted_text(&text),
+                text,
+            };
+            self.push_token(
+                match quoted.kind {
+                    QuotedTextKind::ChordSymbol => MusicTokenKind::ChordSymbol,
+                    QuotedTextKind::Annotation(_) => MusicTokenKind::Annotation,
+                },
                 span,
-                "abc.music.unsupported_quoted_text",
-                "Quoted chord symbols and annotations are preserved but not lowered in this phase",
             );
+            self.pending_attachments.push_quoted_text(quoted);
         } else {
+            self.push_token(MusicTokenKind::Malformed, span);
             self.push_malformed(
                 span,
                 MalformedSyntaxKind::UnclosedQuotedText,
@@ -818,79 +1245,37 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse_group(
-        &mut self,
-        close: char,
-        unsupported_kind: UnsupportedSyntaxKind,
-        malformed_kind: MalformedSyntaxKind,
-        unsupported_code: &'static str,
-        malformed_code: &'static str,
-        message: &'static str,
-    ) {
-        let start = self.index;
-        self.bump_char();
-        let mut closed = false;
-        while let Some(ch) = self.bump_char() {
-            if ch == close {
-                closed = true;
-                break;
-            }
-        }
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Unsupported, span);
-        if closed {
-            self.items.push(MusicItem::Unsupported(UnsupportedSyntax {
-                span,
-                kind: unsupported_kind,
-            }));
-            self.push_unsupported_diagnostic(span, unsupported_code, message);
-        } else {
-            self.push_malformed(span, malformed_kind, malformed_code, message);
-        }
-    }
-
     fn parse_open_paren(&mut self) {
-        let start = self.index;
-        self.bump_char();
-        if self.peek_char().is_some_and(|ch| ch.is_ascii_digit()) {
-            while self
-                .peek_char()
-                .is_some_and(|ch| ch.is_ascii_digit() || ch == ':')
-            {
-                self.bump_char();
-            }
-            let span = self.span(start, self.index);
-            self.push_token(MusicTokenKind::Unsupported, span);
-            self.items.push(MusicItem::Unsupported(UnsupportedSyntax {
-                span,
-                kind: UnsupportedSyntaxKind::Tuplet,
-            }));
-            self.push_unsupported_diagnostic(
-                span,
-                "abc.music.unsupported_tuplet",
-                "Tuplets are preserved but not lowered in this phase",
-            );
+        if self.peek_next_char().is_some_and(|ch| ch.is_ascii_digit()) {
+            self.parse_tuplet();
         } else {
-            let span = self.span(start, self.index);
-            self.push_token(MusicTokenKind::Unsupported, span);
-            self.items.push(MusicItem::Unsupported(UnsupportedSyntax {
-                span,
-                kind: UnsupportedSyntaxKind::Slur,
-            }));
-            self.push_unsupported_diagnostic(
-                span,
-                "abc.music.unsupported_slur",
-                "Slurs are preserved but not lowered in this phase",
-            );
+            self.parse_slur(SlurDirection::Start, false);
         }
     }
 
     fn parse_decoration(&mut self, delimiter: char) {
+        let allowed = match delimiter {
+            '!' => self.dialect.decoration_delimiter == DecorationDelimiter::Bang,
+            '+' => {
+                self.dialect.decoration_delimiter == DecorationDelimiter::Plus
+                    || self.dialect.mode != ParseMode::Strict
+            }
+            _ => false,
+        };
+        if !allowed {
+            self.flush_pending_attachments();
+            self.parse_invalid_decoration(delimiter);
+            return;
+        }
+
         let start = self.index;
         self.bump_char();
+        let name_start = self.index;
+        let mut closed = false;
         while let Some(ch) = self.peek_char() {
             if ch == delimiter {
                 self.bump_char();
+                closed = true;
                 break;
             }
             if ch.is_whitespace() || is_barline_char(ch) {
@@ -899,31 +1284,511 @@ impl<'line> MusicLineParser<'line> {
             self.bump_char();
         }
         let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Unsupported, span);
-        self.items.push(MusicItem::Unsupported(UnsupportedSyntax {
+        if !closed {
+            self.push_token(MusicTokenKind::Malformed, span);
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::UnclosedDecoration,
+                "abc.music.unclosed_decoration",
+                "Decoration was preserved and skipped",
+            );
+            return;
+        }
+
+        let name_end = self.index.saturating_sub(delimiter.len_utf8());
+        let name_span = self.span(name_start, name_end);
+        self.push_token(MusicTokenKind::Decoration, span);
+        self.pending_attachments.decorations.push(DecorationSyntax {
             span,
-            kind: UnsupportedSyntaxKind::Decoration,
-        }));
-        self.push_unsupported_diagnostic(
+            name_span,
+            name: self.text[name_start..name_end].to_owned(),
+            kind: if delimiter == '+' {
+                DecorationKind::LegacyNamed
+            } else {
+                DecorationKind::Named
+            },
+        });
+    }
+
+    fn parse_invalid_decoration(&mut self, delimiter: char) {
+        let start = self.index;
+        self.bump_char();
+        while let Some(ch) = self.peek_char() {
+            self.bump_char();
+            if ch == delimiter || ch.is_whitespace() || is_barline_char(ch) {
+                break;
+            }
+        }
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Malformed, span);
+        self.push_malformed(
             span,
-            "abc.music.unsupported_decoration",
-            "Decorations are preserved but not lowered in this phase",
+            MalformedSyntaxKind::InvalidDecoration,
+            "abc.music.invalid_decoration",
+            "Decoration delimiter is not enabled by the current ABC dialect state",
         );
     }
 
-    fn parse_unsupported_single(
-        &mut self,
-        kind: UnsupportedSyntaxKind,
-        code: &'static str,
-        message: &'static str,
-    ) {
+    fn parse_shorthand_decoration(&mut self) {
         let start = self.index;
+        let Some(symbol) = self.bump_char() else {
+            return;
+        };
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Decoration, span);
+        let kind = if self.is_user_symbol(symbol) {
+            DecorationKind::UserDefined
+        } else {
+            DecorationKind::Shorthand
+        };
+        self.pending_attachments.decorations.push(DecorationSyntax {
+            span,
+            name_span: span,
+            name: symbol.to_string(),
+            kind,
+        });
+    }
+
+    fn parse_broken_rhythm(&mut self) {
+        let start = self.index;
+        let Some(marker) = self.bump_char() else {
+            return;
+        };
+        while self.peek_char() == Some(marker) {
+            self.bump_char();
+        }
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::BrokenRhythm, span);
+        self.items.push(MusicItem::BrokenRhythm(BrokenRhythmSyntax {
+            span,
+            direction: if marker == '<' {
+                BrokenRhythmDirection::LeftShorter
+            } else {
+                BrokenRhythmDirection::RightShorter
+            },
+            count: u8::try_from(self.index - start).unwrap_or(u8::MAX),
+        }));
+    }
+
+    fn parse_tie(&mut self, dotted: bool) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        if dotted {
+            self.bump_char();
+        }
         self.bump_char();
         let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Unsupported, span);
+        self.push_token(MusicTokenKind::Tie, span);
+        self.items.push(MusicItem::Tie(TieSyntax { span, dotted }));
+    }
+
+    fn parse_slur(&mut self, direction: SlurDirection, dotted: bool) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        if dotted {
+            self.bump_char();
+        }
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Slur, span);
+        self.items.push(MusicItem::Slur(SlurSyntax {
+            span,
+            dotted,
+            direction,
+        }));
+    }
+
+    fn parse_tuplet(&mut self) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let Some(p) = self.parse_number_token() else {
+            let span = self.span(start, self.index);
+            self.push_token(MusicTokenKind::Malformed, span);
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::InvalidTuplet,
+                "abc.music.invalid_tuplet",
+                "Tuplet specifier must start with a number",
+            );
+            return;
+        };
+
+        let mut q = None;
+        let mut r = None;
+        if self.peek_char() == Some(':') {
+            self.bump_char();
+            q = self.parse_number_token();
+            if self.peek_char() == Some(':') {
+                self.bump_char();
+                r = self.parse_number_token();
+            }
+        }
+
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Tuplet, span);
+        if !(2..=9).contains(&p.value) {
+            self.diagnostics.push(invalid_tuplet_warning(span));
+        }
         self.items
-            .push(MusicItem::Unsupported(UnsupportedSyntax { span, kind }));
-        self.push_unsupported_diagnostic(span, code, message);
+            .push(MusicItem::Tuplet(TupletSyntax { span, p, q, r }));
+    }
+
+    fn parse_variant_ending(&mut self, shorthand: bool) {
+        let start = self.index;
+        if !shorthand {
+            self.bump_char();
+        }
+
+        let mut endings = Vec::new();
+        while let Some(first) = self.parse_number_token() {
+            if self.peek_char() == Some('-') {
+                self.bump_char();
+                if let Some(second) = self.parse_number_token() {
+                    endings.push(VariantEndingPart::Range {
+                        start: first,
+                        end: second,
+                        span: Span::new(first.span.start, second.span.end),
+                    });
+                } else {
+                    endings.push(VariantEndingPart::Single(first));
+                    self.diagnostics
+                        .push(invalid_repeat_ending_warning(self.span(start, self.index)));
+                    break;
+                }
+            } else {
+                endings.push(VariantEndingPart::Single(first));
+            }
+
+            if self.peek_char() == Some(',') {
+                self.bump_char();
+                continue;
+            }
+            break;
+        }
+
+        if !shorthand && self.peek_char() == Some(']') {
+            self.bump_char();
+        }
+
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::RepeatEnding, span);
+        if endings.is_empty() {
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::InvalidRepeatEnding,
+                "abc.music.invalid_repeat_ending",
+                "Repeat ending did not contain an ending number",
+            );
+        } else {
+            self.items
+                .push(MusicItem::VariantEnding(VariantEndingSyntax {
+                    span,
+                    shorthand,
+                    endings,
+                }));
+        }
+    }
+
+    fn parse_chord(&mut self) {
+        let attachments = self.take_pending_attachments();
+        let start = attachments
+            .span_start()
+            .map(|start| start - self.line_offset)
+            .unwrap_or(self.index);
+        let open_start = self.index;
+        self.bump_char();
+        let open_span = self.span(open_start, self.index);
+        let mut members = Vec::new();
+        let mut closed = false;
+
+        while let Some(ch) = self.peek_char() {
+            match ch {
+                ']' => {
+                    self.bump_char();
+                    closed = true;
+                    break;
+                }
+                ch if ch.is_whitespace() => self.parse_whitespace(),
+                '^' | '_' | '=' => {
+                    let Some(accidental) = self.parse_accidental_token() else {
+                        continue;
+                    };
+                    if self.peek_char().is_some_and(is_note_letter) {
+                        if let Some(note) = self.parse_note_syntax(Some(accidental)) {
+                            members.push(ChordMemberSyntax {
+                                span: note.span,
+                                note,
+                            });
+                        }
+                    } else {
+                        self.push_malformed(
+                            accidental.span,
+                            MalformedSyntaxKind::DanglingAccidental,
+                            "abc.music.malformed_accidental",
+                            "Accidentals must appear immediately before a chord member note",
+                        );
+                    }
+                }
+                'A'..='G' | 'a'..='g' => {
+                    if let Some(note) = self.parse_note_syntax(None) {
+                        members.push(ChordMemberSyntax {
+                            span: note.span,
+                            note,
+                        });
+                    }
+                }
+                '"' => self.parse_quoted_text(),
+                '{' => self.parse_grace_group(),
+                '!' | '+' => self.parse_decoration(ch),
+                '.' => self.parse_dot(),
+                '~' | 'H' | 'L' | 'M' | 'O' | 'P' | 'S' | 'T' | 'u' | 'v' => {
+                    self.parse_shorthand_decoration()
+                }
+                ch if self.is_user_symbol(ch) => self.parse_shorthand_decoration(),
+                _ => {
+                    self.parse_malformed_single(
+                        MalformedSyntaxKind::UnknownToken,
+                        "abc.music.unknown_chord_token",
+                        "Unknown chord-member token was preserved and skipped",
+                    );
+                }
+            }
+        }
+
+        let close_span = closed.then(|| self.span(self.index - 1, self.index));
+        if !closed {
+            let span = self.span(start, self.index);
+            self.push_token(MusicTokenKind::Malformed, span);
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::UnclosedChord,
+                "abc.music.unclosed_chord",
+                "Chord group was preserved and skipped",
+            );
+            return;
+        }
+
+        let length = self.parse_length_suffix();
+        let end = length
+            .as_ref()
+            .map(|length| length.span.end - self.line_offset)
+            .unwrap_or(self.index);
+        let span = self.span(start, end);
+        self.push_token(MusicTokenKind::Chord, span);
+        self.items.push(MusicItem::Chord(ChordSyntax {
+            span,
+            attachments,
+            open_span,
+            close_span,
+            members,
+            length,
+        }));
+    }
+
+    fn parse_grace_group(&mut self) {
+        let start = self.index;
+        self.bump_char();
+        let slash_span = if self.peek_char() == Some('/') {
+            let slash_start = self.index;
+            self.bump_char();
+            Some(self.span(slash_start, self.index))
+        } else {
+            None
+        };
+        let mut elements = Vec::new();
+        let mut closed = false;
+
+        while let Some(ch) = self.peek_char() {
+            match ch {
+                '}' => {
+                    self.bump_char();
+                    closed = true;
+                    break;
+                }
+                ch if ch.is_whitespace() => self.parse_whitespace(),
+                '^' | '_' | '=' => {
+                    let Some(accidental) = self.parse_accidental_token() else {
+                        continue;
+                    };
+                    if self.peek_char().is_some_and(is_note_letter) {
+                        if let Some(note) = self.parse_note_syntax(Some(accidental)) {
+                            elements.push(GraceElementSyntax::Note(note));
+                        }
+                    } else {
+                        let malformed = MalformedSyntax {
+                            span: accidental.span,
+                            kind: MalformedSyntaxKind::DanglingAccidental,
+                        };
+                        elements.push(GraceElementSyntax::Malformed(malformed.clone()));
+                        self.push_malformed(
+                            malformed.span,
+                            malformed.kind,
+                            "abc.music.malformed_accidental",
+                            "Accidentals must appear immediately before a grace note",
+                        );
+                    }
+                }
+                'A'..='G' | 'a'..='g' => {
+                    if let Some(note) = self.parse_note_syntax(None) {
+                        elements.push(GraceElementSyntax::Note(note));
+                    }
+                }
+                'z' => {
+                    let rest = self.parse_rest_syntax(RestVisibility::Visible);
+                    elements.push(GraceElementSyntax::Rest(rest));
+                }
+                'x' => {
+                    let rest = self.parse_rest_syntax(RestVisibility::Invisible);
+                    elements.push(GraceElementSyntax::Rest(rest));
+                }
+                '[' => {
+                    self.parse_chord();
+                    if let Some(MusicItem::Chord(chord)) = self.items.pop() {
+                        elements.push(GraceElementSyntax::Chord(chord));
+                    }
+                }
+                '"' => self.parse_quoted_text(),
+                '!' | '+' => self.parse_decoration(ch),
+                '.' => self.parse_dot(),
+                '~' | 'H' | 'L' | 'M' | 'O' | 'P' | 'S' | 'T' | 'u' | 'v' => {
+                    self.parse_shorthand_decoration()
+                }
+                ch if self.is_user_symbol(ch) => self.parse_shorthand_decoration(),
+                _ => {
+                    let start = self.index;
+                    self.bump_char();
+                    let malformed = MalformedSyntax {
+                        span: self.span(start, self.index),
+                        kind: MalformedSyntaxKind::UnknownToken,
+                    };
+                    elements.push(GraceElementSyntax::Malformed(malformed.clone()));
+                    self.push_malformed(
+                        malformed.span,
+                        malformed.kind,
+                        "abc.music.unknown_grace_token",
+                        "Unknown grace-group token was preserved and skipped",
+                    );
+                }
+            }
+        }
+
+        let span = self.span(start, self.index);
+        if closed {
+            self.push_token(MusicTokenKind::GraceGroup, span);
+            self.pending_attachments
+                .grace_groups
+                .push(GraceGroupSyntax {
+                    span,
+                    slash_span,
+                    elements,
+                });
+        } else {
+            self.push_token(MusicTokenKind::Malformed, span);
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::UnclosedGraceGroup,
+                "abc.music.unclosed_grace",
+                "Grace group was preserved and skipped",
+            );
+        }
+    }
+
+    fn parse_note_syntax(&mut self, accidental: Option<AccidentalSyntax>) -> Option<NoteSyntax> {
+        let attachments = self.take_pending_attachments();
+        let core_start = accidental
+            .as_ref()
+            .map(|accidental| accidental.span.start - self.line_offset)
+            .unwrap_or(self.index);
+        let start = attachments
+            .span_start()
+            .map(|start| start - self.line_offset)
+            .unwrap_or(core_start)
+            .min(core_start);
+        let pitch_start = self.index;
+        let step = self.bump_char()?;
+        let pitch_span = self.span(pitch_start, self.index);
+        self.push_token(MusicTokenKind::Pitch, pitch_span);
+
+        let octave_marks = self.parse_octave_marks();
+        let length = self.parse_length_suffix();
+        let end = length
+            .as_ref()
+            .map(|length| length.span.end - self.line_offset)
+            .or_else(|| {
+                octave_marks
+                    .last()
+                    .map(|mark| mark.span.end - self.line_offset)
+            })
+            .unwrap_or(self.index);
+        Some(NoteSyntax {
+            span: self.span(start, end),
+            attachments,
+            accidental,
+            pitch: PitchSyntax {
+                step,
+                span: pitch_span,
+            },
+            octave_marks,
+            length,
+        })
+    }
+
+    fn parse_rest_syntax(&mut self, visibility: RestVisibility) -> RestSyntax {
+        let attachments = self.take_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let marker_span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Rest, marker_span);
+        let length = self.parse_length_suffix();
+        let span = length
+            .as_ref()
+            .map(|length| {
+                Span::new(
+                    attachments.span_start().unwrap_or(marker_span.start),
+                    length.span.end,
+                )
+            })
+            .unwrap_or_else(|| {
+                Span::new(
+                    attachments.span_start().unwrap_or(marker_span.start),
+                    marker_span.end,
+                )
+            });
+        RestSyntax {
+            span,
+            attachments,
+            visibility,
+            marker_span,
+            length,
+        }
+    }
+
+    fn take_pending_attachments(&mut self) -> AttachmentBundle {
+        std::mem::take(&mut self.pending_attachments)
+    }
+
+    fn flush_pending_attachments(&mut self) {
+        let attachments = self.take_pending_attachments();
+        for grace in attachments.grace_groups {
+            self.items.push(MusicItem::GraceGroup(grace));
+        }
+        for chord_symbol in attachments.chord_symbols {
+            self.items.push(MusicItem::ChordSymbol(chord_symbol));
+        }
+        for annotation in attachments.annotations {
+            self.items.push(MusicItem::Annotation(annotation));
+        }
+        for decoration in attachments.decorations {
+            self.items.push(MusicItem::Decoration(decoration));
+        }
+    }
+
+    fn is_user_symbol(&self, symbol: char) -> bool {
+        self.dialect
+            .user_symbols
+            .iter()
+            .any(|definition| definition.symbol.value == symbol)
     }
 
     fn parse_malformed_single(
@@ -932,6 +1797,7 @@ impl<'line> MusicLineParser<'line> {
         code: &'static str,
         message: &'static str,
     ) {
+        self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
         let span = self.span(start, self.index);
@@ -940,18 +1806,52 @@ impl<'line> MusicLineParser<'line> {
     }
 
     fn parse_malformed_digits(&mut self) {
+        self.flush_pending_attachments();
         let start = self.index;
         while self.peek_char().is_some_and(|ch| ch.is_ascii_digit()) {
             self.bump_char();
         }
         let span = self.span(start, self.index);
         self.push_token(MusicTokenKind::Malformed, span);
-        self.push_malformed(
-            span,
-            MalformedSyntaxKind::StandaloneLength,
-            "abc.music.malformed_length",
-            "Length suffixes must follow a note or rest",
-        );
+        let previous = self.previous_non_whitespace_char(start);
+        if previous.is_some_and(|ch| matches!(ch, '|' | ':')) {
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::InvalidRepeatEnding,
+                "abc.music.invalid_repeat_ending",
+                "Repeat-ending shorthand must be adjacent to the barline",
+            );
+        } else {
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::StandaloneLength,
+                "abc.music.malformed_length",
+                "Length suffixes must follow a note or rest",
+            );
+        }
+    }
+
+    fn previous_non_whitespace_char(&self, before: usize) -> Option<char> {
+        self.text[..before]
+            .chars()
+            .rev()
+            .find(|ch| !ch.is_whitespace())
+    }
+
+    fn parse_unsupported_single(
+        &mut self,
+        kind: UnsupportedSyntaxKind,
+        code: &'static str,
+        message: &'static str,
+    ) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Unsupported, span);
+        self.items
+            .push(MusicItem::Unsupported(UnsupportedSyntax { span, kind }));
+        self.push_unsupported_diagnostic(span, code, message);
     }
 
     fn parse_length_suffix(&mut self) -> Option<LengthSyntax> {
@@ -1147,6 +2047,43 @@ fn slash_denominator(slash_count: u8) -> Option<u32> {
     1u32.checked_shl(u32::from(slash_count))
 }
 
+fn classify_quoted_text(text: &str) -> QuotedTextKind {
+    match text.chars().next() {
+        Some('^') => QuotedTextKind::Annotation(AnnotationPlacement::Above),
+        Some('_') => QuotedTextKind::Annotation(AnnotationPlacement::Below),
+        Some('<') => QuotedTextKind::Annotation(AnnotationPlacement::Left),
+        Some('>') => QuotedTextKind::Annotation(AnnotationPlacement::Right),
+        Some('@') => QuotedTextKind::Annotation(AnnotationPlacement::Free),
+        _ => QuotedTextKind::ChordSymbol,
+    }
+}
+
+fn default_tuplet_q(p: u32) -> u32 {
+    match p {
+        2 | 4 | 8 => 3,
+        _ => 2,
+    }
+}
+
+fn broken_rhythm_multipliers(marker: BrokenRhythmSyntax) -> (Fraction, Fraction) {
+    let shift = u32::from(marker.count).min(30);
+    let denominator = 1u32.checked_shl(shift).unwrap_or(u32::MAX).max(1);
+    let long = denominator
+        .checked_mul(2)
+        .and_then(|value| value.checked_sub(1))
+        .unwrap_or(u32::MAX);
+    match marker.direction {
+        BrokenRhythmDirection::LeftShorter => (
+            Fraction::new(1, denominator),
+            Fraction::new(long, denominator),
+        ),
+        BrokenRhythmDirection::RightShorter => (
+            Fraction::new(long, denominator),
+            Fraction::new(1, denominator),
+        ),
+    }
+}
+
 fn invalid_length_warning(span: Span, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,
@@ -1157,6 +2094,110 @@ fn invalid_length_warning(span: Span, message: &'static str) -> Diagnostic {
     .with_spec_reference(abc_music_reference())
     .with_recovery_note(RecoveryNote::new(
         "The length suffix was preserved and a safe duration was used.",
+    ))
+}
+
+fn variable_chord_duration_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.chord.variable_duration",
+        "Chord members have different durations; members were preserved with their own durations",
+        span,
+    )
+    .with_spec_reference(abc_chord_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "ABC chord members should use a consistent duration within one chord group.",
+    ))
+}
+
+fn invalid_tuplet_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.invalid_tuplet",
+        "Tuplet specifier is outside the supported ABC range",
+        span,
+    )
+    .with_spec_reference(abc_tuplet_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The tuplet syntax was preserved and ignored during lowering.",
+    ))
+}
+
+fn invalid_repeat_ending_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.invalid_repeat_ending",
+        "Repeat ending range is malformed",
+        span,
+    )
+    .with_spec_reference(abc_barline_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The repeat ending syntax was preserved and skipped.",
+    ))
+}
+
+fn broken_rhythm_without_left_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.broken_rhythm.missing_left",
+        "Broken rhythm marker has no preceding time-bearing note group",
+        span,
+    )
+    .with_spec_reference(abc_broken_rhythm_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The marker was preserved and applied only to the following note group when possible.",
+    ))
+}
+
+fn broken_rhythm_without_right_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.broken_rhythm.missing_right",
+        "Broken rhythm marker has no following time-bearing note group",
+        span,
+    )
+    .with_spec_reference(abc_broken_rhythm_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The marker was preserved after applying the preceding-side duration change.",
+    ))
+}
+
+fn overlapping_broken_rhythm_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.broken_rhythm.overlap",
+        "Broken rhythm markers overlap before the next note group",
+        span,
+    )
+    .with_spec_reference(abc_broken_rhythm_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The later marker determines the following-side duration change.",
+    ))
+}
+
+fn unmatched_slur_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.unmatched_slur",
+        "Slur end has no matching open slur",
+        span,
+    )
+    .with_spec_reference(abc_slur_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The unmatched slur marker was preserved and skipped during lowering.",
+    ))
+}
+
+fn unclosed_slur_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.unclosed_slur",
+        "Slur start has no matching close slur",
+        span,
+    )
+    .with_spec_reference(abc_slur_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The open slur marker was preserved and skipped during lowering.",
     ))
 }
 
@@ -1226,6 +2267,26 @@ fn abc_barline_reference() -> SpecReference {
 
 fn abc_rest_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.5 rests")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_chord_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.11 chords")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_tuplet_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.13 tuplets")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_broken_rhythm_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.7 broken rhythm")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_slur_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.10 ties and slurs")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
 }
 
@@ -1630,44 +2691,346 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_attachment_constructs_warn_and_do_not_create_extra_notes() {
-        let document_report = parse_document(
-            "X:1\nK:C\n\"Am\" !trill! {g} (3 A>B-C [1 D # E\n",
-            ParseOptions::default(),
-        );
-
-        for code in [
-            "abc.music.unsupported_quoted_text",
-            "abc.music.unsupported_decoration",
-            "abc.music.unsupported_grace",
-            "abc.music.unsupported_tuplet",
-            "abc.music.unsupported_broken_rhythm",
-            "abc.music.unsupported_tie",
-            "abc.music.unsupported_repeat_ending",
-            "abc.music.reserved",
-        ] {
-            assert!(
-                document_report
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.code == code),
-                "expected diagnostic {code}"
-            );
-        }
-
-        let tune_report = parse_tune_report_from_document(&document_report.value);
-        let notes = tune_report
+    fn parses_spec_attachment_order_around_note_group() {
+        let document_report =
+            parse_document("X:1\nL:1/8\nK:C\n\"Gm7\"v.=G,2\n", ParseOptions::default());
+        assert!(document_report.diagnostics.is_empty());
+        let tune_music = document_report
             .value
-            .expect("expected tune")
-            .events
-            .into_iter()
-            .filter(|event| matches!(event, Event::Note { .. }))
-            .count();
-        assert_eq!(notes, 5);
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+        let note = tune_music.lines[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MusicItem::Note(note) => Some(note),
+                _ => None,
+            })
+            .expect("expected note");
+
+        assert_eq!(note.attachments.chord_symbols[0].text, "Gm7");
+        assert_eq!(
+            note.attachments
+                .decorations
+                .iter()
+                .map(|decoration| decoration.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["v", "."]
+        );
+        assert_eq!(
+            note.accidental.map(|accidental| accidental.sign),
+            Some(Accidental::Natural)
+        );
+        assert_eq!(note.octave_marks[0].mark, OctaveMark::Lower);
+        assert_eq!(
+            note.length.as_ref().map(|length| length.raw.as_str()),
+            Some("2")
+        );
     }
 
     #[test]
-    fn non_music_lines_and_unsupported_groups_do_not_create_notes() {
+    fn classifies_quoted_chord_symbols_and_annotations() {
+        let document_report = parse_document(
+            "X:1\nL:1/8\nK:C\n\"Am7\"C \"^above\"D \"_below\"E \"<left\"F \">right\"G \"@free\"A\n",
+            ParseOptions::default(),
+        );
+        assert!(document_report.diagnostics.is_empty());
+        let tune_music = document_report
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+        let notes = tune_music.lines[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MusicItem::Note(note) => Some(note),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(notes[0].attachments.chord_symbols[0].text, "Am7");
+        let placements = notes[1..]
+            .iter()
+            .map(|note| note.attachments.annotations[0].kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            placements,
+            vec![
+                QuotedTextKind::Annotation(AnnotationPlacement::Above),
+                QuotedTextKind::Annotation(AnnotationPlacement::Below),
+                QuotedTextKind::Annotation(AnnotationPlacement::Left),
+                QuotedTextKind::Annotation(AnnotationPlacement::Right),
+                QuotedTextKind::Annotation(AnnotationPlacement::Free),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_user_defined_and_legacy_decoration_symbols_from_dialect_state() {
+        let user_symbol = parse_document("X:1\nU:W=!trill!\nK:C\nWC\n", ParseOptions::default());
+        assert!(user_symbol.diagnostics.is_empty());
+        let tune_music = user_symbol
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+        let note = tune_music.lines[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MusicItem::Note(note) => Some(note),
+                _ => None,
+            })
+            .expect("expected note");
+        assert_eq!(
+            note.attachments.decorations[0].kind,
+            DecorationKind::UserDefined
+        );
+        assert_eq!(note.attachments.decorations[0].name, "W");
+
+        let legacy_allowed = parse_document(
+            "X:1\nI:decoration +\nK:C\n+trill+C\n",
+            ParseOptions::default(),
+        );
+        assert!(legacy_allowed.diagnostics.is_empty());
+        let tune_music = legacy_allowed
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+        let note = tune_music.lines[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MusicItem::Note(note) => Some(note),
+                _ => None,
+            })
+            .expect("expected note");
+        assert_eq!(
+            note.attachments.decorations[0].kind,
+            DecorationKind::LegacyNamed
+        );
+
+        let legacy_rejected = parse_document("X:1\nK:C\n+trill+C\n", ParseOptions::default());
+        assert!(
+            legacy_rejected
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.invalid_decoration")
+        );
+    }
+
+    #[test]
+    fn parses_chord_with_inside_and_outside_decorations() {
+        let document_report =
+            parse_document("X:1\nL:1/8\nK:C\n!trill![.CEG]\n", ParseOptions::default());
+        assert!(document_report.diagnostics.is_empty());
+        let tune_music = document_report
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+        let chord = tune_music.lines[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MusicItem::Chord(chord) => Some(chord),
+                _ => None,
+            })
+            .expect("expected chord");
+
+        assert_eq!(chord.attachments.decorations[0].name, "trill");
+        assert_eq!(chord.members.len(), 3);
+        assert_eq!(chord.members[0].note.attachments.decorations[0].name, ".");
+    }
+
+    #[test]
+    fn lowers_chord_member_and_outer_duration_multipliers() {
+        let (events, diagnostics) = events_for("X:1\nL:1/8\nK:C\n[C2E2G2]3\n");
+        assert!(diagnostics.is_empty());
+        let notes = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Note {
+                    step,
+                    duration,
+                    chord,
+                    ..
+                } => Some((*step, *duration, *chord)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notes,
+            vec![('C', 24, false), ('E', 24, true), ('G', 24, true)]
+        );
+    }
+
+    #[test]
+    fn variable_duration_chord_members_emit_diagnostic() {
+        let document = parse_document("X:1\nL:1/8\nK:C\n[E2G,6]\n", ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.chord.variable_duration")
+        );
+    }
+
+    #[test]
+    fn broken_rhythm_is_transparent_across_grace_groups() {
+        let (left_events, left_diagnostics) = events_for("X:1\nL:1/8\nK:C\nA<{g}A\n");
+        let (right_events, right_diagnostics) = events_for("X:1\nL:1/8\nK:C\nA{g}<A\n");
+
+        assert!(left_diagnostics.is_empty());
+        assert!(right_diagnostics.is_empty());
+        let durations = |events: Vec<Event>| {
+            events
+                .into_iter()
+                .filter_map(|event| match event {
+                    Event::Note { duration, .. } => Some(duration),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(durations(left_events), durations(right_events));
+    }
+
+    #[test]
+    fn parses_staccato_triplet_without_spaces() {
+        let document_report =
+            parse_document("X:1\nL:1/8\nK:C\n(3.a.b.c\n", ParseOptions::default());
+        assert!(document_report.diagnostics.is_empty());
+        let tune_music = document_report
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+
+        assert!(matches!(tune_music.lines[0].items[0], MusicItem::Tuplet(_)));
+        let staccato_count = tune_music.lines[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MusicItem::Note(note) => Some(&note.attachments.decorations),
+                _ => None,
+            })
+            .filter(|decorations| decorations.iter().any(|decoration| decoration.name == "."))
+            .count();
+        assert_eq!(staccato_count, 3);
+    }
+
+    #[test]
+    fn parses_adjacent_repeat_endings_after_barlines() {
+        let document_report = parse_document("X:1\nK:C\n:|2 C|1D A:|2B\n", ParseOptions::default());
+        assert!(document_report.diagnostics.is_empty());
+        let tune_music = document_report
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+
+        let endings = tune_music.lines[0]
+            .items
+            .iter()
+            .filter(|item| matches!(item, MusicItem::VariantEnding(_)))
+            .count();
+        let repeat_ends = tune_music.lines[0]
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    MusicItem::Barline(BarlineSyntax {
+                        kind: BarlineKind::RepeatEnd,
+                        ..
+                    })
+                )
+            })
+            .count();
+        assert_eq!(endings, 3);
+        assert_eq!(repeat_ends, 2);
+    }
+
+    #[test]
+    fn parses_bracketed_variant_ending_lists_and_ranges() {
+        let document_report = parse_document(
+            "X:1\nK:C\n[1 C | [2 D | [1,3] E | [1-3] F | [1,3,5-7] G\n",
+            ParseOptions::default(),
+        );
+        assert!(document_report.diagnostics.is_empty());
+        let tune_music = document_report
+            .value
+            .music
+            .tune(0)
+            .expect("expected parsed tune music");
+        let endings = tune_music.lines[0]
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MusicItem::VariantEnding(ending) => Some(ending),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(endings.len(), 5);
+        assert_eq!(endings[0].endings.len(), 1);
+        assert_eq!(endings[2].endings.len(), 2);
+        assert!(matches!(
+            endings[3].endings[0],
+            VariantEndingPart::Range { .. }
+        ));
+        assert_eq!(endings[4].endings.len(), 3);
+    }
+
+    #[test]
+    fn repeat_ending_shorthand_must_be_adjacent() {
+        let legal = parse_document("X:1\nK:C\nC| [1D\n", ParseOptions::default());
+        assert!(
+            !legal
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.invalid_repeat_ending")
+        );
+
+        let spaced = parse_document("X:1\nK:C\nC| 1D\n", ParseOptions::default());
+        assert!(
+            spaced
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.invalid_repeat_ending")
+        );
+    }
+
+    #[test]
+    fn unclosed_slurs_are_recoverable_in_lowering() {
+        let document = parse_document("X:1\nK:C\n(C D\n", ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.unclosed_slur")
+        );
+        assert_eq!(
+            report
+                .value
+                .expect("expected tune")
+                .events
+                .iter()
+                .filter(|event| matches!(event, Event::Note { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn non_music_lines_and_chords_do_not_leak_comments_or_directives() {
         let document_report = parse_document(
             "X:1\nT:ABC\n+:DEF\nK:C\n%%text GAB\n[CDE] C % FED\n",
             ParseOptions::default(),
@@ -1675,16 +3038,10 @@ mod tests {
         let report = parse_tune_report_from_document(&document_report.value);
         let events = report.value.expect("expected tune").events;
 
-        assert!(
-            document_report
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "abc.music.unsupported_chord")
-        );
         let notes = events
             .iter()
             .filter(|event| matches!(event, Event::Note { .. }))
             .count();
-        assert_eq!(notes, 1);
+        assert_eq!(notes, 4);
     }
 }
