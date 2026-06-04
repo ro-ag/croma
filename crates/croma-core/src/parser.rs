@@ -1,5 +1,6 @@
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
+use crate::fields::{ParsedAbcFields, ParsedFieldKind, parse_fields};
 use crate::model::{Event, Fraction, Tune};
 use crate::options::ParseOptions;
 use crate::source::SourceText;
@@ -28,6 +29,7 @@ pub struct AbcDocument {
     pub source: SourceText,
     pub options: ParseOptions,
     pub surface: SurfaceMap,
+    pub fields: ParsedAbcFields,
 }
 
 pub fn parse_document(source: &str, options: ParseOptions) -> ParseReport<AbcDocument> {
@@ -38,14 +40,17 @@ pub fn parse_document_source(
     source: SourceText,
     options: ParseOptions,
 ) -> ParseReport<AbcDocument> {
-    let diagnostics = source_level_diagnostics(&source);
+    let mut diagnostics = source_level_diagnostics(&source);
     let surface = analyze_source(&source);
+    let (fields, field_diagnostics) = parse_fields(&source, &surface, options);
+    diagnostics.extend(field_diagnostics);
 
     ParseReport::new(
         AbcDocument {
             source,
             options,
             surface,
+            fields,
         },
         diagnostics,
     )
@@ -65,7 +70,7 @@ pub fn parse_tune(
 pub fn parse_tune_report(
     source: &SourceText,
     surface: &SurfaceMap,
-    _options: ParseOptions,
+    options: ParseOptions,
 ) -> ParseReport<Option<Tune>> {
     if source.content().trim().is_empty() {
         return ParseReport::new(None, source_level_diagnostics(source));
@@ -79,52 +84,64 @@ pub fn parse_tune_report(
         surface
     };
 
+    let (fields, diagnostics) = parse_fields(source, surface, options);
+    parse_tune_report_with_fields(source, surface, &fields, diagnostics)
+}
+
+pub fn parse_tune_report_from_document(document: &AbcDocument) -> ParseReport<Option<Tune>> {
+    parse_tune_report_with_fields(
+        &document.source,
+        &document.surface,
+        &document.fields,
+        Vec::new(),
+    )
+}
+
+fn parse_tune_report_with_fields(
+    source: &SourceText,
+    surface: &SurfaceMap,
+    fields: &ParsedAbcFields,
+    mut diagnostics: Vec<Diagnostic>,
+) -> ParseReport<Option<Tune>> {
+    if source.content().trim().is_empty() {
+        return ParseReport::new(None, source_level_diagnostics(source));
+    }
+
     let mut reference = String::new();
     let mut title = String::new();
     let mut meter = String::from("4/4");
     let mut unit = Fraction::new(1, 8);
     let mut key = String::new();
+    let mut has_key = false;
     let mut events = Vec::new();
     let mut body_start = None;
 
     let Some(tune) = surface.line_map.tunes.first() else {
-        return ParseReport::new(None, vec![missing_key_diagnostic(source)]);
+        diagnostics.push(missing_key_diagnostic(source));
+        return ParseReport::new(None, diagnostics);
     };
 
-    for line in &surface.line_map.lines {
-        let is_header_field = match line.context {
-            LineContext::FileHeader => true,
-            LineContext::TuneHeader { tune_index } => tune_index == tune.index,
-            LineContext::Preamble
-            | LineContext::BetweenBlocks
-            | LineContext::FreeText
-            | LineContext::TypesetText
-            | LineContext::TuneBody { .. }
-            | LineContext::TuneTerminator { .. } => false,
-        };
+    if let Some(tune_fields) = fields.tune(tune.index) {
+        if let Some(parsed_meter) = tune_fields.header.meter.as_ref() {
+            meter = parsed_meter.value.raw.clone();
+        }
+        unit = tune_fields.header.unit_note_length_fraction();
 
-        if is_header_field {
-            let Some(field) = line.field else {
+        for field_index in &tune_fields.header_field_indices {
+            let Some(field) = fields.field(*field_index) else {
                 continue;
             };
-            let Some(value) = source.slice(field.value_span) else {
-                continue;
-            };
-            let value = strip_comment(value).trim();
-            match field.code {
-                'X' if line.context != LineContext::FileHeader => reference = value.to_owned(),
-                'T' if line.context != LineContext::FileHeader && title.is_empty() => {
-                    title = value.to_owned();
-                }
-                'M' => meter = value.to_owned(),
-                'L' => {
-                    if let Some(parsed) = Fraction::parse(value) {
-                        unit = parsed;
-                    }
-                }
-                'K' if line.context != LineContext::FileHeader => {
-                    key = value.to_owned();
-                    body_start = Some(line.span.end);
+            match &field.kind {
+                ParsedFieldKind::Reference(value) => reference = value.value.clone(),
+                ParsedFieldKind::Title(value) if title.is_empty() => title = value.value.clone(),
+                ParsedFieldKind::Key(value) => {
+                    has_key = true;
+                    key = if value.value.raw.is_empty() {
+                        String::from("none")
+                    } else {
+                        value.value.raw.clone()
+                    };
+                    body_start = Some(field.line_span.end);
                 }
                 _ => {}
             }
@@ -147,11 +164,13 @@ pub fn parse_tune_report(
         parse_music_line(line_text.trim(), unit, &mut events);
     }
 
-    if key.is_empty() {
-        return ParseReport::new(None, vec![missing_key_diagnostic(source)]);
+    if !has_key {
+        diagnostics.push(missing_key_diagnostic(source));
+        return ParseReport::new(None, diagnostics);
     }
     if events.iter().all(|event| matches!(event, Event::Bar)) {
-        return ParseReport::new(None, vec![no_music_diagnostic(source, body_start)]);
+        diagnostics.push(no_music_diagnostic(source, body_start));
+        return ParseReport::new(None, diagnostics);
     }
 
     ParseReport::new(
@@ -163,30 +182,8 @@ pub fn parse_tune_report(
             divisions: 8,
             events,
         }),
-        Vec::new(),
+        diagnostics,
     )
-}
-
-fn strip_comment(value: &str) -> &str {
-    for (offset, ch) in value.char_indices() {
-        if ch == '%' && !is_escaped(value, offset) {
-            return &value[..offset];
-        }
-    }
-
-    value
-}
-
-fn is_escaped(text: &str, offset: usize) -> bool {
-    let mut slash_count = 0;
-    for byte in text[..offset].bytes().rev() {
-        if byte == b'\\' {
-            slash_count += 1;
-        } else {
-            break;
-        }
-    }
-    slash_count % 2 == 1
 }
 
 fn source_level_diagnostics(source: &SourceText) -> Vec<Diagnostic> {
