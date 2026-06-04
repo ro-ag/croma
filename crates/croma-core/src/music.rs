@@ -1,7 +1,14 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
-use crate::fields::{DecorationDelimiter, DialectState, FieldState, MeterKind, ParsedAbcFields};
+use crate::fields::{
+    DecorationDelimiter, DialectState, FieldState, InterpretationField, MeterKind, ParsedAbcFields,
+    ParsedFieldKind, ScoreDirective, Spanned, StemDirection, VoiceDefinition,
+};
 use crate::model::{
-    Accidental, BarlineKind, Event, Fraction, RestVisibility, TimedEvent, TimedEventKind, lcm,
+    Accidental, AlignedLyric, AlignedSymbol, AlignedSymbolKind, BarlineKind, Event, Fraction,
+    LyricControl, OverlaySegment, RestVisibility, ScoreDirectiveModel,
+    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, StemDirectionModel, TextLine,
+    TimedEvent, TimedEventKind, TimelineEventKind, VoiceId, VoiceMeasureTimeline,
+    VoicePropertiesModel, VoiceTimedEvent, VoiceTimeline, lcm,
 };
 use crate::options::ParseMode;
 use crate::parser::ParseReport;
@@ -24,6 +31,10 @@ pub struct ParsedTuneMusic {
     pub tune_index: usize,
     pub span: Span,
     pub lines: Vec<MusicLine>,
+    pub body_fields: Vec<MusicFieldLine>,
+    pub lyric_lines: Vec<LyricLineSyntax>,
+    pub symbol_lines: Vec<SymbolLineSyntax>,
+    pub score_directives: Vec<ScoreDirectiveSyntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +71,7 @@ pub enum MusicTokenKind {
     Slur,
     Tie,
     BrokenRhythm,
+    Overlay,
     RepeatEnding,
     Barline,
     InlineField,
@@ -84,6 +96,7 @@ pub enum MusicItem {
     Slur(SlurSyntax),
     Tie(TieSyntax),
     BrokenRhythm(BrokenRhythmSyntax),
+    Overlay(OverlaySyntax),
     VariantEnding(VariantEndingSyntax),
     Barline(BarlineSyntax),
     InlineField(InlineFieldSyntax),
@@ -106,6 +119,7 @@ impl MusicItem {
             Self::Slur(item) => item.span,
             Self::Tie(item) => item.span,
             Self::BrokenRhythm(item) => item.span,
+            Self::Overlay(item) => item.span,
             Self::VariantEnding(item) => item.span,
             Self::Barline(item) => item.span,
             Self::InlineField(item) => item.span,
@@ -338,6 +352,11 @@ pub struct BrokenRhythmSyntax {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlaySyntax {
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrokenRhythmDirection {
     LeftShorter,
     RightShorter,
@@ -371,6 +390,90 @@ pub struct BarlineSyntax {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InlineFieldSyntax {
     pub span: Span,
+    pub marker_span: Span,
+    pub code: char,
+    pub value: Spanned<String>,
+    pub voice: Option<Spanned<VoiceDefinition>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MusicFieldLine {
+    pub line_index: usize,
+    pub code: char,
+    pub line_span: Span,
+    pub marker_span: Span,
+    pub value: Spanned<String>,
+    pub kind: MusicFieldLineKind,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MusicFieldLineKind {
+    Voice(Spanned<VoiceDefinition>),
+    Lyric(LyricLineSyntax),
+    Symbol(SymbolLineSyntax),
+    PostTuneText(Spanned<String>),
+    Score(ScoreDirective),
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LyricLineSyntax {
+    pub line_index: usize,
+    pub span: Span,
+    pub value: Spanned<String>,
+    pub tokens: Vec<LyricTokenSyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LyricTokenSyntax {
+    pub span: Span,
+    pub text: String,
+    pub kind: LyricTokenKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LyricTokenKind {
+    Syllable,
+    Hyphen,
+    Extender,
+    Skip,
+    Bar,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolLineSyntax {
+    pub line_index: usize,
+    pub span: Span,
+    pub value: Spanned<String>,
+    pub tokens: Vec<SymbolTokenSyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolTokenSyntax {
+    pub span: Span,
+    pub text: String,
+    pub kind: SymbolTokenKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolTokenKind {
+    Decoration,
+    ChordSymbol,
+    Annotation,
+    Raw,
+    Skip,
+    Bar,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoreDirectiveSyntax {
+    pub line_index: usize,
+    pub span: Span,
+    pub marker_span: Span,
+    pub name_span: Span,
+    pub value: Spanned<String>,
+    pub directive: ScoreDirective,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,6 +525,9 @@ pub enum MalformedSyntaxKind {
 pub struct LoweredMusic {
     pub events: Vec<Event>,
     pub divisions: u32,
+    pub voices: Vec<VoiceTimeline>,
+    pub score_directives: Vec<ScoreDirectiveModel>,
+    pub post_tune_lyrics: Vec<TextLine>,
 }
 
 pub(crate) fn parse_music_document(
@@ -438,20 +544,82 @@ pub(crate) fn parse_music_document(
             tune_index: tune.index,
             span: tune.body_span,
             lines: Vec::new(),
+            body_fields: Vec::new(),
+            lyric_lines: Vec::new(),
+            symbol_lines: Vec::new(),
+            score_directives: Vec::new(),
         })
         .collect::<Vec<_>>();
 
     for line in &surface.line_map.lines {
-        if line.kind != LineKind::MusicCode {
-            continue;
-        }
         let LineContext::TuneBody { tune_index } = line.context else {
+            if matches!(line.context, LineContext::TuneHeader { .. })
+                && line.kind == LineKind::InformationField
+                && let Some(field_line) = music_field_for_line(fields, line)
+                && let Some(tune_index) = tune_index_for_line_context(line.context)
+                && let Some(tune) = tunes.iter_mut().find(|tune| tune.tune_index == tune_index)
+            {
+                match &field_line.kind {
+                    MusicFieldLineKind::Score(score) => {
+                        tune.score_directives
+                            .push(score_directive_syntax_from_field(&field_line, score));
+                    }
+                    MusicFieldLineKind::PostTuneText(_) => tune.body_fields.push(field_line),
+                    MusicFieldLineKind::Voice(_)
+                    | MusicFieldLineKind::Lyric(_)
+                    | MusicFieldLineKind::Symbol(_)
+                    | MusicFieldLineKind::Other => {}
+                }
+            }
+            if matches!(
+                line.context,
+                LineContext::TuneHeader { .. } | LineContext::TuneBody { .. }
+            ) && line.kind == LineKind::StylesheetDirective
+                && let Some((tune_index, directive)) =
+                    parse_score_stylesheet_directive(source, line)
+                && let Some(tune) = tunes.iter_mut().find(|tune| tune.tune_index == tune_index)
+            {
+                tune.score_directives.push(directive);
+            }
             continue;
         };
 
         let Some(tune) = tunes.iter_mut().find(|tune| tune.tune_index == tune_index) else {
             continue;
         };
+
+        if line.kind == LineKind::InformationField {
+            if let Some(field_line) = music_field_for_line(fields, line) {
+                match &field_line.kind {
+                    MusicFieldLineKind::Lyric(lyric) => {
+                        tune.lyric_lines.push(lyric.clone());
+                    }
+                    MusicFieldLineKind::Symbol(symbol) => {
+                        tune.symbol_lines.push(symbol.clone());
+                    }
+                    MusicFieldLineKind::Score(score) => {
+                        tune.score_directives
+                            .push(score_directive_syntax_from_field(&field_line, score));
+                    }
+                    MusicFieldLineKind::Voice(_)
+                    | MusicFieldLineKind::PostTuneText(_)
+                    | MusicFieldLineKind::Other => {}
+                }
+                tune.body_fields.push(field_line);
+            }
+            continue;
+        }
+
+        if line.kind == LineKind::StylesheetDirective {
+            if let Some((_, directive)) = parse_score_stylesheet_directive(source, line) {
+                tune.score_directives.push(directive);
+            }
+            continue;
+        }
+
+        if line.kind != LineKind::MusicCode {
+            continue;
+        }
         let Some(line_text) = source.slice(line.text_span) else {
             continue;
         };
@@ -498,6 +666,431 @@ pub(crate) fn parse_music_document(
     ParseReport::new(ParsedMusicDocument { tunes }, diagnostics)
 }
 
+fn music_field_for_line(
+    fields: &ParsedAbcFields,
+    line: &crate::surface::ClassifiedLine,
+) -> Option<MusicFieldLine> {
+    let field = fields
+        .fields
+        .iter()
+        .find(|field| field.line_index == line.index)?;
+    let value = match &field.kind {
+        ParsedFieldKind::Voice(voice) => {
+            let mut raw = voice.value.id.value.clone();
+            if !voice.value.properties.value.is_empty() {
+                if !raw.is_empty() {
+                    raw.push(' ');
+                }
+                raw.push_str(&voice.value.properties.value);
+            }
+            Spanned::new(raw, voice.span)
+        }
+        ParsedFieldKind::LyricLine(value)
+        | ParsedFieldKind::SymbolLine(value)
+        | ParsedFieldKind::TextMetadata(crate::fields::TextMetadataField { value, .. }) => {
+            value.clone()
+        }
+        ParsedFieldKind::Interpretation(InterpretationField::Score { directive }) => {
+            directive.value.clone()
+        }
+        _ => Spanned::new(String::new(), field.parsed_value_span),
+    };
+    let kind = match &field.kind {
+        ParsedFieldKind::Voice(voice) => MusicFieldLineKind::Voice(voice.clone()),
+        ParsedFieldKind::LyricLine(value) => {
+            MusicFieldLineKind::Lyric(parse_lyric_line(line.index, field.line_span, value.clone()))
+        }
+        ParsedFieldKind::SymbolLine(value) => MusicFieldLineKind::Symbol(parse_symbol_line(
+            line.index,
+            field.line_span,
+            value.clone(),
+        )),
+        ParsedFieldKind::TextMetadata(metadata) if metadata.code == 'W' => {
+            MusicFieldLineKind::PostTuneText(metadata.value.clone())
+        }
+        ParsedFieldKind::Interpretation(InterpretationField::Score { directive }) => {
+            MusicFieldLineKind::Score(directive.clone())
+        }
+        _ => MusicFieldLineKind::Other,
+    };
+
+    Some(MusicFieldLine {
+        line_index: field.line_index,
+        code: field.code,
+        line_span: field.line_span,
+        marker_span: field.marker_span,
+        value,
+        kind,
+    })
+}
+
+fn score_directive_syntax_from_field(
+    field_line: &MusicFieldLine,
+    score: &ScoreDirective,
+) -> ScoreDirectiveSyntax {
+    ScoreDirectiveSyntax {
+        line_index: field_line.line_index,
+        span: field_line.line_span,
+        marker_span: field_line.marker_span,
+        name_span: Span::new(
+            field_line.value.span.start,
+            field_line
+                .value
+                .span
+                .start
+                .saturating_add("score".len())
+                .min(field_line.value.span.end),
+        ),
+        value: score.value.clone(),
+        directive: score.clone(),
+    }
+}
+
+fn tune_index_for_line_context(context: LineContext) -> Option<usize> {
+    match context {
+        LineContext::TuneHeader { tune_index } | LineContext::TuneBody { tune_index } => {
+            Some(tune_index)
+        }
+        LineContext::Preamble
+        | LineContext::FileHeader
+        | LineContext::BetweenBlocks
+        | LineContext::FreeText
+        | LineContext::TypesetText
+        | LineContext::TuneTerminator { .. } => None,
+    }
+}
+
+fn parse_score_stylesheet_directive(
+    source: &SourceText,
+    line: &crate::surface::ClassifiedLine,
+) -> Option<(usize, ScoreDirectiveSyntax)> {
+    let tune_index = match line.context {
+        LineContext::TuneHeader { tune_index } | LineContext::TuneBody { tune_index } => tune_index,
+        LineContext::Preamble
+        | LineContext::FileHeader
+        | LineContext::BetweenBlocks
+        | LineContext::FreeText
+        | LineContext::TypesetText
+        | LineContext::TuneTerminator { .. } => return None,
+    };
+    let text = source.slice(line.content_span)?;
+    let rest = text.strip_prefix("%%")?;
+    let name_start = line.content_span.start + 2;
+    let trimmed_rest = rest.trim_start();
+    let leading = rest.len() - trimmed_rest.len();
+    let name_start = name_start + leading;
+    let name_end_offset = trimmed_rest
+        .find(char::is_whitespace)
+        .unwrap_or(trimmed_rest.len());
+    let name = &trimmed_rest[..name_end_offset];
+    if !name.eq_ignore_ascii_case("score") {
+        return None;
+    }
+    let name_span = Span::new(name_start, name_start + name.len());
+    let value_start = name_span.end;
+    let value_text = &text[value_start.saturating_sub(line.content_span.start)..];
+    let value = trim_spanned_string(value_text, value_start);
+    let directive = crate::fields::parse_score_directive(value.clone());
+    Some((
+        tune_index,
+        ScoreDirectiveSyntax {
+            line_index: line.index,
+            span: line.content_span,
+            marker_span: line
+                .marker_span
+                .unwrap_or_else(|| Span::new(line.content_span.start, line.content_span.start + 2)),
+            name_span,
+            value,
+            directive,
+        },
+    ))
+}
+
+fn parse_lyric_line(line_index: usize, span: Span, value: Spanned<String>) -> LyricLineSyntax {
+    let tokens = parse_lyric_tokens(&value.value, value.span.start);
+    LyricLineSyntax {
+        line_index,
+        span,
+        value,
+        tokens,
+    }
+}
+
+fn parse_lyric_tokens(value: &str, offset: usize) -> Vec<LyricTokenSyntax> {
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    let mut syllable_start = None;
+    let mut syllable_text = String::new();
+
+    while index < value.len() {
+        let Some(ch) = value[index..].chars().next() else {
+            break;
+        };
+        if ch.is_whitespace() {
+            flush_lyric_syllable(
+                &mut tokens,
+                &mut syllable_start,
+                &mut syllable_text,
+                offset,
+                index,
+            );
+            index += ch.len_utf8();
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                let escape_start = index;
+                index += ch.len_utf8();
+                if let Some(next) = value[index..].chars().next() {
+                    if syllable_start.is_none() {
+                        syllable_start = Some(escape_start);
+                    }
+                    syllable_text.push(next);
+                    index += next.len_utf8();
+                }
+            }
+            '-' => {
+                if syllable_start.is_some() {
+                    flush_lyric_syllable(
+                        &mut tokens,
+                        &mut syllable_start,
+                        &mut syllable_text,
+                        offset,
+                        index,
+                    );
+                    tokens.push(LyricTokenSyntax {
+                        span: Span::new(offset + index, offset + index + 1),
+                        text: "-".to_owned(),
+                        kind: LyricTokenKind::Hyphen,
+                    });
+                } else {
+                    tokens.push(LyricTokenSyntax {
+                        span: Span::new(offset + index, offset + index + 1),
+                        text: "-".to_owned(),
+                        kind: LyricTokenKind::Syllable,
+                    });
+                }
+                index += ch.len_utf8();
+            }
+            '_' => {
+                flush_lyric_syllable(
+                    &mut tokens,
+                    &mut syllable_start,
+                    &mut syllable_text,
+                    offset,
+                    index,
+                );
+                let start = index;
+                while value[index..].starts_with('_') {
+                    index += 1;
+                    tokens.push(LyricTokenSyntax {
+                        span: Span::new(offset + start, offset + index),
+                        text: "_".to_owned(),
+                        kind: LyricTokenKind::Extender,
+                    });
+                }
+            }
+            '*' => {
+                flush_lyric_syllable(
+                    &mut tokens,
+                    &mut syllable_start,
+                    &mut syllable_text,
+                    offset,
+                    index,
+                );
+                tokens.push(LyricTokenSyntax {
+                    span: Span::new(offset + index, offset + index + 1),
+                    text: String::new(),
+                    kind: LyricTokenKind::Skip,
+                });
+                index += ch.len_utf8();
+            }
+            '~' => {
+                if syllable_start.is_none() {
+                    syllable_start = Some(index);
+                }
+                syllable_text.push(' ');
+                index += ch.len_utf8();
+            }
+            '|' => {
+                flush_lyric_syllable(
+                    &mut tokens,
+                    &mut syllable_start,
+                    &mut syllable_text,
+                    offset,
+                    index,
+                );
+                tokens.push(LyricTokenSyntax {
+                    span: Span::new(offset + index, offset + index + 1),
+                    text: "|".to_owned(),
+                    kind: LyricTokenKind::Bar,
+                });
+                index += ch.len_utf8();
+            }
+            _ => {
+                if syllable_start.is_none() {
+                    syllable_start = Some(index);
+                }
+                syllable_text.push(ch);
+                index += ch.len_utf8();
+            }
+        }
+    }
+
+    flush_lyric_syllable(
+        &mut tokens,
+        &mut syllable_start,
+        &mut syllable_text,
+        offset,
+        value.len(),
+    );
+    tokens
+}
+
+fn flush_lyric_syllable(
+    tokens: &mut Vec<LyricTokenSyntax>,
+    syllable_start: &mut Option<usize>,
+    syllable_text: &mut String,
+    offset: usize,
+    end: usize,
+) {
+    let Some(start) = syllable_start.take() else {
+        return;
+    };
+    tokens.push(LyricTokenSyntax {
+        span: Span::new(offset + start, offset + end),
+        text: std::mem::take(syllable_text),
+        kind: LyricTokenKind::Syllable,
+    });
+}
+
+fn parse_symbol_line(line_index: usize, span: Span, value: Spanned<String>) -> SymbolLineSyntax {
+    let tokens = parse_symbol_tokens(&value.value, value.span.start);
+    SymbolLineSyntax {
+        line_index,
+        span,
+        value,
+        tokens,
+    }
+}
+
+fn parse_symbol_tokens(value: &str, offset: usize) -> Vec<SymbolTokenSyntax> {
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < value.len() {
+        let Some(ch) = value[index..].chars().next() else {
+            break;
+        };
+        if ch.is_whitespace() {
+            index += ch.len_utf8();
+            continue;
+        }
+        match ch {
+            '*' => {
+                tokens.push(SymbolTokenSyntax {
+                    span: Span::new(offset + index, offset + index + 1),
+                    text: String::new(),
+                    kind: SymbolTokenKind::Skip,
+                });
+                index += ch.len_utf8();
+            }
+            '|' => {
+                tokens.push(SymbolTokenSyntax {
+                    span: Span::new(offset + index, offset + index + 1),
+                    text: "|".to_owned(),
+                    kind: SymbolTokenKind::Bar,
+                });
+                index += ch.len_utf8();
+            }
+            '"' => {
+                let start = index;
+                index += 1;
+                while index < value.len() {
+                    let Some(ch) = value[index..].chars().next() else {
+                        break;
+                    };
+                    index += ch.len_utf8();
+                    if ch == '"' && !is_escaped(value, index - ch.len_utf8()) {
+                        break;
+                    }
+                }
+                let raw = &value[start..index];
+                let text = raw
+                    .strip_prefix('"')
+                    .and_then(|text| text.strip_suffix('"'))
+                    .unwrap_or(raw)
+                    .to_owned();
+                let kind = match classify_quoted_text(&text) {
+                    QuotedTextKind::ChordSymbol => SymbolTokenKind::ChordSymbol,
+                    QuotedTextKind::Annotation(_) => SymbolTokenKind::Annotation,
+                };
+                tokens.push(SymbolTokenSyntax {
+                    span: Span::new(offset + start, offset + index),
+                    text,
+                    kind,
+                });
+            }
+            '!' | '+' => {
+                let delimiter = ch;
+                let start = index;
+                index += delimiter.len_utf8();
+                while index < value.len() {
+                    let Some(ch) = value[index..].chars().next() else {
+                        break;
+                    };
+                    index += ch.len_utf8();
+                    if ch == delimiter {
+                        break;
+                    }
+                }
+                let raw = &value[start..index];
+                let text = raw
+                    .strip_prefix(delimiter)
+                    .and_then(|text| text.strip_suffix(delimiter))
+                    .unwrap_or(raw)
+                    .to_owned();
+                tokens.push(SymbolTokenSyntax {
+                    span: Span::new(offset + start, offset + index),
+                    text,
+                    kind: SymbolTokenKind::Decoration,
+                });
+            }
+            _ => {
+                let start = index;
+                while index < value.len() {
+                    let Some(ch) = value[index..].chars().next() else {
+                        break;
+                    };
+                    if ch.is_whitespace() || matches!(ch, '*' | '|') {
+                        break;
+                    }
+                    index += ch.len_utf8();
+                }
+                tokens.push(SymbolTokenSyntax {
+                    span: Span::new(offset + start, offset + index),
+                    text: value[start..index].to_owned(),
+                    kind: SymbolTokenKind::Raw,
+                });
+            }
+        }
+    }
+    tokens
+}
+
+fn trim_spanned_string(value: &str, offset: usize) -> Spanned<String> {
+    let leading = value.len() - value.trim_start().len();
+    let trailing = value.trim_end().len();
+    if leading >= trailing {
+        let end = offset + value.len();
+        return Spanned::new(String::new(), Span::new(end, end));
+    }
+    Spanned::new(
+        value[leading..trailing].to_owned(),
+        Span::new(offset + leading, offset + trailing),
+    )
+}
+
 pub(crate) fn lower_tune_music(
     tune_music: &ParsedTuneMusic,
     field_state: &FieldState,
@@ -507,48 +1100,216 @@ pub(crate) fn lower_tune_music(
         .meter
         .as_ref()
         .and_then(|meter| meter_duration(&meter.value.kind));
-    let mut state = LoweringState::new(unit);
+    let mut lowering = MultiVoiceLowering::new(unit, field_state, tune_music.span);
+    let mut entries = Vec::new();
+    for (index, line) in tune_music.lines.iter().enumerate() {
+        entries.push((line.line_index, 1usize, index));
+    }
+    for (index, field) in tune_music.body_fields.iter().enumerate() {
+        entries.push((field.line_index, 0usize, index));
+    }
+    entries.sort_unstable();
 
-    for line in &tune_music.lines {
+    for (_line_index, kind, index) in entries {
+        if kind == 0 {
+            lowering.apply_field(&tune_music.body_fields[index]);
+        } else {
+            lowering.apply_music_line(&tune_music.lines[index], meter_duration);
+        }
+    }
+
+    let lyric_lines = lowering.lyric_lines.clone();
+    let symbol_lines = lowering.symbol_lines.clone();
+    let mut diagnostics = lowering.finish_open_constructs();
+    let all_lowered = lowering
+        .voices
+        .iter()
+        .flat_map(|voice| voice.lowered.iter())
+        .collect::<Vec<_>>();
+    let divisions = all_lowered.iter().fold(8, |divisions, event| match event {
+        LoweredEvent::Timed(timed) => lcm(divisions, timed.event.duration.divisions_requirement()),
+        LoweredEvent::Untimed(_) | LoweredEvent::Overlay(_) => divisions,
+    });
+    let events = all_lowered
+        .into_iter()
+        .filter_map(|event| match event {
+            LoweredEvent::Timed(timed) => Some(timed.event.into_event(divisions)),
+            LoweredEvent::Untimed(event) => Some(event.clone()),
+            LoweredEvent::Overlay(_) => None,
+        })
+        .collect();
+    let mut voices = lowering.into_voice_timelines(meter_duration, &mut diagnostics);
+    align_lyrics(&mut voices, &lyric_lines, &mut diagnostics);
+    align_symbols(&mut voices, &symbol_lines, &mut diagnostics);
+    let score_directives = tune_music
+        .score_directives
+        .iter()
+        .map(score_directive_model)
+        .collect();
+    let post_tune_lyrics = tune_music
+        .body_fields
+        .iter()
+        .filter_map(|field| match &field.kind {
+            MusicFieldLineKind::PostTuneText(text) => Some(TextLine {
+                text: text.value.clone(),
+                span: text.span,
+            }),
+            _ => None,
+        })
+        .collect();
+
+    ParseReport::new(
+        LoweredMusic {
+            events,
+            divisions,
+            voices,
+            score_directives,
+            post_tune_lyrics,
+        },
+        diagnostics,
+    )
+}
+
+struct MultiVoiceLowering {
+    unit: Fraction,
+    voices: Vec<LoweringState>,
+    current_voice: String,
+    source_order: u32,
+    lyric_lines: Vec<VoicedLyricLine>,
+    symbol_lines: Vec<VoicedSymbolLine>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VoicedLyricLine {
+    voice_id: String,
+    line: LyricLineSyntax,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VoicedSymbolLine {
+    voice_id: String,
+    line: SymbolLineSyntax,
+}
+
+impl MultiVoiceLowering {
+    fn new(unit: Fraction, field_state: &FieldState, fallback_span: Span) -> Self {
+        let mut lowering = Self {
+            unit,
+            voices: Vec::new(),
+            current_voice: String::new(),
+            source_order: 0,
+            lyric_lines: Vec::new(),
+            symbol_lines: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+
+        for voice in &field_state.voices {
+            lowering.ensure_voice(voice.clone());
+        }
+
+        let initial = field_state
+            .voices
+            .first()
+            .cloned()
+            .or_else(|| field_state.voice.clone())
+            .unwrap_or_else(|| default_voice_definition(fallback_span));
+        lowering.current_voice = initial.value.id.value.clone();
+        lowering.ensure_voice(initial);
+        lowering
+    }
+
+    fn apply_field(&mut self, field: &MusicFieldLine) {
+        match &field.kind {
+            MusicFieldLineKind::Voice(voice) => self.switch_voice(voice.clone()),
+            MusicFieldLineKind::Lyric(line) => self.lyric_lines.push(VoicedLyricLine {
+                voice_id: self.current_voice.clone(),
+                line: line.clone(),
+            }),
+            MusicFieldLineKind::Symbol(line) => self.symbol_lines.push(VoicedSymbolLine {
+                voice_id: self.current_voice.clone(),
+                line: line.clone(),
+            }),
+            MusicFieldLineKind::PostTuneText(_)
+            | MusicFieldLineKind::Score(_)
+            | MusicFieldLineKind::Other => {}
+        }
+    }
+
+    fn apply_music_line(&mut self, line: &MusicLine, meter_duration: Option<Fraction>) {
         for item in &line.items {
             match item {
-                MusicItem::Note(note) => state.push_note_group(note),
-                MusicItem::Rest(rest) => state.push_rest_group(rest),
+                MusicItem::Note(note) => {
+                    let source_order = self.next_source_order();
+                    self.current_state()
+                        .push_note_group(note, line.line_index, source_order);
+                }
+                MusicItem::Rest(rest) => {
+                    let source_order = self.next_source_order();
+                    self.current_state()
+                        .push_rest_group(rest, line.line_index, source_order);
+                }
                 MusicItem::MultiMeasureRest(rest) => {
                     let count = rest.count.map(|count| count.value).unwrap_or(1);
                     let duration = if let Some(meter_duration) = meter_duration {
                         meter_duration.checked_mul_u32(count)
                     } else {
-                        state
+                        self.current_state()
                             .diagnostics
                             .push(free_meter_multirest_warning(rest.span));
-                        unit.checked_mul_u32(count)
+                        self.unit.checked_mul_u32(count)
                     };
-                    state.push_time_group(vec![TimedEvent {
-                        kind: TimedEventKind::Rest {
-                            visibility: rest.visibility,
-                            span: rest.span,
-                        },
-                        duration,
-                    }]);
+                    let source_order = self.next_source_order();
+                    self.current_state().push_time_group(
+                        vec![(
+                            TimedEvent {
+                                kind: TimedEventKind::Rest {
+                                    visibility: rest.visibility,
+                                    span: rest.span,
+                                },
+                                duration,
+                            },
+                            false,
+                        )],
+                        line.line_index,
+                        source_order,
+                    );
                 }
-                MusicItem::Spacer(spacer) => state
+                MusicItem::Spacer(spacer) => self
+                    .current_state()
                     .lowered
                     .push(LoweredEvent::Untimed(Event::Spacer { span: spacer.span })),
-                MusicItem::Chord(chord) => state.push_chord_group(chord),
-                MusicItem::BrokenRhythm(marker) => state.apply_broken_rhythm(*marker),
-                MusicItem::Tuplet(tuplet) => state.start_tuplet(tuplet),
-                MusicItem::Slur(slur) => state.apply_slur(*slur),
+                MusicItem::Chord(chord) => {
+                    let source_order = self.next_source_order();
+                    self.current_state()
+                        .push_chord_group(chord, line.line_index, source_order);
+                }
+                MusicItem::BrokenRhythm(marker) => {
+                    self.current_state().apply_broken_rhythm(*marker)
+                }
+                MusicItem::Tuplet(tuplet) => self.current_state().start_tuplet(tuplet),
+                MusicItem::Slur(slur) => self.current_state().apply_slur(*slur),
+                MusicItem::Overlay(overlay) => self
+                    .current_state()
+                    .lowered
+                    .push(LoweredEvent::Overlay(*overlay)),
                 MusicItem::Barline(barline) => {
                     if matches!(barline.kind, BarlineKind::Dotted | BarlineKind::Invisible) {
-                        state
+                        self.current_state()
                             .diagnostics
                             .push(barline_export_policy_info(barline.span, barline.kind));
                     }
-                    state.lowered.push(LoweredEvent::Untimed(Event::Barline {
-                        kind: barline.kind,
-                        span: barline.span,
-                    }));
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::Untimed(Event::Barline {
+                            kind: barline.kind,
+                            span: barline.span,
+                        }));
+                }
+                MusicItem::InlineField(inline) if inline.code == 'V' => {
+                    if let Some(voice) = &inline.voice {
+                        self.switch_voice(voice.clone());
+                    }
                 }
                 MusicItem::GraceGroup(_)
                 | MusicItem::ChordSymbol(_)
@@ -563,31 +1324,735 @@ pub(crate) fn lower_tune_music(
         }
     }
 
-    state.finish_open_constructs();
+    fn switch_voice(&mut self, voice: Spanned<VoiceDefinition>) {
+        self.current_voice = voice.value.id.value.clone();
+        self.ensure_voice(voice);
+    }
 
-    let divisions = state
-        .lowered
-        .iter()
-        .fold(8, |divisions, event| match event {
-            LoweredEvent::Timed(event) => lcm(divisions, event.duration.divisions_requirement()),
-            LoweredEvent::Untimed(_) => divisions,
+    fn next_source_order(&mut self) -> u32 {
+        let order = self.source_order;
+        self.source_order = self.source_order.saturating_add(1);
+        order
+    }
+
+    fn ensure_voice(&mut self, voice: Spanned<VoiceDefinition>) -> usize {
+        if let Some(index) = self
+            .voices
+            .iter()
+            .position(|state| state.id.value == voice.value.id.value)
+        {
+            self.voices[index].properties = voice_properties_model(&voice.value);
+            self.voices[index].source_span = voice.span;
+            return index;
+        }
+        let id = VoiceId {
+            value: voice.value.id.value.clone(),
+            span: voice.value.id.span,
+        };
+        let properties = voice_properties_model(&voice.value);
+        self.voices
+            .push(LoweringState::new(id, properties, self.unit));
+        self.voices.len() - 1
+    }
+
+    fn current_state(&mut self) -> &mut LoweringState {
+        let index = self
+            .voices
+            .iter()
+            .position(|state| state.id.value == self.current_voice)
+            .unwrap_or_else(|| {
+                let voice = default_voice_definition(Span::new(0, 0));
+                self.current_voice = voice.value.id.value.clone();
+                self.ensure_voice(voice)
+            });
+        &mut self.voices[index]
+    }
+
+    fn finish_open_constructs(&mut self) -> Vec<Diagnostic> {
+        let mut diagnostics = std::mem::take(&mut self.diagnostics);
+        for voice in &mut self.voices {
+            voice.finish_open_constructs();
+            diagnostics.extend(std::mem::take(&mut voice.diagnostics));
+        }
+        diagnostics
+    }
+
+    fn into_voice_timelines(
+        self,
+        meter_duration: Option<Fraction>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Vec<VoiceTimeline> {
+        let mut voices = self
+            .voices
+            .into_iter()
+            .map(|voice| build_voice_timeline(voice, meter_duration, diagnostics))
+            .collect::<Vec<_>>();
+        if voices.len() > 1 {
+            voices.retain(|voice| {
+                voice_has_timeline_content(voice)
+                    || voice.properties != VoicePropertiesModel::default()
+                    || voice.id.value != "1"
+            });
+        }
+        voices
+    }
+}
+
+fn voice_has_timeline_content(voice: &VoiceTimeline) -> bool {
+    voice.measures.iter().any(|measure| {
+        !measure.overlays.is_empty()
+            || measure.events.iter().any(|event| {
+                matches!(
+                    event.kind,
+                    TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
+                )
+            })
+    })
+}
+
+fn default_voice_definition(span: Span) -> Spanned<VoiceDefinition> {
+    let id = Spanned::new("1".to_owned(), span);
+    Spanned::new(
+        VoiceDefinition {
+            id: id.clone(),
+            properties: Spanned::new(String::new(), Span::new(span.end, span.end)),
+            parsed_properties: Default::default(),
+        },
+        span,
+    )
+}
+
+fn voice_properties_model(voice: &VoiceDefinition) -> VoicePropertiesModel {
+    VoicePropertiesModel {
+        name: voice
+            .parsed_properties
+            .name
+            .as_ref()
+            .map(text_line_from_spanned),
+        nm: voice
+            .parsed_properties
+            .nm
+            .as_ref()
+            .map(text_line_from_spanned),
+        subname: voice
+            .parsed_properties
+            .subname
+            .as_ref()
+            .map(text_line_from_spanned),
+        snm: voice
+            .parsed_properties
+            .snm
+            .as_ref()
+            .map(text_line_from_spanned),
+        clef: voice
+            .parsed_properties
+            .clef
+            .as_ref()
+            .map(text_line_from_spanned),
+        stem: voice
+            .parsed_properties
+            .stem
+            .as_ref()
+            .map(|stem| match stem.value {
+                StemDirection::Up => StemDirectionModel::Up,
+                StemDirection::Down => StemDirectionModel::Down,
+            }),
+        octave: voice
+            .parsed_properties
+            .octave
+            .as_ref()
+            .map(text_line_from_spanned),
+        transpose: voice
+            .parsed_properties
+            .transpose
+            .as_ref()
+            .map(text_line_from_spanned),
+    }
+}
+
+fn text_line_from_spanned(value: &Spanned<String>) -> TextLine {
+    TextLine {
+        text: value.value.clone(),
+        span: value.span,
+    }
+}
+
+fn build_voice_timeline(
+    voice: LoweringState,
+    meter_duration: Option<Fraction>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> VoiceTimeline {
+    let mut builder = VoiceTimelineBuilder::new(voice.id.clone(), meter_duration);
+    for event in voice.lowered {
+        builder.push(event, diagnostics);
+    }
+    let measures = builder.finish(diagnostics);
+    VoiceTimeline {
+        id: voice.id,
+        properties: voice.properties,
+        measures,
+        source_span: voice.source_span,
+    }
+}
+
+struct VoiceTimelineBuilder {
+    voice_id: VoiceId,
+    meter_duration: Option<Fraction>,
+    measures: Vec<VoiceMeasureTimeline>,
+    measure_index: u32,
+    onset: Fraction,
+    active_overlay: Option<OverlayBuilder>,
+    overlay_count: u32,
+}
+
+impl VoiceTimelineBuilder {
+    fn new(voice_id: VoiceId, meter_duration: Option<Fraction>) -> Self {
+        Self {
+            voice_id,
+            meter_duration,
+            measures: vec![VoiceMeasureTimeline {
+                index: 0,
+                span: Span::new(0, 0),
+                events: Vec::new(),
+                overlays: Vec::new(),
+            }],
+            measure_index: 0,
+            onset: Fraction::zero(),
+            active_overlay: None,
+            overlay_count: 0,
+        }
+    }
+
+    fn push(&mut self, event: LoweredEvent, diagnostics: &mut Vec<Diagnostic>) {
+        match event {
+            LoweredEvent::Timed(timed) => self.push_timed(timed),
+            LoweredEvent::Untimed(Event::Barline { kind, span }) => {
+                self.finish_overlay(diagnostics);
+                let onset = self.onset;
+                let measure = self.current_measure_mut();
+                measure.events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::Barline { kind },
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                });
+                measure.span = extend_span(measure.span, span);
+                self.measure_index = self.measure_index.saturating_add(1);
+                self.onset = Fraction::zero();
+                self.measures.push(VoiceMeasureTimeline {
+                    index: self.measure_index,
+                    span: Span::new(span.end, span.end),
+                    events: Vec::new(),
+                    overlays: Vec::new(),
+                });
+            }
+            LoweredEvent::Untimed(Event::Spacer { span }) => {
+                let onset = self.onset;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::Spacer,
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                });
+            }
+            LoweredEvent::Untimed(Event::Note { .. } | Event::Rest { .. }) => {}
+            LoweredEvent::Overlay(overlay) => {
+                self.finish_overlay(diagnostics);
+                let expected_duration = if self.onset == Fraction::zero() {
+                    self.meter_duration.unwrap_or_else(Fraction::zero)
+                } else {
+                    self.onset
+                };
+                let overlay_id = VoiceId {
+                    value: format!("{}.overlay{}", self.voice_id.value, self.overlay_count + 1),
+                    span: overlay.span,
+                };
+                self.overlay_count = self.overlay_count.saturating_add(1);
+                self.active_overlay = Some(OverlayBuilder {
+                    id: overlay_id,
+                    start_span: overlay.span,
+                    span: overlay.span,
+                    measure_index: self.measure_index,
+                    expected_duration,
+                    actual_duration: Fraction::zero(),
+                    events: Vec::new(),
+                });
+            }
+        }
+    }
+
+    fn push_timed(&mut self, timed: LoweredTimedEvent) {
+        let span = timed_span(timed.event);
+        let event = VoiceTimedEvent {
+            onset: self
+                .active_overlay
+                .as_ref()
+                .map(|overlay| overlay.actual_duration)
+                .unwrap_or(self.onset),
+            duration: timed.event.duration,
+            span,
+            line_index: timed.line_index,
+            source_order: timed.source_order,
+            alignable: timed.alignable && matches!(timed.event.kind, TimedEventKind::Note { .. }),
+            kind: timeline_event_kind(timed.event.kind),
+            lyrics: Vec::new(),
+            symbols: Vec::new(),
+        };
+        if let Some(overlay) = &mut self.active_overlay {
+            overlay.actual_duration = overlay.actual_duration.checked_add(timed.event.duration);
+            overlay.span = extend_span(overlay.span, span);
+            overlay.events.push(event);
+        } else {
+            self.onset = self.onset.checked_add(timed.event.duration);
+            self.current_measure_mut().span = extend_span(self.current_measure_mut().span, span);
+            self.current_measure_mut().events.push(event);
+        }
+    }
+
+    fn finish(mut self, diagnostics: &mut Vec<Diagnostic>) -> Vec<VoiceMeasureTimeline> {
+        self.finish_overlay(diagnostics);
+        while self
+            .measures
+            .last()
+            .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
+            && self.measures.len() > 1
+        {
+            self.measures.pop();
+        }
+        self.measures
+    }
+
+    fn finish_overlay(&mut self, diagnostics: &mut Vec<Diagnostic>) {
+        let Some(overlay) = self.active_overlay.take() else {
+            return;
+        };
+        if overlay.actual_duration.less_than(overlay.expected_duration) {
+            diagnostics.push(overlay_incomplete_measure_warning(
+                overlay.start_span,
+                overlay.actual_duration,
+                overlay.expected_duration,
+            ));
+        } else if overlay.expected_duration.less_than(overlay.actual_duration) {
+            diagnostics.push(overlay_overfull_measure_warning(
+                overlay.start_span,
+                overlay.actual_duration,
+                overlay.expected_duration,
+            ));
+        }
+        self.current_measure_mut().overlays.push(OverlaySegment {
+            id: overlay.id,
+            span: overlay.span,
+            measure_index: overlay.measure_index,
+            expected_duration: overlay.expected_duration,
+            actual_duration: overlay.actual_duration,
+            events: overlay.events,
         });
-    let events = state
-        .lowered
-        .into_iter()
-        .map(|event| match event {
-            LoweredEvent::Timed(event) => event.into_event(divisions),
-            LoweredEvent::Untimed(event) => event,
-        })
-        .collect();
+    }
 
-    ParseReport::new(LoweredMusic { events, divisions }, state.diagnostics)
+    fn current_measure_mut(&mut self) -> &mut VoiceMeasureTimeline {
+        self.measures
+            .last_mut()
+            .expect("timeline builder always has a current measure")
+    }
+}
+
+struct OverlayBuilder {
+    id: VoiceId,
+    start_span: Span,
+    span: Span,
+    measure_index: u32,
+    expected_duration: Fraction,
+    actual_duration: Fraction,
+    events: Vec<VoiceTimedEvent>,
+}
+
+fn timed_span(event: TimedEvent) -> Span {
+    match event.kind {
+        TimedEventKind::Note { span, .. } | TimedEventKind::Rest { span, .. } => span,
+    }
+}
+
+fn timeline_event_kind(kind: TimedEventKind) -> TimelineEventKind {
+    match kind {
+        TimedEventKind::Note {
+            step,
+            octave,
+            accidental,
+            chord,
+            ..
+        } => TimelineEventKind::Note {
+            step,
+            octave,
+            accidental,
+            chord,
+        },
+        TimedEventKind::Rest { visibility, .. } => TimelineEventKind::Rest { visibility },
+    }
+}
+
+fn extend_span(current: Span, next: Span) -> Span {
+    if current.is_empty() {
+        return next;
+    }
+    Span::new(current.start.min(next.start), current.end.max(next.end))
+}
+
+fn score_directive_model(syntax: &ScoreDirectiveSyntax) -> ScoreDirectiveModel {
+    ScoreDirectiveModel {
+        span: syntax.span,
+        value: TextLine {
+            text: syntax.value.value.clone(),
+            span: syntax.value.span,
+        },
+        tokens: syntax
+            .directive
+            .tokens
+            .iter()
+            .map(|token| ScoreDirectiveTokenModel {
+                span: token.span,
+                kind: match &token.kind {
+                    crate::fields::ScoreDirectiveTokenKind::Voice(id) => {
+                        ScoreDirectiveTokenKindModel::Voice(id.clone())
+                    }
+                    crate::fields::ScoreDirectiveTokenKind::GroupStart(ch) => {
+                        ScoreDirectiveTokenKindModel::GroupStart(*ch)
+                    }
+                    crate::fields::ScoreDirectiveTokenKind::GroupEnd(ch) => {
+                        ScoreDirectiveTokenKindModel::GroupEnd(*ch)
+                    }
+                    crate::fields::ScoreDirectiveTokenKind::StaffSeparator => {
+                        ScoreDirectiveTokenKindModel::StaffSeparator
+                    }
+                    crate::fields::ScoreDirectiveTokenKind::MeasureSeparator => {
+                        ScoreDirectiveTokenKindModel::MeasureSeparator
+                    }
+                    crate::fields::ScoreDirectiveTokenKind::FloatingVoiceMarker => {
+                        ScoreDirectiveTokenKindModel::FloatingVoiceMarker
+                    }
+                },
+            })
+            .collect(),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AlignableRef {
+    measure_index: usize,
+    event_index: usize,
+    line_index: usize,
+    source_order: u32,
+    measure_number: u32,
+}
+
+fn align_lyrics(
+    voices: &mut [VoiceTimeline],
+    lyric_lines: &[VoicedLyricLine],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for voice in voices {
+        let voice_lines = lyric_lines
+            .iter()
+            .filter(|line| line.voice_id == voice.id.value)
+            .map(|line| &line.line)
+            .collect::<Vec<_>>();
+        align_lyrics_for_voice(voice, &voice_lines, diagnostics);
+    }
+}
+
+fn align_lyrics_for_voice(
+    voice: &mut VoiceTimeline,
+    lyric_lines: &[&LyricLineSyntax],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let refs = alignable_refs(voice);
+    let mut cursor = 0usize;
+    let mut block_start = 0usize;
+    let mut block_available_end = 0usize;
+    let mut previous_line = None;
+    let mut verse = 1u32;
+
+    for line in lyric_lines {
+        let available_end = refs
+            .iter()
+            .take_while(|reference| reference.line_index < line.line_index)
+            .count();
+        let adjacent = previous_line.is_some_and(|previous| previous + 1 == line.line_index);
+        let (start, end, line_verse) = if adjacent {
+            verse = verse.saturating_add(1);
+            (block_start, block_available_end, verse)
+        } else {
+            verse = 1;
+            block_start = cursor;
+            block_available_end = available_end;
+            cursor = available_end;
+            (block_start, block_available_end, verse)
+        };
+
+        align_lyric_line(voice, &refs, start, end, line_verse, line, diagnostics);
+        previous_line = Some(line.line_index);
+    }
+}
+
+fn align_lyric_line(
+    voice: &mut VoiceTimeline,
+    refs: &[AlignableRef],
+    start: usize,
+    end: usize,
+    verse: u32,
+    line: &LyricLineSyntax,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut position = start;
+    for token in &line.tokens {
+        match token.kind {
+            LyricTokenKind::Syllable => {
+                if let Some(reference) = refs.get(position).copied().filter(|_| position < end) {
+                    attach_lyric(
+                        voice,
+                        reference,
+                        AlignedLyric {
+                            verse,
+                            text: token.text.clone(),
+                            span: token.span,
+                            control: LyricControl::Syllable,
+                        },
+                    );
+                    position += 1;
+                } else {
+                    diagnostics.push(lyric_syllable_count_warning(token.span));
+                }
+            }
+            LyricTokenKind::Hyphen => {
+                if position > start
+                    && let Some(reference) = refs.get(position - 1).copied()
+                {
+                    attach_lyric(
+                        voice,
+                        reference,
+                        AlignedLyric {
+                            verse,
+                            text: token.text.clone(),
+                            span: token.span,
+                            control: LyricControl::Hyphen,
+                        },
+                    );
+                }
+            }
+            LyricTokenKind::Extender => {
+                if let Some(reference) = refs.get(position).copied().filter(|_| position < end) {
+                    attach_lyric(
+                        voice,
+                        reference,
+                        AlignedLyric {
+                            verse,
+                            text: String::new(),
+                            span: token.span,
+                            control: LyricControl::Extender,
+                        },
+                    );
+                    position += 1;
+                }
+            }
+            LyricTokenKind::Skip => {
+                position = position.saturating_add(1).min(end);
+            }
+            LyricTokenKind::Bar => {
+                if bar_marker_is_at_boundary(refs, position) {
+                    continue;
+                }
+                if let Some(current) = refs.get(position) {
+                    let measure = current.measure_number;
+                    while position < end
+                        && refs
+                            .get(position)
+                            .is_some_and(|reference| reference.measure_number == measure)
+                    {
+                        position += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn align_symbols(
+    voices: &mut [VoiceTimeline],
+    symbol_lines: &[VoicedSymbolLine],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for voice in voices {
+        let voice_lines = symbol_lines
+            .iter()
+            .filter(|line| line.voice_id == voice.id.value)
+            .map(|line| &line.line)
+            .collect::<Vec<_>>();
+        align_symbols_for_voice(voice, &voice_lines, diagnostics);
+    }
+}
+
+fn align_symbols_for_voice(
+    voice: &mut VoiceTimeline,
+    symbol_lines: &[&SymbolLineSyntax],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let refs = alignable_refs(voice);
+    let mut cursor = 0usize;
+    let mut block_start = 0usize;
+    let mut block_available_end = 0usize;
+    let mut previous_line = None;
+    let mut layer = 1u32;
+
+    for line in symbol_lines {
+        let available_end = refs
+            .iter()
+            .take_while(|reference| reference.line_index < line.line_index)
+            .count();
+        let adjacent = previous_line.is_some_and(|previous| previous + 1 == line.line_index);
+        let (start, end, line_layer) = if adjacent {
+            layer = layer.saturating_add(1);
+            (block_start, block_available_end, layer)
+        } else {
+            layer = 1;
+            block_start = cursor;
+            block_available_end = available_end;
+            cursor = available_end;
+            (block_start, block_available_end, layer)
+        };
+        align_symbol_line(voice, &refs, start, end, line_layer, line, diagnostics);
+        previous_line = Some(line.line_index);
+    }
+}
+
+fn align_symbol_line(
+    voice: &mut VoiceTimeline,
+    refs: &[AlignableRef],
+    start: usize,
+    end: usize,
+    layer: u32,
+    line: &SymbolLineSyntax,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut position = start;
+    for token in &line.tokens {
+        match token.kind {
+            SymbolTokenKind::Skip => {
+                position = position.saturating_add(1).min(end);
+            }
+            SymbolTokenKind::Bar => {
+                if bar_marker_is_at_boundary(refs, position) {
+                    continue;
+                }
+                if let Some(current) = refs.get(position) {
+                    let measure = current.measure_number;
+                    while position < end
+                        && refs
+                            .get(position)
+                            .is_some_and(|reference| reference.measure_number == measure)
+                    {
+                        position += 1;
+                    }
+                }
+            }
+            SymbolTokenKind::Decoration
+            | SymbolTokenKind::ChordSymbol
+            | SymbolTokenKind::Annotation
+            | SymbolTokenKind::Raw => {
+                if let Some(reference) = refs.get(position).copied().filter(|_| position < end) {
+                    attach_symbol(
+                        voice,
+                        reference,
+                        AlignedSymbol {
+                            layer,
+                            text: token.text.clone(),
+                            span: token.span,
+                            kind: match token.kind {
+                                SymbolTokenKind::Decoration => AlignedSymbolKind::Decoration,
+                                SymbolTokenKind::ChordSymbol => AlignedSymbolKind::ChordSymbol,
+                                SymbolTokenKind::Annotation => AlignedSymbolKind::Annotation,
+                                SymbolTokenKind::Raw => AlignedSymbolKind::Raw,
+                                SymbolTokenKind::Skip | SymbolTokenKind::Bar => {
+                                    AlignedSymbolKind::Raw
+                                }
+                            },
+                        },
+                    );
+                    position += 1;
+                } else {
+                    diagnostics.push(symbol_count_warning(token.span));
+                }
+            }
+        }
+    }
+}
+
+fn alignable_refs(voice: &VoiceTimeline) -> Vec<AlignableRef> {
+    let mut refs = Vec::new();
+    for (measure_index, measure) in voice.measures.iter().enumerate() {
+        for (event_index, event) in measure.events.iter().enumerate() {
+            if event.alignable {
+                refs.push(AlignableRef {
+                    measure_index,
+                    event_index,
+                    line_index: event.line_index,
+                    source_order: event.source_order,
+                    measure_number: measure.index,
+                });
+            }
+        }
+    }
+    refs.sort_by_key(|reference| reference.source_order);
+    refs
+}
+
+fn bar_marker_is_at_boundary(refs: &[AlignableRef], position: usize) -> bool {
+    position > 0
+        && position < refs.len()
+        && refs[position - 1].measure_number != refs[position].measure_number
+}
+
+fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, lyric: AlignedLyric) {
+    if let Some(event) = voice
+        .measures
+        .get_mut(reference.measure_index)
+        .and_then(|measure| measure.events.get_mut(reference.event_index))
+    {
+        event.lyrics.push(lyric);
+    }
+}
+
+fn attach_symbol(voice: &mut VoiceTimeline, reference: AlignableRef, symbol: AlignedSymbol) {
+    if let Some(event) = voice
+        .measures
+        .get_mut(reference.measure_index)
+        .and_then(|measure| measure.events.get_mut(reference.event_index))
+    {
+        event.symbols.push(symbol);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LoweredEvent {
-    Timed(TimedEvent),
+    Timed(LoweredTimedEvent),
     Untimed(Event),
+    Overlay(OverlaySyntax),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LoweredTimedEvent {
+    event: TimedEvent,
+    line_index: usize,
+    source_order: u32,
+    alignable: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -598,6 +2063,9 @@ struct ActiveTuplet {
 
 #[derive(Debug)]
 struct LoweringState {
+    id: VoiceId,
+    properties: VoicePropertiesModel,
+    source_span: Span,
     unit: Fraction,
     lowered: Vec<LoweredEvent>,
     time_groups: Vec<Vec<usize>>,
@@ -608,8 +2076,12 @@ struct LoweringState {
 }
 
 impl LoweringState {
-    fn new(unit: Fraction) -> Self {
+    fn new(id: VoiceId, properties: VoicePropertiesModel, unit: Fraction) -> Self {
+        let source_span = id.span;
         Self {
+            id,
+            properties,
+            source_span,
             unit,
             lowered: Vec::new(),
             time_groups: Vec::new(),
@@ -620,34 +2092,48 @@ impl LoweringState {
         }
     }
 
-    fn push_note_group(&mut self, note: &NoteSyntax) {
-        self.push_time_group(vec![TimedEvent {
-            kind: TimedEventKind::Note {
-                step: note.pitch.step.to_ascii_uppercase(),
-                octave: lowered_octave(note),
-                accidental: note.accidental.map(|accidental| accidental.sign),
-                chord: false,
-                span: note.span,
-            },
-            duration: self
-                .unit
-                .checked_mul(length_multiplier(note.length.as_ref())),
-        }]);
+    fn push_note_group(&mut self, note: &NoteSyntax, line_index: usize, source_order: u32) {
+        self.push_time_group(
+            vec![(
+                TimedEvent {
+                    kind: TimedEventKind::Note {
+                        step: note.pitch.step.to_ascii_uppercase(),
+                        octave: lowered_octave(note),
+                        accidental: note.accidental.map(|accidental| accidental.sign),
+                        chord: false,
+                        span: note.span,
+                    },
+                    duration: self
+                        .unit
+                        .checked_mul(length_multiplier(note.length.as_ref())),
+                },
+                true,
+            )],
+            line_index,
+            source_order,
+        );
     }
 
-    fn push_rest_group(&mut self, rest: &RestSyntax) {
-        self.push_time_group(vec![TimedEvent {
-            kind: TimedEventKind::Rest {
-                visibility: rest.visibility,
-                span: rest.span,
-            },
-            duration: self
-                .unit
-                .checked_mul(length_multiplier(rest.length.as_ref())),
-        }]);
+    fn push_rest_group(&mut self, rest: &RestSyntax, line_index: usize, source_order: u32) {
+        self.push_time_group(
+            vec![(
+                TimedEvent {
+                    kind: TimedEventKind::Rest {
+                        visibility: rest.visibility,
+                        span: rest.span,
+                    },
+                    duration: self
+                        .unit
+                        .checked_mul(length_multiplier(rest.length.as_ref())),
+                },
+                false,
+            )],
+            line_index,
+            source_order,
+        );
     }
 
-    fn push_chord_group(&mut self, chord: &ChordSyntax) {
+    fn push_chord_group(&mut self, chord: &ChordSyntax, line_index: usize, source_order: u32) {
         if chord.members.is_empty() {
             return;
         }
@@ -673,31 +2159,44 @@ impl LoweringState {
             .map(|(index, member)| {
                 let member_multiplier =
                     length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
-                TimedEvent {
-                    kind: TimedEventKind::Note {
-                        step: member.note.pitch.step.to_ascii_uppercase(),
-                        octave: lowered_octave(&member.note),
-                        accidental: member.note.accidental.map(|accidental| accidental.sign),
-                        chord: index > 0,
-                        span: member.note.span,
+                (
+                    TimedEvent {
+                        kind: TimedEventKind::Note {
+                            step: member.note.pitch.step.to_ascii_uppercase(),
+                            octave: lowered_octave(&member.note),
+                            accidental: member.note.accidental.map(|accidental| accidental.sign),
+                            chord: index > 0,
+                            span: member.note.span,
+                        },
+                        duration: self.unit.checked_mul(member_multiplier),
                     },
-                    duration: self.unit.checked_mul(member_multiplier),
-                }
+                    index == 0,
+                )
             })
             .collect();
-        self.push_time_group(events);
+        self.push_time_group(events, line_index, source_order);
     }
 
-    fn push_time_group(&mut self, events: Vec<TimedEvent>) {
+    fn push_time_group(
+        &mut self,
+        events: Vec<(TimedEvent, bool)>,
+        line_index: usize,
+        source_order: u32,
+    ) {
         if events.is_empty() {
             return;
         }
 
         let group_multiplier = self.consume_group_multiplier();
         let start_index = self.lowered.len();
-        for mut event in events {
+        for (mut event, alignable) in events {
             event.duration = event.duration.checked_mul(group_multiplier);
-            self.lowered.push(LoweredEvent::Timed(event));
+            self.lowered.push(LoweredEvent::Timed(LoweredTimedEvent {
+                event,
+                line_index,
+                source_order,
+                alignable,
+            }));
         }
         let group = (start_index..self.lowered.len()).collect::<Vec<_>>();
         self.time_groups.push(group);
@@ -729,8 +2228,8 @@ impl LoweringState {
         };
 
         for index in group {
-            if let Some(LoweredEvent::Timed(event)) = self.lowered.get_mut(*index) {
-                event.duration = event.duration.checked_mul(left_multiplier);
+            if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(*index) {
+                timed.event.duration = timed.event.duration.checked_mul(left_multiplier);
             }
         }
         if self
@@ -874,6 +2373,7 @@ impl<'line> MusicLineParser<'line> {
                 '(' => self.parse_open_paren(),
                 ')' => self.parse_slur(SlurDirection::End, false),
                 '<' | '>' => self.parse_broken_rhythm(),
+                '&' => self.parse_overlay(),
                 '-' => self.parse_tie(false),
                 '!' | '+' => self.parse_decoration(ch),
                 '~' | 'H' | 'L' | 'M' | 'O' | 'P' | 'S' | 'T' | 'u' | 'v' => {
@@ -1180,6 +2680,12 @@ impl<'line> MusicLineParser<'line> {
 
     fn parse_inline_field(&mut self) {
         let start = self.index;
+        self.bump_char();
+        let marker_start = self.index;
+        let code = self.bump_char().unwrap_or(' ');
+        self.bump_char();
+        let marker_span = self.span(marker_start, self.index);
+        let value_start = self.index;
         let mut closed = false;
         while let Some(ch) = self.bump_char() {
             if ch == ']' {
@@ -1190,8 +2696,24 @@ impl<'line> MusicLineParser<'line> {
         let span = self.span(start, self.index);
         self.push_token(MusicTokenKind::InlineField, span);
         if closed {
-            self.items
-                .push(MusicItem::InlineField(InlineFieldSyntax { span }));
+            let value_end = self.index.saturating_sub(1);
+            let value = trim_spanned_string(
+                &self.text[value_start..value_end],
+                self.line_offset + value_start,
+            );
+            let voice = (code == 'V').then(|| {
+                Spanned::new(
+                    crate::fields::parse_voice_for_music(value.clone()),
+                    value.span,
+                )
+            });
+            self.items.push(MusicItem::InlineField(InlineFieldSyntax {
+                span,
+                marker_span,
+                code,
+                value,
+                voice,
+            }));
         } else {
             self.push_malformed(
                 span,
@@ -1368,6 +2890,15 @@ impl<'line> MusicLineParser<'line> {
             },
             count: u8::try_from(self.index - start).unwrap_or(u8::MAX),
         }));
+    }
+
+    fn parse_overlay(&mut self) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Overlay, span);
+        self.items.push(MusicItem::Overlay(OverlaySyntax { span }));
     }
 
     fn parse_tie(&mut self, dotted: bool) {
@@ -2255,6 +3786,72 @@ fn free_meter_multirest_warning(span: Span) -> Diagnostic {
     ))
 }
 
+fn overlay_incomplete_measure_warning(
+    span: Span,
+    actual: Fraction,
+    expected: Fraction,
+) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.voice.overlay_incomplete_measure",
+        format!(
+            "Overlay voice duration {}/{} is shorter than the measure-local duration {}/{}",
+            actual.numerator, actual.denominator, expected.numerator, expected.denominator
+        ),
+        span,
+    )
+    .with_spec_reference(abc_overlay_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The overlay segment was preserved as a temporary measure-local voice.",
+    ))
+}
+
+fn overlay_overfull_measure_warning(
+    span: Span,
+    actual: Fraction,
+    expected: Fraction,
+) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.voice.overlay_overfull_measure",
+        format!(
+            "Overlay voice duration {}/{} is longer than the measure-local duration {}/{}",
+            actual.numerator, actual.denominator, expected.numerator, expected.denominator
+        ),
+        span,
+    )
+    .with_spec_reference(abc_overlay_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The overlay segment was preserved as a temporary measure-local voice.",
+    ))
+}
+
+fn lyric_syllable_count_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.lyric.syllable_count",
+        "Lyric line has more syllables than available notes",
+        span,
+    )
+    .with_spec_reference(abc_lyric_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The excess lyric token was preserved but not aligned to a note.",
+    ))
+}
+
+fn symbol_count_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.symbol.count",
+        "Symbol line has more symbols than available notes",
+        span,
+    )
+    .with_spec_reference(abc_symbol_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The excess symbol was preserved but not aligned to a note.",
+    ))
+}
+
 fn abc_music_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 tune body")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
@@ -2287,6 +3884,21 @@ fn abc_broken_rhythm_reference() -> SpecReference {
 
 fn abc_slur_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.10 ties and slurs")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_overlay_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 7.4 voice overlay")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_lyric_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 5.1 lyrics alignment")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+fn abc_symbol_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.15 symbol lines")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
 }
 
@@ -3043,5 +4655,397 @@ mod tests {
             .filter(|event| matches!(event, Event::Note { .. }))
             .count();
         assert_eq!(notes, 4);
+    }
+
+    #[test]
+    fn lowers_sequential_body_voice_blocks_to_explicit_timelines() {
+        let document =
+            parse_document("X:1\nK:C\nV:1\nC D|\nV:2\nE F|\n", ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        assert_eq!(
+            tune.voices
+                .iter()
+                .map(|voice| voice.id.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1", "2"]
+        );
+        let note_counts = tune
+            .voices
+            .iter()
+            .map(|voice| {
+                voice
+                    .measures
+                    .iter()
+                    .flat_map(|measure| &measure.events)
+                    .filter(|event| matches!(event.kind, TimelineEventKind::Note { .. }))
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(note_counts, vec![2, 2]);
+    }
+
+    #[test]
+    fn lowers_inline_voice_switches_to_interleaved_timelines() {
+        let document = parse_document(
+            "X:1\nK:C\n[V:T1] C D| [V:T2] E F|\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        assert_eq!(tune.voices.len(), 2);
+        assert!(tune.voices.iter().any(|voice| voice.id.value == "T1"));
+        assert!(tune.voices.iter().any(|voice| voice.id.value == "T2"));
+        let inline_voice = document
+            .music
+            .tune(0)
+            .expect("expected parsed tune music")
+            .lines
+            .first()
+            .expect("expected music line")
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MusicItem::InlineField(field) if field.code == 'V' => Some(field),
+                _ => None,
+            })
+            .expect("expected inline V field");
+        assert_eq!(inline_voice.value.value, "T1");
+    }
+
+    #[test]
+    fn aligns_postponed_and_adjacent_lyrics_under_abc21_cursor_rules() {
+        let document = parse_document(
+            "X:1\nK:C\nC D E F|\nG A B c|\nw: doh re mi fa sol la ti doh\nw: alt verse words here more text ok done\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let lyrics = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .flat_map(|event| &event.lyrics)
+            .filter(|lyric| lyric.control == LyricControl::Syllable)
+            .map(|lyric| (lyric.verse, lyric.text.as_str()))
+            .collect::<Vec<_>>();
+
+        assert!(lyrics.contains(&(1, "doh")));
+        assert!(lyrics.contains(&(1, "doh")));
+        assert!(lyrics.contains(&(2, "alt")));
+    }
+
+    #[test]
+    fn empty_lyric_line_consumes_notes_and_later_lyrics_start_after_them() {
+        let document = parse_document(
+            "X:1\nK:C\nC D E F|\nw:\nG A B c|\nw: sol la ti doh\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let lyrics = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .filter_map(|event| {
+                event
+                    .lyrics
+                    .iter()
+                    .find(|lyric| lyric.control == LyricControl::Syllable)
+                    .map(|lyric| lyric.text.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(lyrics, vec!["sol", "la", "ti", "doh"]);
+    }
+
+    #[test]
+    fn lyrics_skip_rests_spacers_grace_notes_and_bar_marker_advances() {
+        let document = parse_document(
+            "X:1\nK:C\nC z y {g}D|E F|\nw: one | two three\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let aligned = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .filter_map(|event| {
+                event
+                    .lyrics
+                    .iter()
+                    .find(|lyric| lyric.control == LyricControl::Syllable)
+                    .map(|lyric| lyric.text.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(aligned, vec!["one", "two", "three"]);
+    }
+
+    #[test]
+    fn overlay_rewinds_to_previous_barline_and_warns_when_incomplete() {
+        let document = parse_document("X:1\nL:1/8\nK:C\nC D & E|\n", ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.voice.overlay_incomplete_measure")
+        );
+        let overlay = &tune.voices[0].measures[0].overlays[0];
+        assert_eq!(overlay.events.len(), 1);
+        assert_eq!(overlay.events[0].onset, Fraction::zero());
+    }
+
+    #[test]
+    fn symbol_lines_align_to_notes_and_preserve_symbol_kinds() {
+        let document = parse_document(
+            "X:1\nK:C\nC z D E F|\ns: \"C\" * !>! \"^slow\"\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let symbols = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .flat_map(|event| &event.symbols)
+            .map(|symbol| (symbol.text.as_str(), symbol.kind))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            symbols,
+            vec![
+                ("C", AlignedSymbolKind::ChordSymbol),
+                (">", AlignedSymbolKind::Decoration),
+                ("^slow", AlignedSymbolKind::Annotation),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_score_directives_and_post_tune_words_in_lowered_tune() {
+        let document = parse_document(
+            "X:1\nK:C\n%%score (T1 T2)\nC\nW:after words\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        assert_eq!(tune.score_directives.len(), 1);
+        assert_eq!(tune.score_directives[0].value.text, "(T1 T2)");
+        assert_eq!(tune.post_tune_lyrics[0].text, "after words");
+    }
+
+    #[test]
+    fn preserves_header_score_directive_and_header_words() {
+        let document = parse_document(
+            "X:1\nI:score (A B)\nW:header words\nK:C\nC\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        assert_eq!(tune.score_directives.len(), 1);
+        assert_eq!(tune.score_directives[0].value.text, "(A B)");
+        assert_eq!(tune.post_tune_lyrics[0].text, "header words");
+    }
+
+    #[test]
+    fn body_voice_properties_override_header_definition_in_timeline() {
+        let document = parse_document(
+            "X:1\nV:1 name=Header\nK:C\nV:1 name=Body stem=down\nC\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        assert_eq!(
+            tune.voices[0]
+                .properties
+                .name
+                .as_ref()
+                .map(|name| name.text.as_str()),
+            Some("Body")
+        );
+        assert_eq!(
+            tune.voices[0].properties.stem,
+            Some(StemDirectionModel::Down)
+        );
+    }
+
+    #[test]
+    fn lyrics_controls_preserve_text_and_diagnose_excess_tokens() {
+        let source = "X:1\nK:C\nC D E F G A|\nw: time__ of~the \\-dash * extra too\n";
+        let document = parse_document(source, ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let note_lyrics = tune.voices[0].measures[0]
+            .events
+            .iter()
+            .filter(|event| event.alignable)
+            .map(|event| {
+                event
+                    .lyrics
+                    .iter()
+                    .map(|lyric| (lyric.control, lyric.text.as_str()))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(note_lyrics[0], vec![(LyricControl::Syllable, "time")]);
+        assert_eq!(note_lyrics[1], vec![(LyricControl::Extender, "")]);
+        assert_eq!(note_lyrics[2], vec![(LyricControl::Extender, "")]);
+        assert_eq!(note_lyrics[3], vec![(LyricControl::Syllable, "of the")]);
+        assert_eq!(note_lyrics[4], vec![(LyricControl::Syllable, "-dash")]);
+        assert!(note_lyrics[5].is_empty());
+        assert_eq!(
+            count_diagnostics(&report.diagnostics, "abc.lyric.syllable_count"),
+            2
+        );
+    }
+
+    #[test]
+    fn lyric_bar_marker_is_ignored_when_cursor_is_already_at_measure_boundary() {
+        let document = parse_document(
+            "X:1\nK:C\nC D|E F|\nw: one two | three four\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let aligned = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .filter_map(|event| {
+                event
+                    .lyrics
+                    .iter()
+                    .find(|lyric| lyric.control == LyricControl::Syllable)
+                    .map(|lyric| lyric.text.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(aligned, vec!["one", "two", "three", "four"]);
+    }
+
+    #[test]
+    fn symbol_bar_boundary_and_excess_symbol_are_diagnosed_without_realigning() {
+        let document = parse_document(
+            "X:1\nK:C\nC D|E F|\ns: \"C\" !>! | \"^slow\" !fermata! !extra!\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let aligned = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .flat_map(|event| &event.symbols)
+            .map(|symbol| (symbol.text.as_str(), symbol.kind))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            aligned,
+            vec![
+                ("C", AlignedSymbolKind::ChordSymbol),
+                (">", AlignedSymbolKind::Decoration),
+                ("^slow", AlignedSymbolKind::Annotation),
+                ("fermata", AlignedSymbolKind::Decoration),
+            ]
+        );
+        assert_eq!(
+            count_diagnostics(&report.diagnostics, "abc.symbol.count"),
+            1
+        );
+    }
+
+    #[test]
+    fn lyrics_use_the_current_voice_cursor_in_interleaved_body_fields() {
+        let document = parse_document(
+            "X:1\nK:C\nV:1\nC D|\nw: one two\nV:2\nE F|\nw: three four\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let lyrics_for_voice = |voice_id: &str| {
+            tune.voices
+                .iter()
+                .find(|voice| voice.id.value == voice_id)
+                .expect("expected voice")
+                .measures
+                .iter()
+                .flat_map(|measure| &measure.events)
+                .flat_map(|event| &event.lyrics)
+                .filter(|lyric| lyric.control == LyricControl::Syllable)
+                .map(|lyric| lyric.text.as_str())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(lyrics_for_voice("1"), vec!["one", "two"]);
+        assert_eq!(lyrics_for_voice("2"), vec!["three", "four"]);
+    }
+
+    #[test]
+    fn overfull_overlay_measure_duration_emits_diagnostic() {
+        let document = parse_document("X:1\nL:1/8\nK:C\nC & D E|\n", ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+
+        assert_eq!(
+            count_diagnostics(&report.diagnostics, "abc.voice.overlay_overfull_measure"),
+            1
+        );
+    }
+
+    #[test]
+    fn ampersand_in_lyric_and_symbol_lines_is_not_music_overlay_syntax() {
+        let document = parse_document(
+            "X:1\nK:C\nC D E|\nw: Tom & Jerry\ns: & * !>!\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let lyrics = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .flat_map(|event| &event.lyrics)
+            .filter(|lyric| lyric.control == LyricControl::Syllable)
+            .map(|lyric| lyric.text.as_str())
+            .collect::<Vec<_>>();
+        let symbols = tune.voices[0]
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .flat_map(|event| &event.symbols)
+            .map(|symbol| (symbol.text.as_str(), symbol.kind))
+            .collect::<Vec<_>>();
+
+        assert_eq!(lyrics, vec!["Tom", "&", "Jerry"]);
+        assert_eq!(
+            symbols,
+            vec![
+                ("&", AlignedSymbolKind::Raw),
+                (">", AlignedSymbolKind::Decoration)
+            ]
+        );
+        assert!(tune.voices[0].measures[0].overlays.is_empty());
     }
 }
