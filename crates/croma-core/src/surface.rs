@@ -805,11 +805,11 @@ fn classify_raw_line(
         return line;
     }
 
-    if content.starts_with("%abc-") {
+    if is_version_line(content) {
         line.kind = LineKind::VersionLine;
         line.marker_span = Some(Span::new(
             line.content_span.start,
-            line.content_span.start + 5,
+            line.content_span.start + 4,
         ));
         line.trailing_comment = None;
         return line;
@@ -941,6 +941,18 @@ fn is_typeset_text_directive(content: &str) -> bool {
         name.to_ascii_lowercase().as_str(),
         "text" | "center" | "begintext" | "endtext"
     )
+}
+
+fn is_version_line(content: &str) -> bool {
+    let Some(rest) = content.strip_prefix("%abc") else {
+        return false;
+    };
+    rest.is_empty()
+        || rest
+            .chars()
+            .next()
+            .map(|ch| ch == '-' || ch.is_whitespace())
+            .unwrap_or(true)
 }
 
 fn non_note_kind_for_line(kind: LineKind) -> Option<NonNoteKind> {

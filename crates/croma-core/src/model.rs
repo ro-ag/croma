@@ -34,9 +34,4 @@ impl Fraction {
             denominator: denominator.max(1),
         }
     }
-
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        let (left, right) = value.split_once('/')?;
-        Some(Self::new(left.parse().ok()?, right.parse().ok()?))
-    }
 }
