@@ -40,6 +40,15 @@ of that library.
 4. `croma-lsp`: diagnostics, semantic tokens, formatting, and code actions from
    the same model.
 
+## Design Documents
+
+- `docs/architecture/abc-parser-design-analysis.md`
+  - Deep parser, token, state, and score-model analysis for ABC 2.1,
+    draft 2.2 compatibility, and MusicXML 4.0 export.
+- `docs/architecture/abc-to-musicxml-roadmap.md`
+  - Implementation phases for the library, CLI, corpus harness, formatter, and
+    language server.
+
 ## Invariants
 
 - ABC 2.1 is the stable default.
