@@ -16,6 +16,10 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# Python dev tooling caches
+__pycache__/
+*.py[cod]
+
 # Local/private analysis and generated corpora
 /docs/untracked/
 /.direnv/
