@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod error;
 pub mod fields;
 pub mod model;
+pub mod music;
 pub mod musicxml;
 pub mod options;
 pub mod parser;
@@ -16,7 +17,11 @@ pub mod surface;
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
 pub use fields::{DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField};
-pub use model::{Event, Tune};
+pub use model::{Accidental, BarlineKind, Event, Fraction, RestVisibility, Tune};
+pub use music::{
+    BarlineSyntax, LengthSyntax, MusicItem, MusicLine, MusicToken, MusicTokenKind,
+    ParsedMusicDocument, ParsedTuneMusic,
+};
 pub use options::{AbcSpecVersion, ExportOptions, ParseMode, ParseOptions};
 pub use parser::{AbcDocument, ParseReport};
 pub use source::{LineColumn, LineColumnSpan, LineEnding, SourceLine, SourceText};
@@ -83,6 +88,23 @@ mod tests {
         assert!(xml.contains("<step>C</step><octave>5</octave>"));
         assert!(xml.contains("<type>eighth</type>"));
         assert!(!xml.contains("<measure number=\"3\">"));
+    }
+
+    #[test]
+    fn exports_explicit_accidentals_to_musicxml() {
+        let export = export_musicxml("X:1\nT:Accidentals\nL:1/8\nK:C\n^C =D __E\n")
+            .expect("explicit accidentals should export");
+
+        assert!(export.diagnostics.is_empty());
+        assert!(export.musicxml.contains("<alter>1</alter>"));
+        assert!(export.musicxml.contains("<accidental>sharp</accidental>"));
+        assert!(export.musicxml.contains("<accidental>natural</accidental>"));
+        assert!(export.musicxml.contains("<alter>-2</alter>"));
+        assert!(
+            export
+                .musicxml
+                .contains("<accidental>flat-flat</accidental>")
+        );
     }
 
     #[test]
