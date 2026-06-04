@@ -49,7 +49,7 @@ pub fn parse_document_source(
     let ParseReport {
         value: music,
         diagnostics: music_diagnostics,
-    } = parse_music_document(&source, &surface);
+    } = parse_music_document(&source, &surface, &fields);
     diagnostics.extend(music_diagnostics);
 
     ParseReport::new(
@@ -93,7 +93,7 @@ pub fn parse_tune_report(
     };
 
     let (fields, mut diagnostics) = parse_fields(source, surface, options);
-    let music_report = parse_music_document(source, surface);
+    let music_report = parse_music_document(source, surface, &fields);
     diagnostics.extend(music_report.diagnostics);
     parse_tune_report_with_fields(
         source,
