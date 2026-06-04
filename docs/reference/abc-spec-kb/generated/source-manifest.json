@@ -1,0 +1,42 @@
+[
+  {
+    "bytes": 191962,
+    "file": "docs/reference/abc-spec-kb/raw/abc-2.1.dokuwiki.txt",
+    "id": "abc-2.1",
+    "lines": 2744,
+    "role": "stable-default",
+    "sha256": "89dee9ae979d68520530b55e269e14f7bfead25f55d2c94c9d4ab2e68c9b07bc",
+    "title": "The abc music standard 2.1 (Dec 2011)",
+    "url": "https://abcnotation.com/wiki/abc%3Astandard%3Av2.1?do=export_raw"
+  },
+  {
+    "bytes": 223756,
+    "file": "docs/reference/abc-spec-kb/raw/abc-2.2-draft.dokuwiki.txt",
+    "id": "abc-2.2-draft",
+    "lines": 3169,
+    "role": "appendix-draft-compatibility",
+    "sha256": "07552e29a56839b076457c61538fc6b85bd10e7c4c31e7670b3d199757449ab2",
+    "title": "The DRAFT abc music notation standard 2.2",
+    "url": "https://abcnotation.com/wiki/abc%3Astandard%3Av2.2?do=export_raw"
+  },
+  {
+    "bytes": 3467,
+    "file": "docs/reference/abc-spec-kb/raw/abc-standard-route-map.dokuwiki.txt",
+    "id": "abc-standard-route-map",
+    "lines": 37,
+    "role": "development-status-provenance",
+    "sha256": "3585a38142f41546b9e10458622cdc038caceb2dd7defa136741e9931bfdda9a",
+    "title": "Route-map for the abc standard",
+    "url": "https://abcnotation.com/wiki/abc%3Astandard%3Aroute-map?do=export_raw"
+  },
+  {
+    "bytes": 2862,
+    "file": "docs/reference/abc-spec-kb/raw/abc-standard-index.dokuwiki.txt",
+    "id": "abc-standard-index",
+    "lines": 45,
+    "role": "standard-index-provenance",
+    "sha256": "a8c51ff3ec40e6a85d1189c005764289f3499329b9c2a9f3182e1aa9394d6d75",
+    "title": "ABC standard index",
+    "url": "https://abcnotation.com/wiki/abc%3Astandard?do=export_raw"
+  }
+]

@@ -1,0 +1,37 @@
+==== Route-map for the abc standard ====
+
+From the discussions that emerged over 2.1 it is clear that a number of changes and enhancements are necessary for the abc standard. However, I am reluctant to do them all in one go, so a proposed route-map of [[#major updates]] is given below together with some [[#fundamental principles]].
+
+If required, corrections, clarifications and small discrete additions to the syntax can be published as [[#minor updates]] (e.g. abc 2.1.1, abc 2.1.2, etc).
+
+=== Fundamental principles ===
+
+Abc notation has been around for many years now and so a number of principles are worth stating with regard to the development of the standard:
+  * Clarity, conciseness and, above all, human readability are absolutely fundamental to abc notation and any new features which are introduced must respect those precepts.
+  * There is now a large corpus of abc music with tens of thousands of tunes encoded in abc, including many of the major Western European collections (e.g. O'Neills). In many ways this corpus, and the familiarity with abc built up by thousands of users, is more important than any additional syntax and so all updates must be backwards compatible with current common usage.
+  * Abc is above all a language for describing music and so there should be clear separation between content and any formatting information (much in the same way that css separates out formatting information from html content).
+
+=== Major updates ===
+
+  * [[v2.1|abc 2.1]] - sort out ambiguities and incompatibilities in single voice tunes
+    * [[v2.1|abc 2.1]] is now finished (Dec 2011).
+  * [[v2.2|abc 2.2]] - transposition and clefs - see [[abc:standard:v2.1:proposals]]
+  * abc 2.3 - sort out ambiguities and incompatibilities in multi-voice music, including:
+    * interaction of ''P:'', ''V:'' and ''T:'' - see, for example, message [[http://tech.groups.yahoo.com/group/abcusers/message/5396|5396]] and subsequent discussions
+    * the control voice in multi-voice music
+  * abc 2.4 - **provided it can be done cleanly and simply**, address markup and embedding: i.e. embedding of abc within other document types and embedding of other markup types within abc documents
+    * see, for example, message [[http://tech.groups.yahoo.com/group/abcusers/message/4371|4371]] and subsequent discussions
+
+=== Minor updates ===
+
+The following topics have been under discussion on the abcusers mailing list and may be included in any version once a consensus is reached. Alternatively, since each topic is relatively discrete, each of them could be published as a minor version number.
+
+  * rhythm and slash syntax - see messages [[http://tech.groups.yahoo.com/group/abcusers/message/2877|2877]] (original), [[http://tech.groups.yahoo.com/group/abcusers/message/4260|4620]] (follow-up) and [[http://tech.groups.yahoo.com/group/abcusers/message/4643|4643]] (proposal) and subsequent discussions
+  * [[.:v2.1#accidental_directives|11.3 Accidental directives]] - see message [[http://tech.groups.yahoo.com/group/abcusers/message/4340|4340]] and subsequent discussions
+  * a syntax for creating medleys of tunes using the ''G:'' field - see message [[http://tech.groups.yahoo.com/group/abcusers/message/4283|4283]]; not actually under discussion, but could be
+
+=== How to submit proposals ===
+
+See [[abc:standard:updating|updating the standard]] for details of how to prepare and submit proposals.
+
+[[https://abcnotation.com/contact|Chris Walshaw]] (Editor)
