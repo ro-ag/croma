@@ -408,6 +408,8 @@ music21 comparison requirements:
   measure alignment where music21 exposes reliable structure.
 - Keep music21 tooling outside the published `croma-core` crate; it belongs in
   local corpus scripts, ignored reports, or optional dev tooling.
+- Use `uv` to create and run the Python environment for music21 and corpus
+  comparison tooling. Do not rely on global Python state.
 - Treat music21 failures separately from Croma parse/export failures so tool
   limitations do not hide parser bugs.
 - Preserve exact source file, source span, exported MusicXML location where

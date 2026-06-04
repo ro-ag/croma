@@ -71,5 +71,22 @@ The flake currently provides:
 - taplo
 - pkg-config and OpenSSL
 
+## Python Tooling
+
+Use `uv` for Python environments and Python command execution in this project.
+This matters most for corpus tooling and music21-based MusicXML comparison.
+
+Preferred patterns:
+
+```sh
+uv venv
+uv pip install music21
+uv run python tools/music21_compare.py --help
+```
+
+Do not rely on a global Homebrew or system Python for project validation. Keep
+local Python caches, virtual environments, and generated comparison reports out
+of tracked source paths.
+
 Private research notes and generated scratch files belong in `docs/untracked/`.
 That directory is intentionally ignored by Git.
