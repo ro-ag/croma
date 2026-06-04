@@ -17,12 +17,17 @@ pub mod surface;
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
 pub use fields::{DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField};
-pub use model::{Accidental, BarlineKind, Event, Fraction, RestVisibility, Tune};
+pub use model::{
+    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, BarlineKind, ChordEvent,
+    ChordMemberEvent, Event, EventAttachments, Fraction, KeySignatureModel, Measure, MeasureId,
+    MeterModel, NoteEvent, Part, Pitch, Rational, RestEvent, RestVisibility, Score, ScoreMetadata,
+    Staff, StaffId, TimedEvent, TimedEventKind, Tune, Voice,
+};
 pub use music::{
     BarlineSyntax, LengthSyntax, MusicItem, MusicLine, MusicToken, MusicTokenKind,
     ParsedMusicDocument, ParsedTuneMusic,
 };
-pub use options::{AbcSpecVersion, ExportOptions, ParseMode, ParseOptions};
+pub use options::{AbcSpecVersion, ExportOptions, LowerOptions, ParseMode, ParseOptions};
 pub use parser::{AbcDocument, ParseReport};
 pub use source::{LineColumn, LineColumnSpan, LineEnding, SourceLine, SourceText};
 
@@ -45,6 +50,14 @@ pub fn export_musicxml(source: &str) -> Result<MusicXmlExport> {
 
 pub fn parse_document(source: &str, options: ParseOptions) -> ParseReport<AbcDocument> {
     parser::parse_document(source, options)
+}
+
+pub fn lower_score(document: &AbcDocument, _options: LowerOptions) -> ParseReport<Option<Score>> {
+    let report = parser::parse_tune_report_from_document(document);
+    ParseReport {
+        value: report.value.map(|tune| tune.score),
+        diagnostics: report.diagnostics,
+    }
 }
 
 pub fn export_musicxml_with_options(
