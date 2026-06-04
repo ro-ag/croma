@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/croma-core",
+    "crates/croma-cli",
+    "crates/croma-fmt",
+    "crates/croma-lsp",
+]
+default-members = ["crates/croma-core", "crates/croma-cli"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ro-ag/croma"
+rust-version = "1.96.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
