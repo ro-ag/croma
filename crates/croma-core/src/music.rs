@@ -1619,8 +1619,6 @@ impl MultiVoiceLowering {
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
                     self.current_state().reset_measure_accidentals();
-                    self.current_state()
-                        .finish_pending_tie_at_boundary(barline.span);
                     for kind in barline_lowering_kinds(barline) {
                         self.current_state()
                             .lowered
@@ -6993,6 +6991,46 @@ mod tests {
                 Fraction::new(1, 8)
             ]
         );
+    }
+
+    #[test]
+    fn ties_resolve_across_barlines_without_changing_measure_timing() {
+        let source = "X:1\nM:2/4\nL:1/4\nK:C\nC- | C D |\n";
+        let (tune, diagnostics) = tune_for(source);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+        );
+        let notes = semantic_note_events(&tune);
+        assert_eq!(notes.len(), 3);
+        assert_eq!(
+            notes
+                .iter()
+                .map(|event| event.attachments.ties.first().map(|tie| tie.role))
+                .collect::<Vec<_>>(),
+            vec![Some(TieRole::Start), Some(TieRole::Stop), None]
+        );
+        assert_eq!(notes[0].attachments.ties[0].pair_id, notes[1].attachments.ties[0].pair_id);
+        assert_eq!(
+            notes.iter().map(|event| event.duration).collect::<Vec<_>>(),
+            vec![
+                Fraction::new(1, 4),
+                Fraction::new(1, 4),
+                Fraction::new(1, 4)
+            ]
+        );
+        let measures = &tune.score.parts[0].voices[0].measures;
+        assert_eq!(
+            measures
+                .iter()
+                .map(|measure| measure.actual_duration)
+                .collect::<Vec<_>>(),
+            vec![Fraction::new(1, 4), Fraction::new(2, 4)]
+        );
+        assert!(measures[0].pickup);
+        assert!(measures[1].complete);
     }
 
     #[test]
