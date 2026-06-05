@@ -270,6 +270,41 @@ fn corpus_harness_report_format_is_stable() {
 }
 
 #[test]
+fn corpus_harness_keeps_xml_without_music21_compare() {
+    let dir = TestDir::new("corpus-harness-keep-xml");
+    let corpus = dir.path().join("corpus");
+    let xml_dir = dir.path().join("xml");
+    create_dir(&corpus);
+    write_path(
+        &corpus.join("good.abc"),
+        "X:1\nT:Good\nM:4/4\nL:1/8\nK:C\nC D E F|\n",
+    );
+    let report_path = dir.path().join("report.json");
+    let results_path = dir.path().join("results.jsonl");
+
+    let output = run_corpus_harness([
+        os("--croma"),
+        os(env!("CARGO_BIN_EXE_croma")),
+        os("--corpus"),
+        corpus.as_os_str(),
+        os("--report"),
+        report_path.as_os_str(),
+        os("--results-jsonl"),
+        results_path.as_os_str(),
+        os("--mode"),
+        os("xml"),
+        os("--keep-xml-dir"),
+        xml_dir.as_os_str(),
+    ]);
+
+    assert_success(&output);
+    let kept_xml = read_file(&xml_dir.join("good.croma.musicxml"));
+    assert!(kept_xml.contains("<score-partwise version=\"4.0\">"));
+    assert!(kept_xml.contains("<work-title>Good</work-title>"));
+    assert_eq!(json_file(&report_path)["music21"]["enabled"], json!(false));
+}
+
+#[test]
 fn corpus_harness_handles_failing_file_without_stopping() {
     let dir = TestDir::new("corpus-harness-failures");
     let corpus = dir.path().join("corpus");

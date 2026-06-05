@@ -330,6 +330,12 @@ def enrich_result(
             item.get("diagnostics", []),
             args.snippet_lines,
         )
+    elif args.mode == "xml" and keep_xml_dir is not None and not args.music21_compare:
+        write_kept_croma_xml(
+            croma_xml=item.get("stdout", ""),
+            keep_xml_dir=keep_xml_dir,
+            relative_path=relative_path,
+        )
 
     if (
         args.music21_compare
@@ -353,6 +359,13 @@ def enrich_result(
 
     item["classification"] = classifications.classify(item)
     item["stdout"] = stdout_summary(item.get("stdout", ""))
+
+
+def write_kept_croma_xml(*, croma_xml: str, keep_xml_dir: Path, relative_path: str) -> Path:
+    croma_xml_path = keep_xml_dir / Path(relative_path).with_suffix(".croma.musicxml")
+    croma_xml_path.parent.mkdir(parents=True, exist_ok=True)
+    croma_xml_path.write_text(croma_xml, encoding="utf-8")
+    return croma_xml_path
 
 
 def parse_diagnostics(stderr: str) -> tuple[list[dict[str, Any]], str | None]:
