@@ -4,10 +4,10 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference}
 use crate::model::{
     AccidentalMark, AlignedLyric, AlignedSymbolKind, AnnotationPlacementModel, BarlineKind,
     ChordEvent, DecorationAttachment, EventAttachments, Fraction, GraceEventKind,
-    GraceGroupAttachment, GraceNoteEvent, Measure, MeasureBarline, MeasureId, Part, Pitch,
-    PreservedDirective, RestEvent, RestVisibility, Score, SlurRole, StaffId, TextAttachment,
-    TieRole, TimedEvent, TimedEventKind, TimelineEventKind, TupletAttachment, TupletRole,
-    VoiceTimedEvent,
+    GraceGroupAttachment, GraceNoteEvent, KeySignatureModel, Measure, MeasureBarline, MeasureId,
+    Part, Pitch, PreservedDirective, RestEvent, RestVisibility, Score, SlurRole, StaffId,
+    TextAttachment, TieRole, TimedEvent, TimedEventKind, TimelineEventKind, TupletAttachment,
+    TupletRole, VoiceTimedEvent,
 };
 use crate::parser::ParseReport;
 
@@ -468,6 +468,7 @@ impl<'score> MusicXmlWriter<'score> {
         tuplet_numbers: &TupletNumbers,
     ) {
         let mut first_chord_member = true;
+        let display_duration = grace_display_duration(group.note_count);
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
@@ -477,6 +478,7 @@ impl<'score> MusicXmlWriter<'score> {
                             source: event.source_span,
                             chord_member: false,
                             slash: group.slash.is_some(),
+                            display_duration,
                         },
                         sequence,
                         part,
@@ -489,7 +491,7 @@ impl<'score> MusicXmlWriter<'score> {
                         NoteWrite {
                             pitch: None,
                             rest: Some(rest),
-                            duration: Fraction::zero(),
+                            duration: display_duration,
                             source: event.source_span,
                             written_accidental: None,
                             attachments: &EventAttachments::default(),
@@ -511,6 +513,7 @@ impl<'score> MusicXmlWriter<'score> {
                                 source: event.source_span,
                                 chord_member: !first_chord_member,
                                 slash: group.slash.is_some(),
+                                display_duration,
                             },
                             sequence,
                             part,
@@ -534,7 +537,7 @@ impl<'score> MusicXmlWriter<'score> {
             NoteWrite {
                 pitch: Some(&grace_note.note.pitch),
                 rest: None,
-                duration: Fraction::zero(),
+                duration: grace_note.display_duration,
                 source: grace_note.source,
                 written_accidental: grace_note.note.written_accidental.as_ref(),
                 attachments: &EventAttachments::default(),
@@ -572,7 +575,16 @@ impl<'score> MusicXmlWriter<'score> {
             }
         }
         if let Some(pitch) = note.pitch {
-            self.write_pitch(pitch);
+            let pitch = if note.grace {
+                grace_export_pitch(
+                    pitch,
+                    note.written_accidental,
+                    self.score.metadata.key.as_ref(),
+                )
+            } else {
+                *pitch
+            };
+            self.write_pitch(&pitch);
         } else {
             self.xml.empty("rest", &[]);
         }
@@ -827,6 +839,15 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.end("root");
         self.xml
             .text_element_attrs("kind", &[("text", text)], chord.kind);
+        if let Some(bass_step) = chord.bass_step {
+            self.xml.start("bass", &[]);
+            self.xml.text_element("bass-step", &bass_step.to_string());
+            if chord.bass_alter != 0 {
+                self.xml
+                    .text_element("bass-alter", &chord.bass_alter.to_string());
+            }
+            self.xml.end("bass");
+        }
         self.xml.end("harmony");
     }
 
@@ -1016,6 +1037,7 @@ struct GraceNoteWrite<'a> {
     source: Span,
     chord_member: bool,
     slash: bool,
+    display_duration: Fraction,
 }
 
 #[derive(Debug, Clone)]
@@ -1365,7 +1387,7 @@ fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
         .filter(|barline| {
             matches!(
                 (left, barline.kind),
-                (true, BarlineKind::Initial | BarlineKind::RepeatStart)
+                (true, BarlineKind::RepeatStart)
                     | (
                         false,
                         BarlineKind::Double
@@ -1550,6 +1572,71 @@ fn note_spelling(
     }
 }
 
+fn grace_display_duration(note_count: u32) -> Fraction {
+    if note_count <= 1 {
+        Fraction {
+            numerator: 1,
+            denominator: 8,
+        }
+    } else {
+        Fraction {
+            numerator: 1,
+            denominator: 16,
+        }
+    }
+}
+
+fn grace_export_pitch(
+    pitch: &Pitch,
+    written_accidental: Option<&AccidentalMark>,
+    key: Option<&KeySignatureModel>,
+) -> Pitch {
+    if written_accidental.is_some() {
+        return *pitch;
+    }
+    let Some(key) = key else {
+        return *pitch;
+    };
+    let alter = key_signature_alter(key, pitch.step);
+    if alter == pitch.alter {
+        return *pitch;
+    }
+    Pitch { alter, ..*pitch }
+}
+
+fn key_signature_alter(key: &KeySignatureModel, step: char) -> i8 {
+    let step = step.to_ascii_uppercase();
+    if let Some(accidental) = key
+        .explicit_accidentals
+        .iter()
+        .find(|accidental| accidental.step == step)
+    {
+        return accidental.accidental.alter();
+    }
+
+    if key.fifths > 0 {
+        sharp_key_steps(key.fifths).contains(&step).then_some(1)
+    } else if key.fifths < 0 {
+        flat_key_steps(key.fifths).contains(&step).then_some(-1)
+    } else {
+        None
+    }
+    .unwrap_or(0)
+}
+
+const SHARP_KEY_STEPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+const FLAT_KEY_STEPS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+
+fn sharp_key_steps(fifths: i8) -> &'static [char] {
+    let count = fifths.clamp(0, 7) as usize;
+    &SHARP_KEY_STEPS[..count]
+}
+
+fn flat_key_steps(fifths: i8) -> &'static [char] {
+    let count = fifths.saturating_abs().clamp(0, 7) as usize;
+    &FLAT_KEY_STEPS[..count]
+}
+
 #[derive(Debug, Clone, Copy)]
 struct NoteTypeCandidate {
     name: &'static str,
@@ -1638,22 +1725,18 @@ fn dotted_fraction(base: Fraction, dots: u8) -> Fraction {
 struct ParsedChordSymbol {
     root_step: char,
     root_alter: i8,
+    bass_step: Option<char>,
+    bass_alter: i8,
     kind: &'static str,
 }
 
 fn parse_chord_symbol(text: &str) -> ParsedChordSymbol {
-    let mut chars = text.chars();
-    let root_step = chars
-        .find(|ch| matches!(ch.to_ascii_uppercase(), 'A'..='G'))
-        .map(|ch| ch.to_ascii_uppercase())
-        .unwrap_or('C');
-    let root_alter = if text.contains('#') {
-        1
-    } else if text.contains('b') {
-        -1
-    } else {
-        0
-    };
+    let (root_text, bass_text) = text.split_once('/').unwrap_or((text, ""));
+    let root = parse_chord_tone(root_text).unwrap_or(ChordTone {
+        step: 'C',
+        alter: 0,
+    });
+    let bass = parse_chord_tone(bass_text);
     let lower = text.to_ascii_lowercase();
     let kind = if lower.contains("maj7") {
         "major-seventh"
@@ -1667,10 +1750,35 @@ fn parse_chord_symbol(text: &str) -> ParsedChordSymbol {
         "other"
     };
     ParsedChordSymbol {
-        root_step,
-        root_alter,
+        root_step: root.step,
+        root_alter: root.alter,
+        bass_step: bass.map(|tone| tone.step),
+        bass_alter: bass.map(|tone| tone.alter).unwrap_or(0),
         kind,
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ChordTone {
+    step: char,
+    alter: i8,
+}
+
+fn parse_chord_tone(text: &str) -> Option<ChordTone> {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let step = ch.to_ascii_uppercase();
+        if !matches!(step, 'A'..='G') {
+            continue;
+        }
+        let alter = match chars.peek().copied() {
+            Some('#') => 1,
+            Some('b' | '-') => -1,
+            _ => 0,
+        };
+        return Some(ChordTone { step, alter });
+    }
+    None
 }
 
 fn annotation_text(annotation: &TextAttachment) -> &str {
@@ -1947,6 +2055,30 @@ mod tests {
     }
 
     #[test]
+    fn slash_chord_symbols_export_bass_step_and_alter() {
+        let source = "X:1\nT:Slash Chords\nM:4/4\nL:1/4\nK:C\n\"C/E\"C \"D-/A-\"D|\n";
+        let export = export_musicxml(source).expect("slash chords should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<root-step>C</root-step>"));
+        assert!(export.musicxml.contains("<bass-step>E</bass-step>"));
+        assert!(export.musicxml.contains("<root-step>D</root-step>"));
+        assert!(export.musicxml.contains("<root-alter>-1</root-alter>"));
+        assert!(export.musicxml.contains("<bass-step>A</bass-step>"));
+        assert!(export.musicxml.contains("<bass-alter>-1</bass-alter>"));
+    }
+
+    #[test]
+    fn initial_barlines_do_not_emit_musicxml_heavy_light() {
+        let source = "X:1\nT:Initial Barline\nM:4/4\nL:1/4\nK:C\nC |[| D |]\n";
+        let export = export_musicxml(source).expect("initial barline should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(!export.musicxml.contains("<bar-style>heavy-light</bar-style>"));
+        assert!(export.musicxml.contains("<bar-style>light-heavy</bar-style>"));
+    }
+
+    #[test]
     fn chords_grace_tuplets_ties_slurs_and_lyrics_export() {
         let source = "X:1\nT:Features\nM:4/4\nL:1/8\nK:C\n{g}[CEG] (3D-D F (G A)|\nw: chord trip let slur end\n";
         let export = export_musicxml(source).expect("feature score should export");
@@ -1964,6 +2096,29 @@ mod tests {
         assert!(export.musicxml.contains("<slur type=\"start\""));
         assert!(export.musicxml.contains("<slur type=\"stop\""));
         assert!(export.musicxml.contains("<text>chord</text>"));
+    }
+
+    #[test]
+    fn grace_notes_export_reference_compatible_display_types_without_duration() {
+        let source = "X:1\nT:Grace Display\nM:4/4\nL:1/4\nK:C\n{g}C {de}D|\n";
+        let export = export_musicxml(source).expect("grace note should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<grace/>"), 3);
+        assert_eq!(count(&export.musicxml, "<type>eighth</type>"), 1);
+        assert_eq!(count(&export.musicxml, "<type>16th</type>"), 2);
+        assert!(!export.musicxml.contains("<duration>0</duration>"));
+    }
+
+    #[test]
+    fn grace_notes_apply_implicit_key_signature_alter() {
+        let source = "X:1\nT:Grace Key\nM:4/4\nL:1/4\nK:D\n{f}A {=f}A|\n";
+        let export = export_musicxml(source).expect("grace key accidental should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+        assert_eq!(count(&export.musicxml, "<alter>1</alter>"), 1);
+        assert!(export.musicxml.contains("<accidental>natural</accidental>"));
     }
 
     #[test]
