@@ -772,14 +772,14 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
     ) {
         for symbol in &attachments.chord_symbols {
-            self.write_harmony(&symbol.text);
+            self.write_chord_symbol(&symbol.text, sequence);
         }
         for symbol in attachments
             .symbols
             .iter()
             .filter(|symbol| symbol.kind == AlignedSymbolKind::ChordSymbol)
         {
-            self.write_harmony(&symbol.text);
+            self.write_chord_symbol(&symbol.text, sequence);
         }
         for annotation in &attachments.annotations {
             let text = annotation_text(annotation);
@@ -823,8 +823,25 @@ impl<'score> MusicXmlWriter<'score> {
         }
     }
 
-    fn write_harmony(&mut self, text: &str) {
-        let chord = parse_chord_symbol(text);
+    fn write_chord_symbol(&mut self, text: &str, sequence: &MeasureSequence<'score>) {
+        if self.write_harmony(text) {
+            return;
+        }
+        let words = text.trim();
+        if !words.is_empty() {
+            self.write_direction_words(
+                words,
+                None,
+                Some(sequence.voice_number.as_str()),
+                Some(sequence.staff.value),
+            );
+        }
+    }
+
+    fn write_harmony(&mut self, text: &str) -> bool {
+        let Some(chord) = parse_chord_symbol(text) else {
+            return false;
+        };
         self.xml.start("harmony", &[]);
         self.xml.start("root", &[]);
         self.xml
@@ -846,6 +863,7 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.end("bass");
         }
         self.xml.end("harmony");
+        true
     }
 
     fn write_dynamic(
@@ -1751,13 +1769,14 @@ struct ParsedChordSymbol {
     kind: &'static str,
 }
 
-fn parse_chord_symbol(text: &str) -> ParsedChordSymbol {
+fn parse_chord_symbol(text: &str) -> Option<ParsedChordSymbol> {
     let (root_text, bass_text) = text.split_once('/').unwrap_or((text, ""));
-    let root = parse_chord_tone(root_text).unwrap_or(ChordTone {
-        step: 'C',
-        alter: 0,
-    });
-    let bass = parse_chord_tone(bass_text);
+    let root = parse_chord_tone(root_text)?;
+    let bass = if text.contains('/') {
+        Some(parse_chord_tone(bass_text)?)
+    } else {
+        None
+    };
     let lower = text.to_ascii_lowercase();
     let kind = if lower.contains("maj7") {
         "major-seventh"
@@ -1770,13 +1789,13 @@ fn parse_chord_symbol(text: &str) -> ParsedChordSymbol {
     } else {
         "other"
     };
-    ParsedChordSymbol {
+    Some(ParsedChordSymbol {
         root_step: root.step,
         root_alter: root.alter,
         bass_step: bass.map(|tone| tone.step),
         bass_alter: bass.map(|tone| tone.alter).unwrap_or(0),
         kind,
-    }
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1786,20 +1805,17 @@ struct ChordTone {
 }
 
 fn parse_chord_tone(text: &str) -> Option<ChordTone> {
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        let step = ch.to_ascii_uppercase();
-        if !matches!(step, 'A'..='G') {
-            continue;
-        }
-        let alter = match chars.peek().copied() {
-            Some('#') => 1,
-            Some('b' | '-') => -1,
-            _ => 0,
-        };
-        return Some(ChordTone { step, alter });
+    let mut chars = text.trim_start().chars().peekable();
+    let step = chars.next()?.to_ascii_uppercase();
+    if !matches!(step, 'A'..='G') {
+        return None;
     }
-    None
+    let alter = match chars.peek().copied() {
+        Some('#') => 1,
+        Some('b' | '-') => -1,
+        _ => 0,
+    };
+    Some(ChordTone { step, alter })
 }
 
 fn annotation_text(annotation: &TextAttachment) -> &str {
@@ -2087,6 +2103,44 @@ mod tests {
         assert!(export.musicxml.contains("<root-alter>-1</root-alter>"));
         assert!(export.musicxml.contains("<bass-step>A</bass-step>"));
         assert!(export.musicxml.contains("<bass-alter>-1</bass-alter>"));
+    }
+
+    #[test]
+    fn malformed_quoted_chord_strings_export_as_words_not_fake_harmony() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"(A7)\"C \"C/\"D|\n";
+        let export = export_musicxml(source).expect("malformed chord text should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<harmony>"), 0);
+        assert_eq!(count(&export.musicxml, "<root-step>"), 0);
+        assert!(export.musicxml.contains("<words>(A7)</words>"));
+        assert!(export.musicxml.contains("<words>C/</words>"));
+    }
+
+    #[test]
+    fn leading_whitespace_valid_chord_symbols_still_export_harmony() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"  G7\"C \" C/E\"D|\n";
+        let export = export_musicxml(source).expect("valid spaced chords should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<harmony>"), 2);
+        assert!(export.musicxml.contains("<root-step>G</root-step>"));
+        assert!(export.musicxml.contains("<bass-step>E</bass-step>"));
+        assert!(!export.musicxml.contains("<words>G7</words>"));
+        assert!(!export.musicxml.contains("<words>C/E</words>"));
+    }
+
+    #[test]
+    fn placement_prefixed_annotations_remain_words() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"^slow\"C \"_soft\"D|\n";
+        let export = export_musicxml(source).expect("annotations should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<harmony>"), 0);
+        assert!(export.musicxml.contains("<direction placement=\"above\">"));
+        assert!(export.musicxml.contains("<direction placement=\"below\">"));
+        assert!(export.musicxml.contains("<words>slow</words>"));
+        assert!(export.musicxml.contains("<words>soft</words>"));
     }
 
     #[test]
