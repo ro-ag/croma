@@ -111,10 +111,7 @@ impl<'score> MusicXmlWriter<'score> {
             let right_barlines = unique_barlines(&measure_refs, false);
             for barline in &right_barlines {
                 let ending_type = (!endings.is_empty()
-                    && matches!(
-                        barline.kind,
-                        BarlineKind::RepeatEnd | BarlineKind::RepeatBoth
-                    ))
+                    && stops_repeat_ending_barline(barline.kind))
                 .then_some(EndingType::Stop);
                 if let Some(ending_type) = ending_type {
                     self.write_ending_barline(
@@ -1134,7 +1131,11 @@ fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
             .iter()
             .filter(|tuplet| tuplet.role == TupletRole::Start)
         {
-            if numbers.pairs.iter().any(|(pair, _)| *pair == tuplet.pair_id) {
+            if numbers
+                .pairs
+                .iter()
+                .any(|(pair, _)| *pair == tuplet.pair_id)
+            {
                 continue;
             }
             let number = next_tuplet_number(&active);
@@ -1148,7 +1149,11 @@ fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
             .iter()
             .filter(|tuplet| tuplet.role == TupletRole::Stop)
         {
-            if !numbers.pairs.iter().any(|(pair, _)| *pair == tuplet.pair_id) {
+            if !numbers
+                .pairs
+                .iter()
+                .any(|(pair, _)| *pair == tuplet.pair_id)
+            {
                 numbers.pairs.push((tuplet.pair_id, 1));
             }
             active.retain(|(pair, _)| *pair != tuplet.pair_id);
@@ -1160,7 +1165,10 @@ fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
 
 fn next_tuplet_number(active: &[(u32, u32)]) -> u32 {
     for number in 1..=16 {
-        if !active.iter().any(|(_, active_number)| *active_number == number) {
+        if !active
+            .iter()
+            .any(|(_, active_number)| *active_number == number)
+        {
             return number;
         }
     }
@@ -1382,13 +1390,14 @@ fn compare_fraction(left: Fraction, right: Fraction) -> Ordering {
 fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
     let mut barlines = measures
         .iter()
-        .flat_map(|measure| &measure.barlines)
-        .copied()
-        .filter(|barline| {
+        .flat_map(|measure| measure.barlines.iter().map(|barline| (*measure, barline)))
+        .filter(|(measure, barline)| {
+            let first_measure_leading = is_first_measure_leading_barline(measure, barline);
             matches!(
-                (left, barline.kind),
-                (true, BarlineKind::RepeatStart)
+                (left, first_measure_leading, barline.kind),
+                (true, _, BarlineKind::RepeatStart)
                     | (
+                        false,
                         false,
                         BarlineKind::Double
                             | BarlineKind::Final
@@ -1399,10 +1408,22 @@ fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
                     )
             )
         })
+        .map(|(_, barline)| *barline)
         .collect::<Vec<_>>();
     barlines.sort_by_key(|barline| (barline.span.start, barline.span.end, barline.kind as u8));
     barlines.dedup_by_key(|barline| (barline.kind, barline.span));
     barlines
+}
+
+fn is_first_measure_leading_barline(measure: &Measure, barline: &MeasureBarline) -> bool {
+    measure.id.index == 0 && measure.source_span.start == barline.span.start
+}
+
+fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
+    matches!(
+        kind,
+        BarlineKind::Double | BarlineKind::Final | BarlineKind::RepeatEnd | BarlineKind::RepeatBoth
+    )
 }
 
 fn unique_endings(measures: &[&Measure]) -> Vec<String> {
@@ -2074,8 +2095,188 @@ mod tests {
         let export = export_musicxml(source).expect("initial barline should export");
 
         assert_balanced_xml(&export.musicxml);
-        assert!(!export.musicxml.contains("<bar-style>heavy-light</bar-style>"));
-        assert!(export.musicxml.contains("<bar-style>light-heavy</bar-style>"));
+        assert!(
+            !export
+                .musicxml
+                .contains("<bar-style>heavy-light</bar-style>")
+        );
+        assert!(
+            export
+                .musicxml
+                .contains("<bar-style>light-heavy</bar-style>")
+        );
+    }
+
+    #[test]
+    fn leading_plain_barline_exports_notes_in_measure_one() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n| C D E F |]\n";
+        let export = export_musicxml(source).expect("leading barline should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert_eq!(note_durations(&measures[0]), vec![8, 8, 8, 8]);
+        assert!(!measures[0].notes.iter().any(|note| note.rest));
+    }
+
+    #[test]
+    fn leading_repeat_start_exports_left_repeat_without_empty_measure() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n|: C D E F :|\n";
+        let export = export_musicxml(source).expect("leading repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert_eq!(note_durations(&measures[0]), vec![8, 8, 8, 8]);
+        assert!(has_barline(&measures[0], "left", None, Some("forward")));
+        assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn leading_double_and_final_barlines_do_not_create_empty_measure() {
+        for prefix in ["||", "|]"] {
+            let source = format!("X:1\nM:4/4\nL:1/4\nK:C\n{prefix} C D E F |]\n");
+            let export = export_musicxml(&source).expect("leading section barline should export");
+
+            assert_balanced_xml(&export.musicxml);
+            let measures = musicxml_measures(&export.musicxml);
+            assert_eq!(measure_numbers(&measures), vec!["1"], "{prefix}");
+            assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+            assert_eq!(note_durations(&measures[0]), vec![8, 8, 8, 8]);
+            assert!(
+                !measures[0]
+                    .barlines
+                    .iter()
+                    .any(|barline| barline.location == "left")
+            );
+            assert!(has_barline(
+                &measures[0],
+                "right",
+                Some("light-heavy"),
+                None
+            ));
+        }
+    }
+
+    #[test]
+    fn leading_liberal_barline_diagnoses_and_keeps_measure_timing() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n[::] C D E F |]\n";
+        let export = export_musicxml(source).expect("liberal leading barline should recover");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_diagnostic_span(
+            source,
+            &export.diagnostics,
+            "abc.music.barline.liberal",
+            "[::]",
+        );
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert_eq!(note_durations(&measures[0]), vec![8, 8, 8, 8]);
+        assert!(!measures[0].notes.iter().any(|note| note.rest));
+    }
+
+    #[test]
+    fn leading_double_repeat_start_exports_left_repeat_without_empty_measure() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n||: C D E F :||\n";
+        let export = export_musicxml(source).expect("combined leading repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(
+            !export
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.barline.liberal")
+        );
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert!(has_barline(&measures[0], "left", None, Some("forward")));
+        assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn repeat_end_double_after_notes_exports_right_repeat_and_new_measure() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F :|| G A B c |]\n";
+        let export = export_musicxml(source).expect("combined repeat end should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+        assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn repeat_both_between_sections_exports_right_then_left_repeat() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F :||: G A B c |]\n";
+        let export = export_musicxml(source).expect("repeat-both barline should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+        assert!(has_barline(&measures[0], "right", None, Some("backward")));
+        assert!(has_barline(&measures[1], "left", None, Some("forward")));
+        assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+    }
+
+    #[test]
+    fn triple_repeat_extensions_export_repeat_edges() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:: C D E F ::|\n";
+        let export = export_musicxml(source).expect("triple repeat barlines should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert!(has_barline(&measures[0], "left", None, Some("forward")));
+        assert!(has_barline(&measures[0], "right", None, Some("backward")));
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    }
+
+    #[test]
+    fn bracketed_repeat_start_and_final_repeat_end_export_repeat_edges() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n[|: C D E F :|]\n";
+        let export = export_musicxml(source).expect("bracketed repeat barlines should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert!(has_barline(&measures[0], "left", None, Some("forward")));
+        assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn adjacent_repeat_end_and_second_ending_starts_next_measure() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n|: C D E F |1 G A B c :|2 D E F G |]\n";
+        let export = export_musicxml(source).expect("adjacent repeat ending should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+        assert!(has_ending(&measures[1], "left", "1", "start"));
+        assert!(has_ending(&measures[1], "right", "1", "stop"));
+        assert!(has_ending(&measures[2], "left", "2", "start"));
+        assert!(has_ending(&measures[2], "right", "2", "stop"));
+        assert!(has_barline(&measures[1], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn internal_rest_measure_is_preserved_after_leading_barline_policy() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F | z4 | G A B c |]\n";
+        let export = export_musicxml(source).expect("internal rest measure should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert_eq!(measures[1].notes.len(), 1);
+        assert!(measures[1].notes[0].rest);
+        assert_eq!(measures[1].notes[0].duration, Some(32));
+        assert_eq!(note_steps(&measures[2]), vec!['G', 'A', 'B', 'C']);
     }
 
     #[test]
@@ -2372,6 +2573,195 @@ mod tests {
 
     fn count(haystack: &str, needle: &str) -> usize {
         haystack.matches(needle).count()
+    }
+
+    #[derive(Debug)]
+    struct XmlMeasure {
+        number: String,
+        notes: Vec<XmlNote>,
+        barlines: Vec<XmlBarline>,
+    }
+
+    #[derive(Debug)]
+    struct XmlNote {
+        rest: bool,
+        step: Option<char>,
+        duration: Option<u32>,
+    }
+
+    #[derive(Debug)]
+    struct XmlBarline {
+        location: String,
+        bar_style: Option<String>,
+        repeat_direction: Option<String>,
+        endings: Vec<XmlEnding>,
+    }
+
+    #[derive(Debug)]
+    struct XmlEnding {
+        number: String,
+        kind: String,
+    }
+
+    fn musicxml_measures(xml: &str) -> Vec<XmlMeasure> {
+        let mut measures = Vec::new();
+        let mut index = 0;
+        while let Some(offset) = xml[index..].find("<measure ") {
+            let start = index + offset;
+            let open_end = xml[start..]
+                .find('>')
+                .map(|end| start + end)
+                .expect("measure start tag should terminate");
+            let end_tag = "</measure>";
+            let end = xml[open_end..]
+                .find(end_tag)
+                .map(|end| open_end + end)
+                .expect("measure should have closing tag");
+            let open_tag = &xml[start..=open_end];
+            let body = &xml[open_end + 1..end];
+            measures.push(XmlMeasure {
+                number: attr_value(open_tag, "number").expect("measure should have number"),
+                notes: musicxml_notes(body),
+                barlines: musicxml_barlines(body),
+            });
+            index = end + end_tag.len();
+        }
+        measures
+    }
+
+    fn musicxml_notes(xml: &str) -> Vec<XmlNote> {
+        let mut notes = Vec::new();
+        let mut index = 0;
+        while let Some(offset) = xml[index..].find("<note") {
+            let start = index + offset;
+            let open_end = xml[start..]
+                .find('>')
+                .map(|end| start + end)
+                .expect("note start tag should terminate");
+            let end_tag = "</note>";
+            let end = xml[open_end..]
+                .find(end_tag)
+                .map(|end| open_end + end)
+                .expect("note should have closing tag");
+            let body = &xml[open_end + 1..end];
+            notes.push(XmlNote {
+                rest: body.contains("<rest"),
+                step: element_text(body, "step").and_then(|text| text.chars().next()),
+                duration: element_text(body, "duration").and_then(|text| text.parse().ok()),
+            });
+            index = end + end_tag.len();
+        }
+        notes
+    }
+
+    fn musicxml_barlines(xml: &str) -> Vec<XmlBarline> {
+        let mut barlines = Vec::new();
+        let mut index = 0;
+        while let Some(offset) = xml[index..].find("<barline ") {
+            let start = index + offset;
+            let open_end = xml[start..]
+                .find('>')
+                .map(|end| start + end)
+                .expect("barline start tag should terminate");
+            let end_tag = "</barline>";
+            let end = xml[open_end..]
+                .find(end_tag)
+                .map(|end| open_end + end)
+                .expect("barline should have closing tag");
+            let open_tag = &xml[start..=open_end];
+            let body = &xml[open_end + 1..end];
+            let repeat_direction = body.find("<repeat ").and_then(|offset| {
+                let repeat_start = offset;
+                let repeat_end = body[repeat_start..]
+                    .find('>')
+                    .map(|end| repeat_start + end)?;
+                attr_value(&body[repeat_start..=repeat_end], "direction")
+            });
+            barlines.push(XmlBarline {
+                location: attr_value(open_tag, "location").expect("barline should have location"),
+                bar_style: element_text(body, "bar-style"),
+                repeat_direction,
+                endings: musicxml_endings(body),
+            });
+            index = end + end_tag.len();
+        }
+        barlines
+    }
+
+    fn musicxml_endings(xml: &str) -> Vec<XmlEnding> {
+        let mut endings = Vec::new();
+        let mut index = 0;
+        while let Some(offset) = xml[index..].find("<ending ") {
+            let start = index + offset;
+            let end = xml[start..]
+                .find('>')
+                .map(|end| start + end)
+                .expect("ending tag should terminate");
+            let tag = &xml[start..=end];
+            endings.push(XmlEnding {
+                number: attr_value(tag, "number").expect("ending should have number"),
+                kind: attr_value(tag, "type").expect("ending should have type"),
+            });
+            index = end + 1;
+        }
+        endings
+    }
+
+    fn measure_numbers(measures: &[XmlMeasure]) -> Vec<&str> {
+        measures
+            .iter()
+            .map(|measure| measure.number.as_str())
+            .collect()
+    }
+
+    fn note_steps(measure: &XmlMeasure) -> Vec<char> {
+        measure.notes.iter().filter_map(|note| note.step).collect()
+    }
+
+    fn note_durations(measure: &XmlMeasure) -> Vec<u32> {
+        measure
+            .notes
+            .iter()
+            .filter_map(|note| note.duration)
+            .collect()
+    }
+
+    fn has_barline(
+        measure: &XmlMeasure,
+        location: &str,
+        bar_style: Option<&str>,
+        repeat_direction: Option<&str>,
+    ) -> bool {
+        measure.barlines.iter().any(|barline| {
+            barline.location == location
+                && barline.bar_style.as_deref() == bar_style
+                && barline.repeat_direction.as_deref() == repeat_direction
+        })
+    }
+
+    fn has_ending(measure: &XmlMeasure, location: &str, number: &str, kind: &str) -> bool {
+        measure.barlines.iter().any(|barline| {
+            barline.location == location
+                && barline
+                    .endings
+                    .iter()
+                    .any(|ending| ending.number == number && ending.kind == kind)
+        })
+    }
+
+    fn attr_value(tag: &str, attr: &str) -> Option<String> {
+        let pattern = format!("{attr}=\"");
+        let start = tag.find(&pattern)? + pattern.len();
+        let end = tag[start..].find('"')?;
+        Some(tag[start..start + end].to_owned())
+    }
+
+    fn element_text(block: &str, element: &str) -> Option<String> {
+        let open = format!("<{element}>");
+        let close = format!("</{element}>");
+        let start = block.find(&open)? + open.len();
+        let end = block[start..].find(&close)? + start;
+        Some(block[start..end].to_owned())
     }
 
     fn assert_diagnostic_span(
