@@ -1621,12 +1621,14 @@ impl MultiVoiceLowering {
                     self.current_state().reset_measure_accidentals();
                     self.current_state()
                         .finish_pending_tie_at_boundary(barline.span);
-                    self.current_state()
-                        .lowered
-                        .push(LoweredEvent::Untimed(Event::Barline {
-                            kind: barline.kind,
-                            span: barline.span,
-                        }));
+                    for kind in barline_lowering_kinds(barline) {
+                        self.current_state()
+                            .lowered
+                            .push(LoweredEvent::Untimed(Event::Barline {
+                                kind,
+                                span: barline.span,
+                            }));
+                    }
                 }
                 MusicItem::InlineField(inline) if inline.code == 'V' => {
                     if let Some(voice) = &inline.voice {
@@ -1854,21 +1856,20 @@ impl VoiceTimelineBuilder {
             LoweredEvent::Timed(timed) => self.push_timed(timed),
             LoweredEvent::Untimed(Event::Barline { kind, span }) => {
                 self.finish_overlay(diagnostics);
-                let starts_current_measure =
-                    self.is_empty_measure_start() && starts_measure_barline(kind);
+                let starts_current_measure = self.is_empty_measure_start()
+                    && (starts_measure_barline(kind)
+                        || (self.is_first_measure_start()
+                            && starts_first_body_measure_barline(kind)));
+                if !starts_current_measure && starts_next_measure_barline(kind) {
+                    self.start_measure_after_barline(span);
+                    self.push_barline(kind, span);
+                    return;
+                }
                 self.push_barline(kind, span);
                 if starts_current_measure {
                     return;
                 }
-                self.measure_index = self.measure_index.saturating_add(1);
-                self.onset = Fraction::zero();
-                self.last_group_onset = Fraction::zero();
-                self.measures.push(VoiceMeasureTimeline {
-                    index: self.measure_index,
-                    span: Span::new(span.end, span.end),
-                    events: Vec::new(),
-                    overlays: Vec::new(),
-                });
+                self.start_measure_after_barline(span);
             }
             LoweredEvent::Untimed(Event::Spacer { span }) => {
                 let onset = self.onset;
@@ -1953,10 +1954,29 @@ impl VoiceTimelineBuilder {
     fn is_empty_measure_start(&self) -> bool {
         self.onset == Fraction::zero()
             && self.active_overlay.is_none()
-            && self
-                .measures
-                .last()
-                .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
+            && self.measures.last().is_some_and(|measure| {
+                measure.overlays.is_empty()
+                    && measure.events.iter().all(|event| {
+                        event.duration == Fraction::zero()
+                            && matches!(event.kind, TimelineEventKind::Barline { .. })
+                    })
+            })
+    }
+
+    fn is_first_measure_start(&self) -> bool {
+        self.measure_index == 0 && self.measures.len() == 1
+    }
+
+    fn start_measure_after_barline(&mut self, span: Span) {
+        self.measure_index = self.measure_index.saturating_add(1);
+        self.onset = Fraction::zero();
+        self.last_group_onset = Fraction::zero();
+        self.measures.push(VoiceMeasureTimeline {
+            index: self.measure_index,
+            span: Span::new(span.end, span.end),
+            events: Vec::new(),
+            overlays: Vec::new(),
+        });
     }
 
     fn push_timed(&mut self, timed: LoweredTimedEvent) {
@@ -2057,6 +2077,23 @@ fn starts_measure_barline(kind: BarlineKind) -> bool {
     matches!(
         kind,
         BarlineKind::Regular | BarlineKind::Initial | BarlineKind::RepeatStart
+    )
+}
+
+fn starts_next_measure_barline(kind: BarlineKind) -> bool {
+    matches!(kind, BarlineKind::Initial | BarlineKind::RepeatStart)
+}
+
+fn starts_first_body_measure_barline(kind: BarlineKind) -> bool {
+    matches!(
+        kind,
+        BarlineKind::Double
+            | BarlineKind::Final
+            | BarlineKind::RepeatEnd
+            | BarlineKind::RepeatBoth
+            | BarlineKind::Dotted
+            | BarlineKind::Invisible
+            | BarlineKind::Liberal
     )
 }
 
@@ -5010,8 +5047,46 @@ fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
         ":|" | "::|" => BarlineKind::RepeatEnd,
         "::" | ":|:" | ":||:" => BarlineKind::RepeatBoth,
         "[|]" => BarlineKind::Invisible,
+        _ if is_liberal_repeat_both_barline(raw) => BarlineKind::RepeatBoth,
+        _ if is_liberal_repeat_start_barline(raw) => BarlineKind::RepeatStart,
+        _ if is_liberal_repeat_end_barline(raw) => BarlineKind::RepeatEnd,
         _ => BarlineKind::Liberal,
     }
+}
+
+fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
+    let raw = barline.raw.strip_prefix('.').unwrap_or(&barline.raw);
+    if barline.kind == BarlineKind::RepeatStart {
+        if raw.starts_with("||") {
+            return vec![BarlineKind::Double, BarlineKind::RepeatStart];
+        }
+        if raw.starts_with("[|") {
+            return vec![BarlineKind::Initial, BarlineKind::RepeatStart];
+        }
+    }
+    vec![barline.kind]
+}
+
+fn is_liberal_repeat_start_barline(raw: &str) -> bool {
+    !raw.starts_with(':')
+        && raw.ends_with(':')
+        && raw.contains('|')
+        && raw[..raw.len().saturating_sub(1)].chars().any(is_bar_glyph)
+}
+
+fn is_liberal_repeat_end_barline(raw: &str) -> bool {
+    raw.starts_with(':')
+        && !raw.ends_with(':')
+        && raw.contains('|')
+        && raw[1..].chars().any(is_bar_glyph)
+}
+
+fn is_liberal_repeat_both_barline(raw: &str) -> bool {
+    raw.starts_with(':') && raw.ends_with(':') && raw.contains('|')
+}
+
+fn is_bar_glyph(ch: char) -> bool {
+    matches!(ch, '|' | '[' | ']')
 }
 
 fn is_note_letter(ch: char) -> bool {
