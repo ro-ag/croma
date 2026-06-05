@@ -2234,7 +2234,97 @@ mod tests {
         assert_eq!(measure_numbers(&measures), vec!["1"]);
         assert!(has_barline(&measures[0], "left", None, Some("forward")));
         assert!(has_barline(&measures[0], "right", None, Some("backward")));
+        assert!(
+            measures[0]
+                .barlines
+                .iter()
+                .all(|barline| barline.repeat_times.is_none())
+        );
         assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    }
+
+    #[test]
+    fn excessive_repeat_dots_are_liberal_policy_not_repeat_count() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n|::: C D E F :::|\n";
+        let export = export_musicxml(source).expect("liberal repeat dots should recover");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(
+            export
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "abc.music.barline.liberal")
+                .count(),
+            2
+        );
+        assert_diagnostic_span(
+            source,
+            &export.diagnostics,
+            "abc.music.barline.liberal",
+            "|:::",
+        );
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert!(measures[0].barlines.is_empty());
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    }
+
+    #[test]
+    fn words_containing_double_colon_pipe_do_not_emit_repeat_barlines() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |]\nW::| Cross over two couples\n";
+        let export = export_musicxml(source).expect("words field should not affect barlines");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert!(has_barline(
+            &measures[0],
+            "right",
+            Some("light-heavy"),
+            None
+        ));
+        assert!(
+            measures[0]
+                .barlines
+                .iter()
+                .all(|barline| barline.repeat_direction.is_none())
+        );
+    }
+
+    #[test]
+    fn tune_014868_style_leading_double_repeat_has_no_empty_measure() {
+        let source = concat!(
+            "X:260\n",
+            "T:Bag o' Spuds -- Am\n",
+            "M:4/4\n",
+            "R:Reel\n",
+            "K:Am\n",
+            "||:\"Am\"A2eA BAeA|ABcd ecdB|\"G\"G2BG DGBG|GABc \"Em\"dBcB|\n",
+            "\"Am\"A2eA BAeA|ABcd \"G\"ecdB|\"F\"ABcd efge|\"Em\"dBGB BAA2:|\n",
+            "|:\"Am\"a2ea ageg|agbg agef|\"G\"gedc BGBd|g2ga bgeg|\n",
+            "\"Am\"a2ea ageg|agbg ageg|\"G\"d3e g3e|\"Em\"dBGB BAA2:|\n",
+        );
+        let export = export_musicxml(source).expect("leading combined repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(
+            measure_numbers(&measures),
+            (1..=16)
+                .map(|number| number.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            note_steps(&measures[0]),
+            vec!['A', 'E', 'A', 'B', 'A', 'E', 'A']
+        );
+        assert_eq!(note_durations(&measures[0]), vec![8, 4, 4, 4, 4, 4, 4]);
+        assert!(has_barline(&measures[0], "left", None, Some("forward")));
+        assert!(has_barline(&measures[7], "right", None, Some("backward")));
+        assert!(has_barline(&measures[8], "left", None, Some("forward")));
+        assert!(has_barline(&measures[15], "right", None, Some("backward")));
+        assert!(!measures[0].notes.iter().any(|note| note.rest));
     }
 
     #[test]
@@ -2594,6 +2684,7 @@ mod tests {
         location: String,
         bar_style: Option<String>,
         repeat_direction: Option<String>,
+        repeat_times: Option<String>,
         endings: Vec<XmlEnding>,
     }
 
@@ -2677,10 +2768,18 @@ mod tests {
                     .map(|end| repeat_start + end)?;
                 attr_value(&body[repeat_start..=repeat_end], "direction")
             });
+            let repeat_times = body.find("<repeat ").and_then(|offset| {
+                let repeat_start = offset;
+                let repeat_end = body[repeat_start..]
+                    .find('>')
+                    .map(|end| repeat_start + end)?;
+                attr_value(&body[repeat_start..=repeat_end], "times")
+            });
             barlines.push(XmlBarline {
                 location: attr_value(open_tag, "location").expect("barline should have location"),
                 bar_style: element_text(body, "bar-style"),
                 repeat_direction,
+                repeat_times,
                 endings: musicxml_endings(body),
             });
             index = end + end_tag.len();
