@@ -1854,21 +1854,12 @@ impl VoiceTimelineBuilder {
             LoweredEvent::Timed(timed) => self.push_timed(timed),
             LoweredEvent::Untimed(Event::Barline { kind, span }) => {
                 self.finish_overlay(diagnostics);
-                let onset = self.onset;
-                let measure = self.current_measure_mut();
-                measure.events.push(VoiceTimedEvent {
-                    onset,
-                    duration: Fraction::zero(),
-                    span,
-                    line_index: 0,
-                    source_order: 0,
-                    alignable: false,
-                    kind: TimelineEventKind::Barline { kind },
-                    lyrics: Vec::new(),
-                    symbols: Vec::new(),
-                    attachments: EventAttachments::default(),
-                });
-                measure.span = extend_span(measure.span, span);
+                let starts_current_measure =
+                    self.is_empty_measure_start() && starts_measure_barline(kind);
+                self.push_barline(kind, span);
+                if starts_current_measure {
+                    return;
+                }
                 self.measure_index = self.measure_index.saturating_add(1);
                 self.onset = Fraction::zero();
                 self.last_group_onset = Fraction::zero();
@@ -1939,6 +1930,33 @@ impl VoiceTimelineBuilder {
                     extend_span(self.current_measure_mut().span, span);
             }
         }
+    }
+
+    fn push_barline(&mut self, kind: BarlineKind, span: Span) {
+        let onset = self.onset;
+        let measure = self.current_measure_mut();
+        measure.events.push(VoiceTimedEvent {
+            onset,
+            duration: Fraction::zero(),
+            span,
+            line_index: 0,
+            source_order: 0,
+            alignable: false,
+            kind: TimelineEventKind::Barline { kind },
+            lyrics: Vec::new(),
+            symbols: Vec::new(),
+            attachments: EventAttachments::default(),
+        });
+        measure.span = extend_span(measure.span, span);
+    }
+
+    fn is_empty_measure_start(&self) -> bool {
+        self.onset == Fraction::zero()
+            && self.active_overlay.is_none()
+            && self
+                .measures
+                .last()
+                .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
     }
 
     fn push_timed(&mut self, timed: LoweredTimedEvent) {
@@ -2033,6 +2051,13 @@ impl VoiceTimelineBuilder {
             .last_mut()
             .expect("timeline builder always has a current measure")
     }
+}
+
+fn starts_measure_barline(kind: BarlineKind) -> bool {
+    matches!(
+        kind,
+        BarlineKind::Regular | BarlineKind::Initial | BarlineKind::RepeatStart
+    )
 }
 
 struct OverlayBuilder {
@@ -6718,6 +6743,46 @@ mod tests {
         );
         assert_eq!(measures[1].actual_duration, Fraction::new(4, 4));
         assert!(measures[1].complete);
+    }
+
+    #[test]
+    fn leading_repeat_start_stays_on_first_measure() {
+        let source = "X:1\nM:3/4\nL:1/4\nK:C\n|: G c d | E D C |\n";
+        let (tune, diagnostics) = tune_for(source);
+
+        assert!(diagnostics.is_empty());
+        let measures = &tune.score.parts[0].voices[0].measures;
+        assert_eq!(measures.len(), 2);
+        assert_eq!(measures[0].actual_duration, Fraction::new(3, 4));
+        assert_eq!(measures[1].actual_duration, Fraction::new(3, 4));
+        assert!(
+            measures[0]
+                .barlines
+                .iter()
+                .any(|barline| barline.kind == BarlineKind::RepeatStart)
+        );
+        let first_measure_steps = semantic_note_events(&tune)
+            .into_iter()
+            .take(3)
+            .map(|event| match &event.kind {
+                TimedEventKind::Note(note) => note.pitch.step,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_measure_steps, vec!['G', 'C', 'D']);
+    }
+
+    #[test]
+    fn plain_leading_barline_does_not_create_empty_pickup_measure() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n| E | F G A B |\n";
+        let (tune, diagnostics) = tune_for(source);
+
+        assert!(diagnostics.is_empty());
+        let measures = &tune.score.parts[0].voices[0].measures;
+        assert_eq!(measures.len(), 2);
+        assert_eq!(measures[0].actual_duration, Fraction::new(1, 4));
+        assert!(measures[0].pickup);
+        assert_eq!(measures[1].actual_duration, Fraction::new(4, 4));
     }
 
     #[test]
