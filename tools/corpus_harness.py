@@ -82,6 +82,9 @@ def main() -> int:
     keep_xml_dir = args.keep_xml_dir.resolve() if args.keep_xml_dir else None
     if keep_xml_dir is not None:
         keep_xml_dir.mkdir(parents=True, exist_ok=True)
+    music21_facts_dir = args.music21_facts_dir.resolve() if args.music21_facts_dir else None
+    if music21_facts_dir is not None:
+        music21_facts_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="croma-corpus-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
@@ -102,6 +105,7 @@ def main() -> int:
                         compare_script=compare_script,
                         temp_dir=temp_dir,
                         keep_xml_dir=keep_xml_dir,
+                        music21_facts_dir=music21_facts_dir,
                     )
                     append_jsonl(append_handle, item)
 
@@ -169,6 +173,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--music21-script", type=Path)
     parser.add_argument("--music21-timeout", type=float, default=30.0)
+    parser.add_argument("--music21-comparison-engine", choices=["polars", "python"], default="polars")
+    parser.add_argument("--music21-facts-dir", type=Path)
     parser.add_argument("--keep-xml-dir", type=Path)
     parser.add_argument("--classifications", type=Path)
     return parser.parse_args()
@@ -235,8 +241,13 @@ def load_previous_results(results_jsonl: Path, args: argparse.Namespace) -> dict
         if item.get("mode") != args.mode:
             continue
         expected_music21 = bool(args.music21_compare)
-        actual_music21 = bool(item.get("music21", {}).get("enabled", False))
+        music21 = item.get("music21", {})
+        actual_music21 = bool(music21.get("enabled", False))
         if expected_music21 != actual_music21:
+            continue
+        if expected_music21 and music21.get("comparison_engine") != args.music21_comparison_engine:
+            continue
+        if expected_music21 and args.music21_facts_dir is not None and not music21.get("facts_parquet"):
             continue
         path = item.get("path")
         if isinstance(path, str):
@@ -307,6 +318,7 @@ def enrich_result(
     compare_script: Path,
     temp_dir: Path,
     keep_xml_dir: Path | None,
+    music21_facts_dir: Path | None,
 ) -> None:
     abc_path = Path(item["path"])
     relative_path = str(abc_path.relative_to(corpus))
@@ -334,6 +346,7 @@ def enrich_result(
             croma_xml=item.get("stdout", ""),
             temp_dir=temp_dir,
             keep_xml_dir=keep_xml_dir,
+            music21_facts_dir=music21_facts_dir,
         )
     else:
         item["music21"] = {"enabled": bool(args.music21_compare), "status": "not_run"}
@@ -406,6 +419,7 @@ def run_music21_compare(
     croma_xml: str,
     temp_dir: Path,
     keep_xml_dir: Path | None,
+    music21_facts_dir: Path | None,
 ) -> dict[str, Any]:
     relative = abc_path.relative_to(corpus_root)
     reference = reference_root / relative.with_suffix(".musicxml")
@@ -426,7 +440,21 @@ def run_music21_compare(
         "--reference-xml",
         str(reference),
         "--json",
+        "--comparison-engine",
+        args.music21_comparison_engine,
     ]
+    if music21_facts_dir is not None:
+        facts_path = music21_facts_dir / relative.with_suffix(".facts.parquet")
+        mismatches_path = music21_facts_dir / relative.with_suffix(".mismatches.parquet")
+        facts_path.parent.mkdir(parents=True, exist_ok=True)
+        command.extend(
+            [
+                "--facts-parquet",
+                str(facts_path),
+                "--mismatches-parquet",
+                str(mismatches_path),
+            ]
+        )
     try:
         completed = subprocess.run(
             command,
@@ -600,6 +628,8 @@ def build_report(
             "resume": args.resume,
             "music21_compare": args.music21_compare,
             "music21_timeout": args.music21_timeout,
+            "music21_comparison_engine": args.music21_comparison_engine,
+            "music21_facts_dir": str(args.music21_facts_dir.resolve()) if args.music21_facts_dir else None,
         },
         "corpus_path": str(corpus),
         "reference_root": str(args.reference_root.resolve()) if args.reference_root else None,

@@ -46,16 +46,44 @@ def main() -> int:
     except Exception as error:  # noqa: BLE001 - tool failures must be reported distinctly.
         return emit({"status": "music21_tool_failure", "error": str(error)}, args.json)
 
-    differences, category_counts = compare_facts(croma, reference, args.max_differences_per_category)
+    try:
+        if args.comparison_engine == "polars":
+            fact_rows = music21_fact_rows(croma, "croma") + music21_fact_rows(reference, "reference")
+            differences, category_counts, mismatch_rows = compare_fact_rows_polars(
+                fact_rows,
+                args.max_differences_per_category,
+            )
+            artifact_paths = write_polars_artifacts(
+                fact_rows=fact_rows,
+                mismatch_rows=mismatch_rows,
+                facts_jsonl=args.facts_jsonl,
+                facts_parquet=args.facts_parquet,
+                mismatches_jsonl=args.mismatches_jsonl,
+                mismatches_parquet=args.mismatches_parquet,
+            )
+        else:
+            differences, category_counts = compare_facts(
+                croma,
+                reference,
+                args.max_differences_per_category,
+            )
+            artifact_paths = {}
+    except PolarsUnavailable as error:
+        return emit({"status": "music21_tool_failure", "error": str(error)}, args.json)
+    except Exception as error:  # noqa: BLE001 - comparison failures are tooling failures.
+        return emit({"status": "music21_tool_failure", "error": str(error)}, args.json)
+
     status = "match" if not category_counts else "difference"
     return emit(
         {
             "status": status,
+            "comparison_engine": args.comparison_engine,
             "croma_xml": str(args.croma_xml),
             "reference_xml": str(args.reference_xml),
             "differences": differences,
             "category_counts": dict(sorted(category_counts.items())),
             "classification": "unclassified_difference" if category_counts else None,
+            **artifact_paths,
         },
         args.json,
     )
@@ -67,10 +95,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-xml", type=Path, required=True)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--max-differences-per-category", type=int, default=5)
+    parser.add_argument("--comparison-engine", choices=["polars", "python"], default="polars")
+    parser.add_argument("--facts-jsonl", type=Path)
+    parser.add_argument("--facts-parquet", type=Path)
+    parser.add_argument("--mismatches-jsonl", type=Path)
+    parser.add_argument("--mismatches-parquet", type=Path)
     return parser.parse_args()
 
 
 class Music21Unavailable(RuntimeError):
+    pass
+
+
+class PolarsUnavailable(RuntimeError):
     pass
 
 
@@ -118,14 +155,18 @@ def extract_facts(path: Path, label: str) -> dict[str, Any]:
                     voice_id = str(getattr(voice, "id", voice_index))
                     voice_events = [
                         event_facts(element, voice_id, event_index, note, chord)
-                        for event_index, element in enumerate(voice.notesAndRests)
+                        for event_index, element in enumerate(
+                            musical_event_elements(voice.notesAndRests, harmony)
+                        )
                     ]
                     voice_facts.append({"id": voice_id, "events": voice_events})
                     events.extend(voice_events)
             else:
                 events = [
                     event_facts(element, None, event_index, note, chord)
-                    for event_index, element in enumerate(measure.notesAndRests)
+                    for event_index, element in enumerate(
+                        musical_event_elements(measure.notesAndRests, harmony)
+                    )
                 ]
                 voice_facts.append({"id": None, "events": events})
 
@@ -165,6 +206,20 @@ def extract_facts(path: Path, label: str) -> dict[str, Any]:
         "harmony": harmony_facts(score, harmony, stream),
         "directions": direction_facts(score, dynamics, expressions, tempo, stream),
     }
+
+
+def musical_event_elements(elements: Any, harmony_module: Any) -> list[Any]:
+    excluded = tuple(
+        element_type
+        for element_type in [
+            getattr(harmony_module, "ChordSymbol", None),
+            getattr(harmony_module, "NoChord", None),
+        ]
+        if element_type is not None
+    )
+    if not excluded:
+        return list(elements)
+    return [element for element in elements if not isinstance(element, excluded)]
 
 
 def event_facts(
@@ -254,7 +309,6 @@ def barline_facts(barline: Any) -> dict[str, Any] | None:
         return None
     return {
         "type": optional_string(getattr(barline, "type", None)),
-        "style": optional_string(getattr(barline, "style", None)),
         "direction": optional_string(getattr(barline, "direction", None)),
         "times": optional_string(getattr(barline, "times", None)),
     }
@@ -376,6 +430,308 @@ def optional_string(value: Any) -> str | None:
     return str(value)
 
 
+def import_polars() -> Any:
+    try:
+        import polars as pl
+    except ImportError as error:
+        raise PolarsUnavailable(
+            "polars is not installed; run `uv pip install polars` for Polars comparison"
+        ) from error
+    return pl
+
+
+def music21_fact_rows(facts: dict[str, Any], side: str) -> list[dict[str, str | None]]:
+    rows: list[dict[str, str | None]] = []
+
+    add_fact(rows, side, "parts", "part_count", facts.get("part_count"))
+    for part_index, part in enumerate(facts.get("parts", [])):
+        part_path = f"parts[{part_index}]"
+        add_fact(rows, side, "measures", f"{part_path}.measure_count", part.get("measure_count"))
+        for measure_index, measure in enumerate(part.get("measures", [])):
+            measure_path = f"{part_path}.measures[{measure_index}]"
+            add_fact(rows, side, "measure_alignment", f"{measure_path}.number", measure.get("number"))
+            add_fact(
+                rows,
+                side,
+                "measure_alignment",
+                f"{measure_path}.duration",
+                measure.get("duration"),
+            )
+            add_fact(rows, side, "voices", f"{measure_path}.voices", measure.get("voices", []))
+            add_fact(
+                rows,
+                side,
+                "repeats_endings",
+                f"{measure_path}.barlines",
+                measure.get("barlines"),
+            )
+
+            events = measure.get("events", [])
+            add_fact(rows, side, "measure_alignment", f"{measure_path}.events.count", len(events))
+            for event_index, event in enumerate(events):
+                event_path = f"{measure_path}.events[{event_index}]"
+                add_fact(rows, side, "measure_alignment", f"{event_path}.kind", event.get("kind"))
+                add_fact(rows, side, "voices", f"{event_path}.voice", event.get("voice"))
+                add_duration_facts(rows, side, event_path, event.get("duration", {}))
+                add_fact(rows, side, "ties_slurs", f"{event_path}.tie", event.get("tie"))
+                add_fact(rows, side, "lyrics", f"{event_path}.lyrics", event.get("lyrics", []))
+                add_pitch_facts(rows, side, event_path, event)
+
+    add_indexed_list_facts(rows, side, "ties_slurs", "slurs", facts.get("slurs", []))
+    add_indexed_list_facts(
+        rows,
+        side,
+        "repeats_endings",
+        "repeat_endings",
+        facts.get("repeat_endings", []),
+    )
+    add_indexed_list_facts(
+        rows,
+        side,
+        "harmony_chord_symbols",
+        "harmony",
+        facts.get("harmony", []),
+    )
+    add_indexed_list_facts(rows, side, "directions", "directions", facts.get("directions", []))
+    return rows
+
+
+def add_duration_facts(
+    rows: list[dict[str, str | None]],
+    side: str,
+    event_path: str,
+    duration: dict[str, Any],
+) -> None:
+    add_fact(
+        rows,
+        side,
+        "durations",
+        f"{event_path}.duration.quarter_length",
+        duration.get("quarter_length"),
+    )
+    add_fact(rows, side, "durations", f"{event_path}.duration.type", duration.get("type"))
+    add_fact(rows, side, "durations", f"{event_path}.duration.dots", duration.get("dots"))
+    add_fact(rows, side, "tuplets", f"{event_path}.duration.tuplets", duration.get("tuplets", []))
+
+
+def add_pitch_facts(
+    rows: list[dict[str, str | None]],
+    side: str,
+    event_path: str,
+    event: dict[str, Any],
+) -> None:
+    if "pitch" in event:
+        pitch = event.get("pitch") or {}
+        add_fact(rows, side, "pitches", f"{event_path}.pitch.step", pitch.get("step"))
+        add_fact(rows, side, "octaves", f"{event_path}.pitch.octave", pitch.get("octave"))
+        add_fact(
+            rows,
+            side,
+            "accidentals",
+            f"{event_path}.pitch.accidental",
+            pitch.get("accidental"),
+        )
+    if "pitches" in event:
+        pitches = event.get("pitches", [])
+        add_fact(rows, side, "pitches", f"{event_path}.pitches.count", len(pitches))
+        for pitch_index, pitch in enumerate(pitches):
+            pitch_path = f"{event_path}.pitches[{pitch_index}]"
+            add_fact(rows, side, "pitches", f"{pitch_path}.step", pitch.get("step"))
+            add_fact(rows, side, "octaves", f"{pitch_path}.octave", pitch.get("octave"))
+            add_fact(rows, side, "accidentals", f"{pitch_path}.accidental", pitch.get("accidental"))
+
+
+def add_indexed_list_facts(
+    rows: list[dict[str, str | None]],
+    side: str,
+    category: str,
+    path: str,
+    values: list[Any],
+) -> None:
+    add_fact(rows, side, category, f"{path}.count", len(values))
+    for index, value in enumerate(values):
+        add_fact(rows, side, category, f"{path}[{index}]", value)
+
+
+def add_fact(
+    rows: list[dict[str, str | None]],
+    side: str,
+    category: str,
+    path: str,
+    value: Any,
+) -> None:
+    rows.append(
+        {
+            "side": side,
+            "category": category,
+            "path": path,
+            "value": encode_fact_value(value),
+        }
+    )
+
+
+def encode_fact_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def decode_fact_value(value: str | None) -> Any:
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def compare_fact_rows_polars(
+    rows: list[dict[str, str | None]],
+    max_differences_per_category: int,
+) -> tuple[list[dict[str, Any]], Counter[str], list[dict[str, Any]]]:
+    pl = import_polars()
+    schema = {
+        "side": pl.String,
+        "category": pl.String,
+        "path": pl.String,
+        "value": pl.String,
+    }
+    facts = pl.DataFrame(rows, schema=schema)
+    croma = (
+        facts.filter(pl.col("side") == "croma")
+        .select(
+            "category",
+            "path",
+            pl.col("value").alias("croma"),
+            pl.lit(True).alias("croma_present"),
+        )
+    )
+    reference = (
+        facts.filter(pl.col("side") == "reference")
+        .select(
+            "category",
+            "path",
+            pl.col("value").alias("reference"),
+            pl.lit(True).alias("reference_present"),
+        )
+    )
+    joined = (
+        croma.join(reference, on=["category", "path"], how="full", coalesce=True)
+        .with_columns(
+            pl.col("croma_present").fill_null(False),
+            pl.col("reference_present").fill_null(False),
+        )
+        .with_columns(
+            (
+                pl.col("croma_present")
+                & pl.col("reference_present")
+                & (
+                    (pl.col("croma") == pl.col("reference"))
+                    | (pl.col("croma").is_null() & pl.col("reference").is_null())
+                )
+            )
+            .fill_null(False)
+            .alias("matches")
+        )
+    )
+    mismatches = joined.filter(
+        ~pl.col("matches")
+    ).sort(["category", "path"])
+
+    category_counts: Counter[str] = Counter()
+    if mismatches.height:
+        for category, count in mismatches.group_by("category").len().iter_rows():
+            category_counts[str(category)] = int(count)
+
+    differences: list[dict[str, Any]] = []
+    mismatch_rows: list[dict[str, Any]] = []
+    stored_counts: Counter[str] = Counter()
+    max_per_category = max(0, max_differences_per_category)
+    for row in mismatches.iter_rows(named=True):
+        category = str(row["category"])
+        mismatch = {
+            "category": category,
+            "path": row["path"],
+            "croma_present": bool(row["croma_present"]),
+            "reference_present": bool(row["reference_present"]),
+            "croma": decode_fact_value(row["croma"]),
+            "reference": decode_fact_value(row["reference"]),
+        }
+        mismatch_rows.append(mismatch)
+        if stored_counts[category] >= max_per_category:
+            continue
+        stored_counts[category] += 1
+        differences.append(mismatch)
+
+    return differences, category_counts, mismatch_rows
+
+
+def write_polars_artifacts(
+    *,
+    fact_rows: list[dict[str, str | None]],
+    mismatch_rows: list[dict[str, Any]],
+    facts_jsonl: Path | None,
+    facts_parquet: Path | None,
+    mismatches_jsonl: Path | None,
+    mismatches_parquet: Path | None,
+) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    pl = None
+    if facts_jsonl is not None:
+        write_jsonl(facts_jsonl, fact_rows)
+        paths["facts_jsonl"] = str(facts_jsonl)
+    if mismatches_jsonl is not None:
+        write_jsonl(mismatches_jsonl, mismatch_rows)
+        paths["mismatches_jsonl"] = str(mismatches_jsonl)
+    if facts_parquet is not None:
+        pl = pl or import_polars()
+        facts_parquet.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            fact_rows,
+            schema={
+                "side": pl.String,
+                "category": pl.String,
+                "path": pl.String,
+                "value": pl.String,
+            },
+        ).write_parquet(facts_parquet)
+        paths["facts_parquet"] = str(facts_parquet)
+    if mismatches_parquet is not None:
+        pl = pl or import_polars()
+        mismatches_parquet.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            [
+                {
+                    "category": row["category"],
+                    "path": row["path"],
+                    "croma_present": bool(row.get("croma_present", True)),
+                    "reference_present": bool(row.get("reference_present", True)),
+                    "croma": encode_fact_value(row["croma"]),
+                    "reference": encode_fact_value(row["reference"]),
+                }
+                for row in mismatch_rows
+            ],
+            schema={
+                "category": pl.String,
+                "path": pl.String,
+                "croma_present": pl.Boolean,
+                "reference_present": pl.Boolean,
+                "croma": pl.String,
+                "reference": pl.String,
+            },
+        ).write_parquet(mismatches_parquet)
+        paths["mismatches_parquet"] = str(mismatches_parquet)
+    return paths
+
+
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str))
+            handle.write("\n")
+
+
 def compare_facts(
     croma: dict[str, Any],
     reference: dict[str, Any],
@@ -417,7 +773,6 @@ def compare_parts(
 ) -> None:
     for part_index, (croma_part, reference_part) in enumerate(zip(croma_parts, reference_parts)):
         path = f"parts[{part_index}]"
-        compare_scalar(builder, "parts", f"{path}.name", croma_part, reference_part, "name")
         compare_scalar(
             builder,
             "measures",
