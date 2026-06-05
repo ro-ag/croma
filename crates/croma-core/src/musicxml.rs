@@ -247,11 +247,12 @@ impl<'score> MusicXmlWriter<'score> {
     fn write_sequence(&mut self, sequence: &MeasureSequence<'score>, part: &Part) -> Fraction {
         let mut cursor = Fraction::zero();
         let mut last_onset = Fraction::zero();
+        let tuplet_numbers = sequence_tuplet_numbers(sequence);
         for event in &sequence.events {
             let onset = event.onset();
             let is_chord_member = event.is_chord_member();
             if is_chord_member && onset == last_onset {
-                self.write_event(event, sequence, part, true);
+                self.write_event(event, sequence, part, &tuplet_numbers, true);
                 continue;
             }
             if cursor.less_than(onset) {
@@ -261,7 +262,7 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_backup(cursor.subtract(onset));
                 cursor = onset;
             }
-            self.write_event(event, sequence, part, false);
+            self.write_event(event, sequence, part, &tuplet_numbers, false);
             if event.advances_time() {
                 cursor = cursor.checked_add(event.duration());
                 last_onset = onset;
@@ -275,11 +276,12 @@ impl<'score> MusicXmlWriter<'score> {
         event: &SequenceEvent<'score>,
         sequence: &MeasureSequence<'score>,
         part: &Part,
+        tuplet_numbers: &TupletNumbers,
         chord_member: bool,
     ) {
         let attachments = event.attachments();
         self.write_harmony_and_directions(attachments, sequence, part);
-        self.write_grace_groups(attachments, sequence, part);
+        self.write_grace_groups(attachments, sequence, part, tuplet_numbers);
         match event {
             SequenceEvent::Timed(timed) => match &timed.kind {
                 TimedEventKind::Note(note) => {
@@ -297,9 +299,12 @@ impl<'score> MusicXmlWriter<'score> {
                         },
                         sequence,
                         part,
+                        tuplet_numbers,
                     );
                 }
-                TimedEventKind::Chord(chord) => self.write_chord(chord, sequence, part),
+                TimedEventKind::Chord(chord) => {
+                    self.write_chord(chord, sequence, part, tuplet_numbers);
+                }
                 TimedEventKind::Rest(rest) => {
                     self.write_note(
                         NoteWrite {
@@ -315,6 +320,7 @@ impl<'score> MusicXmlWriter<'score> {
                         },
                         sequence,
                         part,
+                        tuplet_numbers,
                     );
                 }
                 TimedEventKind::Spacer
@@ -358,6 +364,7 @@ impl<'score> MusicXmlWriter<'score> {
                         },
                         sequence,
                         part,
+                        tuplet_numbers,
                     );
                 }
                 TimelineEventKind::Rest { visibility } => {
@@ -378,6 +385,7 @@ impl<'score> MusicXmlWriter<'score> {
                         },
                         sequence,
                         part,
+                        tuplet_numbers,
                     );
                 }
                 TimelineEventKind::Spacer
@@ -387,7 +395,13 @@ impl<'score> MusicXmlWriter<'score> {
         }
     }
 
-    fn write_chord(&mut self, chord: &ChordEvent, sequence: &MeasureSequence<'score>, part: &Part) {
+    fn write_chord(
+        &mut self,
+        chord: &ChordEvent,
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+        tuplet_numbers: &TupletNumbers,
+    ) {
         let variable_durations = chord
             .members
             .iter()
@@ -425,6 +439,7 @@ impl<'score> MusicXmlWriter<'score> {
                 },
                 sequence,
                 part,
+                tuplet_numbers,
             );
         }
     }
@@ -434,13 +449,14 @@ impl<'score> MusicXmlWriter<'score> {
         attachments: &EventAttachments,
         sequence: &MeasureSequence<'score>,
         part: &Part,
+        tuplet_numbers: &TupletNumbers,
     ) {
         for group in &attachments.grace_groups {
             if group.events.is_empty() && group.note_count > 0 {
                 self.diagnostics.push(unsupported_grace_warning(group.span));
                 continue;
             }
-            self.write_grace_group(group, sequence, part);
+            self.write_grace_group(group, sequence, part, tuplet_numbers);
         }
     }
 
@@ -449,18 +465,22 @@ impl<'score> MusicXmlWriter<'score> {
         group: &GraceGroupAttachment,
         sequence: &MeasureSequence<'score>,
         part: &Part,
+        tuplet_numbers: &TupletNumbers,
     ) {
         let mut first_chord_member = true;
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
                     self.write_grace_note(
-                        note,
-                        event.source_span,
+                        GraceNoteWrite {
+                            note,
+                            source: event.source_span,
+                            chord_member: false,
+                            slash: group.slash.is_some(),
+                        },
                         sequence,
                         part,
-                        false,
-                        group.slash.is_some(),
+                        tuplet_numbers,
                     );
                     first_chord_member = false;
                 }
@@ -479,18 +499,22 @@ impl<'score> MusicXmlWriter<'score> {
                         },
                         sequence,
                         part,
+                        tuplet_numbers,
                     );
                     first_chord_member = false;
                 }
                 GraceEventKind::Chord(notes) => {
                     for note in notes {
                         self.write_grace_note(
-                            note,
-                            event.source_span,
+                            GraceNoteWrite {
+                                note,
+                                source: event.source_span,
+                                chord_member: !first_chord_member,
+                                slash: group.slash.is_some(),
+                            },
                             sequence,
                             part,
-                            !first_chord_member,
-                            group.slash.is_some(),
+                            tuplet_numbers,
                         );
                         first_chord_member = false;
                     }
@@ -501,31 +525,36 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn write_grace_note(
         &mut self,
-        note: &GraceNoteEvent,
-        source: Span,
+        grace_note: GraceNoteWrite<'_>,
         sequence: &MeasureSequence<'score>,
         part: &Part,
-        chord_member: bool,
-        slash: bool,
+        tuplet_numbers: &TupletNumbers,
     ) {
         self.write_note(
             NoteWrite {
-                pitch: Some(&note.pitch),
+                pitch: Some(&grace_note.note.pitch),
                 rest: None,
                 duration: Fraction::zero(),
-                source,
-                written_accidental: note.written_accidental.as_ref(),
+                source: grace_note.source,
+                written_accidental: grace_note.note.written_accidental.as_ref(),
                 attachments: &EventAttachments::default(),
-                chord_member,
+                chord_member: grace_note.chord_member,
                 grace: true,
-                grace_slash: slash,
+                grace_slash: grace_note.slash,
             },
             sequence,
             part,
+            tuplet_numbers,
         );
     }
 
-    fn write_note(&mut self, note: NoteWrite<'_>, sequence: &MeasureSequence<'score>, part: &Part) {
+    fn write_note(
+        &mut self,
+        note: NoteWrite<'_>,
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+        tuplet_numbers: &TupletNumbers,
+    ) {
         let print_no = note
             .rest
             .is_some_and(|rest| rest.visibility == RestVisibility::Invisible);
@@ -579,7 +608,7 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml
                 .text_element("staff", &sequence.staff.value.to_string());
         }
-        self.write_notations(note.attachments, time_modification);
+        self.write_notations(note.attachments, time_modification, tuplet_numbers);
         self.write_lyrics(&note.attachments.lyrics);
         self.xml.end("note");
     }
@@ -613,6 +642,7 @@ impl<'score> MusicXmlWriter<'score> {
         &mut self,
         attachments: &EventAttachments,
         time_modification: Option<TimeModification>,
+        tuplet_numbers: &TupletNumbers,
     ) {
         let has_tied = !attachments.ties.is_empty();
         let has_slurs = !attachments.slurs.is_empty();
@@ -670,7 +700,7 @@ impl<'score> MusicXmlWriter<'score> {
             }) else {
                 continue;
             };
-            let number = tuplet.pair_id.to_string();
+            let number = tuplet_numbers.number_for(tuplet.pair_id).to_string();
             self.xml.empty(
                 "tuplet",
                 &[("type", tuplet_type), ("number", number.as_str())],
@@ -980,6 +1010,14 @@ struct NoteWrite<'a> {
     grace_slash: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct GraceNoteWrite<'a> {
+    note: &'a GraceNoteEvent,
+    source: Span,
+    chord_member: bool,
+    slash: bool,
+}
+
 #[derive(Debug, Clone)]
 struct MeasureSequence<'score> {
     voice_number: String,
@@ -1047,6 +1085,64 @@ impl SequenceEvent<'_> {
             Self::Overlay(event) => event.span.start,
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct TupletNumbers {
+    pairs: Vec<(u32, u32)>,
+}
+
+impl TupletNumbers {
+    fn number_for(&self, pair_id: u32) -> u32 {
+        self.pairs
+            .iter()
+            .find_map(|(pair, number)| (*pair == pair_id).then_some(*number))
+            .unwrap_or(1)
+    }
+}
+
+fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
+    let mut numbers = TupletNumbers::default();
+    let mut active = Vec::<(u32, u32)>::new();
+
+    for event in &sequence.events {
+        for tuplet in event
+            .attachments()
+            .tuplets
+            .iter()
+            .filter(|tuplet| tuplet.role == TupletRole::Start)
+        {
+            if numbers.pairs.iter().any(|(pair, _)| *pair == tuplet.pair_id) {
+                continue;
+            }
+            let number = next_tuplet_number(&active);
+            numbers.pairs.push((tuplet.pair_id, number));
+            active.push((tuplet.pair_id, number));
+        }
+
+        for tuplet in event
+            .attachments()
+            .tuplets
+            .iter()
+            .filter(|tuplet| tuplet.role == TupletRole::Stop)
+        {
+            if !numbers.pairs.iter().any(|(pair, _)| *pair == tuplet.pair_id) {
+                numbers.pairs.push((tuplet.pair_id, 1));
+            }
+            active.retain(|(pair, _)| *pair != tuplet.pair_id);
+        }
+    }
+
+    numbers
+}
+
+fn next_tuplet_number(active: &[(u32, u32)]) -> u32 {
+    for number in 1..=16 {
+        if !active.iter().any(|(_, active_number)| *active_number == number) {
+            return number;
+        }
+    }
+    16
 }
 
 struct XmlWriter {
@@ -1465,22 +1561,22 @@ fn note_type_candidates() -> &'static [NoteTypeCandidate] {
         NoteTypeCandidate {
             name: "breve",
             fraction: Fraction {
-                numerator: 8,
-                denominator: 4,
+                numerator: 2,
+                denominator: 1,
             },
         },
         NoteTypeCandidate {
             name: "whole",
             fraction: Fraction {
-                numerator: 4,
-                denominator: 4,
+                numerator: 1,
+                denominator: 1,
             },
         },
         NoteTypeCandidate {
             name: "half",
             fraction: Fraction {
-                numerator: 2,
-                denominator: 4,
+                numerator: 1,
+                denominator: 2,
             },
         },
         NoteTypeCandidate {
@@ -1868,6 +1964,41 @@ mod tests {
         assert!(export.musicxml.contains("<slur type=\"start\""));
         assert!(export.musicxml.contains("<slur type=\"stop\""));
         assert!(export.musicxml.contains("<text>chord</text>"));
+    }
+
+    #[test]
+    fn sequential_tuplets_reuse_musicxml_number_levels() {
+        let source = concat!(
+            "X:1\n",
+            "T:Many Tuplets\n",
+            "M:4/4\n",
+            "L:1/16\n",
+            "K:C\n",
+            "(3CDE (3DEF (3EFG (3FGA (3GAB (3ABc (3Bcd|\n",
+        );
+        let export = export_musicxml(source).expect("many sequential tuplets should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(
+            count(&export.musicxml, "<tuplet type=\"start\" number=\"1\"/>"),
+            7
+        );
+        assert_eq!(
+            count(&export.musicxml, "<tuplet type=\"stop\" number=\"1\"/>"),
+            7
+        );
+        assert!(!export.musicxml.contains("number=\"7\""));
+    }
+
+    #[test]
+    fn reduced_duration_note_types_do_not_emit_spurious_tuplets() {
+        let source = "X:1\nT:Long notes\nM:4/4\nL:1/4\nK:C\nC2 D4|\n";
+        let export = export_musicxml(source).expect("long note types should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<type>half</type>"));
+        assert!(export.musicxml.contains("<type>whole</type>"));
+        assert!(!export.musicxml.contains("<time-modification>"));
     }
 
     #[test]
