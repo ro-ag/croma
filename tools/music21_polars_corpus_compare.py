@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,7 +29,12 @@ REPORT_SCHEMA = "croma-music21-polars-corpus-compare-v1"
 
 def main() -> int:
     args = parse_args()
-    pl = import_polars()
+    jobs = resolve_jobs(args.jobs)
+    worker_chunk_size = resolve_worker_chunk_size(args.worker_chunk_size)
+    polars_threads_per_worker = resolve_polars_threads_per_worker(
+        args.polars_threads_per_worker,
+        jobs,
+    )
 
     facts_jsonl = args.facts_jsonl or sibling_jsonl(args.facts_parquet)
     comparison_jsonl = args.comparison_jsonl or sibling_jsonl(args.comparison_parquet)
@@ -54,70 +61,72 @@ def main() -> int:
     facts_rows_written = 0
     comparison_rows_written = 0
     mismatch_rows_written = 0
+    completed_inputs = 0
+    tasks = []
 
     with (
         optional_jsonl_handle(facts_jsonl) as facts_handle,
         optional_jsonl_handle(comparison_jsonl) as comparison_handle,
         optional_jsonl_handle(mismatches_jsonl) as mismatches_handle,
     ):
-        for index, item in enumerate(results, start=1):
+        for item in results:
             counters["files_attempted"] += 1
             relative_path = relative_path_for(item)
             if relative_path is None:
                 status_counts["missing_relative_path"] += 1
+                completed_inputs += 1
+                print_progress(args, completed_inputs, len(results))
                 continue
 
             if item.get("status") != "success":
                 counters["croma_export_failures"] += 1
                 croma_failures.append(croma_failure_summary(item, relative_path))
+                completed_inputs += 1
+                print_progress(args, completed_inputs, len(results))
                 continue
 
             counters["croma_export_successes"] += 1
             croma_xml = resolve_croma_xml(args.croma_xml_root, item, relative_path)
             reference_xml = resolve_reference_xml(args.reference_root, item, relative_path)
+            tasks.append(
+                {
+                    "relative_path": relative_path,
+                    "croma_xml": str(croma_xml) if croma_xml is not None else None,
+                    "reference_xml": str(reference_xml) if reference_xml is not None else None,
+                    "write_facts_jsonl": facts_jsonl is not None,
+                    "write_comparison_jsonl": comparison_jsonl is not None,
+                    "write_mismatches_jsonl": mismatches_jsonl is not None,
+                    "max_examples_per_category": args.max_examples_per_category,
+                }
+            )
 
-            croma_facts = None
-            reference_facts = None
-            if croma_xml is None:
-                status_counts["croma_xml_missing"] += 1
-            else:
-                counters["croma_musicxml_import_attempts"] += 1
-                croma_facts = parse_musicxml(croma_xml, "croma", counters, import_failures)
+        for task_result in comparison_task_results(
+            tasks,
+            jobs,
+            worker_chunk_size,
+            polars_threads_per_worker,
+        ):
+            merge_counter(counters, task_result["counters"])
+            merge_counter(status_counts, task_result["status_counts"])
+            merge_counter(category_counts, task_result["mismatch_category_counts"])
+            merge_examples(
+                examples,
+                task_result["examples"],
+                args.max_examples_per_category,
+            )
+            import_failures.extend(task_result["import_failures"])
 
-            if reference_xml is None:
-                status_counts["reference_xml_missing"] += 1
-            else:
-                counters["reference_musicxml_import_attempts"] += 1
-                reference_facts = parse_musicxml(reference_xml, "reference", counters, import_failures)
+            facts_rows_written += int(task_result["fact_rows"])
+            comparison_rows_written += int(task_result["comparison_rows"])
+            mismatch_rows_written += int(task_result["mismatch_rows"])
+            write_optional_text(facts_handle, task_result.get("facts_jsonl"))
+            write_optional_text(comparison_handle, task_result.get("comparison_jsonl"))
+            write_optional_text(mismatches_handle, task_result.get("mismatches_jsonl"))
 
-            if croma_facts is None or reference_facts is None:
-                continue
+            completed_inputs += 1
+            print_progress(args, completed_inputs, len(results))
 
-            fact_rows = corpus_fact_rows(relative_path, croma_facts, reference_facts)
-            facts_rows_written += len(fact_rows)
-            write_jsonl_rows(facts_handle, fact_rows)
-
-            comparison = comparison_frame(pl, fact_rows)
-            mismatches = comparison.filter(~pl.col("matches"))
-            comparison_rows_written += comparison.height
-            mismatch_rows_written += mismatches.height
-            write_frame_jsonl(comparison_handle, comparison)
-            write_frame_jsonl(mismatches_handle, mismatches)
-
-            if mismatches.height:
-                counters["structural_mismatches"] += 1
-                update_mismatch_summary(
-                    mismatches,
-                    category_counts,
-                    examples,
-                    args.max_examples_per_category,
-                )
-            else:
-                counters["structural_matches"] += 1
-
-            if args.progress_every and index % args.progress_every == 0:
-                print(f"processed {index}/{len(results)}", file=sys.stderr)
-
+    pl = import_polars()
     write_parquet(pl, facts_jsonl, args.facts_parquet, fact_schema(pl))
     write_parquet(pl, comparison_jsonl, args.comparison_parquet, comparison_schema(pl))
     write_parquet(pl, mismatches_jsonl, args.mismatches_parquet, comparison_schema(pl))
@@ -131,6 +140,9 @@ def main() -> int:
         "results_jsonl": str(args.results_jsonl),
         "croma_xml_root": str(args.croma_xml_root) if args.croma_xml_root else None,
         "reference_root": str(args.reference_root),
+        "jobs": jobs,
+        "worker_chunk_size": worker_chunk_size,
+        "polars_threads_per_worker": polars_threads_per_worker,
         "files_discovered": len(load_results(args.results_jsonl)),
         "files_selected": len(results),
         "files_attempted": counters["files_attempted"],
@@ -202,7 +214,54 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--progress-every", type=int, default=500)
     parser.add_argument("--max-examples-per-category", type=int, default=5)
     parser.add_argument("--max-failures", type=int, default=20)
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of music21 worker processes. Use 0 for the host CPU count.",
+    )
+    parser.add_argument(
+        "--worker-chunk-size",
+        type=int,
+        default=8,
+        help="Number of files to hand to each worker process at a time.",
+    )
+    parser.add_argument(
+        "--polars-threads-per-worker",
+        type=int,
+        help=(
+            "Set POLARS_MAX_THREADS inside worker processes. "
+            "Defaults to 1 when --jobs is greater than 1."
+        ),
+    )
     return parser.parse_args()
+
+
+def resolve_jobs(requested_jobs: int) -> int:
+    if requested_jobs < 0:
+        raise SystemExit("--jobs must be >= 0")
+    if requested_jobs == 0:
+        return os.cpu_count() or 1
+    return requested_jobs
+
+
+def resolve_worker_chunk_size(requested_chunk_size: int) -> int:
+    if requested_chunk_size < 1:
+        raise SystemExit("--worker-chunk-size must be >= 1")
+    return requested_chunk_size
+
+
+def resolve_polars_threads_per_worker(
+    requested_threads: int | None,
+    jobs: int,
+) -> int | None:
+    if requested_threads is not None:
+        if requested_threads < 1:
+            raise SystemExit("--polars-threads-per-worker must be >= 1")
+        return requested_threads
+    if jobs > 1:
+        return 1
+    return None
 
 
 def sibling_jsonl(path: Path | None) -> Path | None:
@@ -297,6 +356,118 @@ def parse_musicxml(
     return facts
 
 
+def comparison_task_results(
+    tasks: list[dict[str, Any]],
+    jobs: int,
+    worker_chunk_size: int,
+    polars_threads_per_worker: int | None,
+) -> Any:
+    if jobs == 1:
+        configure_worker_environment(polars_threads_per_worker)
+        for task in tasks:
+            yield run_comparison_task(task)
+        return
+
+    with ProcessPoolExecutor(
+        max_workers=jobs,
+        initializer=configure_worker_environment,
+        initargs=(polars_threads_per_worker,),
+    ) as executor:
+        yield from executor.map(
+            run_comparison_task,
+            tasks,
+            chunksize=worker_chunk_size,
+        )
+
+
+def configure_worker_environment(polars_threads_per_worker: int | None) -> None:
+    if polars_threads_per_worker is not None:
+        os.environ["POLARS_MAX_THREADS"] = str(polars_threads_per_worker)
+
+
+def run_comparison_task(task: dict[str, Any]) -> dict[str, Any]:
+    counters: Counter[str] = Counter()
+    status_counts: Counter[str] = Counter()
+    import_failures: list[dict[str, Any]] = []
+    croma_facts = None
+    reference_facts = None
+
+    croma_xml = Path(task["croma_xml"]) if task.get("croma_xml") is not None else None
+    reference_xml = (
+        Path(task["reference_xml"]) if task.get("reference_xml") is not None else None
+    )
+
+    if croma_xml is None:
+        status_counts["croma_xml_missing"] += 1
+    else:
+        counters["croma_musicxml_import_attempts"] += 1
+        croma_facts = parse_musicxml(croma_xml, "croma", counters, import_failures)
+
+    if reference_xml is None:
+        status_counts["reference_xml_missing"] += 1
+    else:
+        counters["reference_musicxml_import_attempts"] += 1
+        reference_facts = parse_musicxml(reference_xml, "reference", counters, import_failures)
+
+    result = empty_task_result(counters, status_counts, import_failures)
+    if croma_facts is None or reference_facts is None:
+        return result
+
+    pl = import_polars()
+    fact_rows = corpus_fact_rows(task["relative_path"], croma_facts, reference_facts)
+    facts = facts_frame(pl, fact_rows)
+    comparison = comparison_frame(
+        pl,
+        facts,
+        sort_rows=bool(task.get("write_comparison_jsonl") or task.get("write_mismatches_jsonl")),
+    )
+    mismatches = comparison.filter(~pl.col("matches"))
+
+    result["fact_rows"] = facts.height
+    result["comparison_rows"] = comparison.height
+    result["mismatch_rows"] = mismatches.height
+    if task.get("write_facts_jsonl"):
+        result["facts_jsonl"] = frame_jsonl_text(facts)
+    if task.get("write_comparison_jsonl"):
+        result["comparison_jsonl"] = frame_jsonl_text(comparison)
+    if task.get("write_mismatches_jsonl"):
+        result["mismatches_jsonl"] = frame_jsonl_text(mismatches)
+
+    if mismatches.height:
+        counters["structural_mismatches"] += 1
+        category_counts, examples = mismatch_summary(
+            mismatches,
+            int(task["max_examples_per_category"]),
+        )
+        result["mismatch_category_counts"] = dict(category_counts)
+        result["examples"] = examples
+    else:
+        counters["structural_matches"] += 1
+
+    result["counters"] = dict(counters)
+    return result
+
+
+def empty_task_result(
+    counters: Counter[str],
+    status_counts: Counter[str],
+    import_failures: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "counters": dict(counters),
+        "status_counts": dict(status_counts),
+        "mismatch_category_counts": {},
+        "examples": {},
+        "import_failures": import_failures,
+        "fact_rows": 0,
+        "comparison_rows": 0,
+        "mismatch_rows": 0,
+        "facts_jsonl": None,
+        "comparison_jsonl": None,
+        "mismatches_jsonl": None,
+    }
+
+
 def corpus_fact_rows(
     relative_path: str,
     croma_facts: dict[str, Any],
@@ -319,9 +490,12 @@ def corpus_fact_rows(
     return rows
 
 
-def comparison_frame(pl: Any, fact_rows: list[dict[str, str | None]]) -> Any:
+def facts_frame(pl: Any, fact_rows: list[dict[str, str | None]]) -> Any:
+    return pl.DataFrame(fact_rows, schema=fact_schema(pl))
+
+
+def comparison_frame(pl: Any, facts: Any, *, sort_rows: bool) -> Any:
     keys = ["relative_path", "file_name", "category", "path"]
-    facts = pl.DataFrame(fact_rows, schema=fact_schema(pl))
     croma = (
         facts.filter(pl.col("side") == "croma")
         .select(
@@ -338,7 +512,7 @@ def comparison_frame(pl: Any, fact_rows: list[dict[str, str | None]]) -> Any:
             pl.lit(True).alias("reference_present"),
         )
     )
-    return (
+    comparison = (
         croma.join(reference, on=keys, how="full", coalesce=True)
         .with_columns(
             pl.col("croma_present").fill_null(False),
@@ -357,21 +531,31 @@ def comparison_frame(pl: Any, fact_rows: list[dict[str, str | None]]) -> Any:
             .alias("matches")
         )
         .select(*keys, "croma_present", "reference_present", "croma", "reference", "matches")
-        .sort(keys)
     )
+    if sort_rows:
+        return comparison.sort(keys)
+    return comparison
 
 
-def update_mismatch_summary(
+def mismatch_summary(
     mismatches: Any,
-    category_counts: Counter[str],
-    examples: dict[str, list[dict[str, Any]]],
     max_examples_per_category: int,
-) -> None:
-    for row in mismatches.iter_rows(named=True):
+) -> tuple[Counter[str], dict[str, list[dict[str, Any]]]]:
+    category_counts: Counter[str] = Counter(
+        {
+            str(category): int(count)
+            for category, count in mismatches.group_by("category").len().iter_rows()
+        }
+    )
+    examples: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if max_examples_per_category <= 0:
+        return category_counts, {}
+
+    example_rows = mismatches.group_by("category", maintain_order=True).head(
+        max_examples_per_category
+    )
+    for row in example_rows.iter_rows(named=True):
         category = str(row["category"])
-        category_counts[category] += 1
-        if len(examples[category]) >= max_examples_per_category:
-            continue
         examples[category].append(
             {
                 "relative_path": row["relative_path"],
@@ -383,6 +567,29 @@ def update_mismatch_summary(
                 "reference": decode_fact_value(row["reference"]),
             }
         )
+    return category_counts, dict(examples)
+
+
+def merge_counter(target: Counter[str], source: dict[str, int]) -> None:
+    for key, count in source.items():
+        target[str(key)] += int(count)
+
+
+def merge_examples(
+    target: dict[str, list[dict[str, Any]]],
+    source: dict[str, list[dict[str, Any]]],
+    max_examples_per_category: int,
+) -> None:
+    for category, rows in source.items():
+        for row in rows:
+            if len(target[category]) >= max_examples_per_category:
+                break
+            target[category].append(row)
+
+
+def print_progress(args: argparse.Namespace, completed: int, total: int) -> None:
+    if args.progress_every and completed % args.progress_every == 0:
+        print(f"processed {completed}/{total}", file=sys.stderr)
 
 
 def optional_jsonl_handle(path: Path | None) -> Any:
@@ -402,16 +609,13 @@ class NullJsonlHandle:
         return None
 
 
-def write_jsonl_rows(handle: Any, rows: list[dict[str, Any]]) -> None:
-    for row in rows:
-        handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str))
-        handle.write("\n")
+def frame_jsonl_text(frame: Any) -> str:
+    return frame.write_ndjson()
 
 
-def write_frame_jsonl(handle: Any, frame: Any) -> None:
-    for row in frame.iter_rows(named=True):
-        handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str))
-        handle.write("\n")
+def write_optional_text(handle: Any, text: str | None) -> None:
+    if text:
+        handle.write(text)
 
 
 def write_parquet(pl: Any, jsonl: Path | None, parquet: Path | None, schema: dict[str, Any]) -> None:
