@@ -54,6 +54,37 @@ For Croma's ABC-to-MusicXML milestone, read and implement from the following
   semantic target, but they must not become notes.
 - Reference converters do not override this source.
 
+### Barline Normalization Policy
+
+ABC 2.1 section 4.8 defines canonical barlines and explicitly recommends that
+parsers be liberal with arbitrary `|`, `[`, `]`, and `:` sequences. Croma
+normalizes source-spanned barline syntax before semantic lowering:
+
+- Right-edge measure closers: `|`, `||`, `|]`, `:|`, `:||`, `::|`, and `:|]`
+  close the current measure. `:||` and `:|]` are normalized as repeat-end
+  barlines; the repeat-end MusicXML barline already carries the final-style
+  visual boundary, so Croma does not emit a second adjacent double/final
+  barline.
+- Left-edge repeat starts: `|:`, `||:`, `|::`, and `[|:` emit a MusicXML
+  left-repeat edge for the measure they start. `||:` is lowered as a double
+  boundary plus repeat start; `[|:` is lowered as an initial boundary plus
+  repeat start. At the first body position these attach to measure 1 and must
+  not create an empty measure 1.
+- Combined repeat boundaries: `::`, `:|:`, and `:||:` are normalized as
+  repeat-both boundaries: a right-edge repeat end on the current measure plus a
+  left-edge repeat start on the following measure. At the first body position
+  they are recovered without inserting an empty measure.
+- Triple-repeat spellings such as `|::` and `::|` preserve the start/end repeat
+  edge. Croma does not currently model a repeat playback count for these
+  spellings.
+- Variant endings start at `[N` or adjacent shorthand such as `|1` and `:|2`.
+  Per section 4.10, endings stop at `||`, `:|`, or `|]`; Croma emits the ending
+  stop on the same MusicXML barline rather than double-emitting another
+  boundary.
+- Unrecognized liberal sequences are preserved in syntax, produce a
+  source-spanned `abc.music.barline.liberal` warning, and lower as stable
+  measure boundaries without changing note timing.
+
 ## Immediate Parser Backlog Anchored In 2.1
 
 1. Source text wrapper with byte spans and line/column lookup.

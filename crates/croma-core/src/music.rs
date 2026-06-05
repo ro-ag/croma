@@ -1859,12 +1859,8 @@ impl VoiceTimelineBuilder {
                 let starts_current_measure = self.is_empty_measure_start()
                     && (starts_measure_barline(kind)
                         || (self.is_first_measure_start()
-                            && starts_first_body_measure_barline(kind)));
-                if !starts_current_measure && starts_next_measure_barline(kind) {
-                    self.start_measure_after_barline(span);
-                    self.push_barline(kind, span);
-                    return;
-                }
+                            && starts_first_body_measure_barline(kind)))
+                    || self.is_first_measure_combined_repeat_start(kind, span);
                 self.push_barline(kind, span);
                 if starts_current_measure {
                     return;
@@ -1954,17 +1950,35 @@ impl VoiceTimelineBuilder {
     fn is_empty_measure_start(&self) -> bool {
         self.onset == Fraction::zero()
             && self.active_overlay.is_none()
-            && self.measures.last().is_some_and(|measure| {
-                measure.overlays.is_empty()
-                    && measure.events.iter().all(|event| {
-                        event.duration == Fraction::zero()
-                            && matches!(event.kind, TimelineEventKind::Barline { .. })
-                    })
-            })
+            && self
+                .measures
+                .last()
+                .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
     }
 
     fn is_first_measure_start(&self) -> bool {
         self.measure_index == 0 && self.measures.len() == 1
+    }
+
+    fn is_first_measure_combined_repeat_start(&self, kind: BarlineKind, span: Span) -> bool {
+        kind == BarlineKind::RepeatStart
+            && self.onset == Fraction::zero()
+            && self.active_overlay.is_none()
+            && self.is_first_measure_start()
+            && self.measures.last().is_some_and(|measure| {
+                !measure.events.is_empty()
+                    && measure.overlays.is_empty()
+                    && measure.events.iter().all(|event| {
+                        event.duration == Fraction::zero()
+                            && event.span == span
+                            && matches!(
+                                event.kind,
+                                TimelineEventKind::Barline {
+                                    kind: BarlineKind::Double | BarlineKind::Initial
+                                }
+                            )
+                    })
+            })
     }
 
     fn start_measure_after_barline(&mut self, span: Span) {
@@ -2080,20 +2094,10 @@ fn starts_measure_barline(kind: BarlineKind) -> bool {
     )
 }
 
-fn starts_next_measure_barline(kind: BarlineKind) -> bool {
-    matches!(kind, BarlineKind::Initial | BarlineKind::RepeatStart)
-}
-
 fn starts_first_body_measure_barline(kind: BarlineKind) -> bool {
     matches!(
         kind,
-        BarlineKind::Double
-            | BarlineKind::Final
-            | BarlineKind::RepeatEnd
-            | BarlineKind::RepeatBoth
-            | BarlineKind::Dotted
-            | BarlineKind::Invisible
-            | BarlineKind::Liberal
+        BarlineKind::Double | BarlineKind::Final | BarlineKind::Liberal
     )
 }
 
@@ -5043,13 +5047,10 @@ fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
         "||" => BarlineKind::Double,
         "|]" => BarlineKind::Final,
         "[|" => BarlineKind::Initial,
-        "|:" | "|::" => BarlineKind::RepeatStart,
-        ":|" | "::|" => BarlineKind::RepeatEnd,
+        "|:" | "|::" | "||:" | "[|:" => BarlineKind::RepeatStart,
+        ":|" | "::|" | ":||" | ":|]" => BarlineKind::RepeatEnd,
         "::" | ":|:" | ":||:" => BarlineKind::RepeatBoth,
         "[|]" => BarlineKind::Invisible,
-        _ if is_liberal_repeat_both_barline(raw) => BarlineKind::RepeatBoth,
-        _ if is_liberal_repeat_start_barline(raw) => BarlineKind::RepeatStart,
-        _ if is_liberal_repeat_end_barline(raw) => BarlineKind::RepeatEnd,
         _ => BarlineKind::Liberal,
     }
 }
@@ -5065,28 +5066,6 @@ fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
         }
     }
     vec![barline.kind]
-}
-
-fn is_liberal_repeat_start_barline(raw: &str) -> bool {
-    !raw.starts_with(':')
-        && raw.ends_with(':')
-        && raw.contains('|')
-        && raw[..raw.len().saturating_sub(1)].chars().any(is_bar_glyph)
-}
-
-fn is_liberal_repeat_end_barline(raw: &str) -> bool {
-    raw.starts_with(':')
-        && !raw.ends_with(':')
-        && raw.contains('|')
-        && raw[1..].chars().any(is_bar_glyph)
-}
-
-fn is_liberal_repeat_both_barline(raw: &str) -> bool {
-    raw.starts_with(':') && raw.ends_with(':') && raw.contains('|')
-}
-
-fn is_bar_glyph(ch: char) -> bool {
-    matches!(ch, '|' | '[' | ']')
 }
 
 fn is_note_letter(ch: char) -> bool {
