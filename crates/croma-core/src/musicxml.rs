@@ -2390,6 +2390,28 @@ mod tests {
     }
 
     #[test]
+    fn ties_across_barlines_export_start_and_stop_without_diagnostic() {
+        let source = "X:1\nM:2/4\nL:1/4\nK:C\nC- | C D |\n";
+        let export = export_musicxml(source).expect("cross-bar tie should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(
+            !export
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+        );
+        assert_eq!(count(&export.musicxml, "<tie type=\"start\"/>"), 1);
+        assert_eq!(count(&export.musicxml, "<tie type=\"stop\"/>"), 1);
+        assert_eq!(count(&export.musicxml, "<tied type=\"start\""), 1);
+        assert_eq!(count(&export.musicxml, "<tied type=\"stop\""), 1);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+        assert_eq!(measures[0].notes.len(), 1);
+        assert_eq!(measures[1].notes.len(), 2);
+    }
+
+    #[test]
     fn grace_notes_export_reference_compatible_display_types_without_duration() {
         let source = "X:1\nT:Grace Display\nM:4/4\nL:1/4\nK:C\n{g}C {de}D|\n";
         let export = export_musicxml(source).expect("grace note should export");
