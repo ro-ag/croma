@@ -121,6 +121,12 @@ INSERT INTO "metric" VALUES(48,'phase-10k','full_10k','missing_in_croma','179437
 INSERT INTO "metric" VALUES(49,'phase-10k','full_10k','extra_in_croma','1643332','1642470',NULL,'rows','-862 lyric/symbol extender realignment');
 INSERT INTO "metric" VALUES(50,'phase-10k','full_10k','exports_success_failure','9935/65','9935/65',NULL,'files','unchanged; no new panics/failures');
 INSERT INTO "metric" VALUES(51,'phase-10k','full_10k','import_failures','0/0','0/0',NULL,'files','croma/reference musicxml import failures');
+INSERT INTO "metric" VALUES(52,'phase-10l','full_10k','mismatch_rows','3577076','3536841',NULL,'rows','-40235 across all categories; no regressions');
+INSERT INTO "metric" VALUES(53,'phase-10l','full_10k','affected_files','62','62',NULL,'files','files with |[X: inline-field-after-barline pattern');
+INSERT INTO "metric" VALUES(54,'phase-10l','full_10k','pitch','20575','17524',NULL,'rows','-3051');
+INSERT INTO "metric" VALUES(55,'phase-10l','full_10k','duration','35199','32448',NULL,'rows','-2751');
+INSERT INTO "metric" VALUES(56,'phase-10l','full_10k','measure_alignment','36128','34278',NULL,'rows','-1850');
+INSERT INTO "metric" VALUES(57,'phase-10l','full_10k','structural_matches','3093','3094',NULL,'files','+1');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -148,7 +154,8 @@ INSERT INTO "phase" VALUES('phase-10i','codex/phase-10i-lyric-melisma-hold','mer
 INSERT INTO "phase" VALUES('testbed-reproducibility','codex/testbed-reproducibility-recipe','complete',NULL,NULL,NULL,'Corpus/testbed recreation recipe','documentation/infrastructure','Added a committed recipe for recreating full 10k exports, report-only Music21/Polars comparisons, optional large table artifacts, targeted corpus selection, targeted comparisons, validation queries, and progress tracker restore/query/export workflow. Updated corpus inventory to the local trd_obsolete input/reference roots.','Use the recipe before the next parser phase; then triage the remaining 89 direct lyric rows in 7 files.','2026-06-06 02:01:00');
 INSERT INTO "phase" VALUES('linux-sandbox-env','codex/phase-10j-linux-sandbox-env','complete',NULL,NULL,NULL,'Port dev-environment and corpus reproducibility docs from macOS-only paths to a portable Linux cloud sandbox + Nix flake setup; provision Rust 1.96.0 (rustup) and uv Python env','tooling/docs','Rewrote docs/development-environment.md for Linux cloud sandbox (rustup) and local Nix flake; made docs/testing/corpus-reproducibility.md environment-agnostic (ABC_ROOT/REF_ROOT vars, rust-toolchain.toml instead of absolute toolchain path); added provenance note to corpus-inventory.md; updated pinned_toolchain memory and added dev_environments memory. Built env: cargo build -p croma-cli OK, uv sync OK; cargo test --workspace green (cli 18, croma-core 145, croma-fmt 1).','Provision the external 10k corpus (ABC_ROOT/REF_ROOT) into the sandbox, then triage the residual 89 direct lyric rows in 7 files per phase-10i.','2026-06-06 02:24:17');
 INSERT INTO "phase" VALUES('bootstrap-hardening','codex/bootstrap-hardening','complete',NULL,NULL,NULL,'Session bootstrap fail-fast behavior and uv fallback','tooling fix','Hardened tools/session_bootstrap.sh with fail-fast behavior, uv/python3 progress restore fallback, optional verified Git LFS ABC corpus cache import, Zenodo fallback provisioning, and explicit partial corpus status.','Continue Phase 10 parser work after provisioning ABC corpus and reference MusicXML; residual lyric policy triage remains next.','2026-06-06 04:35:22');
-INSERT INTO "phase" VALUES('phase-10k','work/phase-10k-lyric-bar-marker','in_progress',NULL,NULL,NULL,'Residual 89 direct lyric rows in 7 files (lyric cursor/bar-marker policy)','Croma bug fixed (two spec violations); residual rows justified as measure-model/overlay downstream artifacts','Fixed two ABC 2.1 section 5.1 violations: (1) a w:/s: bar marker now advances to the next bar at a block boundary and for consecutive markers instead of being ignored against the previous block note; (2) a hyphen preceded by a space or another hyphen now holds a blank note instead of exporting a literal dash. Direct lyric rows 89->75 across the full 10k; 3 files reach 100% lyric match and +7 files now fully match structurally with no category regressions. Remaining 75 rows in 4 files are downstream of measure-structure (empty leading harmony measure, cut-time grouping, inline meter-change empty measures) or voice-overlay divergences, which the positional comparison cannot align; lyric-to-note alignment is itself correct.','Triage measure-model differences: leading bare-harmony empty measure (tune_006403) and inline meter-change spurious empty measures (tune_002325); both are high-value measure_alignment/barline targets.','2026-06-06 06:00:47');
+INSERT INTO "phase" VALUES('phase-10k','work/phase-10k-lyric-bar-marker','merged',25,'https://github.com/ro-ag/croma/pull/25',NULL,'Residual 89 direct lyric rows in 7 files (lyric cursor/bar-marker policy)','Croma bug fixed (two spec violations); residual rows justified as measure-model/overlay downstream artifacts','Fixed two ABC 2.1 section 5.1 violations: (1) a w:/s: bar marker now advances to the next bar at a block boundary and for consecutive markers instead of being ignored against the previous block note; (2) a hyphen preceded by a space or another hyphen now holds a blank note instead of exporting a literal dash. Direct lyric rows 89->75 across the full 10k; 3 files reach 100% lyric match and +7 files now fully match structurally with no category regressions. Remaining 75 rows in 4 files are downstream of measure-structure (empty leading harmony measure, cut-time grouping, inline meter-change empty measures) or voice-overlay divergences, which the positional comparison cannot align; lyric-to-note alignment is itself correct.','Triage measure-model differences: leading bare-harmony empty measure (tune_006403) and inline meter-change spurious empty measures (tune_002325); both are high-value measure_alignment/barline targets.','2026-06-06 06:34:21');
+INSERT INTO "phase" VALUES('phase-10l','work/phase-10l-inline-field-barline','in_progress',NULL,NULL,NULL,'Inline information field after a barline mis-parsed as a liberal combined barline','Croma parser bug fixed','Fixed a parser bug where a barline immediately followed by an inline field (e.g. |[M:3/8], |[K:D]) swallowed the [ into a liberal |[ barline, dropping the field and inserting a spurious empty measure plus cascading garbage. The barline scan now stops before a [ that begins an inline field. Full 10k report-only mismatch rows drop 3,577,076 -> 3,536,841 (-40,235) with every category improved and none regressed; affects 62 corpus files. tune_002325 fully resolves (11 measures matching reference, 100 percent lyric match).','Apply inline [K:]/[M:]/[L:] changes (parsed but not yet applied): 377 files use inline key changes, 135 use inline meter; route them to the existing key/meter/unit change handlers and emit mid-tune key signatures.','2026-06-06 06:34:21');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -208,6 +215,9 @@ INSERT INTO "validation" VALUES(48,'phase-10k','cargo clippy --workspace --all-t
 INSERT INTO "validation" VALUES(49,'phase-10k','uv run python -m pytest tests -q','pass','6 passed');
 INSERT INTO "validation" VALUES(50,'phase-10k','git diff --check','pass','no whitespace errors');
 INSERT INTO "validation" VALUES(51,'phase-10k','full 10k report-only compare','pass','lyric 89->75, +7 matches, -1064 rows, no regressions');
+INSERT INTO "validation" VALUES(52,'phase-10l','cargo test --workspace','pass','149 core tests incl. new inline-field-after-barline test');
+INSERT INTO "validation" VALUES(53,'phase-10l','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
+INSERT INTO "validation" VALUES(54,'phase-10l','full 10k report-only compare','pass','-40235 mismatch rows, no category regressions');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -222,7 +232,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',51);
+INSERT INTO "sqlite_sequence" VALUES('metric',57);
 INSERT INTO "sqlite_sequence" VALUES('artifact',29);
-INSERT INTO "sqlite_sequence" VALUES('validation',51);
+INSERT INTO "sqlite_sequence" VALUES('validation',54);
 COMMIT;
