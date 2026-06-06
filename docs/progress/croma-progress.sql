@@ -32,6 +32,9 @@ INSERT INTO "artifact" VALUES(23,'bootstrap-hardening','script','tools/provision
 INSERT INTO "artifact" VALUES(24,'bootstrap-hardening','lfs_archive','docs/corpus/zenodo-10k-abc.tar.gz','Optional Git LFS ABC corpus cache archive, built from the Zenodo 10k dataset output.');
 INSERT INTO "artifact" VALUES(25,'bootstrap-hardening','checksum','docs/corpus/zenodo-10k-abc.tar.gz.sha256','SHA-256 checksum used by provision_corpus.py import-archive.');
 INSERT INTO "artifact" VALUES(26,'bootstrap-hardening','docs','docs/testing/corpus-reproducibility.md','Documents Zenodo provenance, LFS cache, bootstrap provisioning, reference XML generation, and archive rebuild commands.');
+INSERT INTO "artifact" VALUES(27,'phase-10k','triage_md','docs/untracked/phase-10k/phase-10k-lyric-bar-marker-triage.md','Bar-marker + double-hyphen lyric triage and 100%-or-justify report');
+INSERT INTO "artifact" VALUES(28,'phase-10k','after_report','docs/untracked/session-after/full-10k-report-only-compare-report.json','Full 10k report-only compare after the fix');
+INSERT INTO "artifact" VALUES(29,'phase-10k','baseline_report','docs/untracked/session-baseline/full-10k-report-only-compare-report.json','Full 10k report-only compare before the fix');
 CREATE TABLE memory (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -40,11 +43,13 @@ CREATE TABLE memory (
 );
 INSERT INTO "memory" VALUES('pinned_toolchain','Rust 1.96.0 pinned by rust-toolchain.toml at repo root.','Use plain cargo/rustc; rust-toolchain.toml auto-selects 1.96.0 on any host. Linux cloud sandbox provisions via rustup (rustup show); local dev via Nix flake. No absolute toolchain path.','2026-06-06 02:23:59');
 INSERT INTO "memory" VALUES('python_tooling','Use uv for Python/music21/Polars/corpus tooling.','Do not hand-roll venv setup.','2026-06-06 01:33:56');
-INSERT INTO "memory" VALUES('abc_reference_repo','/Users/rodox/dev/abc','Use as parser-policy/test/prover reference only; do not copy whole parser.','2026-06-06 01:33:56');
+INSERT INTO "memory" VALUES('abc_reference_repo','/Users/rodox/dev/abc','Use as parser-policy/test/prover reference only; do not copy whole parser.','2026-06-06 06:01:44');
 INSERT INTO "memory" VALUES('generated_artifacts_policy','Keep generated corpus XML/parquet/jsonl/reports under docs/untracked/.','Do not commit generated corpus artifacts unless explicitly requested.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('formatter_lsp_gate','Formatter and LSP wait until parser quality is proven.','Parser/corpus/music21 work remains priority.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('croma_core_crates_io','Keep croma-core crates.io-compatible.','Avoid path-only/local runtime assumptions in library code.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('dev_environments','Two supported: Linux cloud sandbox (rustup + uv) and local Nix flake.','Build/validate from repo root: uv sync; cargo build -p croma-cli; cargo test --workspace. See docs/development-environment.md. Corpus roots are external; set ABC_ROOT/REF_ROOT per docs/testing/corpus-reproducibility.md.','2026-06-06 02:23:59');
+INSERT INTO "memory" VALUES('phase_10k_outcome','Bar marker in w:/s: advances to next bar at block boundary and for consecutive markers; hyphen after space/hyphen holds a blank note (ABC 2.1 section 5.1).','Direct lyric rows 89->75; remaining 75 in tune_006403/001361/002325/006565 are downstream of measure-structure/overlay diffs, not lyric bugs.','2026-06-06 06:01:54');
+INSERT INTO "memory" VALUES('next_target','Measure-model triage: leading bare-harmony empty measure (tune_006403) and inline meter-change empty measures (tune_002325).','High-value measure_alignment/barline targets surfaced by lyric triage.','2026-06-06 06:01:55');
 CREATE TABLE meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -108,6 +113,14 @@ INSERT INTO "metric" VALUES(40,'phase-10i','full_10k','direct_lyric_rows','628',
 INSERT INTO "metric" VALUES(41,'phase-10i','full_10k','exports_success_failure','9935/65','9935/65','0','files',NULL);
 INSERT INTO "metric" VALUES(42,'phase-10i','full_10k','music21_import_failures','0/0','0/0','0','files','Croma/reference import failures.');
 INSERT INTO "metric" VALUES(43,'phase-10i','full_10k','elapsed',NULL,'124.773',NULL,'seconds',NULL);
+INSERT INTO "metric" VALUES(44,'phase-10k','full_10k','direct_lyric_rows','89','75',NULL,'rows','mismatch_category=lyric; remaining 75 in 4 files are downstream of measure-structure/overlay diffs');
+INSERT INTO "metric" VALUES(45,'phase-10k','full_10k','lyric_target_files','7','4',NULL,'files','tune_009204/005254/003682 reach 100% lyric match');
+INSERT INTO "metric" VALUES(46,'phase-10k','full_10k','mismatch_rows','3578140','3577076',NULL,'rows','net -1064; no category increased');
+INSERT INTO "metric" VALUES(47,'phase-10k','full_10k','structural_matches','3086','3093',NULL,'files','+7 fully-matching files');
+INSERT INTO "metric" VALUES(48,'phase-10k','full_10k','missing_in_croma','1794379','1794191',NULL,'rows','-188 lyric/symbol extender realignment');
+INSERT INTO "metric" VALUES(49,'phase-10k','full_10k','extra_in_croma','1643332','1642470',NULL,'rows','-862 lyric/symbol extender realignment');
+INSERT INTO "metric" VALUES(50,'phase-10k','full_10k','exports_success_failure','9935/65','9935/65',NULL,'files','unchanged; no new panics/failures');
+INSERT INTO "metric" VALUES(51,'phase-10k','full_10k','import_failures','0/0','0/0',NULL,'files','croma/reference musicxml import failures');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -135,6 +148,7 @@ INSERT INTO "phase" VALUES('phase-10i','codex/phase-10i-lyric-melisma-hold','mer
 INSERT INTO "phase" VALUES('testbed-reproducibility','codex/testbed-reproducibility-recipe','complete',NULL,NULL,NULL,'Corpus/testbed recreation recipe','documentation/infrastructure','Added a committed recipe for recreating full 10k exports, report-only Music21/Polars comparisons, optional large table artifacts, targeted corpus selection, targeted comparisons, validation queries, and progress tracker restore/query/export workflow. Updated corpus inventory to the local trd_obsolete input/reference roots.','Use the recipe before the next parser phase; then triage the remaining 89 direct lyric rows in 7 files.','2026-06-06 02:01:00');
 INSERT INTO "phase" VALUES('linux-sandbox-env','codex/phase-10j-linux-sandbox-env','complete',NULL,NULL,NULL,'Port dev-environment and corpus reproducibility docs from macOS-only paths to a portable Linux cloud sandbox + Nix flake setup; provision Rust 1.96.0 (rustup) and uv Python env','tooling/docs','Rewrote docs/development-environment.md for Linux cloud sandbox (rustup) and local Nix flake; made docs/testing/corpus-reproducibility.md environment-agnostic (ABC_ROOT/REF_ROOT vars, rust-toolchain.toml instead of absolute toolchain path); added provenance note to corpus-inventory.md; updated pinned_toolchain memory and added dev_environments memory. Built env: cargo build -p croma-cli OK, uv sync OK; cargo test --workspace green (cli 18, croma-core 145, croma-fmt 1).','Provision the external 10k corpus (ABC_ROOT/REF_ROOT) into the sandbox, then triage the residual 89 direct lyric rows in 7 files per phase-10i.','2026-06-06 02:24:17');
 INSERT INTO "phase" VALUES('bootstrap-hardening','codex/bootstrap-hardening','complete',NULL,NULL,NULL,'Session bootstrap fail-fast behavior and uv fallback','tooling fix','Hardened tools/session_bootstrap.sh with fail-fast behavior, uv/python3 progress restore fallback, optional verified Git LFS ABC corpus cache import, Zenodo fallback provisioning, and explicit partial corpus status.','Continue Phase 10 parser work after provisioning ABC corpus and reference MusicXML; residual lyric policy triage remains next.','2026-06-06 04:35:22');
+INSERT INTO "phase" VALUES('phase-10k','work/phase-10k-lyric-bar-marker','in_progress',NULL,NULL,NULL,'Residual 89 direct lyric rows in 7 files (lyric cursor/bar-marker policy)','Croma bug fixed (two spec violations); residual rows justified as measure-model/overlay downstream artifacts','Fixed two ABC 2.1 section 5.1 violations: (1) a w:/s: bar marker now advances to the next bar at a block boundary and for consecutive markers instead of being ignored against the previous block note; (2) a hyphen preceded by a space or another hyphen now holds a blank note instead of exporting a literal dash. Direct lyric rows 89->75 across the full 10k; 3 files reach 100% lyric match and +7 files now fully match structurally with no category regressions. Remaining 75 rows in 4 files are downstream of measure-structure (empty leading harmony measure, cut-time grouping, inline meter-change empty measures) or voice-overlay divergences, which the positional comparison cannot align; lyric-to-note alignment is itself correct.','Triage measure-model differences: leading bare-harmony empty measure (tune_006403) and inline meter-change spurious empty measures (tune_002325); both are high-value measure_alignment/barline targets.','2026-06-06 06:00:47');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -189,6 +203,11 @@ INSERT INTO "validation" VALUES(43,'bootstrap-hardening','uv run python -m py_co
 INSERT INTO "validation" VALUES(44,'bootstrap-hardening','uv run python -m pytest tests -q','passed','6 passed.');
 INSERT INTO "validation" VALUES(45,'bootstrap-hardening','git diff --cached --check','passed',NULL);
 INSERT INTO "validation" VALUES(46,'bootstrap-hardening','git lfs ls-files','passed','dfaff46a0a * docs/corpus/zenodo-10k-abc.tar.gz');
+INSERT INTO "validation" VALUES(47,'phase-10k','cargo test --workspace','pass','148 core tests incl. 3 new no-happy-path lyric tests');
+INSERT INTO "validation" VALUES(48,'phase-10k','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
+INSERT INTO "validation" VALUES(49,'phase-10k','uv run python -m pytest tests -q','pass','6 passed');
+INSERT INTO "validation" VALUES(50,'phase-10k','git diff --check','pass','no whitespace errors');
+INSERT INTO "validation" VALUES(51,'phase-10k','full 10k report-only compare','pass','lyric 89->75, +7 matches, -1064 rows, no regressions');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -203,7 +222,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',43);
-INSERT INTO "sqlite_sequence" VALUES('artifact',26);
-INSERT INTO "sqlite_sequence" VALUES('validation',46);
+INSERT INTO "sqlite_sequence" VALUES('metric',51);
+INSERT INTO "sqlite_sequence" VALUES('artifact',29);
+INSERT INTO "sqlite_sequence" VALUES('validation',51);
 COMMIT;
