@@ -2,14 +2,14 @@
 
 ## Located Corpus
 
-- ABC corpus directory: `/Users/rodox/dev/rs/trd/test/real/abc`
+- ABC corpus directory: `/Users/rodox/dev/rs/trd_obsolete/test/real/abc`
 - ABC `.abc` files discovered under that directory: `10000`
 - Directory size: `39M`
-- Indexed 10k manifest: `/Users/rodox/dev/rs/trd/test/real/manifest.jsonl`
+- Indexed 10k manifest: `/Users/rodox/dev/rs/trd_obsolete/test/real/manifest.jsonl`
 - Manifest rows: `10000`
-- Reference MusicXML directory: `/Users/rodox/dev/rs/trd/test/real/musicxml`
+- Reference MusicXML directory: `/Users/rodox/dev/rs/trd_obsolete/test/real/musicxml`
 - Reference MusicXML size: `308M`
-- TRD coverage DB: `/Users/rodox/dev/rs/trd/test/real/coverage/coverage.sqlite3`
+- TRD coverage DB: `/Users/rodox/dev/rs/trd_obsolete/test/real/coverage/coverage.sqlite3`
 - Coverage DB size: `15M`
 
 The corpus should stay outside tracked Croma paths. Reports derived from it
@@ -17,11 +17,11 @@ belong under `docs/untracked/`.
 
 ## Existing TRD Corpus Tooling
 
-- Python package: `/Users/rodox/dev/rs/trd/src/traduttore_tools`
+- Python package: `/Users/rodox/dev/rs/trd_obsolete/src/traduttore_tools`
 - Corpus command surface: `uv run trd-corpus ...`
 - Coverage DB command surface: `uv run trd-coverage-db ...`
-- Reference converter used by TRD: `/Users/rodox/dev/rs/trd/test/real/tools/abc2xml`
-- Smoke output directory: `/Users/rodox/dev/rs/trd/test/real/trd-smoke`
+- Reference converter used by TRD: `/Users/rodox/dev/rs/trd_obsolete/test/real/tools/abc2xml`
+- Smoke output directory: `/Users/rodox/dev/rs/trd_obsolete/test/real/trd-smoke`
 
 TRD uses a SQLite database with tables for samples, feature counts, smoke runs,
 semantic categories, finding tags, and dispositions. This is the right shape
@@ -99,19 +99,19 @@ own full parse/export corpus comparison.
 ## Sources
 
 - Local ABC corpus directory:
-  `/Users/rodox/dev/rs/trd/test/real/abc`
+  `/Users/rodox/dev/rs/trd_obsolete/test/real/abc`
 - Local 10k corpus manifest:
-  `/Users/rodox/dev/rs/trd/test/real/manifest.jsonl`
+  `/Users/rodox/dev/rs/trd_obsolete/test/real/manifest.jsonl`
 - Local reference MusicXML directory:
-  `/Users/rodox/dev/rs/trd/test/real/musicxml`
+  `/Users/rodox/dev/rs/trd_obsolete/test/real/musicxml`
 - Local TRD coverage SQLite database:
-  `/Users/rodox/dev/rs/trd/test/real/coverage/coverage.sqlite3`
+  `/Users/rodox/dev/rs/trd_obsolete/test/real/coverage/coverage.sqlite3`
 - Local TRD corpus tooling:
-  `/Users/rodox/dev/rs/trd/src/traduttore_tools/corpus.py`
+  `/Users/rodox/dev/rs/trd_obsolete/src/traduttore_tools/corpus.py`
 - Local TRD coverage DB tooling:
-  `/Users/rodox/dev/rs/trd/src/traduttore_tools/coverage_db.py`
+  `/Users/rodox/dev/rs/trd_obsolete/src/traduttore_tools/coverage_db.py`
 - Local TRD chat transcript used for project context:
-  `/Users/rodox/dev/rs/trd/docs/chats/2026-06-03-traduttore-coverage-continuation.md`
+  `/Users/rodox/dev/rs/trd_obsolete/docs/chats/2026-06-03-traduttore-coverage-continuation.md`
 - Counts were produced with local filesystem, `sqlite3`, `find`, `wc`, and
   `du` commands on June 3, 2026. The `.abc` file count was re-verified from
   the local filesystem on June 4, 2026.

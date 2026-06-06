@@ -23,6 +23,9 @@ INSERT INTO "artifact" VALUES(14,'phase-10i','target_after_report','docs/untrack
 INSERT INTO "artifact" VALUES(15,'phase-10i','full_report','docs/untracked/phase-10i/full-10k-after-report-only-compare-report.json','Full 10k report-only comparison after Phase 10-i fix.');
 INSERT INTO "artifact" VALUES(16,'phase-10i','residual_file_list','docs/untracked/phase-10i/residual-lyric-files.txt','Residual lyric target file list.');
 INSERT INTO "artifact" VALUES(17,'phase-10i','target_corpus','docs/untracked/phase-10i/residual-lyric-target-corpus/','Target corpus for residual lyric/melisma analysis.');
+INSERT INTO "artifact" VALUES(18,'testbed-reproducibility','recipe','docs/testing/corpus-reproducibility.md','Committed recipe for recreating corpus/testbed artifacts.');
+INSERT INTO "artifact" VALUES(19,'testbed-reproducibility','inventory','docs/reference/corpus-inventory.md','Corpus inventory updated to current local input/reference roots.');
+INSERT INTO "artifact" VALUES(20,'testbed-reproducibility','progress_snapshot','docs/progress/croma-progress.sql','Progress tracker SQL snapshot including this documentation phase.');
 CREATE TABLE memory (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -122,6 +125,7 @@ INSERT INTO "phase" VALUES('phase-10f','codex/phase-10f-polars-guided-parser-fix
 INSERT INTO "phase" VALUES('phase-10g','codex/phase-10g-text-direction-leakage','merged',18,'https://github.com/ro-ag/croma/pull/18','640c7a6','Malformed unprefixed quoted chord strings','Croma MusicXML export bug fixed','Strings like "(A7)" and "C/" export as words instead of fake harmony; valid chord symbols still export as harmony. Full mismatch rows -5663.','Body w: lyric alignment/control mismatches.','2026-06-06 01:33:56');
 INSERT INTO "phase" VALUES('phase-10h','codex/phase-10h-lyric-alignment-controls','merged',19,NULL,'ce6c160','Lyric hyphen control MusicXML export','Croma MusicXML export bug fixed','ABC lyric - controls no longer export as standalone sung text; escaped literal hyphens remain text. Full mismatch rows -66232; lyric rows 28985 -> 628.','Residual _ melisma/hold lyric alignment, especially tune_000509.abc.','2026-06-06 01:33:56');
 INSERT INTO "phase" VALUES('phase-10i','codex/phase-10i-lyric-melisma-hold','merged',20,'https://github.com/ro-ag/croma/pull/20','51440fb','NBSP lyric tokenization plus empty-extender comparison for _ melisma holds','Croma bug plus comparison harness bug fixed','Fixed tune_000509-style lyric _ melisma/hold evidence: Croma no longer treats U+00A0 inside body w: lyrics as a separator, and comparison tooling preserves empty MusicXML lyric extender slots. Target direct lyric rows reduced; no targeted regressions.','Remaining direct lyric rows: 89 rows in 7 files, likely lyric cursor/reference-policy behavior; triage separately.','2026-06-06 01:46:30');
+INSERT INTO "phase" VALUES('testbed-reproducibility','codex/testbed-reproducibility-recipe','complete',NULL,NULL,NULL,'Corpus/testbed recreation recipe','documentation/infrastructure','Added a committed recipe for recreating full 10k exports, report-only Music21/Polars comparisons, optional large table artifacts, targeted corpus selection, targeted comparisons, validation queries, and progress tracker restore/query/export workflow. Updated corpus inventory to the local trd_obsolete input/reference roots.','Use the recipe before the next parser phase; then triage the remaining 89 direct lyric rows in 7 files.','2026-06-06 02:01:00');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -157,6 +161,10 @@ INSERT INTO "validation" VALUES(24,'phase-10i','cargo clippy --workspace --all-t
 INSERT INTO "validation" VALUES(25,'phase-10i','cargo doc -p croma-core --no-deps','passed','Pinned Rust toolchain, reported by Phase 10-i agent.');
 INSERT INTO "validation" VALUES(26,'phase-10i','cargo package -p croma-core --allow-dirty','passed','Pinned Rust toolchain, reported by Phase 10-i agent.');
 INSERT INTO "validation" VALUES(27,'phase-10i','git diff --check','passed','Reported by Phase 10-i agent.');
+INSERT INTO "validation" VALUES(28,'testbed-reproducibility','find "$ABC_ROOT" -type f -name ''*.abc'' | wc -l','passed','10000 files under /Users/rodox/dev/rs/trd_obsolete/test/real/abc.');
+INSERT INTO "validation" VALUES(29,'testbed-reproducibility','find "$REF_ROOT" -type f \( -name ''*.musicxml'' -o -name ''*.xml'' \) | wc -l','passed','10000 reference XML/MusicXML files under /Users/rodox/dev/rs/trd_obsolete/test/real/musicxml.');
+INSERT INTO "validation" VALUES(30,'testbed-reproducibility','uv run python tools/progress/progress.py status','passed','Tracker query works and shows Phase 10-i merged.');
+INSERT INTO "validation" VALUES(31,'testbed-reproducibility','git diff --check','passed',NULL);
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -172,6 +180,6 @@ FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
 INSERT INTO "sqlite_sequence" VALUES('metric',43);
-INSERT INTO "sqlite_sequence" VALUES('artifact',17);
-INSERT INTO "sqlite_sequence" VALUES('validation',27);
+INSERT INTO "sqlite_sequence" VALUES('artifact',20);
+INSERT INTO "sqlite_sequence" VALUES('validation',31);
 COMMIT;
