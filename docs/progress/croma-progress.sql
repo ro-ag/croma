@@ -32,12 +32,13 @@ CREATE TABLE memory (
   notes TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT INTO "memory" VALUES('pinned_toolchain','/Users/rodox/.rustup/toolchains/1.96.0-aarch64-apple-darwin','Use PATH="$TOOLCHAIN/bin:$PATH" RUSTC="$TOOLCHAIN/bin/rustc" "$TOOLCHAIN/bin/cargo" ...','2026-06-06 01:33:56');
+INSERT INTO "memory" VALUES('pinned_toolchain','Rust 1.96.0 pinned by rust-toolchain.toml at repo root.','Use plain cargo/rustc; rust-toolchain.toml auto-selects 1.96.0 on any host. Linux cloud sandbox provisions via rustup (rustup show); local dev via Nix flake. No absolute toolchain path.','2026-06-06 02:23:59');
 INSERT INTO "memory" VALUES('python_tooling','Use uv for Python/music21/Polars/corpus tooling.','Do not hand-roll venv setup.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('abc_reference_repo','/Users/rodox/dev/abc','Use as parser-policy/test/prover reference only; do not copy whole parser.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('generated_artifacts_policy','Keep generated corpus XML/parquet/jsonl/reports under docs/untracked/.','Do not commit generated corpus artifacts unless explicitly requested.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('formatter_lsp_gate','Formatter and LSP wait until parser quality is proven.','Parser/corpus/music21 work remains priority.','2026-06-06 01:33:56');
 INSERT INTO "memory" VALUES('croma_core_crates_io','Keep croma-core crates.io-compatible.','Avoid path-only/local runtime assumptions in library code.','2026-06-06 01:33:56');
+INSERT INTO "memory" VALUES('dev_environments','Two supported: Linux cloud sandbox (rustup + uv) and local Nix flake.','Build/validate from repo root: uv sync; cargo build -p croma-cli; cargo test --workspace. See docs/development-environment.md. Corpus roots are external; set ABC_ROOT/REF_ROOT per docs/testing/corpus-reproducibility.md.','2026-06-06 02:23:59');
 CREATE TABLE meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -126,6 +127,7 @@ INSERT INTO "phase" VALUES('phase-10g','codex/phase-10g-text-direction-leakage',
 INSERT INTO "phase" VALUES('phase-10h','codex/phase-10h-lyric-alignment-controls','merged',19,NULL,'ce6c160','Lyric hyphen control MusicXML export','Croma MusicXML export bug fixed','ABC lyric - controls no longer export as standalone sung text; escaped literal hyphens remain text. Full mismatch rows -66232; lyric rows 28985 -> 628.','Residual _ melisma/hold lyric alignment, especially tune_000509.abc.','2026-06-06 01:33:56');
 INSERT INTO "phase" VALUES('phase-10i','codex/phase-10i-lyric-melisma-hold','merged',20,'https://github.com/ro-ag/croma/pull/20','51440fb','NBSP lyric tokenization plus empty-extender comparison for _ melisma holds','Croma bug plus comparison harness bug fixed','Fixed tune_000509-style lyric _ melisma/hold evidence: Croma no longer treats U+00A0 inside body w: lyrics as a separator, and comparison tooling preserves empty MusicXML lyric extender slots. Target direct lyric rows reduced; no targeted regressions.','Remaining direct lyric rows: 89 rows in 7 files, likely lyric cursor/reference-policy behavior; triage separately.','2026-06-06 01:46:30');
 INSERT INTO "phase" VALUES('testbed-reproducibility','codex/testbed-reproducibility-recipe','complete',NULL,NULL,NULL,'Corpus/testbed recreation recipe','documentation/infrastructure','Added a committed recipe for recreating full 10k exports, report-only Music21/Polars comparisons, optional large table artifacts, targeted corpus selection, targeted comparisons, validation queries, and progress tracker restore/query/export workflow. Updated corpus inventory to the local trd_obsolete input/reference roots.','Use the recipe before the next parser phase; then triage the remaining 89 direct lyric rows in 7 files.','2026-06-06 02:01:00');
+INSERT INTO "phase" VALUES('linux-sandbox-env','codex/phase-10j-linux-sandbox-env','complete',NULL,NULL,NULL,'Port dev-environment and corpus reproducibility docs from macOS-only paths to a portable Linux cloud sandbox + Nix flake setup; provision Rust 1.96.0 (rustup) and uv Python env','tooling/docs','Rewrote docs/development-environment.md for Linux cloud sandbox (rustup) and local Nix flake; made docs/testing/corpus-reproducibility.md environment-agnostic (ABC_ROOT/REF_ROOT vars, rust-toolchain.toml instead of absolute toolchain path); added provenance note to corpus-inventory.md; updated pinned_toolchain memory and added dev_environments memory. Built env: cargo build -p croma-cli OK, uv sync OK; cargo test --workspace green (cli 18, croma-core 145, croma-fmt 1).','Provision the external 10k corpus (ABC_ROOT/REF_ROOT) into the sandbox, then triage the residual 89 direct lyric rows in 7 files per phase-10i.','2026-06-06 02:24:17');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -165,6 +167,9 @@ INSERT INTO "validation" VALUES(28,'testbed-reproducibility','find "$ABC_ROOT" -
 INSERT INTO "validation" VALUES(29,'testbed-reproducibility','find "$REF_ROOT" -type f \( -name ''*.musicxml'' -o -name ''*.xml'' \) | wc -l','passed','10000 reference XML/MusicXML files under /Users/rodox/dev/rs/trd_obsolete/test/real/musicxml.');
 INSERT INTO "validation" VALUES(30,'testbed-reproducibility','uv run python tools/progress/progress.py status','passed','Tracker query works and shows Phase 10-i merged.');
 INSERT INTO "validation" VALUES(31,'testbed-reproducibility','git diff --check','passed',NULL);
+INSERT INTO "validation" VALUES(32,'linux-sandbox-env','cargo build -p croma-cli','pass','Built target/debug/croma on x86_64-unknown-linux-gnu with Rust 1.96.0.');
+INSERT INTO "validation" VALUES(33,'linux-sandbox-env','cargo test --workspace','pass','cli 18, croma-core 145, croma-fmt 1 passed; 0 failed.');
+INSERT INTO "validation" VALUES(34,'linux-sandbox-env','uv sync','pass','Resolved 30 / installed 28 packages; music21 10.3.0, polars 1.41.2 importable.');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -181,5 +186,5 @@ ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
 INSERT INTO "sqlite_sequence" VALUES('metric',43);
 INSERT INTO "sqlite_sequence" VALUES('artifact',20);
-INSERT INTO "sqlite_sequence" VALUES('validation',31);
+INSERT INTO "sqlite_sequence" VALUES('validation',34);
 COMMIT;
