@@ -2432,20 +2432,65 @@ pub(crate) struct ScoreModelInput<'a> {
 }
 
 pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
-    let staff_id = StaffId {
-        value: 1,
-        span: input.source_span,
-    };
-    let voices = input
+    // Each ABC voice becomes its own MusicXML part (one part per voice), matching
+    // how abc2xml/music21 organise a multi-voice tune. A single-voice tune still
+    // yields exactly one part, so the common case is unchanged.
+    let single_voice = input.voices.len() == 1;
+    let mut parts = input
         .voices
         .iter()
-        .map(|voice| semantic_voice_from_timeline(voice, staff_id, input.field_state))
+        .enumerate()
+        .map(|(index, voice)| {
+            let staff_id = StaffId {
+                value: 1,
+                span: input.source_span,
+            };
+            let semantic = semantic_voice_from_timeline(voice, staff_id, input.field_state);
+            let staves = vec![Staff {
+                id: staff_id,
+                voices: vec![semantic.id.clone()],
+                source_span: input.source_span,
+            }];
+            // Prefer the voice's own name; fall back to the tune title only when
+            // there is a single voice (a part name does not affect comparison).
+            let name = semantic
+                .properties
+                .name
+                .clone()
+                .or_else(|| semantic.properties.nm.clone())
+                .or_else(|| single_voice.then(|| input.title.clone()).flatten());
+            Part {
+                id: PartId {
+                    value: format!("P{}", index + 1),
+                    span: input.source_span,
+                },
+                name,
+                staves,
+                voices: vec![semantic],
+                source_span: input.source_span,
+            }
+        })
         .collect::<Vec<_>>();
-    let staves = vec![Staff {
-        id: staff_id,
-        voices: voices.iter().map(|voice| voice.id.clone()).collect(),
-        source_span: input.source_span,
-    }];
+    if parts.is_empty() {
+        // Defensive: a tune always exposes at least one (possibly empty) part.
+        parts.push(Part {
+            id: PartId {
+                value: "P1".to_owned(),
+                span: input.source_span,
+            },
+            name: input.title.clone(),
+            staves: vec![Staff {
+                id: StaffId {
+                    value: 1,
+                    span: input.source_span,
+                },
+                voices: Vec::new(),
+                source_span: input.source_span,
+            }],
+            voices: Vec::new(),
+            source_span: input.source_span,
+        });
+    }
 
     Score {
         metadata: ScoreMetadata {
@@ -2460,16 +2505,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
             post_tune_lyrics: input.post_tune_lyrics.to_vec(),
             source_span: input.source_span,
         },
-        parts: vec![Part {
-            id: PartId {
-                value: "P1".to_owned(),
-                span: input.source_span,
-            },
-            name: input.title,
-            staves,
-            voices,
-            source_span: input.source_span,
-        }],
+        parts,
         diagnostics: input.diagnostics.to_vec(),
         divisions: input.divisions,
         source_span: input.source_span,
@@ -7082,9 +7118,11 @@ mod tests {
         let (tune, diagnostics) = tune_for(source);
 
         assert!(diagnostics.is_empty());
-        let voice = tune.score.parts[0]
-            .voices
+        let voice = tune
+            .score
+            .parts
             .iter()
+            .flat_map(|part| &part.voices)
             .find(|voice| voice.id.value == "2")
             .expect("expected voice 2");
         let notes = voice
