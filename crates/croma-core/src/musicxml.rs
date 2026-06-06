@@ -36,11 +36,26 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.declaration();
         self.xml.start("score-partwise", &[("version", "4.0")]);
         self.write_metadata();
+        self.write_credits();
         self.write_part_list();
         for (part_index, part) in self.score.parts.iter().enumerate() {
             self.write_part(part, part_index);
         }
         self.xml.end("score-partwise");
+    }
+
+    /// `W:` post-tune words are text printed after the tune (ABC 2.1), not music
+    /// aligned to notes. MusicXML represents such page-level text with
+    /// score-header `<credit>` elements rather than in-measure directions.
+    fn write_credits(&mut self) {
+        for line in &self.score.metadata.post_tune_lyrics {
+            if line.text.trim().is_empty() {
+                continue;
+            }
+            self.xml.start("credit", &[("page", "1")]);
+            self.xml.text_element("credit-words", &line.text);
+            self.xml.end("credit");
+        }
     }
 
     fn write_metadata(&mut self) {
@@ -81,7 +96,7 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.start("measure", &[("number", number.as_str())]);
             if measure_position == 0 {
                 self.write_attributes(part);
-                self.write_initial_directions(part);
+                self.write_initial_directions(part, part_index == 0);
             }
 
             if pending_left_repeat {
@@ -218,21 +233,19 @@ impl<'score> MusicXmlWriter<'score> {
         }
     }
 
-    fn write_initial_directions(&mut self, part: &Part) {
+    fn write_initial_directions(&mut self, part: &Part, is_first_part: bool) {
+        // Score-level directions (tempo and preserved `%%` directives) belong to
+        // the score once, not to every part. With one part per voice, emitting
+        // them in each part duplicated them N times. `W:` post-tune verses are
+        // emitted separately as score-header credits (see `write_credits`).
+        if !is_first_part {
+            return;
+        }
         if let Some(tempo) = &self.score.metadata.tempo {
             self.write_direction_words(&tempo.text, None, Some("1"), Some(1));
         }
         for directive in &self.score.metadata.preserved_directives {
             self.write_preserved_directive(directive, part);
-        }
-        for words in self
-            .score
-            .metadata
-            .post_tune_lyrics
-            .iter()
-            .map(|line| &line.text)
-        {
-            self.write_direction_words(words, None, Some("1"), Some(1));
         }
     }
 
@@ -2533,6 +2546,29 @@ mod tests {
             p2.contains("<sign>F</sign>"),
             "V:2 should keep its bass clef"
         );
+    }
+
+    #[test]
+    fn post_tune_words_export_as_credits_not_in_measure_directions() {
+        // `W:` words are printed after the tune (ABC 2.1), so they belong in
+        // score-header <credit> elements, not as in-measure <words> directions.
+        let source =
+            "X:1\nT:Song\nL:1/4\nK:C\nC D E F|\nW: Verse one here\nW: Verse two here\nW:\n";
+        let export = export_musicxml(source).expect("post-tune words should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(
+            export
+                .musicxml
+                .contains("<credit-words>Verse one here</credit-words>")
+        );
+        assert!(
+            export
+                .musicxml
+                .contains("<credit-words>Verse two here</credit-words>")
+        );
+        // The empty `W:` line is skipped, and no verse leaks into a direction.
+        assert!(!export.musicxml.contains("<words>Verse one here</words>"));
+        assert_eq!(count(&export.musicxml, "<credit-words>"), 2);
     }
 
     #[test]
