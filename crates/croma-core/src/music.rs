@@ -6372,9 +6372,19 @@ mod tests {
         let non_empty: Vec<usize> = tune.voices[0]
             .measures
             .iter()
-            .map(|measure| measure.events.iter().filter(|event| event.alignable).count())
+            .map(|measure| {
+                measure
+                    .events
+                    .iter()
+                    .filter(|event| event.alignable)
+                    .count()
+            })
             .collect();
-        assert_eq!(non_empty, vec![1, 2, 2], "no spurious empty measures: {non_empty:?}");
+        assert_eq!(
+            non_empty,
+            vec![1, 2, 2],
+            "no spurious empty measures: {non_empty:?}"
+        );
 
         let line = document
             .music
@@ -6680,9 +6690,11 @@ mod tests {
         // `tri--umph` spans three notes with the middle one blank (ABC 2.1
         // section 5.1: a hyphen preceded by another hyphen is a separate, empty
         // syllable). The middle note must not export the literal "-" text.
-        let document =
-            parse_document("X:1\nL:1/4\nK:C\nc d e|\nw: tri--umph\n", ParseOptions::default())
-                .value;
+        let document = parse_document(
+            "X:1\nL:1/4\nK:C\nc d e|\nw: tri--umph\n",
+            ParseOptions::default(),
+        )
+        .value;
         let report = parse_tune_report_from_document(&document);
         let tune = report.value.expect("expected tune");
         let texts = tune.voices[0].measures[0]
@@ -7164,7 +7176,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(TieRole::Start), Some(TieRole::Stop), None]
         );
-        assert_eq!(notes[0].attachments.ties[0].pair_id, notes[1].attachments.ties[0].pair_id);
+        assert_eq!(
+            notes[0].attachments.ties[0].pair_id,
+            notes[1].attachments.ties[0].pair_id
+        );
         assert_eq!(
             notes.iter().map(|event| event.duration).collect::<Vec<_>>(),
             vec![
