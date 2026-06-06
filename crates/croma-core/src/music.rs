@@ -1556,6 +1556,34 @@ impl MultiVoiceLowering {
         }
     }
 
+    /// Apply an inline information field (`[M:..]`, `[K:..]`, `[L:..]`) that
+    /// appears mid-line. Voice switches (`[V:..]`) are handled separately. The
+    /// change takes effect from this point in the line, mirroring how the
+    /// whole-line fields are applied via `apply_field`.
+    fn apply_inline_field(&mut self, inline: &InlineFieldSyntax) {
+        match inline.code {
+            'M' => {
+                let meter = crate::fields::parse_meter(&inline.value.value);
+                self.apply_meter_change(&Spanned::new(meter, inline.value.span));
+            }
+            'L' => {
+                if let Some(unit) = crate::fields::parse_unit_note_length(&inline.value.value) {
+                    self.apply_unit_change(&Spanned::new(unit, inline.value.span));
+                }
+            }
+            'K' => {
+                let key = crate::fields::parse_key(&inline.value.value, inline.value.span);
+                // An inline `[K:..]` that carries no key information — e.g. a
+                // clef-only change such as `[K:clef=bass]` — must leave the
+                // current key signature untouched rather than reset it.
+                if inline_key_changes_signature(&key) {
+                    self.apply_key_change(&Spanned::new(key, inline.value.span));
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn apply_music_line(&mut self, line: &MusicLine) {
         for item in &line.items {
             match item {
@@ -1642,11 +1670,11 @@ impl MultiVoiceLowering {
                         self.switch_voice(voice.clone());
                     }
                 }
+                MusicItem::InlineField(inline) => self.apply_inline_field(inline),
                 MusicItem::GraceGroup(_)
                 | MusicItem::ChordSymbol(_)
                 | MusicItem::Annotation(_)
                 | MusicItem::Decoration(_)
-                | MusicItem::InlineField(_)
                 | MusicItem::Unsupported(_)
                 | MusicItem::Malformed(_) => {}
             }
@@ -2092,6 +2120,14 @@ impl VoiceTimelineBuilder {
             .last_mut()
             .expect("timeline builder always has a current measure")
     }
+}
+
+/// Whether an inline `[K:..]` field actually specifies a key signature (and so
+/// should be applied) rather than only carrying non-key information such as a
+/// clef (`[K:clef=bass]`). A bare default — no tonic, no accidentals, plain
+/// major mode — means "no key change", so it is left untouched.
+fn inline_key_changes_signature(key: &KeySignature) -> bool {
+    key.tonic.is_some() || !key.accidentals.is_empty() || key.mode != KeyMode::Major
 }
 
 fn starts_measure_barline(kind: BarlineKind) -> bool {
