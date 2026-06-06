@@ -105,6 +105,41 @@ def test_component_filtering_and_precise_mismatch_categories(tmp_path: Path) -> 
     }
 
 
+def test_empty_lyric_extenders_preserve_alignment_slots(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["melisma"])
+    write_musicxml(
+        paths.croma_xml("melisma"),
+        [
+            note(lyric="time"),
+            note(lyric_xml="<lyric number=\"1\"><extend/></lyric>"),
+            note(lyric="day"),
+        ],
+    )
+    write_musicxml(
+        paths.reference_xml("melisma"),
+        [
+            note(lyric="time"),
+            note(lyric_xml="<lyric number=\"1\"><extend type=\"stop\"/></lyric>"),
+            note(lyric="day"),
+        ],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="melisma")
+
+    assert report["mismatch_category_counts"] == {}
+    lyric_rows = [
+        row
+        for row in read_jsonl(paths.output / "melisma-facts.jsonl")
+        if row["component"] == "lyric"
+    ]
+    assert [row["value_text"] for row in lyric_rows if row["source_side"] == "croma"] == [
+        "\"time\"",
+        "\"\"",
+        "\"day\"",
+    ]
+
+
 def test_baseline_delta_classification(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["delta", "new"])
@@ -318,9 +353,10 @@ def note(
     duration: int = 4,
     type_: str = "quarter",
     lyric: str | None = None,
+    lyric_xml: str | None = None,
 ) -> str:
     alter_xml = f"<alter>{alter}</alter>" if alter is not None else ""
-    lyric_xml = (
+    lyric_body = lyric_xml if lyric_xml is not None else (
         f"<lyric><syllabic>single</syllabic><text>{lyric}</text></lyric>"
         if lyric is not None
         else ""
@@ -330,6 +366,6 @@ def note(
         <pitch><step>{step}</step>{alter_xml}<octave>{octave}</octave></pitch>
         <duration>{duration}</duration>
         <type>{type_}</type>
-        {lyric_xml}
+        {lyric_body}
       </note>
 """
