@@ -1122,10 +1122,15 @@ fn parse_lyric_tokens(value: &str, offset: usize) -> Vec<LyricTokenSyntax> {
                         kind: LyricTokenKind::Hyphen,
                     });
                 } else {
+                    // A hyphen preceded by a space or another hyphen is a
+                    // "separate syllable" (ABC 2.1 section 5.1): it consumes a
+                    // note with no sung text, e.g. `syll-a--ble` spans four
+                    // notes with the third left blank. Emit a skip rather than a
+                    // literal "-" so the held note carries no lyric text.
                     tokens.push(LyricTokenSyntax {
                         span: Span::new(offset + index, offset + index + 1),
-                        text: "-".to_owned(),
-                        kind: LyricTokenKind::Syllable,
+                        text: String::new(),
+                        kind: LyricTokenKind::Skip,
                     });
                 }
                 index += ch.len_utf8();
@@ -2890,6 +2895,7 @@ fn align_lyric_line(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut position = start;
+    let mut last_bar_consume: Option<usize> = None;
     for token in &line.tokens {
         match token.kind {
             LyricTokenKind::Syllable => {
@@ -2944,19 +2950,7 @@ fn align_lyric_line(
                 position = position.saturating_add(1).min(end);
             }
             LyricTokenKind::Bar => {
-                if bar_marker_is_at_boundary(refs, position) {
-                    continue;
-                }
-                if let Some(current) = refs.get(position) {
-                    let measure = current.measure_number;
-                    while position < end
-                        && refs
-                            .get(position)
-                            .is_some_and(|reference| reference.measure_number == measure)
-                    {
-                        position += 1;
-                    }
-                }
+                position = advance_bar_marker(refs, start, end, position, &mut last_bar_consume);
             }
         }
     }
@@ -3028,25 +3022,14 @@ fn align_symbol_line(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut position = start;
+    let mut last_bar_consume: Option<usize> = None;
     for token in &line.tokens {
         match token.kind {
             SymbolTokenKind::Skip => {
                 position = position.saturating_add(1).min(end);
             }
             SymbolTokenKind::Bar => {
-                if bar_marker_is_at_boundary(refs, position) {
-                    continue;
-                }
-                if let Some(current) = refs.get(position) {
-                    let measure = current.measure_number;
-                    while position < end
-                        && refs
-                            .get(position)
-                            .is_some_and(|reference| reference.measure_number == measure)
-                    {
-                        position += 1;
-                    }
-                }
+                position = advance_bar_marker(refs, start, end, position, &mut last_bar_consume);
             }
             SymbolTokenKind::Decoration
             | SymbolTokenKind::ChordSymbol
@@ -3099,10 +3082,48 @@ fn alignable_refs(voice: &VoiceTimeline) -> Vec<AlignableRef> {
     refs
 }
 
-fn bar_marker_is_at_boundary(refs: &[AlignableRef], position: usize) -> bool {
-    position > 0
-        && position < refs.len()
+/// Resolve a `|` bar marker inside a `w:`/`s:` alignment line per ABC 2.1
+/// section 5.1: a bar marker "advances to the next bar", i.e. any remaining
+/// notes of the current measure are skipped (they receive blank syllables).
+/// The marker is ignored only when the current measure has already been filled
+/// — that is, the cursor sits exactly at a real barline that has not yet been
+/// absorbed by an earlier marker on this line.
+///
+/// `start` is the first alignable index of the current verse/layer block and
+/// `last_consume` records where the previous marker on this line was absorbed,
+/// so consecutive markers (e.g. a leading `||`) each advance one further bar
+/// instead of collapsing into a single no-op.
+fn advance_bar_marker(
+    refs: &[AlignableRef],
+    start: usize,
+    end: usize,
+    position: usize,
+    last_consume: &mut Option<usize>,
+) -> usize {
+    let at_unconsumed_barline = position > start
+        && position < end
         && refs[position - 1].measure_number != refs[position].measure_number
+        && *last_consume != Some(position);
+    if at_unconsumed_barline {
+        // The measure is already full and a real barline lines up here, so the
+        // marker is a no-op; remember it so a following marker advances past it.
+        *last_consume = Some(position);
+        return position;
+    }
+    let Some(current) = refs.get(position).copied().filter(|_| position < end) else {
+        return position;
+    };
+    let measure = current.measure_number;
+    let mut next = position;
+    while next < end
+        && refs
+            .get(next)
+            .is_some_and(|reference| reference.measure_number == measure)
+    {
+        next += 1;
+    }
+    *last_consume = Some(next);
+    next
 }
 
 fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, lyric: AlignedLyric) {
@@ -6553,6 +6574,88 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(aligned, vec!["one", "two", "three", "four"]);
+    }
+
+    fn syllables_per_measure(source: &str) -> Vec<Vec<String>> {
+        let document = parse_document(source, ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        tune.voices[0]
+            .measures
+            .iter()
+            .map(|measure| {
+                measure
+                    .events
+                    .iter()
+                    .filter(|event| event.alignable)
+                    .map(|event| {
+                        event
+                            .lyrics
+                            .iter()
+                            .find(|lyric| {
+                                matches!(
+                                    lyric.control,
+                                    LyricControl::Syllable | LyricControl::Extender
+                                )
+                            })
+                            .map(|lyric| lyric.text.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn leading_bar_marker_advances_past_a_filled_first_measure() {
+        // Per ABC 2.1 section 5.1 a `|` "advances to the next bar". When a lyric
+        // line opens with `|`, the notes of the first measure carry no syllable
+        // and the first word lands on the downbeat of the second measure. The
+        // earlier cursor model wrongly treated the line-start boundary as an
+        // already-synced barline and kept the word on the pickup note.
+        let per_measure = syllables_per_measure("X:1\nL:1/4\nK:C\nG z|c d|e f|\nw: |Oh well\n");
+        assert_eq!(per_measure[0], vec!["".to_owned()]);
+        assert_eq!(per_measure[1], vec!["Oh".to_owned(), "well".to_owned()]);
+    }
+
+    #[test]
+    fn consecutive_bar_markers_each_advance_one_measure() {
+        // `|||` must skip three bars, not collapse into a single no-op at the
+        // first boundary. The first word therefore lands in the fourth measure.
+        let per_measure =
+            syllables_per_measure("X:1\nL:1/4\nK:C\nG|c d|e f|g a|b c|\nw:|||All done\n");
+        assert!(per_measure[0].iter().all(|text| text.is_empty()));
+        assert!(per_measure[1].iter().all(|text| text.is_empty()));
+        assert!(per_measure[2].iter().all(|text| text.is_empty()));
+        assert_eq!(per_measure[3], vec!["All".to_owned(), "done".to_owned()]);
+    }
+
+    #[test]
+    fn double_hyphen_holds_a_blank_note_instead_of_a_literal_dash() {
+        // `tri--umph` spans three notes with the middle one blank (ABC 2.1
+        // section 5.1: a hyphen preceded by another hyphen is a separate, empty
+        // syllable). The middle note must not export the literal "-" text.
+        let document =
+            parse_document("X:1\nL:1/4\nK:C\nc d e|\nw: tri--umph\n", ParseOptions::default())
+                .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+        let texts = tune.voices[0].measures[0]
+            .events
+            .iter()
+            .filter(|event| event.alignable)
+            .map(|event| {
+                event
+                    .lyrics
+                    .iter()
+                    .find(|lyric| lyric.control == LyricControl::Syllable)
+                    .map(|lyric| lyric.text.clone())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            vec![Some("tri".to_owned()), None, Some("umph".to_owned())]
+        );
     }
 
     #[test]
