@@ -193,6 +193,10 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.start("clef", attrs_slice);
             self.xml.text_element("sign", clef.sign);
             self.xml.text_element("line", clef.line);
+            if clef.octave_change != 0 {
+                self.xml
+                    .text_element("clef-octave-change", &clef.octave_change.to_string());
+            }
             self.xml.end("clef");
         }
     }
@@ -1476,35 +1480,37 @@ fn meter_parts(display: &str) -> Option<(&str, &str, Option<&'static str>)> {
 struct ClefModel {
     sign: &'static str,
     line: &'static str,
+    octave_change: i8,
 }
 
 fn clef_model(clef: Option<&str>) -> ClefModel {
     let clef = clef.unwrap_or("treble").to_ascii_lowercase();
-    if clef.contains("bass") {
-        ClefModel {
-            sign: "F",
-            line: "4",
-        }
-    } else if clef.contains("alto") {
-        ClefModel {
-            sign: "C",
-            line: "3",
-        }
-    } else if clef.contains("tenor") {
-        ClefModel {
-            sign: "C",
-            line: "4",
-        }
-    } else if clef.contains("perc") {
-        ClefModel {
-            sign: "percussion",
-            line: "2",
-        }
+    let octave_change = if clef.contains("-15") {
+        -2
+    } else if clef.contains("+15") {
+        2
+    } else if clef.contains("-8") {
+        -1
+    } else if clef.contains("+8") {
+        1
     } else {
-        ClefModel {
-            sign: "G",
-            line: "2",
-        }
+        0
+    };
+    let (sign, line) = if clef.contains("bass") {
+        ("F", "4")
+    } else if clef.contains("alto") {
+        ("C", "3")
+    } else if clef.contains("tenor") {
+        ("C", "4")
+    } else if clef.contains("perc") {
+        ("percussion", "2")
+    } else {
+        ("G", "2")
+    };
+    ClefModel {
+        sign,
+        line,
+        octave_change,
     }
 }
 
@@ -2488,6 +2494,45 @@ mod tests {
         assert!(export.musicxml.contains("<text>day</text>"));
         assert!(!export.musicxml.contains("<text>_</text>"));
         assert!(export.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn clef_octave_suffix_shifts_notes_and_marks_the_clef() {
+        // `clef=treble-8` writes the notes one octave lower and adds a matching
+        // clef-octave-change, like abc2xml. `C` (octave 4) becomes octave 3.
+        let source = "X:1\nL:1/4\nK:C\nV:1 clef=treble-8\nC2 C2|\n";
+        let export = export_musicxml(source).expect("treble-8 score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(
+            export
+                .musicxml
+                .contains("<clef-octave-change>-1</clef-octave-change>")
+        );
+        assert!(export.musicxml.contains("<octave>3</octave>"));
+        assert!(!export.musicxml.contains("<octave>4</octave>"));
+    }
+
+    #[test]
+    fn bare_voice_switch_keeps_each_header_clef() {
+        // Header voice definitions carry clefs; a later bare `V:n` switch in the
+        // body must not wipe them. Each voice keeps its own clef and octave.
+        let source = concat!(
+            "X:1\nL:1/4\n",
+            "V:1 clef=treble\nV:2 clef=bass\nK:C\n",
+            "V:1\nc c|\n",
+            "V:2\nC, C,|\n",
+        );
+        let export = export_musicxml(source).expect("multi-voice score should export");
+        assert_balanced_xml(&export.musicxml);
+        let p2 = export
+            .musicxml
+            .split("<part id=\"P2\">")
+            .nth(1)
+            .expect("part P2");
+        assert!(
+            p2.contains("<sign>F</sign>"),
+            "V:2 should keep its bass clef"
+        );
     }
 
     #[test]

@@ -1698,7 +1698,11 @@ impl MultiVoiceLowering {
             .iter()
             .position(|state| state.id.value == voice.value.id.value)
         {
-            self.voices[index].properties = voice_properties_model(&voice.value);
+            // A later voice reference (e.g. a bare `V:3` switch in the body) must
+            // not wipe properties such as the clef declared when the voice was
+            // first defined. Merge: new values win, otherwise keep the existing.
+            let incoming = voice_properties_model(&voice.value);
+            merge_voice_properties(&mut self.voices[index].properties, incoming);
             self.voices[index].source_span = voice.span;
             return index;
         }
@@ -1781,6 +1785,36 @@ fn default_voice_definition(span: Span) -> Spanned<VoiceDefinition> {
         },
         span,
     )
+}
+
+/// Merge a later voice definition into the existing properties: any field set
+/// by the new definition overrides, and unset fields keep their existing value
+/// so a bare `V:` switch does not discard the original clef/name/etc.
+fn merge_voice_properties(existing: &mut VoicePropertiesModel, incoming: VoicePropertiesModel) {
+    if incoming.name.is_some() {
+        existing.name = incoming.name;
+    }
+    if incoming.nm.is_some() {
+        existing.nm = incoming.nm;
+    }
+    if incoming.subname.is_some() {
+        existing.subname = incoming.subname;
+    }
+    if incoming.snm.is_some() {
+        existing.snm = incoming.snm;
+    }
+    if incoming.clef.is_some() {
+        existing.clef = incoming.clef;
+    }
+    if incoming.stem.is_some() {
+        existing.stem = incoming.stem;
+    }
+    if incoming.octave.is_some() {
+        existing.octave = incoming.octave;
+    }
+    if incoming.transpose.is_some() {
+        existing.transpose = incoming.transpose;
+    }
 }
 
 fn voice_properties_model(voice: &VoiceDefinition) -> VoicePropertiesModel {
@@ -3344,7 +3378,7 @@ impl LoweringState {
     }
 
     fn push_note_group(&mut self, note: &NoteSyntax, line_index: usize, source_order: u32) {
-        let octave = lowered_octave(note);
+        let octave = lowered_octave(note) + voice_octave_shift(&self.properties);
         let written_accidental = note.accidental.map(|accidental| accidental.sign);
         let (effective_accidental, accidental_source) = self.effective_accidental(
             note.pitch.step,
@@ -3420,7 +3454,7 @@ impl LoweringState {
             .iter()
             .enumerate()
             .map(|(index, member)| {
-                let octave = lowered_octave(&member.note);
+                let octave = lowered_octave(&member.note) + voice_octave_shift(&self.properties);
                 let written_accidental = member.note.accidental.map(|accidental| accidental.sign);
                 let (effective_accidental, accidental_source) = self.effective_accidental(
                     member.note.pitch.step,
@@ -3900,6 +3934,32 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
         })
         .sum::<i8>();
     base_octave + adjustment
+}
+
+/// Octave displacement declared by a voice's clef octave suffix
+/// (`clef=treble-8` → -1, `+8` → +1, `±15` → ±2) plus any explicit `octave=`
+/// property. abc2xml writes the note octaves shifted by this amount (and marks
+/// the clef with a matching `clef-octave-change`).
+fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
+    let mut shift = 0;
+    if let Some(clef) = properties.clef.as_ref() {
+        let clef = clef.text.as_str();
+        if clef.contains("-15") {
+            shift -= 2;
+        } else if clef.contains("+15") {
+            shift += 2;
+        } else if clef.contains("-8") {
+            shift -= 1;
+        } else if clef.contains("+8") {
+            shift += 1;
+        }
+    }
+    if let Some(octave) = properties.octave.as_ref()
+        && let Ok(value) = octave.text.trim().parse::<i8>()
+    {
+        shift += value;
+    }
+    shift
 }
 
 fn length_multiplier(length: Option<&LengthSyntax>) -> Fraction {
