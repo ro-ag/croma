@@ -28,6 +28,10 @@ INSERT INTO "artifact" VALUES(19,'testbed-reproducibility','inventory','docs/ref
 INSERT INTO "artifact" VALUES(20,'testbed-reproducibility','progress_snapshot','docs/progress/croma-progress.sql','Progress tracker SQL snapshot including this documentation phase.');
 INSERT INTO "artifact" VALUES(21,'bootstrap-hardening','script','tools/session_bootstrap.sh','Session bootstrap script hardened to fail fast and tolerate uv-missing tracker restore via python3.');
 INSERT INTO "artifact" VALUES(22,'bootstrap-hardening','progress_snapshot','docs/progress/croma-progress.sql','Progress tracker SQL snapshot recording bootstrap hardening.');
+INSERT INTO "artifact" VALUES(23,'bootstrap-hardening','script','tools/provision_corpus.py','Croma-owned corpus provisioner for Zenodo import, verified LFS archive import/build, and abc2xml reference generation.');
+INSERT INTO "artifact" VALUES(24,'bootstrap-hardening','lfs_archive','docs/corpus/zenodo-10k-abc.tar.gz','Optional Git LFS ABC corpus cache archive, built from the Zenodo 10k dataset output.');
+INSERT INTO "artifact" VALUES(25,'bootstrap-hardening','checksum','docs/corpus/zenodo-10k-abc.tar.gz.sha256','SHA-256 checksum used by provision_corpus.py import-archive.');
+INSERT INTO "artifact" VALUES(26,'bootstrap-hardening','docs','docs/testing/corpus-reproducibility.md','Documents Zenodo provenance, LFS cache, bootstrap provisioning, reference XML generation, and archive rebuild commands.');
 CREATE TABLE memory (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -130,7 +134,7 @@ INSERT INTO "phase" VALUES('phase-10h','codex/phase-10h-lyric-alignment-controls
 INSERT INTO "phase" VALUES('phase-10i','codex/phase-10i-lyric-melisma-hold','merged',20,'https://github.com/ro-ag/croma/pull/20','51440fb','NBSP lyric tokenization plus empty-extender comparison for _ melisma holds','Croma bug plus comparison harness bug fixed','Fixed tune_000509-style lyric _ melisma/hold evidence: Croma no longer treats U+00A0 inside body w: lyrics as a separator, and comparison tooling preserves empty MusicXML lyric extender slots. Target direct lyric rows reduced; no targeted regressions.','Remaining direct lyric rows: 89 rows in 7 files, likely lyric cursor/reference-policy behavior; triage separately.','2026-06-06 01:46:30');
 INSERT INTO "phase" VALUES('testbed-reproducibility','codex/testbed-reproducibility-recipe','complete',NULL,NULL,NULL,'Corpus/testbed recreation recipe','documentation/infrastructure','Added a committed recipe for recreating full 10k exports, report-only Music21/Polars comparisons, optional large table artifacts, targeted corpus selection, targeted comparisons, validation queries, and progress tracker restore/query/export workflow. Updated corpus inventory to the local trd_obsolete input/reference roots.','Use the recipe before the next parser phase; then triage the remaining 89 direct lyric rows in 7 files.','2026-06-06 02:01:00');
 INSERT INTO "phase" VALUES('linux-sandbox-env','codex/phase-10j-linux-sandbox-env','complete',NULL,NULL,NULL,'Port dev-environment and corpus reproducibility docs from macOS-only paths to a portable Linux cloud sandbox + Nix flake setup; provision Rust 1.96.0 (rustup) and uv Python env','tooling/docs','Rewrote docs/development-environment.md for Linux cloud sandbox (rustup) and local Nix flake; made docs/testing/corpus-reproducibility.md environment-agnostic (ABC_ROOT/REF_ROOT vars, rust-toolchain.toml instead of absolute toolchain path); added provenance note to corpus-inventory.md; updated pinned_toolchain memory and added dev_environments memory. Built env: cargo build -p croma-cli OK, uv sync OK; cargo test --workspace green (cli 18, croma-core 145, croma-fmt 1).','Provision the external 10k corpus (ABC_ROOT/REF_ROOT) into the sandbox, then triage the residual 89 direct lyric rows in 7 files per phase-10i.','2026-06-06 02:24:17');
-INSERT INTO "phase" VALUES('bootstrap-hardening','codex/bootstrap-hardening','complete',NULL,NULL,NULL,'Session bootstrap fail-fast behavior and uv fallback','tooling fix','Hardened tools/session_bootstrap.sh with set -euo pipefail, explicit uv availability tracking, python3 fallback for progress tracker restore/status, and a clear --testbed error when uv is unavailable.','Continue with evidence-backed residual lyric policy triage after corpus provisioning.','2026-06-06 04:35:22');
+INSERT INTO "phase" VALUES('bootstrap-hardening','codex/bootstrap-hardening','complete',NULL,NULL,NULL,'Session bootstrap fail-fast behavior and uv fallback','tooling fix','Hardened tools/session_bootstrap.sh with fail-fast behavior, uv/python3 progress restore fallback, optional verified Git LFS ABC corpus cache import, Zenodo fallback provisioning, and explicit partial corpus status.','Continue Phase 10 parser work after provisioning ABC corpus and reference MusicXML; residual lyric policy triage remains next.','2026-06-06 04:35:22');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -177,6 +181,14 @@ INSERT INTO "validation" VALUES(35,'bootstrap-hardening','bash -n tools/session_
 INSERT INTO "validation" VALUES(36,'bootstrap-hardening','tools/session_bootstrap.sh','passed','Normal local run with uv/cargo present.');
 INSERT INTO "validation" VALUES(37,'bootstrap-hardening','PATH=/usr/bin:/bin tools/session_bootstrap.sh','passed','Simulated uv/cargo missing; progress tracker restored through python3 fallback.');
 INSERT INTO "validation" VALUES(38,'bootstrap-hardening','git diff --check','passed',NULL);
+INSERT INTO "validation" VALUES(39,'bootstrap-hardening','brew install git-lfs && git lfs install','passed','Installed git-lfs 3.7.1 and initialized Git LFS hooks.');
+INSERT INTO "validation" VALUES(40,'bootstrap-hardening','uv run python tools/provision_corpus.py build-archive --output docs/untracked/corpus/zenodo-10k --archive docs/corpus/zenodo-10k-abc.tar.gz','passed','Built 2.5M ABC corpus archive with sha256 dfaff46a0af4bfc93b70a55dccff17d16dd1fbc8aeb5eff814bb9c2e0284cc92.');
+INSERT INTO "validation" VALUES(41,'bootstrap-hardening','uv run python tools/provision_corpus.py import-archive --archive docs/corpus/zenodo-10k-abc.tar.gz','passed','Verified checksum and restored 10000 ABC files from the archive.');
+INSERT INTO "validation" VALUES(42,'bootstrap-hardening','tools/session_bootstrap.sh --fetch-corpus','passed','Preferred verified LFS archive and reported ABC corpus available with 10000 files while reference XML remained missing.');
+INSERT INTO "validation" VALUES(43,'bootstrap-hardening','uv run python -m py_compile tools/provision_corpus.py tools/music21_polars_corpus_compare.py','passed',NULL);
+INSERT INTO "validation" VALUES(44,'bootstrap-hardening','uv run python -m pytest tests -q','passed','6 passed.');
+INSERT INTO "validation" VALUES(45,'bootstrap-hardening','git diff --cached --check','passed',NULL);
+INSERT INTO "validation" VALUES(46,'bootstrap-hardening','git lfs ls-files','passed','dfaff46a0a * docs/corpus/zenodo-10k-abc.tar.gz');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -192,6 +204,6 @@ FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
 INSERT INTO "sqlite_sequence" VALUES('metric',43);
-INSERT INTO "sqlite_sequence" VALUES('artifact',22);
-INSERT INTO "sqlite_sequence" VALUES('validation',38);
+INSERT INTO "sqlite_sequence" VALUES('artifact',26);
+INSERT INTO "sqlite_sequence" VALUES('validation',46);
 COMMIT;
