@@ -4159,6 +4159,13 @@ impl<'line> MusicLineParser<'line> {
             self.bump_char();
         }
         while self.peek_char().is_some_and(is_barline_char) {
+            // `[` is a barline character (e.g. `[|`, `|]`), but a `[` that opens
+            // an inline field such as `|[M:3/8]` must not be swallowed into a
+            // liberal combined barline — that would drop the field and split the
+            // bar. Stop the scan so the inline field is parsed on its own.
+            if self.peek_char() == Some('[') && self.is_inline_field_start() {
+                break;
+            }
             self.bump_char();
         }
         let span = self.span(start, self.index);
@@ -6347,6 +6354,44 @@ mod tests {
             })
             .expect("expected inline V field");
         assert_eq!(inline_voice.value.value, "T1");
+    }
+
+    #[test]
+    fn inline_field_after_barline_is_not_swallowed_into_a_liberal_barline() {
+        // `|[M:3/8]` must parse as a plain barline followed by an inline field,
+        // not as a liberal `|[` combined barline. The old greedy barline scan
+        // ate the `[`, mangling the field and inserting a spurious empty bar.
+        let document = parse_document(
+            "X:1\nL:1/4\nM:6/8\nK:C\nC3|[M:3/8]E2E|[M:6/8]F2G|\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        let non_empty: Vec<usize> = tune.voices[0]
+            .measures
+            .iter()
+            .map(|measure| measure.events.iter().filter(|event| event.alignable).count())
+            .collect();
+        assert_eq!(non_empty, vec![1, 2, 2], "no spurious empty measures: {non_empty:?}");
+
+        let line = document
+            .music
+            .tune(0)
+            .expect("expected parsed tune music")
+            .lines
+            .first()
+            .expect("expected music line");
+        let inline_codes: Vec<char> = line
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MusicItem::InlineField(field) => Some(field.code),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inline_codes, vec!['M', 'M']);
     }
 
     #[test]
