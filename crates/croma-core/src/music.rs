@@ -1083,7 +1083,7 @@ fn parse_lyric_tokens(value: &str, offset: usize) -> Vec<LyricTokenSyntax> {
         let Some(ch) = value[index..].chars().next() else {
             break;
         };
-        if ch.is_whitespace() {
+        if is_lyric_separator(ch) {
             flush_lyric_syllable(
                 &mut tokens,
                 &mut syllable_start,
@@ -1203,6 +1203,10 @@ fn parse_lyric_tokens(value: &str, offset: usize) -> Vec<LyricTokenSyntax> {
         value.len(),
     );
     tokens
+}
+
+fn is_lyric_separator(ch: char) -> bool {
+    matches!(ch, ' ' | '\t')
 }
 
 fn flush_lyric_syllable(

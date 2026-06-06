@@ -2478,6 +2478,45 @@ mod tests {
     }
 
     #[test]
+    fn lyric_underscore_exports_melisma_extender_without_sung_text() {
+        let source = "X:1\nT:Melisma Lyrics\nM:3/4\nL:1/4\nK:C\nC D E|\nw: time_ day\n";
+        let export = export_musicxml(source).expect("melisma lyric score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<text>time</text>"));
+        assert!(export.musicxml.contains("<extend/>"));
+        assert!(export.musicxml.contains("<text>day</text>"));
+        assert!(!export.musicxml.contains("<text>_</text>"));
+        assert!(export.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn escaped_literal_underscore_in_lyrics_still_exports_as_text() {
+        let source =
+            "X:1\nT:Literal Underscore Lyrics\nM:2/4\nL:1/4\nK:C\nC D|\nw: \\_hold end\n";
+        let export = export_musicxml(source).expect("literal underscore lyric score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<text>_hold</text>"));
+        assert!(!export.musicxml.contains("<text>_</text>"));
+        assert!(export.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn lyric_nbsp_inside_tune_000509_style_word_is_not_a_separator() {
+        let source =
+            "X:1\nT:NBSP Melisma Lyrics\nM:6/4\nL:1/4\nK:C\nC D E F G A|\nw: A-ten-toÃ\u{00a0}a-do_ra\n";
+        let export = export_musicxml(source).expect("NBSP lyric score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<text>toÃ\u{00a0}a</text>"));
+        assert!(export.musicxml.contains("<text>do</text>"));
+        assert!(export.musicxml.contains("<extend/>"));
+        assert!(!export.musicxml.contains("<text>toÃ</text>"));
+        assert!(export.diagnostics.is_empty());
+    }
+
+    #[test]
     fn ties_across_barlines_export_start_and_stop_without_diagnostic() {
         let source = "X:1\nM:2/4\nL:1/4\nK:C\nC- | C D |\n";
         let export = export_musicxml(source).expect("cross-bar tie should export");
