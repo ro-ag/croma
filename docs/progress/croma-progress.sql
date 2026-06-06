@@ -140,6 +140,10 @@ INSERT INTO "metric" VALUES(67,'phase-10n','full_10k','octave_exposed','8030','2
 INSERT INTO "metric" VALUES(68,'phase-10o','full_10k','mismatch_rows','393045','375387',NULL,'rows','-17658');
 INSERT INTO "metric" VALUES(69,'phase-10o','full_10k','octave','29970','12347',NULL,'rows','-17623 clef octave + property merge');
 INSERT INTO "metric" VALUES(70,'phase-10o','full_10k','structural_matches','3153','3153',NULL,'files','unchanged');
+INSERT INTO "metric" VALUES(71,'phase-10p','full_10k','mismatch_rows','375387','353827',NULL,'rows','-21560');
+INSERT INTO "metric" VALUES(72,'phase-10p','full_10k','structural_matches','3153','3326',NULL,'files','+173');
+INSERT INTO "metric" VALUES(73,'phase-10p','full_10k','extra_in_croma','147500','126517',NULL,'rows','-20983 W: verses to credits');
+INSERT INTO "metric" VALUES(74,'phase-10p','full_10k','direction','5779','5133',NULL,'rows','-646');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -171,7 +175,8 @@ INSERT INTO "phase" VALUES('phase-10k','work/phase-10k-lyric-bar-marker','merged
 INSERT INTO "phase" VALUES('phase-10l','work/phase-10l-inline-field-barline','merged',NULL,NULL,NULL,'Inline information field after a barline mis-parsed as a liberal combined barline','Croma parser bug fixed','Fixed a parser bug where a barline immediately followed by an inline field (e.g. |[M:3/8], |[K:D]) swallowed the [ into a liberal |[ barline, dropping the field and inserting a spurious empty measure plus cascading garbage. The barline scan now stops before a [ that begins an inline field. Full 10k report-only mismatch rows drop 3,577,076 -> 3,536,841 (-40,235) with every category improved and none regressed; affects 62 corpus files. tune_002325 fully resolves (11 measures matching reference, 100 percent lyric match).','Apply inline [K:]/[M:]/[L:] changes (parsed but not yet applied): 377 files use inline key changes, 135 use inline meter; route them to the existing key/meter/unit change handlers and emit mid-tune key signatures.','2026-06-06 06:34:21');
 INSERT INTO "phase" VALUES('phase-10m','work/phase-10m-inline-field-apply','merged',NULL,NULL,NULL,'Inline [K:]/[M:]/[L:] information fields parsed but never applied mid-tune','Croma parser bug fixed','Routed inline [M:]/[K:]/[L:] fields to the existing meter/key/unit change handlers so a mid-line change affects subsequent notes (accidentals, durations, meter). Hardened key tonic parsing so a clef shorthand or property token (bass, clef=bass) that happens to start with a note letter is no longer misread as a key change, and a clef-only inline [K:] leaves the signature untouched. Full 10k mismatch rows drop 3,536,841 -> 3,524,300 (-12,541): duration -7,838, accidental -2,499, measure_alignment -2,011, plus +30 fully-matching files and no category regressions.','Emit mid-tune <key>/<time> attributes in the MusicXML writer (currently applied to notes but not declared); then triage the remaining large missing_in_croma/extra_in_croma categories.','2026-06-06 07:01:17');
 INSERT INTO "phase" VALUES('phase-10n','work/phase-10n-multipart-export','merged',NULL,NULL,NULL,'Single combined MusicXML part for multi-voice tunes vs one part per voice in abc2xml','Croma export model gap fixed (multi-voice multipart)','build_score_model now emits one MusicXML part per ABC voice (single score-partwise document, all parts), matching abc2xml/music21 and Finale-style export. Single-voice tunes are unchanged. Full 10k mismatch rows drop 3,524,300 -> 393,045 (-3,131,255, -89 percent): missing_in_croma -1,668,240, extra_in_croma -1,478,486, measure_alignment -10,957, slur -1,574, metadata -634, +29 fully-matching files. Correct part alignment EXPOSES pre-existing per-note mismatches previously hidden in the missing/extra bucket: octave +21,940 (clef octave transposition like clef=treble-8 not applied), duration +3,054, pitch +1,469, accidental +1,307. These are now visible and become the next targets.','Apply clef octave transposition (clef=treble-8/+8, octave=N) to voice note octaves to match abc2xml (octave +21,940 exposed by multipart).','2026-06-06 16:46:07');
-INSERT INTO "phase" VALUES('phase-10o','work/phase-10o-clef-octave','in_progress',NULL,NULL,NULL,'Clef octave transposition (clef=treble-8 etc.) not applied; bare V: switch clobbered header voice properties','Croma export bug fixed','Apply the clef octave suffix (clef=treble-8/+8, +/-15) and octave= property as a per-voice octave shift on note octaves, and emit a matching clef-octave-change. Also fixed a pre-existing bug where a bare body V: switch overwrote a voices header-defined properties (clef/name/etc.) with empty values; properties now merge so each voice keeps its clef. Full 10k octave mismatches drop 29,970 -> 12,347 (-17,623), total rows 393,045 -> 375,387 (-17,658), no category regressions.','Triage remaining duration (27,664), measure_alignment (21,310), pitch (18,993), and the residual missing/extra (261k) categories.','2026-06-06 17:25:23');
+INSERT INTO "phase" VALUES('phase-10o','work/phase-10o-clef-octave','merged',NULL,NULL,NULL,'Clef octave transposition (clef=treble-8 etc.) not applied; bare V: switch clobbered header voice properties','Croma export bug fixed','Apply the clef octave suffix (clef=treble-8/+8, +/-15) and octave= property as a per-voice octave shift on note octaves, and emit a matching clef-octave-change. Also fixed a pre-existing bug where a bare body V: switch overwrote a voices header-defined properties (clef/name/etc.) with empty values; properties now merge so each voice keeps its clef. Full 10k octave mismatches drop 29,970 -> 12,347 (-17,623), total rows 393,045 -> 375,387 (-17,658), no category regressions.','Triage remaining duration (27,664), measure_alignment (21,310), pitch (18,993), and the residual missing/extra (261k) categories.','2026-06-06 17:25:23');
+INSERT INTO "phase" VALUES('phase-10p','work/phase-10p-direction-cleanup','in_progress',NULL,NULL,NULL,'W: post-tune words emitted as in-measure directions and duplicated per part','Croma export corrected to ABC + MusicXML specs','Per ABC 2.1 (W: = words printed after the tune) and MusicXML (page-level text = score-header <credit>), W: post-tune verses now export as <credit><credit-words> instead of in-measure <words> directions, and empty W: lines are skipped. Score-level directions (tempo, %% directives) are emitted once in the first part instead of once per voice-part. Full 10k structural matches +173 (3,153 -> 3,326), mismatch rows 375,387 -> 353,827 (-21,560): extra_in_croma -20,983, direction -646, with +69 missing_in_croma edge. abc2xml is only a baseline; this follows the ABC and MusicXML specs.','Map ABC decorations (!fermata!, articulations, ornaments) to MusicXML notation elements instead of <words> directions; then duration/pitch residuals.','2026-06-06 22:40:16');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -246,6 +251,10 @@ INSERT INTO "validation" VALUES(63,'phase-10o','cargo test --workspace','pass','
 INSERT INTO "validation" VALUES(64,'phase-10o','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
 INSERT INTO "validation" VALUES(65,'phase-10o','cargo fmt --all -- --check','pass','clean');
 INSERT INTO "validation" VALUES(66,'phase-10o','full 10k report-only compare','pass','-17658 rows, octave -17623, no regressions');
+INSERT INTO "validation" VALUES(67,'phase-10p','cargo test --workspace','pass','156 core tests incl. W: credit');
+INSERT INTO "validation" VALUES(68,'phase-10p','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
+INSERT INTO "validation" VALUES(69,'phase-10p','cargo fmt --all -- --check','pass','clean');
+INSERT INTO "validation" VALUES(70,'phase-10p','full 10k report-only compare','pass','+173 matches, -21560 rows');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -260,7 +269,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',70);
+INSERT INTO "sqlite_sequence" VALUES('metric',74);
 INSERT INTO "sqlite_sequence" VALUES('artifact',29);
-INSERT INTO "sqlite_sequence" VALUES('validation',66);
+INSERT INTO "sqlite_sequence" VALUES('validation',70);
 COMMIT;
