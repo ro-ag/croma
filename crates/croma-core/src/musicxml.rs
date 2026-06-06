@@ -2492,8 +2492,7 @@ mod tests {
 
     #[test]
     fn escaped_literal_underscore_in_lyrics_still_exports_as_text() {
-        let source =
-            "X:1\nT:Literal Underscore Lyrics\nM:2/4\nL:1/4\nK:C\nC D|\nw: \\_hold end\n";
+        let source = "X:1\nT:Literal Underscore Lyrics\nM:2/4\nL:1/4\nK:C\nC D|\nw: \\_hold end\n";
         let export = export_musicxml(source).expect("literal underscore lyric score should export");
 
         assert_balanced_xml(&export.musicxml);
@@ -2504,8 +2503,7 @@ mod tests {
 
     #[test]
     fn lyric_nbsp_inside_tune_000509_style_word_is_not_a_separator() {
-        let source =
-            "X:1\nT:NBSP Melisma Lyrics\nM:6/4\nL:1/4\nK:C\nC D E F G A|\nw: A-ten-toÃ\u{00a0}a-do_ra\n";
+        let source = "X:1\nT:NBSP Melisma Lyrics\nM:6/4\nL:1/4\nK:C\nC D E F G A|\nw: A-ten-toÃ\u{00a0}a-do_ra\n";
         let export = export_musicxml(source).expect("NBSP lyric score should export");
 
         assert_balanced_xml(&export.musicxml);
