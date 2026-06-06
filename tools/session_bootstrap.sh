@@ -15,7 +15,7 @@
 #
 # Everything runs from the repository root. No absolute host paths are assumed.
 
-set -uo pipefail
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -37,10 +37,20 @@ else
   echo "WARN: rustup not found. Install per docs/development-environment.md, or use the Nix flake (nix develop)."
 fi
 have cargo && echo "cargo: $(cargo --version)"
-have uv    && echo "uv: $(uv --version)" || echo "WARN: uv not found; see docs/development-environment.md"
+UV_AVAILABLE=0
+if have uv; then
+  UV_AVAILABLE=1
+  echo "uv: $(uv --version)"
+else
+  echo "WARN: uv not found; see docs/development-environment.md"
+fi
 
 section "Provision Python env (uv sync)"
-if have uv; then uv sync; else echo "skipped: uv missing"; fi
+if [ "$UV_AVAILABLE" = "1" ]; then
+  uv sync
+else
+  echo "skipped: uv missing"
+fi
 
 section "Build CLI (cargo build -p croma-cli)"
 if have cargo; then
@@ -51,8 +61,16 @@ fi
 
 section "Restore progress tracker DB"
 # Recreates docs/untracked/croma-progress.sqlite from the committed SQL snapshot.
-uv run python tools/progress/progress.py restore --force
-uv run python tools/progress/progress.py status
+if [ "$UV_AVAILABLE" = "1" ]; then
+  uv run python tools/progress/progress.py restore --force
+  uv run python tools/progress/progress.py status
+elif have python3; then
+  python3 tools/progress/progress.py restore --force
+  python3 tools/progress/progress.py status
+else
+  echo "ERROR: neither uv nor python3 is available; cannot restore progress tracker." >&2
+  exit 1
+fi
 
 section "Corpus testbed"
 ABC_ROOT="${ABC_ROOT:-}"
@@ -63,6 +81,10 @@ if [ -n "$ABC_ROOT" ] && [ -d "$ABC_ROOT" ] && [ -n "$REF_ROOT" ] && [ -d "$REF_
   echo "ABC_ROOT=$ABC_ROOT ($abc_count .abc files)"
   echo "REF_ROOT=$REF_ROOT ($ref_count reference files)"
   if [ "$REBUILD_TESTBED" = "1" ]; then
+    if [ "$UV_AVAILABLE" != "1" ]; then
+      echo "ERROR: --testbed requires uv for corpus and music21/Polars tooling." >&2
+      exit 1
+    fi
     PHASE="${PHASE:-session-testbed}"
     OUT="docs/untracked/$PHASE"
     mkdir -p "$OUT"
