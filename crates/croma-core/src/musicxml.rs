@@ -2491,6 +2491,42 @@ mod tests {
     }
 
     #[test]
+    fn inline_key_change_applies_to_following_accidentals() {
+        // `[K:D]` mid-tune must make the following notes use the D-major key
+        // signature: the C in the second measure becomes C-sharp.
+        let source = "X:1\nL:1/8\nK:C\nCEG c|[K:D]CEG c|\n";
+        let export = export_musicxml(source).expect("inline key change should export");
+        assert_balanced_xml(&export.musicxml);
+        let second = export
+            .musicxml
+            .split("<measure number=\"2\">")
+            .nth(1)
+            .expect("second measure");
+        assert!(
+            second.contains("<step>C</step>\n          <alter>1</alter>"),
+            "second measure C should be sharp under inline K:D"
+        );
+    }
+
+    #[test]
+    fn inline_clef_only_key_field_does_not_reset_the_signature() {
+        // `[K:clef=bass]` only changes the clef; it must not be misread as a key
+        // change that wipes the D-major signature (the following F stays F#).
+        let source = "X:1\nL:1/8\nK:D\nFAd f|[K:clef=bass]FAd f|\n";
+        let export = export_musicxml(source).expect("inline clef change should export");
+        assert_balanced_xml(&export.musicxml);
+        let second = export
+            .musicxml
+            .split("<measure number=\"2\">")
+            .nth(1)
+            .expect("second measure");
+        assert!(
+            second.contains("<step>F</step>\n          <alter>1</alter>"),
+            "F should stay sharp; clef-only inline key must not reset the signature"
+        );
+    }
+
+    #[test]
     fn escaped_literal_underscore_in_lyrics_still_exports_as_text() {
         let source = "X:1\nT:Literal Underscore Lyrics\nM:2/4\nL:1/4\nK:C\nC D|\nw: \\_hold end\n";
         let export = export_musicxml(source).expect("literal underscore lyric score should export");

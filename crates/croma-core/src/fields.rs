@@ -1349,7 +1349,7 @@ fn mode_for_version(version: &AbcVersion) -> Option<ParseMode> {
     }
 }
 
-fn parse_meter(value: &str) -> Meter {
+pub(crate) fn parse_meter(value: &str) -> Meter {
     let trimmed = value.trim();
     let kind = match trimmed {
         "C" => MeterKind::CommonTime,
@@ -1371,7 +1371,7 @@ fn parse_simple_meter(value: &str) -> Option<MeterKind> {
     })
 }
 
-fn parse_unit_note_length(value: &str) -> Option<UnitNoteLength> {
+pub(crate) fn parse_unit_note_length(value: &str) -> Option<UnitNoteLength> {
     let (numerator, denominator) = value.trim().split_once('/')?;
     Some(UnitNoteLength {
         fraction: NoteLengthFraction::new(numerator.parse().ok()?, denominator.parse().ok()?),
@@ -1425,7 +1425,7 @@ fn ensure_default_unit_note_length(state: &mut FieldState, span: Span, options: 
     }
 }
 
-fn parse_key(value: &str, value_span: Span) -> KeySignature {
+pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
     let trimmed = value.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         return KeySignature {
@@ -1516,7 +1516,15 @@ fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
     }
 
     let mode = if mode_start < token.len() {
-        parse_key_mode(&token[mode_start..])
+        // Any text after the tonic letter (and optional accidental) must be a
+        // recognised mode suffix, e.g. `Cmaj`, `Ador`. Otherwise the token is
+        // not a key tonic at all — for instance a clef shorthand (`bass`,
+        // `alto`) or a property token (`clef=bass`) that merely happens to start
+        // with a note letter must not be misread as a key change.
+        match parse_key_mode(&token[mode_start..]) {
+            Some(mode) => Some(mode),
+            None => return None,
+        }
     } else {
         None
     };
