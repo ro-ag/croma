@@ -6,27 +6,46 @@ JSONL, Parquet, and reports stay under `docs/untracked/`.
 
 ## Required Inputs
 
-- ABC corpus root: `/Users/rodox/dev/rs/trd_obsolete/test/real/abc`
-- Reference MusicXML root: `/Users/rodox/dev/rs/trd_obsolete/test/real/musicxml`
-- Optional 10k manifest: `/Users/rodox/dev/rs/trd_obsolete/test/real/manifest.jsonl`
-- Croma repository root: `/Users/rodox/dev/rs/croma`
-- Rust toolchain: `/Users/rodox/.rustup/toolchains/1.96.0-aarch64-apple-darwin`
+These two corpus roots live **outside** the Croma repository and are not
+committed. They must be made available wherever you run this recipe (mounted,
+copied, or downloaded into the sandbox). Point the `ABC_ROOT` / `REF_ROOT`
+environment variables at wherever they actually live in your environment.
 
-The ABC and reference roots are outside the Croma repository. Phase 10-i export
-results record this `trd_obsolete` corpus path, and this local machine currently
-does not have `/Users/rodox/dev/rs/trd/test/real`.
+- ABC corpus root (`ABC_ROOT`): directory tree of `*.abc` source files
+  (10000 expected).
+- Reference MusicXML root (`REF_ROOT`): matching `*.musicxml` / `*.xml`
+  reference files.
+- Optional 10k manifest: a `manifest.jsonl` index of the corpus, if available.
+- Croma repository root: the checkout you run these commands from.
+- Rust toolchain: Rust 1.96.0, pinned by `rust-toolchain.toml` and provided by
+  whichever development environment you use (`rustup` in the Linux cloud
+  sandbox, or the Nix flake locally — see `docs/development-environment.md`).
+
+The corpus originated on a macOS workstation under
+`…/trd_obsolete/test/real/{abc,musicxml}` (Phase 10-i export results still
+record that provenance path). A fresh Linux cloud sandbox does **not** contain
+the corpus; provisioning it is the prerequisite step before any corpus phase.
 
 ## Environment
 
-Run from `/Users/rodox/dev/rs/croma`.
+Run all commands from the Croma repository root.
+
+`rust-toolchain.toml` pins Rust 1.96.0, so `cargo`/`rustc` automatically select
+the correct toolchain on any host — no absolute toolchain path is needed. If you
+are not already inside the project dev shell, provision the toolchain and Python
+deps first:
 
 ```sh
-export TOOLCHAIN=/Users/rodox/.rustup/toolchains/1.96.0-aarch64-apple-darwin
-export PATH="$TOOLCHAIN/bin:$PATH"
-export RUSTC="$TOOLCHAIN/bin/rustc"
+rustup show   # installs Rust 1.96.0 + clippy + rustfmt per rust-toolchain.toml
+uv sync       # installs pinned Python deps (music21, polars, pytest)
+```
 
-export ABC_ROOT=/Users/rodox/dev/rs/trd_obsolete/test/real/abc
-export REF_ROOT=/Users/rodox/dev/rs/trd_obsolete/test/real/musicxml
+Set the corpus roots and a per-phase output directory:
+
+```sh
+# Point these at the corpus locations in *your* environment.
+export ABC_ROOT="${ABC_ROOT:?set to the ABC corpus root}"
+export REF_ROOT="${REF_ROOT:?set to the reference MusicXML root}"
 
 # Use a new phase directory for new work, for example phase-10j.
 export PHASE=phase-10j
@@ -37,7 +56,7 @@ mkdir -p "$OUT"
 Build the CLI used by the harness:
 
 ```sh
-"$TOOLCHAIN/bin/cargo" build -p croma-cli
+cargo build -p croma-cli   # produces target/debug/croma
 ```
 
 ## Full 10k Croma XML Export

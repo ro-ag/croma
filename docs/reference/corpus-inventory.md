@@ -1,5 +1,13 @@
 # Corpus Inventory
 
+> **Path provenance note.** The absolute `/Users/rodox/...` paths below record
+> where this corpus was originally located on the macOS workstation that
+> produced the Phase 10 evidence. They are historical provenance, not portable
+> locations. In a Linux cloud sandbox (or any other machine), provision the
+> corpus wherever convenient and drive the tooling through the `ABC_ROOT` /
+> `REF_ROOT` environment variables described in
+> `docs/testing/corpus-reproducibility.md`.
+
 ## Located Corpus
 
 - ABC corpus directory: `/Users/rodox/dev/rs/trd_obsolete/test/real/abc`
