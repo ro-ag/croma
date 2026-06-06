@@ -294,7 +294,10 @@ def tie_facts(element: Any) -> str | None:
 
 
 def lyric_facts(element: Any) -> list[str]:
-    return [lyric.text for lyric in getattr(element, "lyrics", []) if lyric.text]
+    return [
+        lyric.text if lyric.text is not None else ""
+        for lyric in getattr(element, "lyrics", [])
+    ]
 
 
 def measure_barline_facts(measure: Any) -> dict[str, Any]:
