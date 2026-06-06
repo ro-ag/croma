@@ -2491,6 +2491,30 @@ mod tests {
     }
 
     #[test]
+    fn each_voice_becomes_its_own_part() {
+        // A multi-voice tune exports as one score with one <part> per voice, in
+        // voice order, all in a single document (matching abc2xml/music21).
+        let source = "X:1\nL:1/4\nK:C\nV:1\nC D|E F|\nV:2\nG A|B c|\nV:3\nc B|A G|\n";
+        let export = export_musicxml(source).expect("multi-voice score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<score-partwise"), 1);
+        assert_eq!(count(&export.musicxml, "<part id="), 3);
+        for id in ["P1", "P2", "P3"] {
+            assert!(
+                export.musicxml.contains(&format!("<part id=\"{id}\"")),
+                "missing part {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_voice_tune_stays_one_part() {
+        let source = "X:1\nL:1/4\nK:C\nC D E F|\n";
+        let export = export_musicxml(source).expect("single-voice score should export");
+        assert_eq!(count(&export.musicxml, "<part id="), 1);
+    }
+
+    #[test]
     fn inline_key_change_applies_to_following_accidentals() {
         // `[K:D]` mid-tune must make the following notes use the D-major key
         // signature: the C in the second measure becomes C-sharp.
@@ -2657,9 +2681,14 @@ mod tests {
                 .musicxml
                 .contains("<ending number=\"2\" type=\"start\"/>")
         );
+        // V:1 (with its `&` overlay) and V:2 each become their own part. The
+        // overlay still adds a second voice within V:1's part, so a backup and
+        // `<voice>2</voice>` appear; V:2 is part P2, not a third voice.
+        assert_eq!(count(&export.musicxml, "<part id="), 2);
+        assert!(export.musicxml.contains("<part id=\"P2\""));
         assert!(export.musicxml.contains("<backup>"));
         assert!(export.musicxml.contains("<voice>2</voice>"));
-        assert!(export.musicxml.contains("<voice>3</voice>"));
+        assert!(!export.musicxml.contains("<voice>3</voice>"));
     }
 
     #[test]
