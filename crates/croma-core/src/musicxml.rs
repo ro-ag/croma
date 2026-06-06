@@ -742,7 +742,10 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn write_lyrics(&mut self, lyrics: &[AlignedLyric]) {
         for lyric in lyrics {
-            if lyric.control == crate::model::LyricControl::Skip {
+            if matches!(
+                lyric.control,
+                crate::model::LyricControl::Skip | crate::model::LyricControl::Hyphen
+            ) {
                 continue;
             }
             let number = lyric.verse.to_string();
@@ -752,10 +755,7 @@ impl<'score> MusicXmlWriter<'score> {
                     self.xml.text_element("syllabic", "single");
                     self.xml.text_element("text", &lyric.text);
                 }
-                crate::model::LyricControl::Hyphen => {
-                    self.xml.text_element("syllabic", "middle");
-                    self.xml.text_element("text", &lyric.text);
-                }
+                crate::model::LyricControl::Hyphen => {}
                 crate::model::LyricControl::Extender => {
                     self.xml.empty("extend", &[]);
                 }
@@ -2441,6 +2441,40 @@ mod tests {
         assert!(export.musicxml.contains("<slur type=\"start\""));
         assert!(export.musicxml.contains("<slur type=\"stop\""));
         assert!(export.musicxml.contains("<text>chord</text>"));
+    }
+
+    #[test]
+    fn lyric_hyphen_controls_do_not_export_as_sung_text() {
+        let source = "X:1\nT:Hyphen Lyrics\nM:4/4\nL:1/4\nK:C\nC D E F|\nw: A-des-te fi-del\n";
+        let export = export_musicxml(source).expect("hyphen lyric score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<lyric number=\"1\">"), 4);
+        assert!(export.musicxml.contains("<text>A</text>"));
+        assert!(export.musicxml.contains("<text>des</text>"));
+        assert!(export.musicxml.contains("<text>te</text>"));
+        assert!(export.musicxml.contains("<text>fi</text>"));
+        assert!(!export.musicxml.contains("<text>del</text>"));
+        assert!(!export.musicxml.contains("<text>-</text>"));
+        assert_eq!(
+            export
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "abc.lyric.syllable_count")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn escaped_literal_hyphen_in_lyrics_still_exports_as_text() {
+        let source = "X:1\nT:Literal Hyphen Lyrics\nM:2/4\nL:1/4\nK:C\nC D|\nw: \\-dash end\n";
+        let export = export_musicxml(source).expect("literal hyphen lyric score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<text>-dash</text>"));
+        assert!(!export.musicxml.contains("<text>-</text>"));
+        assert!(export.diagnostics.is_empty());
     }
 
     #[test]
