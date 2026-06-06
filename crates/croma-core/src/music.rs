@@ -4159,6 +4159,13 @@ impl<'line> MusicLineParser<'line> {
             self.bump_char();
         }
         while self.peek_char().is_some_and(is_barline_char) {
+            // `[` is a barline character (e.g. `[|`, `|]`), but a `[` that opens
+            // an inline field such as `|[M:3/8]` must not be swallowed into a
+            // liberal combined barline — that would drop the field and split the
+            // bar. Stop the scan so the inline field is parsed on its own.
+            if self.peek_char() == Some('[') && self.is_inline_field_start() {
+                break;
+            }
             self.bump_char();
         }
         let span = self.span(start, self.index);
@@ -6350,6 +6357,54 @@ mod tests {
     }
 
     #[test]
+    fn inline_field_after_barline_is_not_swallowed_into_a_liberal_barline() {
+        // `|[M:3/8]` must parse as a plain barline followed by an inline field,
+        // not as a liberal `|[` combined barline. The old greedy barline scan
+        // ate the `[`, mangling the field and inserting a spurious empty bar.
+        let document = parse_document(
+            "X:1\nL:1/4\nM:6/8\nK:C\nC3|[M:3/8]E2E|[M:6/8]F2G|\n",
+            ParseOptions::default(),
+        )
+        .value;
+        let report = parse_tune_report_from_document(&document);
+        let tune = report.value.expect("expected tune");
+
+        let non_empty: Vec<usize> = tune.voices[0]
+            .measures
+            .iter()
+            .map(|measure| {
+                measure
+                    .events
+                    .iter()
+                    .filter(|event| event.alignable)
+                    .count()
+            })
+            .collect();
+        assert_eq!(
+            non_empty,
+            vec![1, 2, 2],
+            "no spurious empty measures: {non_empty:?}"
+        );
+
+        let line = document
+            .music
+            .tune(0)
+            .expect("expected parsed tune music")
+            .lines
+            .first()
+            .expect("expected music line");
+        let inline_codes: Vec<char> = line
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MusicItem::InlineField(field) => Some(field.code),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inline_codes, vec!['M', 'M']);
+    }
+
+    #[test]
     fn aligns_postponed_and_adjacent_lyrics_under_abc21_cursor_rules() {
         let document = parse_document(
             "X:1\nK:C\nC D E F|\nG A B c|\nw: doh re mi fa sol la ti doh\nw: alt verse words here more text ok done\n",
@@ -6635,9 +6690,11 @@ mod tests {
         // `tri--umph` spans three notes with the middle one blank (ABC 2.1
         // section 5.1: a hyphen preceded by another hyphen is a separate, empty
         // syllable). The middle note must not export the literal "-" text.
-        let document =
-            parse_document("X:1\nL:1/4\nK:C\nc d e|\nw: tri--umph\n", ParseOptions::default())
-                .value;
+        let document = parse_document(
+            "X:1\nL:1/4\nK:C\nc d e|\nw: tri--umph\n",
+            ParseOptions::default(),
+        )
+        .value;
         let report = parse_tune_report_from_document(&document);
         let tune = report.value.expect("expected tune");
         let texts = tune.voices[0].measures[0]
@@ -7119,7 +7176,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(TieRole::Start), Some(TieRole::Stop), None]
         );
-        assert_eq!(notes[0].attachments.ties[0].pair_id, notes[1].attachments.ties[0].pair_id);
+        assert_eq!(
+            notes[0].attachments.ties[0].pair_id,
+            notes[1].attachments.ties[0].pair_id
+        );
         assert_eq!(
             notes.iter().map(|event| event.duration).collect::<Vec<_>>(),
             vec![
