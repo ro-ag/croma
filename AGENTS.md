@@ -15,7 +15,27 @@ tools/session_bootstrap.sh
 
 It reports git state, provisions the toolchain (`rustup` + `uv sync`), builds
 `target/debug/croma`, restores the progress tracker DB, and reports testbed
-status. To also rebuild the full 10k testbed (needs the external corpus):
+status.
+
+If the external corpus is missing, bootstrap can recreate the original 10k ABC
+sources from Zenodo under ignored storage:
+
+```sh
+tools/session_bootstrap.sh --fetch-corpus
+tools/session_bootstrap.sh --fetch-corpus --fetch-reference
+```
+
+Bootstrap prefers the verified Git LFS archive at
+`docs/corpus/zenodo-10k-abc.tar.gz` when present, and falls back to Zenodo when
+the archive is absent or fails checksum validation. If LFS smudge was skipped,
+fetch only that archive with:
+
+```sh
+git lfs pull --include docs/corpus/zenodo-10k-abc.tar.gz
+```
+
+The second bootstrap command also generates reference MusicXML with `abc2xml.py`.
+To rebuild the full 10k testbed after the corpus exists:
 
 ```sh
 ABC_ROOT=/path/to/abc REF_ROOT=/path/to/musicxml tools/session_bootstrap.sh --testbed

@@ -23,6 +23,42 @@
 The corpus should stay outside tracked Croma paths. Reports derived from it
 belong under `docs/untracked/`.
 
+## Upstream Dataset Provenance
+
+The base ABC corpus can be recreated without the old local TRD checkout:
+
+- Dataset: **ABC Notation Dataset (10k samples)**
+- DOI: <https://doi.org/10.5281/zenodo.17694747>
+- Zenodo record: <https://zenodo.org/records/17694747>
+- JSON download URL:
+  <https://zenodo.org/records/17694747/files/dataset_10k.json?download=1>
+- Published date recorded by the old TRD copyright note: `2025-11-24`
+- Listed creator: anonymous
+- License: Creative Commons Attribution 4.0 International
+- License URL: <https://creativecommons.org/licenses/by/4.0/>
+
+Croma's local provisioner imports that JSON into ignored storage:
+
+```sh
+tools/session_bootstrap.sh --fetch-corpus
+```
+
+Bootstrap prefers the verified Git LFS archive
+`docs/corpus/zenodo-10k-abc.tar.gz` when present. Its checksum is tracked in
+`docs/corpus/zenodo-10k-abc.tar.gz.sha256`. If the archive is missing or the
+checksum does not match, bootstrap falls back to the Zenodo JSON download above.
+
+The provisioned working copy writes ABC sources, a manifest, and a license
+report under `docs/untracked/corpus/zenodo-10k/`. Reference MusicXML is not part
+of the Zenodo dataset; it is generated locally with Willem Vree's `abc2xml.py`:
+
+```sh
+tools/session_bootstrap.sh --fetch-corpus --fetch-reference
+```
+
+The reference converter is documented at <https://wim.vree.org/svgParse/abc2xml.html>
+and is downloaded from <https://wim.vree.org/svgParse/abc2xml.py-268.zip>.
+
 ## Existing TRD Corpus Tooling
 
 - Python package: `/Users/rodox/dev/rs/trd_obsolete/src/traduttore_tools`

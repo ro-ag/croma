@@ -26,6 +26,83 @@ The corpus originated on a macOS workstation under
 record that provenance path). A fresh Linux cloud sandbox does **not** contain
 the corpus; provisioning it is the prerequisite step before any corpus phase.
 
+## Provision Original Corpus
+
+The original ABC source corpus is reproducible from the Zenodo dataset used by
+the older TRD work:
+
+- Dataset: **ABC Notation Dataset (10k samples)**
+- DOI: <https://doi.org/10.5281/zenodo.17694747>
+- Zenodo record: <https://zenodo.org/records/17694747>
+- Downloaded JSON: `dataset_10k.json`
+- License: Creative Commons Attribution 4.0 International
+
+Download and import the 10k ABC sources into ignored Croma storage:
+
+```sh
+tools/session_bootstrap.sh --fetch-corpus
+```
+
+Bootstrap first looks for a verified Git LFS cache archive:
+
+- `docs/corpus/zenodo-10k-abc.tar.gz`
+- `docs/corpus/zenodo-10k-abc.tar.gz.sha256`
+
+If the archive is present and its SHA-256 matches, bootstrap extracts it. If the
+archive is absent, unresolved as a Git LFS pointer, or fails checksum
+verification, bootstrap falls back to the Zenodo download URL above.
+
+The generated local corpus lives under ignored storage:
+
+- `docs/untracked/corpus/zenodo-10k/cache/dataset_10k.json`
+- `docs/untracked/corpus/zenodo-10k/abc/*.abc`
+- `docs/untracked/corpus/zenodo-10k/manifest.jsonl`
+- `docs/untracked/corpus/zenodo-10k/license-report.json`
+
+When cloning with Git LFS smudge disabled, fetch only this corpus cache with:
+
+```sh
+git lfs pull --include docs/corpus/zenodo-10k-abc.tar.gz
+```
+
+Generate the reference MusicXML files with Willem Vree's `abc2xml.py`:
+
+```sh
+tools/session_bootstrap.sh --fetch-corpus --fetch-reference
+```
+
+This also downloads `abc2xml.py-268.zip` into ignored storage and writes:
+
+- `docs/untracked/corpus/zenodo-10k/tools/abc2xml/`
+- `docs/untracked/corpus/zenodo-10k/musicxml/*.xml`
+- `docs/untracked/corpus/zenodo-10k/abc2xml-report.jsonl`
+
+After this, bootstrap auto-detects the ignored corpus paths. You can also set
+the roots explicitly:
+
+```sh
+export ABC_ROOT=docs/untracked/corpus/zenodo-10k/abc
+export REF_ROOT=docs/untracked/corpus/zenodo-10k/musicxml
+```
+
+The lower-level provisioner is available when you need a limited test download
+or an already downloaded JSON:
+
+```sh
+uv run python tools/provision_corpus.py fetch-zenodo-10k --output docs/untracked/corpus/zenodo-10k
+uv run python tools/provision_corpus.py import-zenodo-10k /path/to/dataset_10k.json --output docs/untracked/corpus/zenodo-10k
+uv run python tools/provision_corpus.py import-archive --archive docs/corpus/zenodo-10k-abc.tar.gz --output docs/untracked/corpus/zenodo-10k
+uv run python tools/provision_corpus.py abc2xml-real --output docs/untracked/corpus/zenodo-10k
+```
+
+To rebuild the LFS cache archive after regenerating the ABC sources:
+
+```sh
+uv run python tools/provision_corpus.py build-archive --output docs/untracked/corpus/zenodo-10k --archive docs/corpus/zenodo-10k-abc.tar.gz
+git lfs track "docs/corpus/*.tar.gz"
+git add .gitattributes docs/corpus/zenodo-10k-abc.tar.gz docs/corpus/zenodo-10k-abc.tar.gz.sha256
+```
+
 ## Environment
 
 Run all commands from the Croma repository root.
@@ -40,12 +117,14 @@ rustup show   # installs Rust 1.96.0 + clippy + rustfmt per rust-toolchain.toml
 uv sync       # installs pinned Python deps (music21, polars, pytest)
 ```
 
-Set the corpus roots and a per-phase output directory:
+Set the corpus roots and a per-phase output directory. If you used
+`tools/session_bootstrap.sh --fetch-corpus --fetch-reference`, these are the
+default ignored local roots:
 
 ```sh
 # Point these at the corpus locations in *your* environment.
-export ABC_ROOT="${ABC_ROOT:?set to the ABC corpus root}"
-export REF_ROOT="${REF_ROOT:?set to the reference MusicXML root}"
+export ABC_ROOT="${ABC_ROOT:-docs/untracked/corpus/zenodo-10k/abc}"
+export REF_ROOT="${REF_ROOT:-docs/untracked/corpus/zenodo-10k/musicxml}"
 
 # Use a new phase directory for new work, for example phase-10j.
 export PHASE=phase-10j
