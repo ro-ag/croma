@@ -36,11 +36,17 @@ is the contract for the fuller parser.
 
 ## Development
 
-This repository targets the latest stable Rust toolchain, currently Rust 1.96.0.
-For reproducible per-project tooling on macOS, use the Nix flake described in
+This repository targets the latest stable Rust toolchain, currently Rust 1.96.0,
+pinned by `rust-toolchain.toml`. Work in a Linux cloud sandbox (`rustup` + `uv`)
+or a local Nix flake; both are described in
 [`docs/development-environment.md`](docs/development-environment.md).
 
+Agents (and humans) should start each session with the idempotent bootstrap,
+which provisions the toolchain, restores the progress database, and reports
+testbed status. See [`AGENTS.md`](AGENTS.md) for the full workflow.
+
 ```sh
+tools/session_bootstrap.sh
 cargo test --workspace
 cargo run -p croma-cli -- xml examples/basic.abc
 just check
