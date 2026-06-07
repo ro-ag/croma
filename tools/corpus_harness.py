@@ -10,6 +10,7 @@ and optional MusicXML structural comparison. It deliberately shells out to the
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import random
@@ -86,36 +87,40 @@ def main() -> int:
     if music21_facts_dir is not None:
         music21_facts_dir.mkdir(parents=True, exist_ok=True)
 
+    jobs = resolve_jobs(args.jobs)
+
     with tempfile.TemporaryDirectory(prefix="croma-corpus-") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         append_handle = results_jsonl.open("a", encoding="utf-8")
         try:
-            for index, abc_path in enumerate(selected, start=1):
-                abc_key = str(abc_path)
-                if abc_key in previous:
-                    item = previous[abc_key]
-                    skipped_by_resume += 1
-                else:
-                    item = run_one(args, abc_path)
-                    enrich_result(
-                        item=item,
-                        args=args,
-                        corpus=corpus,
-                        classifications=classifications,
-                        compare_script=compare_script,
-                        temp_dir=temp_dir,
-                        keep_xml_dir=keep_xml_dir,
-                        music21_facts_dir=music21_facts_dir,
-                    )
-                    append_jsonl(append_handle, item)
-
-                results.append(item)
-
-                if should_stop(args, item):
-                    break
-
-                if args.progress_every and index % args.progress_every == 0:
-                    print(f"processed {index}/{len(selected)}", file=sys.stderr)
+            if jobs == 1:
+                skipped_by_resume = run_serial(
+                    selected=selected,
+                    previous=previous,
+                    results=results,
+                    append_handle=append_handle,
+                    args=args,
+                    corpus=corpus,
+                    classifications=classifications,
+                    compare_script=compare_script,
+                    temp_dir=temp_dir,
+                    keep_xml_dir=keep_xml_dir,
+                    music21_facts_dir=music21_facts_dir,
+                )
+            else:
+                skipped_by_resume = run_parallel(
+                    selected=selected,
+                    previous=previous,
+                    results=results,
+                    append_handle=append_handle,
+                    jobs=jobs,
+                    args=args,
+                    corpus=corpus,
+                    classifications=classifications,
+                    compare_script=compare_script,
+                    keep_xml_dir=keep_xml_dir,
+                    music21_facts_dir=music21_facts_dir,
+                )
         finally:
             append_handle.close()
 
@@ -148,6 +153,132 @@ def main() -> int:
     return 0
 
 
+def run_serial(
+    *,
+    selected: list[Path],
+    previous: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+    append_handle: Any,
+    args: argparse.Namespace,
+    corpus: Path,
+    classifications: "ClassificationMap",
+    compare_script: Path,
+    temp_dir: Path,
+    keep_xml_dir: Path | None,
+    music21_facts_dir: Path | None,
+) -> int:
+    """Original serial path. Preserves exact pre-parallel behavior."""
+    skipped_by_resume = 0
+    for index, abc_path in enumerate(selected, start=1):
+        abc_key = str(abc_path)
+        if abc_key in previous:
+            item = previous[abc_key]
+            skipped_by_resume += 1
+        else:
+            item = run_one(args, abc_path)
+            enrich_result(
+                item=item,
+                args=args,
+                corpus=corpus,
+                classifications=classifications,
+                compare_script=compare_script,
+                temp_dir=temp_dir,
+                keep_xml_dir=keep_xml_dir,
+                music21_facts_dir=music21_facts_dir,
+            )
+            append_jsonl(append_handle, item)
+
+        results.append(item)
+
+        if should_stop(args, item):
+            break
+
+        if args.progress_every and index % args.progress_every == 0:
+            print(f"processed {index}/{len(selected)}", file=sys.stderr)
+    return skipped_by_resume
+
+
+def run_parallel(
+    *,
+    selected: list[Path],
+    previous: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+    append_handle: Any,
+    jobs: int,
+    args: argparse.Namespace,
+    corpus: Path,
+    classifications: "ClassificationMap",
+    compare_script: Path,
+    keep_xml_dir: Path | None,
+    music21_facts_dir: Path | None,
+) -> int:
+    """Parallel path: workers compute items, the main process writes them.
+
+    Output ordering matches `selected` exactly: results.jsonl and the in-memory
+    `results` list are written in original file order regardless of worker
+    completion order. Resumed (cached) files are never dispatched. `should_stop`
+    is honored in original order; once an item triggers a stop, no further items
+    are written or collected (in-flight workers are cancelled best-effort).
+    """
+    # Indices of files that actually need computing (not satisfied by --resume).
+    pending_indices = [
+        index for index, abc_path in enumerate(selected) if str(abc_path) not in previous
+    ]
+    skipped_by_resume = len(selected) - len(pending_indices)
+
+    computed: dict[int, dict[str, Any]] = {}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
+        future_to_index = {
+            executor.submit(
+                process_one,
+                args=args,
+                abc_path=selected[index],
+                corpus=corpus,
+                classifications=classifications,
+                compare_script=compare_script,
+                keep_xml_dir=keep_xml_dir,
+                music21_facts_dir=music21_facts_dir,
+            ): index
+            for index in pending_indices
+        }
+        try:
+            for future in concurrent.futures.as_completed(future_to_index):
+                computed[future_to_index[future]] = future.result()
+        except BaseException:
+            for future in future_to_index:
+                future.cancel()
+            raise
+
+    # Reassemble in original `selected` order and write/collect deterministically.
+    stopped = False
+    for index, abc_path in enumerate(selected):
+        abc_key = str(abc_path)
+        if abc_key in previous:
+            item = previous[abc_key]
+        else:
+            item = computed[index]
+            append_jsonl(append_handle, item)
+
+        results.append(item)
+
+        if should_stop(args, item):
+            stopped = True
+            break
+
+        position = index + 1
+        if args.progress_every and position % args.progress_every == 0:
+            print(f"processed {position}/{len(selected)}", file=sys.stderr)
+
+    # When stopping early, do not let skipped-by-resume counts past the stop
+    # point inflate the report; recount only the cached files we actually used.
+    if stopped:
+        skipped_by_resume = sum(
+            1 for item in results if str(item.get("path")) in previous
+        )
+
+    return skipped_by_resume
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run croma over an ABC corpus")
     parser.add_argument("--croma", type=Path, default=Path("target/debug/croma"))
@@ -166,6 +297,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-codes", type=int, default=20)
     parser.add_argument("--snippet-lines", type=int, default=2)
     parser.add_argument("--progress-every", type=int, default=0)
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=0,
+        help="Number of worker processes. Use 0 for host CPU count minus 1; 1 runs serially.",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--fail-on-croma-failure", action="store_true")
     parser.add_argument("--fail-on-mismatch", action="store_true")
@@ -178,6 +315,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-xml-dir", type=Path)
     parser.add_argument("--classifications", type=Path)
     return parser.parse_args()
+
+
+def resolve_jobs(requested_jobs: int) -> int:
+    if requested_jobs < 0:
+        raise SystemExit("--jobs must be >= 0")
+    if requested_jobs == 0:
+        return max(1, (os.cpu_count() or 1) - 1)
+    return requested_jobs
 
 
 def resolve_corpus(corpus_arg: Path | None) -> Path:
@@ -253,6 +398,37 @@ def load_previous_results(results_jsonl: Path, args: argparse.Namespace) -> dict
         if isinstance(path, str):
             previous[path] = item
     return previous
+
+
+def process_one(
+    *,
+    args: argparse.Namespace,
+    abc_path: Path,
+    corpus: Path,
+    classifications: "ClassificationMap",
+    compare_script: Path,
+    keep_xml_dir: Path | None,
+    music21_facts_dir: Path | None,
+) -> dict[str, Any]:
+    """Run croma and enrich a single file. Safe to call in a worker process.
+
+    Uses a private temporary directory so concurrent workers never collide on
+    scratch MusicXML paths. Distinct per-file outputs under keep_xml_dir /
+    music21_facts_dir do not collide because their paths are file-specific.
+    """
+    item = run_one(args, abc_path)
+    with tempfile.TemporaryDirectory(prefix="croma-corpus-worker-") as temp_dir_name:
+        enrich_result(
+            item=item,
+            args=args,
+            corpus=corpus,
+            classifications=classifications,
+            compare_script=compare_script,
+            temp_dir=Path(temp_dir_name),
+            keep_xml_dir=keep_xml_dir,
+            music21_facts_dir=music21_facts_dir,
+        )
+    return item
 
 
 def run_one(args: argparse.Namespace, abc_path: Path) -> dict[str, Any]:

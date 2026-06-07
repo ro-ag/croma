@@ -149,7 +149,7 @@ if [ -n "$ABC_ROOT" ] && [ -d "$ABC_ROOT" ] && [ -n "$REF_ROOT" ] && [ -d "$REF_
       --croma target/debug/croma --corpus "$ABC_ROOT" --mode xml \
       --report "$OUT/full-10k-export-report.json" \
       --results-jsonl "$OUT/full-10k-export-results.jsonl" \
-      --keep-xml-dir "$OUT/full-10k-xml" --progress-every 500
+      --keep-xml-dir "$OUT/full-10k-xml" --progress-every 500 --jobs 0
     uv run python tools/music21_polars_corpus_compare.py \
       --results-jsonl "$OUT/full-10k-export-results.jsonl" \
       --croma-xml-root "$OUT/full-10k-xml" --reference-root "$REF_ROOT" \
