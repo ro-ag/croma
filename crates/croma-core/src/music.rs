@@ -1557,6 +1557,20 @@ impl MultiVoiceLowering {
         }
     }
 
+    /// Apply an inline `[K:..]` key change to the currently-active voice only.
+    ///
+    /// Per ABC 2.1 (§4.2, §7) an inline key change inside a voice line affects
+    /// that voice from this point onward; the other voices keep their existing
+    /// key signature. The active voice is the one `current_state()` resolves via
+    /// `self.current_voice`.
+    fn apply_inline_key_change(&mut self, key: &Spanned<KeySignature>) {
+        if key_is_invalid_for_lowering(&key.value) {
+            self.diagnostics.push(invalid_key_change_warning(key.span));
+            return;
+        }
+        self.current_state().set_key(Some(&key.value));
+    }
+
     /// Apply an inline information field (`[M:..]`, `[K:..]`, `[L:..]`) that
     /// appears mid-line. Voice switches (`[V:..]`) are handled separately. The
     /// change takes effect from this point in the line, mirroring how the
@@ -1578,7 +1592,7 @@ impl MultiVoiceLowering {
                 // clef-only change such as `[K:clef=bass]` — must leave the
                 // current key signature untouched rather than reset it.
                 if inline_key_changes_signature(&key) {
-                    self.apply_key_change(&Spanned::new(key, inline.value.span));
+                    self.apply_inline_key_change(&Spanned::new(key, inline.value.span));
                 }
             }
             _ => {}
@@ -1656,7 +1670,7 @@ impl MultiVoiceLowering {
                     }
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
-                    self.current_state().reset_measure_accidentals();
+                    self.current_state().reset_measure_accidentals_at_barline();
                     for kind in barline_lowering_kinds(barline) {
                         self.current_state()
                             .lowered
@@ -3976,6 +3990,43 @@ impl LoweringState {
 
     fn reset_measure_accidentals(&mut self) {
         self.accidental_state.clear();
+    }
+
+    /// Reset measure accidentals at a bar line, but preserve the accidental of a
+    /// note whose tie is still open.
+    ///
+    /// Per ABC 2.1 §4.20 a tie continues the same sounding pitch across the bar
+    /// line; the bar must not cancel it. Without this, the stop note would be
+    /// re-resolved against the key signature, changing the tied pitch. Normal
+    /// (non-tied) accidentals are still cleared as usual.
+    fn reset_measure_accidentals_at_barline(&mut self) {
+        let preserved = self.pending_tie.and_then(|tie| {
+            lowered_timed_note(self.lowered.get(tie.event_index)).and_then(|timed| {
+                if let LoweredEventAtomKind::Note {
+                    step,
+                    octave,
+                    effective_accidental,
+                    accidental_source,
+                    ..
+                } = timed.event.kind
+                {
+                    effective_accidental.map(|accidental| MeasureAccidental {
+                        step: step.to_ascii_uppercase(),
+                        octave,
+                        accidental,
+                        span: accidental_source.unwrap_or_else(|| {
+                            Span::new(self.source_span.end, self.source_span.end)
+                        }),
+                    })
+                } else {
+                    None
+                }
+            })
+        });
+        self.accidental_state.clear();
+        if let Some(accidental) = preserved {
+            self.accidental_state.push(accidental);
+        }
     }
 
     fn set_key(&mut self, key: Option<&KeySignature>) {
