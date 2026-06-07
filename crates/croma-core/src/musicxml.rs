@@ -2714,6 +2714,31 @@ mod tests {
     }
 
     #[test]
+    fn staves_parenthesis_group_merges_voices_into_one_part() {
+        // `%%staves 1 (2 3) 4`: voices 2 and 3 share one part; 1 and 4 are their
+        // own parts, giving three parts.
+        let source = concat!(
+            "X:1\nL:1/4\n%%staves 1 (2 3) 4\n",
+            "V:1\nV:2\nV:3\nV:4\nK:C\n",
+            "V:1\nC D|\nV:2\nE F|\nV:3\nG A|\nV:4\nc d|\n",
+        );
+        let export = export_musicxml(source).expect("grouped score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<part id="), 3);
+    }
+
+    #[test]
+    fn staves_bracket_group_keeps_one_part_per_voice() {
+        let source = concat!(
+            "X:1\nL:1/4\n%%staves [1 2 3]\n",
+            "V:1\nV:2\nV:3\nK:C\n",
+            "V:1\nC D|\nV:2\nE F|\nV:3\nG A|\n",
+        );
+        let export = export_musicxml(source).expect("bracketed score should export");
+        assert_eq!(count(&export.musicxml, "<part id="), 3);
+    }
+
+    #[test]
     fn each_voice_becomes_its_own_part() {
         // A multi-voice tune exports as one score with one <part> per voice, in
         // voice order, all in a single document (matching abc2xml/music21).

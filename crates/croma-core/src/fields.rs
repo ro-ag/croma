@@ -781,7 +781,8 @@ impl<'source> FieldParser<'source> {
                     })
                 }
             },
-            "score" => ParsedFieldKind::Interpretation(InterpretationField::Score {
+            // `%%score` and `%%staves` share the same voice-grouping syntax.
+            "score" | "staves" => ParsedFieldKind::Interpretation(InterpretationField::Score {
                 directive: parse_score_directive(rest),
             }),
             _ => {
