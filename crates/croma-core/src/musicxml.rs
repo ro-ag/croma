@@ -676,11 +676,11 @@ impl<'score> MusicXmlWriter<'score> {
             .tuplets
             .iter()
             .any(|tuplet| matches!(tuplet.role, TupletRole::Start | TupletRole::Stop));
-        let has_ornaments = attachments
+        let has_notation_decorations = attachments
             .decorations
             .iter()
-            .any(|decoration| notation_decoration(decoration).is_some());
-        if !(has_tied || has_slurs || has_tuplets || has_ornaments) {
+            .any(|decoration| decoration_notation(decoration).is_some());
+        if !(has_tied || has_slurs || has_tuplets || has_notation_decorations) {
             return;
         }
         self.xml.start("notations", &[]);
@@ -732,14 +732,58 @@ impl<'score> MusicXmlWriter<'score> {
                 &[("type", tuplet_type), ("number", number.as_str())],
             );
         }
-        if has_ornaments {
-            self.xml.start("ornaments", &[]);
-            for decoration in &attachments.decorations {
-                if let Some(name) = notation_decoration(decoration) {
+        if has_notation_decorations {
+            let kinds = |want: fn(NotationKind) -> Option<&'static str>| {
+                attachments
+                    .decorations
+                    .iter()
+                    .filter_map(|decoration| decoration_notation(decoration).and_then(want))
+                    .collect::<Vec<_>>()
+            };
+            // MusicXML groups these per category, in schema order: ornaments,
+            // technical, articulations, then fermata.
+            let ornaments = kinds(|kind| match kind {
+                NotationKind::Ornament(name) => Some(name),
+                _ => None,
+            });
+            if !ornaments.is_empty() {
+                self.xml.start("ornaments", &[]);
+                for name in ornaments {
                     self.xml.empty(name, &[]);
                 }
+                self.xml.end("ornaments");
             }
-            self.xml.end("ornaments");
+            let technical = kinds(|kind| match kind {
+                NotationKind::Technical(name) => Some(name),
+                _ => None,
+            });
+            if !technical.is_empty() {
+                self.xml.start("technical", &[]);
+                for name in technical {
+                    self.xml.empty(name, &[]);
+                }
+                self.xml.end("technical");
+            }
+            let articulations = kinds(|kind| match kind {
+                NotationKind::Articulation(name) => Some(name),
+                _ => None,
+            });
+            if !articulations.is_empty() {
+                self.xml.start("articulations", &[]);
+                for name in articulations {
+                    self.xml.empty(name, &[]);
+                }
+                self.xml.end("articulations");
+            }
+            for kind in attachments
+                .decorations
+                .iter()
+                .filter_map(decoration_notation)
+            {
+                if let NotationKind::Fermata(fermata_type) = kind {
+                    self.xml.empty("fermata", &[("type", fermata_type)]);
+                }
+            }
         }
         if time_modification.is_none() {
             self.diagnostics
@@ -827,7 +871,7 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_dynamic(dynamic, sequence, part);
             } else if let Some(direction) = symbol_direction(decoration.name.as_str()) {
                 self.write_direction_type(direction, sequence, part);
-            } else if notation_decoration(decoration).is_none() {
+            } else if decoration_notation(decoration).is_none() {
                 self.diagnostics
                     .push(unsupported_decoration_warning(decoration));
                 self.write_direction_words(
@@ -1872,12 +1916,44 @@ fn dynamic_decoration(name: &str) -> Option<&'static str> {
     }
 }
 
-fn notation_decoration(decoration: &DecorationAttachment) -> Option<&'static str> {
-    match decoration.name.as_str() {
-        "." | "staccato" => Some("staccato"),
-        "trill" => Some("trill-mark"),
-        _ => None,
-    }
+/// MusicXML `<notations>` category and element for an ABC `!decoration!`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotationKind {
+    /// Inside `<ornaments>` (e.g. trill, mordent, turn).
+    Ornament(&'static str),
+    /// Inside `<articulations>` (e.g. staccato, accent, tenuto).
+    Articulation(&'static str),
+    /// Inside `<technical>` (e.g. up-bow, down-bow, open string).
+    Technical(&'static str),
+    /// A `<fermata>` element with the given type attribute.
+    Fermata(&'static str),
+}
+
+/// Map an ABC decoration to its MusicXML notation, per the ABC 2.1 decoration
+/// list and the MusicXML notation categories. Decorations handled elsewhere as
+/// dynamics or directions return `None`.
+fn decoration_notation(decoration: &DecorationAttachment) -> Option<NotationKind> {
+    Some(match decoration.name.as_str() {
+        "." | "staccato" => NotationKind::Articulation("staccato"),
+        ">" | "accent" | "emphasis" => NotationKind::Articulation("accent"),
+        "tenuto" => NotationKind::Articulation("tenuto"),
+        "wedge" => NotationKind::Articulation("staccatissimo"),
+        "marcato" => NotationKind::Articulation("strong-accent"),
+        "breath" => NotationKind::Articulation("breath-mark"),
+        "fermata" => NotationKind::Fermata("upright"),
+        "invertedfermata" => NotationKind::Fermata("inverted"),
+        "trill" => NotationKind::Ornament("trill-mark"),
+        "mordent" | "lowermordent" => NotationKind::Ornament("mordent"),
+        "uppermordent" | "pralltriller" => NotationKind::Ornament("inverted-mordent"),
+        "turn" => NotationKind::Ornament("turn"),
+        "invertedturn" => NotationKind::Ornament("inverted-turn"),
+        "upbow" => NotationKind::Technical("up-bow"),
+        "downbow" => NotationKind::Technical("down-bow"),
+        "open" => NotationKind::Technical("open-string"),
+        "thumb" => NotationKind::Technical("thumb-position"),
+        "snap" => NotationKind::Technical("snap-pizzicato"),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2546,6 +2622,26 @@ mod tests {
             p2.contains("<sign>F</sign>"),
             "V:2 should keep its bass clef"
         );
+    }
+
+    #[test]
+    fn decorations_map_to_notation_elements_not_words() {
+        // ABC decorations map to MusicXML notation categories, not <words>:
+        // fermata -> <fermata>, staccato/accent -> <articulations>,
+        // up-bow -> <technical>, trill -> <ornaments>.
+        let source = "X:1\nL:1/4\nK:C\n!fermata!.C !accent!D|!upbow!E !trill!F|\n";
+        let export = export_musicxml(source).expect("decorated score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<fermata type=\"upright\"/>"));
+        assert!(export.musicxml.contains("<articulations>"));
+        assert!(export.musicxml.contains("<staccato/>"));
+        assert!(export.musicxml.contains("<accent/>"));
+        assert!(export.musicxml.contains("<technical>"));
+        assert!(export.musicxml.contains("<up-bow/>"));
+        assert!(export.musicxml.contains("<ornaments>"));
+        assert!(export.musicxml.contains("<trill-mark/>"));
+        assert!(!export.musicxml.contains("<words>fermata</words>"));
+        assert!(!export.musicxml.contains("<words>accent</words>"));
     }
 
     #[test]
