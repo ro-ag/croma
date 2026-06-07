@@ -143,6 +143,14 @@ impl<'score> MusicXmlWriter<'score> {
                 }
             }
 
+            // A trailing `|:` (a forward repeat that follows content rather than
+            // opening its measure) is stored in this measure but begins the
+            // *next* measure's repeated section. Defer it like a `RepeatBoth`'s
+            // left half so it is emitted as the next measure's LEFT barline.
+            if trailing_left_repeat_pending(&measure_refs) {
+                pending_left_repeat = true;
+            }
+
             self.xml.end("measure");
         }
         self.xml.end("part");
@@ -1559,10 +1567,15 @@ fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
         .iter()
         .flat_map(|measure| measure.barlines.iter().map(|barline| (*measure, barline)))
         .filter(|(measure, barline)| {
-            let first_measure_leading = is_first_measure_leading_barline(measure, barline);
+            // A `RepeatStart` is a legitimate LEFT barline only when it leads
+            // its measure (no note content precedes it). A trailing `|:` that
+            // follows content marks the start of the *next* section's body and
+            // is deferred (see `trailing_left_repeat_pending`), so it is never
+            // emitted as this measure's left barline.
+            let leading = is_leading_barline(measure, barline);
             matches!(
-                (left, first_measure_leading, barline.kind),
-                (true, _, BarlineKind::RepeatStart)
+                (left, leading, barline.kind),
+                (true, true, BarlineKind::RepeatStart)
                     | (
                         false,
                         false,
@@ -1582,8 +1595,24 @@ fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
     barlines
 }
 
-fn is_first_measure_leading_barline(measure: &Measure, barline: &MeasureBarline) -> bool {
-    measure.id.index == 0 && measure.source_span.start == barline.span.start
+/// A barline "leads" its measure when nothing in the measure precedes it, i.e.
+/// it opens the measure rather than closing it. ABC stores a trailing `|:`
+/// (one that follows note content, like a pickup `E|:` or a mid-tune `...c|:`)
+/// in the *preceding* measure's barline vector; such a barline is not leading
+/// and its forward-repeat belongs to the measure that begins the repeated body.
+fn is_leading_barline(measure: &Measure, barline: &MeasureBarline) -> bool {
+    measure.source_span.start == barline.span.start
+}
+
+/// True when this measure carries a trailing `RepeatStart` (a `|:` that follows
+/// content) whose forward repeat must be deferred to the LEFT barline of the
+/// next measure — the one that actually begins the repeated section.
+fn trailing_left_repeat_pending(measures: &[&Measure]) -> bool {
+    measures.iter().any(|measure| {
+        measure.barlines.iter().any(|barline| {
+            barline.kind == BarlineKind::RepeatStart && !is_leading_barline(measure, barline)
+        })
+    })
 }
 
 fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
@@ -2636,6 +2665,98 @@ mod tests {
         assert_eq!(measure_numbers(&measures), vec!["1"]);
         assert!(has_barline(&measures[0], "left", None, Some("forward")));
         assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn pickup_repeat_start_places_forward_repeat_on_repeated_section() {
+        // ABC 2.1 §6: `|:` after a pickup marks the START of the repeated
+        // section, so the forward repeat belongs to the LEFT of measure 2
+        // (`CDEF`), not the pickup measure 1 (`E`).
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nE|:CDEF|GABc:|]\n";
+        let export = export_musicxml(source).expect("pickup repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+        assert_eq!(note_steps(&measures[0]), vec!['E']);
+        assert_eq!(note_steps(&measures[1]), vec!['C', 'D', 'E', 'F']);
+        assert!(
+            !has_barline(&measures[0], "left", None, Some("forward")),
+            "pickup measure must not carry the forward repeat"
+        );
+        assert!(has_barline(&measures[1], "left", None, Some("forward")));
+        assert!(has_barline(&measures[2], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn mid_tune_repeat_start_places_forward_repeat_on_repeated_section() {
+        // `|:` after content mid-tune marks the start of the repeated section:
+        // forward repeat belongs to the LEFT of measure 3 (`cBAG`).
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|GABc|:cBAG|FEDC:|]\n";
+        let export = export_musicxml(source).expect("mid-tune repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4"]);
+        assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+        assert_eq!(note_steps(&measures[2]), vec!['C', 'B', 'A', 'G']);
+        assert!(
+            !has_barline(&measures[1], "left", None, Some("forward")),
+            "measure preceding the repeat must not carry the forward repeat"
+        );
+        assert!(has_barline(&measures[2], "left", None, Some("forward")));
+        assert!(has_barline(&measures[3], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn leading_repeat_start_after_header_stays_on_its_own_measure() {
+        // Non-regression: a `|:` with no preceding content in its measure is a
+        // legitimate LEFT barline of measure 1 and must stay there.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF|GABc:|]\n";
+        let export = export_musicxml(source).expect("leading repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert!(has_barline(&measures[0], "left", None, Some("forward")));
+        assert!(has_barline(&measures[1], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn double_then_repeat_start_after_content_defers_forward_repeat() {
+        // `||:` after content (`Double` + `RepeatStart`) must not drop the
+        // forward repeat and must place it on the measure beginning the body.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF||:GABc|cBAG:|]\n";
+        let export = export_musicxml(source).expect("double-then-repeat should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+        assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+        assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+        assert!(
+            !has_barline(&measures[0], "left", None, Some("forward")),
+            "first measure must not carry the forward repeat"
+        );
+        assert!(has_barline(&measures[1], "left", None, Some("forward")));
+        assert!(has_barline(&measures[2], "right", None, Some("backward")));
+    }
+
+    #[test]
+    fn section_final_barline_followed_by_regular_is_preserved() {
+        // Bug C: `|]` (light-heavy section barline) immediately followed by `|`
+        // must be kept as the RIGHT barline of its measure (`GABc`).
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|GABc|]|cBAG|FEDC|]\n";
+        let export = export_musicxml(source).expect("section final barline should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+        assert!(
+            has_barline(&measures[1], "right", Some("light-heavy"), None),
+            "the section final barline after measure 2 must be preserved"
+        );
     }
 
     #[test]

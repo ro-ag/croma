@@ -4601,7 +4601,14 @@ impl<'line> MusicLineParser<'line> {
             {
                 break;
             }
-            self.bump_char();
+            let ch = self.bump_char();
+            // `]` always closes a barline spelling (`|]`, `:|]`, `[|]`, `[::]`).
+            // Anything after it — e.g. the `|` in `|]|` — begins a new barline,
+            // so stop here instead of swallowing it into a single Liberal run
+            // and losing the section/final barline (ABC 2.1 §6).
+            if ch == Some(']') {
+                break;
+            }
         }
         let span = self.span(start, self.index);
         let raw = self.text[start..self.index].to_owned();
