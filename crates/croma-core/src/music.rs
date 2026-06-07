@@ -4293,12 +4293,17 @@ impl<'line> MusicLineParser<'line> {
         if dotted {
             self.bump_char();
         }
+        let scan_start = self.index;
         while self.peek_char().is_some_and(is_barline_char) {
-            // `[` is a barline character (e.g. `[|`, `|]`), but a `[` that opens
-            // an inline field such as `|[M:3/8]` must not be swallowed into a
-            // liberal combined barline — that would drop the field and split the
-            // bar. Stop the scan so the inline field is parsed on its own.
-            if self.peek_char() == Some('[') && self.is_inline_field_start() {
+            // `[` is a barline character (it leads `[|`, `[::]`), but a `[`
+            // encountered partway through the scan opens a separate construct —
+            // a chord (`|[G2C,2]`), variant ending (`|[1`) or inline field
+            // (`|[M:3/8]`) — unless it continues a `[|`. Stop there so that `[`
+            // is parsed on its own instead of being swallowed into the barline.
+            if self.peek_char() == Some('[')
+                && self.index != scan_start
+                && self.peek_next_char() != Some('|')
+            {
                 break;
             }
             self.bump_char();
@@ -7478,7 +7483,9 @@ mod tests {
                 &document.diagnostics,
                 "abc.music.invalid_repeat_ending"
             ),
-            "1-"
+            // `|[1-` parses as a barline plus the `[1` variant ending, so the
+            // malformed-ending diagnostic spans the whole `[1-`.
+            "[1-"
         );
         let report = parse_tune_report_from_document(&document.value);
         let tune = report.value.expect("expected tune");

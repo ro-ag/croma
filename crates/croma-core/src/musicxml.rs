@@ -2625,6 +2625,25 @@ mod tests {
     }
 
     #[test]
+    fn chords_adjacent_to_barlines_are_not_swallowed() {
+        // `|[G2C,2]` and `][` must keep the chords intact: the `[` opens a chord,
+        // it is not part of a liberal `|[` / `][` barline. Two 4/4 measures of
+        // four quarter chords each, not many tiny measures.
+        let source =
+            "X:1\nL:1/8\nM:4/4\nK:C\n[G2C,2][c2C,2][A2F,2][e2C,2]|[F2D,2][D2D,2][A2D,2][d2D,2]|\n";
+        let export = export_musicxml(source).expect("bass-chord score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<measure "), 2);
+        assert!(
+            !export
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.barline.liberal"),
+            "no chord bracket should be read as a liberal barline"
+        );
+    }
+
+    #[test]
     fn staccato_chord_keeps_its_length_suffix() {
         // `.[CE]2` is a staccato chord of length 2 (a quarter at L:1/8), not a
         // dotted barline. The leading `.` must not swallow the chord's length.
@@ -2996,7 +3015,7 @@ mod tests {
             source,
             &export.diagnostics,
             "abc.music.invalid_repeat_ending",
-            "1-",
+            "[1-",
         );
         assert!(!export.musicxml.contains("<ending number=\"1-\""));
         assert!(export.musicxml.contains("<measure number=\"1\">"));
