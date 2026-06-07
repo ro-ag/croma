@@ -270,6 +270,7 @@ fn empty_score(span: Span, diagnostics: Vec<Diagnostic>) -> Score {
             title: None,
             composers: Vec::new(),
             tempo: None,
+            tempo_model: None,
             meter: None,
             key: None,
             directives: Vec::new(),
