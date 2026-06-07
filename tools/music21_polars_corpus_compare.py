@@ -521,7 +521,7 @@ def parse_args() -> argparse.Namespace:
         "--jobs",
         type=int,
         default=1,
-        help="Number of music21 worker processes. Use 0 for the host CPU count.",
+        help="Number of music21 worker processes. Use 0 for host CPU count minus 1.",
     )
     parser.add_argument(
         "--worker-chunk-size",
@@ -551,7 +551,7 @@ def resolve_jobs(requested_jobs: int) -> int:
     if requested_jobs < 0:
         raise SystemExit("--jobs must be >= 0")
     if requested_jobs == 0:
-        return os.cpu_count() or 1
+        return max(1, (os.cpu_count() or 1) - 1)
     return requested_jobs
 
 
