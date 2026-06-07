@@ -35,6 +35,8 @@ pub struct ScoreMetadata {
     pub title: Option<TextLine>,
     pub composers: Vec<TextLine>,
     pub tempo: Option<TextLine>,
+    /// Structured interpretation of [`Self::tempo`] for `<metronome>` export.
+    pub tempo_model: Option<TempoModel>,
     pub meter: Option<MeterModel>,
     pub key: Option<KeySignatureModel>,
     pub directives: Vec<ScoreDirectiveModel>,
@@ -56,6 +58,31 @@ pub struct MeterModel {
     pub duration: Option<Rational>,
     pub free_meter: bool,
     pub source_span: Span,
+}
+
+/// A parsed ABC `Q:` tempo field, structured for MusicXML `<metronome>` export.
+///
+/// The raw field text is preserved in [`ScoreMetadata::tempo`]; this model adds
+/// the interpreted beat unit, beats-per-minute and any leading quoted text so
+/// the writer can emit a real metronome direction rather than plain words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempoModel {
+    /// Optional quoted text accompanying the tempo (e.g. `"Allegro"`).
+    pub text: Option<String>,
+    /// Beat unit and bpm, when the field carries a numeric tempo.
+    pub beat: Option<TempoBeat>,
+    pub source_span: Span,
+}
+
+/// The numeric component of a tempo: a beat-unit fraction and its bpm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TempoBeat {
+    /// Beat-unit fraction numerator (e.g. `1` for `1/4`, `3` for `3/8`).
+    pub beat_numerator: u32,
+    /// Beat-unit fraction denominator (e.g. `4` for `1/4`, `8` for `3/8`).
+    pub beat_denominator: u32,
+    /// Beats per minute.
+    pub bpm: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

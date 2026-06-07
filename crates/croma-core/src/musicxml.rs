@@ -6,8 +6,8 @@ use crate::model::{
     ChordEvent, DecorationAttachment, EventAttachments, Fraction, GraceEventKind,
     GraceGroupAttachment, GraceNoteEvent, KeySignatureModel, Measure, MeasureBarline, MeasureId,
     Part, Pitch, PreservedDirective, RestEvent, RestVisibility, Score, SlurRole, StaffId,
-    TextAttachment, TieRole, TimedEvent, TimedEventKind, TimelineEventKind, TupletAttachment,
-    TupletRole, VoiceTimedEvent,
+    TempoBeat, TempoModel, TextAttachment, TieRole, TimedEvent, TimedEventKind, TimelineEventKind,
+    TupletAttachment, TupletRole, VoiceTimedEvent,
 };
 use crate::parser::ParseReport;
 
@@ -241,12 +241,58 @@ impl<'score> MusicXmlWriter<'score> {
         if !is_first_part {
             return;
         }
-        if let Some(tempo) = &self.score.metadata.tempo {
+        if let Some(tempo_model) = &self.score.metadata.tempo_model {
+            self.write_tempo_direction(tempo_model);
+        } else if let Some(tempo) = &self.score.metadata.tempo {
             self.write_direction_words(&tempo.text, None, Some("1"), Some(1));
         }
         for directive in &self.score.metadata.preserved_directives {
             self.write_preserved_directive(directive, part);
         }
+    }
+
+    /// Emit a `Q:` tempo as a MusicXML `<metronome>` direction (matching the
+    /// abc2xml reference), falling back to plain `<words>` when the field has no
+    /// numeric tempo. A `<sound tempo=...>` is always emitted: quarter-notes per
+    /// minute for a numeric tempo, or a default of 120 for text-only tempos.
+    fn write_tempo_direction(&mut self, tempo: &TempoModel) {
+        let beat_unit = tempo.beat.and_then(beat_unit_model);
+        // A numeric tempo we cannot map to a beat unit falls back to words using
+        // the raw field text, preserving prior behavior for exotic forms.
+        if tempo.beat.is_some() && beat_unit.is_none() {
+            if let Some(raw) = &self.score.metadata.tempo {
+                self.write_direction_words(&raw.text, None, Some("1"), Some(1));
+            }
+            return;
+        }
+
+        self.xml.start("direction", &[("placement", "above")]);
+        if let Some(text) = &tempo.text {
+            self.xml.start("direction-type", &[]);
+            self.xml.text_element("words", text);
+            self.xml.end("direction-type");
+        }
+        if let Some(unit) = &beat_unit {
+            self.xml.start("direction-type", &[]);
+            self.xml.start("metronome", &[]);
+            self.xml.text_element("beat-unit", unit.name);
+            if unit.dotted {
+                self.xml.empty("beat-unit-dot", &[]);
+            }
+            self.xml.text_element(
+                "per-minute",
+                &tempo.beat.expect("beat present").bpm.to_string(),
+            );
+            self.xml.end("metronome");
+            self.xml.end("direction-type");
+        }
+        let sound_tempo = match tempo.beat {
+            Some(beat) => sound_tempo_qpm(beat),
+            None => 120.0,
+        };
+        self.xml
+            .empty("sound", &[("tempo", &format!("{sound_tempo:.2}"))]);
+        self.xml.end("direction");
     }
 
     fn write_preserved_directive(&mut self, directive: &PreservedDirective, _part: &Part) {
@@ -1334,6 +1380,48 @@ impl XmlWriter {
     }
 }
 
+/// A MusicXML beat unit: a note-type name plus whether it carries a single dot.
+struct BeatUnit {
+    name: &'static str,
+    dotted: bool,
+}
+
+/// Map a tempo beat fraction to a MusicXML `<beat-unit>` (with optional dot).
+///
+/// Plain powers of two map directly (1/4 -> quarter). A numerator of 3 over a
+/// power of two is a dotted unit one power larger (3/8 -> dotted quarter). Forms
+/// that do not map cleanly return `None` so the writer falls back to words.
+fn beat_unit_model(beat: TempoBeat) -> Option<BeatUnit> {
+    let name_for = |denominator: u32| -> Option<&'static str> {
+        match denominator {
+            1 => Some("whole"),
+            2 => Some("half"),
+            4 => Some("quarter"),
+            8 => Some("eighth"),
+            16 => Some("16th"),
+            32 => Some("32nd"),
+            64 => Some("64th"),
+            _ => None,
+        }
+    };
+    match beat.beat_numerator {
+        1 => name_for(beat.beat_denominator).map(|name| BeatUnit {
+            name,
+            dotted: false,
+        }),
+        // 3/(2^k) is a dotted note one power larger, e.g. 3/8 -> dotted quarter.
+        3 if beat.beat_denominator.is_multiple_of(2) => {
+            name_for(beat.beat_denominator / 2).map(|name| BeatUnit { name, dotted: true })
+        }
+        _ => None,
+    }
+}
+
+/// Quarter-notes-per-minute for a `<sound tempo>` value: `beat * 4 * bpm`.
+fn sound_tempo_qpm(beat: TempoBeat) -> f64 {
+    (f64::from(beat.beat_numerator) / f64::from(beat.beat_denominator)) * 4.0 * f64::from(beat.bpm)
+}
+
 fn part_xml_id(part: &Part, index: usize) -> String {
     let value = part.id.value.trim();
     let fallback = format!("P{}", index + 1);
@@ -2223,6 +2311,68 @@ mod tests {
         assert!(export.musicxml.contains("<bass-step>E</bass-step>"));
         assert!(!export.musicxml.contains("<words>G7</words>"));
         assert!(!export.musicxml.contains("<words>C/E</words>"));
+    }
+
+    #[test]
+    fn tempo_beat_equals_bpm_emits_metronome() {
+        let source = "X:1\nM:4/4\nL:1/4\nQ:1/4=104\nK:C\nC4|\n";
+        let export = export_musicxml(source).expect("tempo score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<metronome>"));
+        assert!(export.musicxml.contains("<beat-unit>quarter</beat-unit>"));
+        assert!(export.musicxml.contains("<per-minute>104</per-minute>"));
+        assert!(export.musicxml.contains("<sound tempo=\"104.00\""));
+        assert!(!export.musicxml.contains("<words>1/4=104</words>"));
+    }
+
+    #[test]
+    fn tempo_dotted_beat_unit_emits_metronome_dot() {
+        let source = "X:1\nM:4/4\nL:1/4\nQ:3/8=100\nK:C\nC4|\n";
+        let export = export_musicxml(source).expect("tempo score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<beat-unit>quarter</beat-unit>"));
+        assert!(export.musicxml.contains("<beat-unit-dot"));
+        assert!(export.musicxml.contains("<per-minute>100</per-minute>"));
+        assert!(export.musicxml.contains("<sound tempo=\"150.00\""));
+        assert!(!export.musicxml.contains("<words>3/8=100</words>"));
+    }
+
+    #[test]
+    fn tempo_bare_number_uses_unit_note_length() {
+        let source = "X:1\nM:4/4\nL:1/8\nQ:120\nK:C\nC4|\n";
+        let export = export_musicxml(source).expect("tempo score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<beat-unit>eighth</beat-unit>"));
+        assert!(export.musicxml.contains("<per-minute>120</per-minute>"));
+        assert!(export.musicxml.contains("<sound tempo=\"60.00\""));
+        assert!(!export.musicxml.contains("<words>120</words>"));
+    }
+
+    #[test]
+    fn tempo_text_only_stays_words_with_default_sound() {
+        let source = "X:1\nM:4/4\nL:1/4\nQ:\"Slow\"\nK:C\nC4|\n";
+        let export = export_musicxml(source).expect("tempo score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<words>Slow</words>"));
+        assert!(export.musicxml.contains("<sound tempo=\"120.00\""));
+        assert_eq!(count(&export.musicxml, "<metronome>"), 0);
+    }
+
+    #[test]
+    fn tempo_text_plus_beat_emits_words_and_metronome() {
+        let source = "X:1\nM:4/4\nL:1/4\nQ:\"allegretto\" 1/4=110\nK:C\nC4|\n";
+        let export = export_musicxml(source).expect("tempo score should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<words>allegretto</words>"));
+        assert!(export.musicxml.contains("<metronome>"));
+        assert!(export.musicxml.contains("<beat-unit>quarter</beat-unit>"));
+        assert!(export.musicxml.contains("<per-minute>110</per-minute>"));
+        assert!(export.musicxml.contains("<sound tempo=\"110.00\""));
     }
 
     #[test]
