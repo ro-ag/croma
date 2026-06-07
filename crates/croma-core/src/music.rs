@@ -997,7 +997,8 @@ fn parse_score_stylesheet_directive(
         .find(char::is_whitespace)
         .unwrap_or(trimmed_rest.len());
     let name = &trimmed_rest[..name_end_offset];
-    if !name.eq_ignore_ascii_case("score") {
+    // `%%score` and `%%staves` share the same voice-grouping syntax.
+    if !name.eq_ignore_ascii_case("score") && !name.eq_ignore_ascii_case("staves") {
         return None;
     }
     let name_span = Span::new(name_start, name_start + name.len());
@@ -2465,42 +2466,128 @@ pub(crate) struct ScoreModelInput<'a> {
     pub divisions: u32,
 }
 
+/// Group voice indices into parts according to a `%%staves` / `%%score`
+/// directive. A parenthesis `( )` group merges its voices into one part
+/// (overlay voices on a shared staff); `[ ]` brackets and `{ }` braces are
+/// visual bracketing only and keep one part per voice. With no grouping
+/// directive — or a directive that never merges voices — each voice is its own
+/// part in voice-definition order (so the common bracket/brace cases keep the
+/// existing ordering).
+fn part_voice_groups(
+    directives: &[ScoreDirectiveModel],
+    voices: &[VoiceTimeline],
+) -> Vec<Vec<usize>> {
+    let one_per_voice = || {
+        (0..voices.len())
+            .map(|index| vec![index])
+            .collect::<Vec<_>>()
+    };
+    let Some(directive) = directives.iter().rev().find(|directive| {
+        directive
+            .tokens
+            .iter()
+            .any(|token| matches!(token.kind, ScoreDirectiveTokenKindModel::Voice(_)))
+    }) else {
+        return one_per_voice();
+    };
+
+    let index_of = |id: &str| voices.iter().position(|voice| voice.id.value == id);
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut paren_depth = 0u32;
+    let mut current: Vec<usize> = Vec::new();
+    for token in &directive.tokens {
+        match &token.kind {
+            ScoreDirectiveTokenKindModel::GroupStart('(') => paren_depth += 1,
+            ScoreDirectiveTokenKindModel::GroupEnd(')') => {
+                paren_depth = paren_depth.saturating_sub(1);
+                if paren_depth == 0 && !current.is_empty() {
+                    groups.push(std::mem::take(&mut current));
+                }
+            }
+            ScoreDirectiveTokenKindModel::Voice(id) => {
+                if let Some(index) = index_of(id) {
+                    if paren_depth > 0 {
+                        current.push(index);
+                    } else {
+                        groups.push(vec![index]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    // Any voice the directive did not list still needs a part.
+    let mentioned: std::collections::HashSet<usize> = groups.iter().flatten().copied().collect();
+    for index in 0..voices.len() {
+        if !mentioned.contains(&index) {
+            groups.push(vec![index]);
+        }
+    }
+    // Only honour the directive ordering/grouping when it actually merges voices;
+    // otherwise keep the simple one-part-per-voice order to avoid reordering the
+    // common bracket/brace cases.
+    if groups.is_empty() || groups.iter().all(|group| group.len() <= 1) {
+        return one_per_voice();
+    }
+    groups
+}
+
 pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
-    // Each ABC voice becomes its own MusicXML part (one part per voice), matching
-    // how abc2xml/music21 organise a multi-voice tune. A single-voice tune still
-    // yields exactly one part, so the common case is unchanged.
+    // Each ABC voice becomes its own MusicXML part, except that a `%%staves` /
+    // `%%score` parenthesis group merges its voices into one multi-voice part.
+    // A single-voice tune still yields exactly one part.
     let single_voice = input.voices.len() == 1;
-    let mut parts = input
-        .voices
+    let groups = part_voice_groups(input.score_directives, input.voices);
+    let mut parts = groups
         .iter()
         .enumerate()
-        .map(|(index, voice)| {
+        .map(|(part_index, voice_indices)| {
             let staff_id = StaffId {
                 value: 1,
                 span: input.source_span,
             };
-            let semantic = semantic_voice_from_timeline(voice, staff_id, input.field_state);
+            let semantic_voices = voice_indices
+                .iter()
+                .map(|&voice_index| {
+                    semantic_voice_from_timeline(
+                        &input.voices[voice_index],
+                        staff_id,
+                        input.field_state,
+                    )
+                })
+                .collect::<Vec<_>>();
             let staves = vec![Staff {
                 id: staff_id,
-                voices: vec![semantic.id.clone()],
+                voices: semantic_voices
+                    .iter()
+                    .map(|voice| voice.id.clone())
+                    .collect(),
                 source_span: input.source_span,
             }];
-            // Prefer the voice's own name; fall back to the tune title only when
-            // there is a single voice (a part name does not affect comparison).
-            let name = semantic
-                .properties
-                .name
-                .clone()
-                .or_else(|| semantic.properties.nm.clone())
+            // Prefer the (first) voice's own name; fall back to the tune title
+            // only for a single-voice tune (a part name does not affect the
+            // structural comparison).
+            let name = semantic_voices
+                .first()
+                .and_then(|voice| {
+                    voice
+                        .properties
+                        .name
+                        .clone()
+                        .or_else(|| voice.properties.nm.clone())
+                })
                 .or_else(|| single_voice.then(|| input.title.clone()).flatten());
             Part {
                 id: PartId {
-                    value: format!("P{}", index + 1),
+                    value: format!("P{}", part_index + 1),
                     span: input.source_span,
                 },
                 name,
                 staves,
-                voices: vec![semantic],
+                voices: semantic_voices,
                 source_span: input.source_span,
             }
         })
