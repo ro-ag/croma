@@ -4254,7 +4254,10 @@ impl<'line> MusicLineParser<'line> {
             self.parse_slur(SlurDirection::End, true);
             return;
         }
-        if self.peek_next_char().is_some_and(is_barline_char) {
+        // A dotted barline is `.|`, `.:|`, etc. `[` and `]` are barline
+        // characters too, but `.[...]` is a staccato chord (and `.]` is
+        // meaningless), so only `|`/`:` start a dotted barline here.
+        if matches!(self.peek_next_char(), Some('|' | ':')) {
             self.flush_pending_attachments();
             self.parse_barline(true);
             return;
