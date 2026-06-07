@@ -2625,6 +2625,20 @@ mod tests {
     }
 
     #[test]
+    fn staccato_chord_keeps_its_length_suffix() {
+        // `.[CE]2` is a staccato chord of length 2 (a quarter at L:1/8), not a
+        // dotted barline. The leading `.` must not swallow the chord's length.
+        let source = "X:1\nL:1/8\nK:C\n.[CE]2 [CE]|\n";
+        let export = export_musicxml(source).expect("staccato chord should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<staccato/>"));
+        // Two chords (each two notes) in one measure: the first is a quarter.
+        assert_eq!(count(&export.musicxml, "<chord/>"), 2);
+        assert_eq!(count(&export.musicxml, "<type>quarter</type>"), 2);
+        assert_eq!(count(&export.musicxml, "<type>eighth</type>"), 2);
+    }
+
+    #[test]
     fn decorations_map_to_notation_elements_not_words() {
         // ABC decorations map to MusicXML notation categories, not <words>:
         // fermata -> <fermata>, staccato/accent -> <articulations>,
