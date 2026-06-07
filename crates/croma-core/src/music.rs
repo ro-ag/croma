@@ -4478,12 +4478,18 @@ impl<'line> MusicLineParser<'line> {
         }
         let span = self.span(start, self.index);
         if !closed {
-            self.push_token(MusicTokenKind::Malformed, span);
+            // An unclosed `!` (a stray, or a deprecated line-break before notes
+            // such as `!f2e2f2`) must not swallow the following notes as its
+            // name. Recover by keeping only the delimiter as malformed and
+            // rewinding so the rest parses normally.
+            self.index = name_start;
+            let delimiter_span = self.span(start, name_start);
+            self.push_token(MusicTokenKind::Malformed, delimiter_span);
             self.push_malformed(
-                span,
+                delimiter_span,
                 MalformedSyntaxKind::UnclosedDecoration,
                 "abc.music.unclosed_decoration",
-                "Decoration was preserved and skipped",
+                "Decoration delimiter was preserved and skipped",
             );
             return;
         }
