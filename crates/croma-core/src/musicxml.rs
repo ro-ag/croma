@@ -3515,4 +3515,121 @@ mod tests {
         }
         assert!(stack.is_empty(), "unclosed XML tags: {stack:?}");
     }
+
+    /// Collect the `(step, alter)` of every pitched note in source order.
+    fn note_steps_and_alters(xml: &str) -> Vec<(char, i8)> {
+        let mut out = Vec::new();
+        let mut index = 0;
+        while let Some(offset) = xml[index..].find("<step>") {
+            let start = index + offset + "<step>".len();
+            let end = start + xml[start..].find("</step>").expect("step end");
+            let step = xml[start..end].chars().next().expect("step char");
+            // The optional <alter> for this pitch lives between the step and the
+            // closing </pitch>.
+            let pitch_end = end + xml[end..].find("</pitch>").expect("pitch end");
+            let alter = xml[end..pitch_end]
+                .find("<alter>")
+                .map(|alter_offset| {
+                    let alter_start = end + alter_offset + "<alter>".len();
+                    let alter_end =
+                        alter_start + xml[alter_start..].find("</alter>").expect("alter end");
+                    xml[alter_start..alter_end]
+                        .parse::<i8>()
+                        .expect("alter int")
+                })
+                .unwrap_or(0);
+            out.push((step, alter));
+            index = pitch_end;
+        }
+        out
+    }
+
+    /// Split the partwise document into its `<part ...>...</part>` bodies.
+    fn part_bodies(xml: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut index = 0;
+        while let Some(offset) = xml[index..].find("<part ") {
+            let start = index + offset;
+            let body_start = start + xml[start..].find('>').expect("part open end") + 1;
+            let body_end = body_start + xml[body_start..].find("</part>").expect("part end");
+            out.push(xml[body_start..body_end].to_owned());
+            index = body_end;
+        }
+        out
+    }
+
+    #[test]
+    fn inline_key_change_scopes_to_current_voice_only() {
+        // V1 switches to C in its third measure; V3 must keep key G, so its F
+        // notes stay F# throughout. abc2xml keeps the other voice in key G.
+        let source = concat!(
+            "X:1\n",
+            "M:2/4\n",
+            "L:1/8\n",
+            "K:G\n",
+            "V:1\n",
+            "A A A A | A A A A | [K:C] A A A A |\n",
+            "V:3\n",
+            "F F F F | F F F F | G G G G |\n",
+        );
+        let export = export_musicxml(source).expect("multi-voice score should export");
+        assert_balanced_xml(&export.musicxml);
+
+        let parts = part_bodies(&export.musicxml);
+        assert_eq!(parts.len(), 2, "expected two voices/parts");
+
+        // V3 (second part): the eight F notes across the first two measures must
+        // all sound F# (alter +1) from key G; the inline [K:C] in V1 must not
+        // wipe V3's key signature.
+        let v3 = note_steps_and_alters(&parts[1]);
+        let f_notes: Vec<(char, i8)> = v3.into_iter().filter(|(step, _)| *step == 'F').collect();
+        assert_eq!(f_notes.len(), 8, "V3 should have eight F notes");
+        for (step, alter) in f_notes {
+            assert_eq!((step, alter), ('F', 1), "V3 F must stay F# under key G");
+        }
+    }
+
+    #[test]
+    fn tie_across_barline_keeps_natural_against_flat_key() {
+        // `=B-` ties a natural B across the barline; the stop note must remain
+        // natural (alter 0) and not pick up key F's B-flat.
+        let source = "X:1\nM:4/4\nL:1/4\nK:F\nA G =B- | B A2 z |\n";
+        let export = export_musicxml(source).expect("tied score should export");
+        assert_balanced_xml(&export.musicxml);
+
+        let notes = note_steps_and_alters(&export.musicxml);
+        let b_notes: Vec<(char, i8)> = notes.into_iter().filter(|(step, _)| *step == 'B').collect();
+        assert_eq!(
+            b_notes.len(),
+            2,
+            "expected two B notes (tie start and stop)"
+        );
+        for (step, alter) in b_notes {
+            assert_eq!(
+                (step, alter),
+                ('B', 0),
+                "tied B must stay natural across bar"
+            );
+        }
+    }
+
+    #[test]
+    fn tie_across_barline_keeps_flat_against_neutral_key() {
+        // `_B-` ties a flat B across the barline in key C; the stop note must
+        // remain flat (alter -1) rather than reverting to natural.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\nA G _B- | B A2 z |\n";
+        let export = export_musicxml(source).expect("tied score should export");
+        assert_balanced_xml(&export.musicxml);
+
+        let notes = note_steps_and_alters(&export.musicxml);
+        let b_notes: Vec<(char, i8)> = notes.into_iter().filter(|(step, _)| *step == 'B').collect();
+        assert_eq!(
+            b_notes.len(),
+            2,
+            "expected two B notes (tie start and stop)"
+        );
+        for (step, alter) in b_notes {
+            assert_eq!((step, alter), ('B', -1), "tied B must stay flat across bar");
+        }
+    }
 }
