@@ -2625,6 +2625,19 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_decoration_does_not_swallow_following_notes() {
+        // `!f2e2f2` is a stray `!` before notes (a deprecated line-break or
+        // typo), not a decoration named "f2e2f2". The notes must survive.
+        let source = "X:1\nL:1/8\nK:C\nA !f2e2f2 | g2|\n";
+        let export = export_musicxml(source).expect("stray-bang score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<step>F</step>"), 2);
+        assert_eq!(count(&export.musicxml, "<step>E</step>"), 1);
+        assert_eq!(count(&export.musicxml, "<step>A</step>"), 1);
+        assert_eq!(count(&export.musicxml, "<step>G</step>"), 1);
+    }
+
+    #[test]
     fn chords_adjacent_to_barlines_are_not_swallowed() {
         // `|[G2C,2]` and `][` must keep the chords intact: the `[` opens a chord,
         // it is not part of a liberal `|[` / `][` barline. Two 4/4 measures of
