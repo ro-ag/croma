@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::diagnostic::Span;
-use super::split_assignment;
+use super::misc::split_assignment;
 
 pub(super) fn parse_line_break_mode(value: &str) -> Option<LineBreakMode> {
     let mut mode = LineBreakMode::none();

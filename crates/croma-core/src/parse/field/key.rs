@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::diagnostic::Span;
-use super::tokens_with_spans;
+use super::misc::tokens_with_spans;
 
 pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
     let trimmed = value.trim();
