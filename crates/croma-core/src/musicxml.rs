@@ -925,6 +925,10 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_dynamic(dynamic, sequence, part);
             } else if let Some(direction) = symbol_direction(decoration.name.as_str()) {
                 self.write_direction_type(direction, sequence, part);
+            } else if is_suppressed_decoration(decoration.name.as_str()) {
+                // No clean MusicXML equivalent (e.g. the Irish roll `~`).
+                // abc2xml emits nothing; suppress without a words direction or
+                // an unsupported-decoration diagnostic.
             } else if decoration_notation(decoration).is_none() {
                 self.diagnostics
                     .push(unsupported_decoration_warning(decoration));
@@ -2073,6 +2077,14 @@ fn decoration_notation(decoration: &DecorationAttachment) -> Option<NotationKind
     })
 }
 
+/// Decorations that have no clean MusicXML equivalent and are intentionally not
+/// emitted (matching abc2xml, which emits nothing). They must not fall through
+/// to a `<words>` direction.
+fn is_suppressed_decoration(name: &str) -> bool {
+    // `~` (Irish roll / general gracing) normalizes to the canonical `roll`.
+    matches!(name, "roll")
+}
+
 #[derive(Debug, Clone, Copy)]
 enum DirectionSymbol {
     Coda,
@@ -2959,6 +2971,87 @@ mod tests {
         assert!(export.musicxml.contains("<trill-mark/>"));
         assert!(!export.musicxml.contains("<words>fermata</words>"));
         assert!(!export.musicxml.contains("<words>accent</words>"));
+    }
+
+    #[test]
+    fn shorthand_decorations_map_to_notation_elements_not_words() {
+        // ABC 2.1 §4.14 single-char shorthand decorations are the canonical
+        // equivalents of the long-form `!...!` names and must map to the same
+        // MusicXML notation/symbol output, never to <words> directions.
+        let source = "X:1\nL:1/4\nK:C\nHC TD|uE vF|MG Pa|\n";
+        let export = export_musicxml(source).expect("shorthand decorations should export");
+        assert_balanced_xml(&export.musicxml);
+        // H -> fermata
+        assert!(export.musicxml.contains("<fermata type=\"upright\"/>"));
+        // T -> trill
+        assert!(export.musicxml.contains("<trill-mark/>"));
+        // u -> up-bow, v -> down-bow
+        assert!(export.musicxml.contains("<up-bow/>"));
+        assert!(export.musicxml.contains("<down-bow/>"));
+        // M -> lowermordent (mordent), P -> uppermordent (inverted-mordent)
+        assert!(export.musicxml.contains("<mordent/>"));
+        assert!(export.musicxml.contains("<inverted-mordent/>"));
+        // No raw shorthand chars leak out as <words>.
+        for raw in ["H", "T", "u", "v", "M", "P"] {
+            assert!(
+                !export.musicxml.contains(&format!("<words>{raw}</words>")),
+                "shorthand `{raw}` should not be emitted as <words>"
+            );
+        }
+    }
+
+    #[test]
+    fn shorthand_accent_maps_to_articulation_not_words() {
+        let source = "X:1\nL:1/4\nK:C\nLC D|\n";
+        let export = export_musicxml(source).expect("shorthand accent should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<articulations>"));
+        assert!(export.musicxml.contains("<accent/>"));
+        assert!(!export.musicxml.contains("<words>L</words>"));
+    }
+
+    #[test]
+    fn shorthand_segno_and_coda_map_to_direction_symbols_not_words() {
+        let source = "X:1\nL:1/4\nK:C\nSC OD|\n";
+        let export = export_musicxml(source).expect("shorthand segno/coda should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<segno/>"));
+        assert!(export.musicxml.contains("<coda/>"));
+        assert!(!export.musicxml.contains("<words>S</words>"));
+        assert!(!export.musicxml.contains("<words>O</words>"));
+    }
+
+    #[test]
+    fn shorthand_roll_emits_neither_words_nor_diagnostic() {
+        // `~` (Irish roll / general gracing) has no clean MusicXML equivalent;
+        // abc2xml emits nothing. The hard requirement is that it must NOT become
+        // a <words> direction, which would show up as an extra music21 direction.
+        let source = "X:1\nL:1/4\nK:C\n~C D|\n";
+        let export = export_musicxml(source).expect("shorthand roll should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(!export.musicxml.contains("<words>~</words>"));
+        assert!(!export.musicxml.contains("<words>roll</words>"));
+        // Suppressed cleanly: no unsupported-decoration diagnostic for `~`.
+        assert!(
+            !export
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+            "roll should be suppressed without an unsupported-decoration diagnostic"
+        );
+        // The notes and their timing survive.
+        assert_eq!(count(&export.musicxml, "<note>"), 2);
+    }
+
+    #[test]
+    fn user_defined_symbol_expands_to_its_notation_not_words() {
+        // `U:T=!trill!` redefines T; a `U:`-defined letter must expand to its
+        // definition and map through the same notation path.
+        let source = "X:1\nU:W=!trill!\nL:1/4\nK:C\nWC D|\n";
+        let export = export_musicxml(source).expect("user symbol should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<trill-mark/>"));
+        assert!(!export.musicxml.contains("<words>W</words>"));
     }
 
     #[test]
