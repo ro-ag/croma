@@ -58,11 +58,9 @@ fn text_output_is_escaped_for_metadata_lyrics_harmony_and_directions() {
     assert!(export.musicxml.contains("G7&amp;&lt;&gt;&apos;"));
     assert!(export.musicxml.contains("Ann &amp; &lt; &gt; &apos;"));
     assert!(export.musicxml.contains("lyr&amp;&lt;&gt;&apos;"));
-    assert!(
-        export
-            .musicxml
-            .contains("%%foo dir &amp; &lt; &gt; &quot; &apos;")
-    );
+    // Preserved `%%` stylesheet directives are playback/formatting only and
+    // are not rendered as printed words, so `%%foo` must not leak out.
+    assert!(!export.musicxml.contains("%%foo"));
 }
 
 #[test]
@@ -301,6 +299,38 @@ fn tempo_text_plus_beat_emits_words_and_metronome() {
     assert!(export.musicxml.contains("<beat-unit>quarter</beat-unit>"));
     assert!(export.musicxml.contains("<per-minute>110</per-minute>"));
     assert!(export.musicxml.contains("<sound tempo=\"110.00\""));
+}
+
+#[test]
+fn midi_directives_are_not_emitted_as_words() {
+    // `%%MIDI` (and other preserved `%%` stylesheet directives) control
+    // playback/formatting, not printed musical text. abc2xml emits nothing for
+    // them; Croma must not render them as visible <words> directions. A real
+    // `Q:` tempo and the actual notes must still be present, proving we
+    // suppressed only the directive, not genuine content.
+    let source = concat!(
+        "X:1\n",
+        "T:Test\n",
+        "M:C\n",
+        "L:1/8\n",
+        "Q:1/4=104\n",
+        "K:G\n",
+        "%%MIDI program 72\n",
+        "%%MIDI channel 1\n",
+        "CDEF GABc |\n",
+    );
+    let export = export_musicxml(source).expect("score with MIDI directives should export");
+
+    assert_balanced_xml(&export.musicxml);
+    // No preserved `%%`-derived directive may leak out as <words>.
+    assert!(!export.musicxml.contains("%%MIDI"));
+    assert!(!export.musicxml.contains("%%"));
+    assert!(!export.musicxml.contains("<words>"));
+    // Real content survives: the `Q:` tempo metronome and the notes.
+    assert!(export.musicxml.contains("<metronome>"));
+    assert!(export.musicxml.contains("<per-minute>104</per-minute>"));
+    assert!(export.musicxml.contains("<step>C</step>"));
+    assert!(export.musicxml.contains("<step>G</step>"));
 }
 
 #[test]
@@ -1401,7 +1431,9 @@ fn unknown_directive_is_direction_metadata_not_music() {
         "abc.directive.unsupported",
         "foo",
     );
-    assert!(export.musicxml.contains("%%foo bar &amp; &lt; &gt;"));
+    // The unsupported directive is reported as a diagnostic but, being a
+    // preserved `%%` stylesheet directive, is not rendered as printed words.
+    assert!(!export.musicxml.contains("%%foo"));
     assert_eq!(count(&export.musicxml, "<note>"), 1);
 }
 
