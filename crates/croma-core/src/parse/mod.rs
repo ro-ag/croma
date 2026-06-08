@@ -4,6 +4,7 @@ pub mod directive;
 pub mod field;
 pub mod lyric;
 pub mod music;
+pub mod note;
 
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
