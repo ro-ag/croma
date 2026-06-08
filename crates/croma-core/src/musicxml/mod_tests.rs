@@ -1334,6 +1334,53 @@ fn repeats_endings_multiple_voices_and_overlays_use_timeline_elements() {
 }
 
 #[test]
+fn multi_pass_volta_merges_passes_into_single_ending_element() {
+    let source = concat!(
+        "X:1\n",
+        "T:Volta\n",
+        "M:2/4\n",
+        "L:1/8\n",
+        "K:G\n",
+        "|: GABc |1,3 GA :|2,4 Bc :|\n",
+    );
+    let export = export_musicxml(source).expect("multi-pass volta score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    // Each volta bracket lists its passes as a single comma-separated `number`.
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"1,3\" type=\"start\"")
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"2,4\" type=\"start\"")
+    );
+    // The passes must NOT be split into separate `<ending>` elements.
+    assert!(
+        !export
+            .musicxml
+            .contains("<ending number=\"1\" type=\"start\"")
+    );
+    assert!(
+        !export
+            .musicxml
+            .contains("<ending number=\"3\" type=\"start\"")
+    );
+    assert!(
+        !export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"start\"")
+    );
+    assert!(
+        !export
+            .musicxml
+            .contains("<ending number=\"4\" type=\"start\"")
+    );
+}
+
+#[test]
 fn semantic_onset_gaps_emit_forward() {
     let source = "X:1\nL:1/8\nK:C\nC D|\n";
     let document = parse_document(source, ParseOptions::default());
