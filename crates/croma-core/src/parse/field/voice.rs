@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::diagnostic::Span;
-use super::{is_escaped, split_first_word, trim_quoted_value_span, trim_value_span};
+use super::misc::{is_escaped, split_first_word, trim_quoted_value_span, trim_value_span};
 
 pub(super) fn parse_voice(value: Spanned<String>) -> VoiceDefinition {
     let (id, properties) = split_first_word(value);
