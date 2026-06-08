@@ -1,6 +1,7 @@
 //! Key-signature (`K:`) field parsing.
 
 use super::misc::tokens_with_spans;
+use super::voice::parse_voice_properties;
 use super::*;
 use crate::diagnostic::Span;
 
@@ -13,6 +14,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
             mode: KeyMode::None,
             accidentals: Vec::new(),
             explicit: false,
+            properties: VoiceProperties::default(),
         };
     }
 
@@ -27,6 +29,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
             },
             accidentals: Vec::new(),
             explicit: false,
+            properties: VoiceProperties::default(),
         };
     }
 
@@ -60,12 +63,29 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
         .filter_map(parse_key_accidental)
         .collect();
 
+    // ABC 2.1 §4.6: a K: field may also carry clef/octave/middle/transpose
+    // modifiers (`K:C treble+8`, `K: Dm octave=1`). The tonic/mode tokens are
+    // already consumed, so parse the remainder with the voice-property parser.
+    // Accidental tokens (`^f`, `_B`) carry no `=` and match no clef shorthand,
+    // so they fall harmlessly into `other`.
+    let properties = if let Some(first_remaining) = tokens.get(token_start) {
+        let remainder_start = first_remaining.span.start;
+        let remainder_offset = remainder_start.saturating_sub(value_span.start);
+        let remainder = trimmed.get(remainder_offset..).unwrap_or("");
+        parse_voice_properties(&Spanned::new(remainder.to_owned(), {
+            Span::new(remainder_start, value_span.end)
+        }))
+    } else {
+        VoiceProperties::default()
+    };
+
     KeySignature {
         raw: trimmed.to_owned(),
         tonic,
         mode,
         accidentals,
         explicit,
+        properties,
     }
 }
 
