@@ -16,9 +16,10 @@ use crate::syntax::VariantEndingPart;
 pub(crate) fn build_voice_timeline(
     voice: LoweringState,
     meter_duration: Option<Fraction>,
+    single_voice: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> VoiceTimeline {
-    let mut builder = VoiceTimelineBuilder::new(voice.id.clone(), meter_duration);
+    let mut builder = VoiceTimelineBuilder::new(voice.id.clone(), meter_duration, single_voice);
     for event in voice.lowered {
         builder.push(event, diagnostics);
     }
@@ -40,10 +41,15 @@ struct VoiceTimelineBuilder {
     last_group_onset: Fraction,
     active_overlay: Option<OverlayBuilder>,
     overlay_count: u32,
+    /// True iff the whole tune has exactly one voice. Bar-line-only "phantom"
+    /// measures are only coalesced in single-voice music; in multi-voice tunes
+    /// a bar-line-only measure is a legitimate tacet bar that must be kept so
+    /// voices stay measure-aligned.
+    single_voice: bool,
 }
 
 impl VoiceTimelineBuilder {
-    fn new(voice_id: VoiceId, meter_duration: Option<Fraction>) -> Self {
+    fn new(voice_id: VoiceId, meter_duration: Option<Fraction>, single_voice: bool) -> Self {
         Self {
             voice_id,
             meter_duration,
@@ -58,7 +64,15 @@ impl VoiceTimelineBuilder {
             last_group_onset: Fraction::zero(),
             active_overlay: None,
             overlay_count: 0,
+            single_voice,
         }
+    }
+
+    /// Bar-line-only measures may be coalesced only when the tune is
+    /// single-voice and this voice carries no overlays (`&`): overlays imply a
+    /// multi-layer measure that abc2xml preserves.
+    fn may_coalesce_barline_only(&self) -> bool {
+        self.single_voice && self.overlay_count == 0
     }
 
     fn push(&mut self, event: LoweredEvent, diagnostics: &mut Vec<Diagnostic>) {
@@ -160,10 +174,23 @@ impl VoiceTimelineBuilder {
     fn is_empty_measure_start(&self) -> bool {
         self.onset == Fraction::zero()
             && self.active_overlay.is_none()
-            && self
-                .measures
-                .last()
-                .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
+            && self.measures.last().is_some_and(|measure| {
+                // A brand-new measure (no events at all) always accepts a leading
+                // bar line without opening a phantom. A measure that already holds
+                // *only bar-line tokens* is a phantom produced by a run of bar
+                // lines (`| |`, `|]|`, `]|`): a further bar line merges into the
+                // same boundary (ABC 2.1 §4.8) instead of opening a new measure —
+                // but only past the first measure, since abc2xml preserves a single
+                // leading empty (pickup) measure. Spacers (`y`, annotation-only
+                // bars) and overlays are *not* treated as collapsible: abc2xml
+                // keeps those measures, so they must not be coalesced here.
+                if is_empty_measure(measure) {
+                    return true;
+                }
+                self.may_coalesce_barline_only()
+                    && self.measure_index > 0
+                    && is_barline_only_measure(measure)
+            })
     }
 
     fn is_first_measure_start(&self) -> bool {
@@ -252,11 +279,19 @@ impl VoiceTimelineBuilder {
 
     fn finish(mut self, diagnostics: &mut Vec<Diagnostic>) -> Vec<VoiceMeasureTimeline> {
         self.finish_overlay(diagnostics);
-        while self
-            .measures
-            .last()
-            .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
-            && self.measures.len() > 1
+        // Pop a trailing measure that carries only bar-line tokens. Per ABC 2.1
+        // §4.8 a run of adjacent or split bar lines (`| |`, `|]|`, `]|`) is a
+        // single boundary, not a measure of music, so a trailing bar-line-only
+        // measure is a phantom and must not survive. The first bar line of the
+        // run already sits on the preceding real measure, so its right bar line
+        // is not lost when the phantom is popped. Spacer-only or overlay-bearing
+        // trailing measures are kept (abc2xml keeps them). Never pop the only
+        // measure.
+        let may_coalesce_barline_only = self.may_coalesce_barline_only();
+        while self.measures.last().is_some_and(|measure| {
+            is_empty_measure(measure)
+                || (may_coalesce_barline_only && is_barline_only_measure(measure))
+        }) && self.measures.len() > 1
         {
             self.measures.pop();
         }
@@ -295,6 +330,28 @@ impl VoiceTimelineBuilder {
             .last_mut()
             .expect("timeline builder always has a current measure")
     }
+}
+
+/// A measure with no events and no overlays at all (the original phantom case:
+/// a fresh measure opened after a trailing bar line with nothing following).
+fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
+    measure.events.is_empty() && measure.overlays.is_empty()
+}
+
+/// A measure is *bar-line-only* when it carries no overlay and every event it
+/// holds is a bar line — i.e. it has at least one `Barline` and nothing else.
+/// Such a measure is a phantom produced by a run of bar lines (e.g. a trailing
+/// `| |` / `|]|` / `]|`, or consecutive interior bar lines) and is not a measure
+/// of music. A real rest (`z`/`x`/`Z`) is a `Rest` event, a `y` is a `Spacer`,
+/// and an annotation/overlay carries its own events, so none of those count as
+/// bar-line-only — abc2xml preserves those measures.
+fn is_barline_only_measure(measure: &VoiceMeasureTimeline) -> bool {
+    measure.overlays.is_empty()
+        && !measure.events.is_empty()
+        && measure
+            .events
+            .iter()
+            .all(|event| matches!(event.kind, TimelineEventKind::Barline { .. }))
 }
 
 fn starts_measure_barline(kind: BarlineKind) -> bool {
