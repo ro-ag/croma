@@ -22,10 +22,10 @@ pub use music::{
     AccidentalSyntax, AnnotationPlacement, AttachmentBundle, BarlineSyntax, BrokenRhythmDirection,
     BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax, DecorationKind, DecorationSyntax,
     GraceElementSyntax, GraceGroupSyntax, LengthSyntax, MultiMeasureRestSyntax, MusicItem,
-    MusicLine, MusicToken, MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax,
-    OverlaySyntax, ParsedMusicDocument, ParsedTuneMusic, PitchSyntax, QuotedTextKind,
-    QuotedTextSyntax, RestSyntax, SlurDirection, SlurSyntax, SpacerSyntax, SpannedNumber,
-    TieSyntax, TupletSyntax, VariantEndingPart, VariantEndingSyntax,
+    MusicLine, MusicToken, MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax, OverlaySyntax,
+    ParsedMusicDocument, ParsedTuneMusic, PitchSyntax, QuotedTextKind, QuotedTextSyntax,
+    RestSyntax, SlurDirection, SlurSyntax, SpacerSyntax, SpannedNumber, TieSyntax, TupletSyntax,
+    VariantEndingPart, VariantEndingSyntax,
 };
 pub use tune::{
     ClassifiedLine, ContinuationEdge, ContinuationKind, FieldHeader, LineContext, LineKind,

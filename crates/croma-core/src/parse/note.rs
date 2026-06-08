@@ -1,14 +1,14 @@
 //! Note, rest, accidental, octave, length, chord, and grace parsing.
 
 use crate::diagnostic::Span;
-use crate::model::{Accidental, Fraction, RestVisibility};
 use crate::lower::invalid_tuplet_warning;
+use crate::model::{Accidental, Fraction, RestVisibility};
 use crate::parse::music::{MusicLineParser, invalid_length_warning, is_note_letter};
 use crate::syntax::{
-    AccidentalSyntax, ChordMemberSyntax, ChordSyntax, GraceElementSyntax, GraceGroupSyntax,
-    LengthSyntax, MalformedSyntax, MalformedSyntaxKind, MultiMeasureRestSyntax, MusicItem,
-    MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax, PitchSyntax, RestSyntax,
-    BrokenRhythmDirection, BrokenRhythmSyntax, SpannedNumber, TupletSyntax,
+    AccidentalSyntax, BrokenRhythmDirection, BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax,
+    GraceElementSyntax, GraceGroupSyntax, LengthSyntax, MalformedSyntax, MalformedSyntaxKind,
+    MultiMeasureRestSyntax, MusicItem, MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax,
+    PitchSyntax, RestSyntax, SpannedNumber, TupletSyntax,
 };
 
 impl<'line> MusicLineParser<'line> {
@@ -351,7 +351,10 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    pub(super) fn parse_note_syntax(&mut self, accidental: Option<AccidentalSyntax>) -> Option<NoteSyntax> {
+    pub(super) fn parse_note_syntax(
+        &mut self,
+        accidental: Option<AccidentalSyntax>,
+    ) -> Option<NoteSyntax> {
         let attachments = self.take_pending_attachments();
         let core_start = accidental
             .as_ref()

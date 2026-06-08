@@ -8,13 +8,13 @@ pub mod note;
 
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
+use crate::lower::{ScoreModelInput, build_score_model, lower_tune_music};
+use crate::model::{Score, TextLine, Tune};
+use crate::options::ParseOptions;
 use crate::parse::field::{ParsedAbcFields, ParsedFieldKind, parse_fields};
 use crate::parse::music::parse_music_document;
-use crate::model::{Score, TextLine, Tune};
-use crate::lower::{ScoreModelInput, build_score_model, lower_tune_music};
-use crate::syntax::ParsedMusicDocument;
-use crate::options::ParseOptions;
 use crate::source::SourceText;
+use crate::syntax::ParsedMusicDocument;
 use crate::syntax::tune::{SurfaceMap, analyze_source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

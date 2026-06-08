@@ -3,7 +3,9 @@
 //! when a music token cannot be represented.
 
 use crate::diagnostic::Span;
-use crate::parse::field::{KeySignature, Meter, ScoreDirective, Spanned, UnitNoteLength, VoiceDefinition};
+use crate::parse::field::{
+    KeySignature, Meter, ScoreDirective, Spanned, UnitNoteLength, VoiceDefinition,
+};
 use crate::syntax::lyric::{LyricLineSyntax, SymbolLineSyntax};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

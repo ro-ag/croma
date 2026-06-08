@@ -2,9 +2,9 @@
 //! decoration delimiter (`I:decoration`), user symbols (`U:`), and macros
 //! (`m:`).
 
+use super::misc::split_assignment;
 use super::*;
 use crate::diagnostic::Span;
-use super::misc::split_assignment;
 
 pub(super) fn parse_line_break_mode(value: &str) -> Option<LineBreakMode> {
     let mut mode = LineBreakMode::none();

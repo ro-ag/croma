@@ -10,42 +10,33 @@ pub(crate) mod voice;
 
 pub(crate) use crate::lower::diagnostics::*;
 pub(crate) use crate::lower::voice::{
-    is_note_atom, lowered_timed_note, note_signature, ActiveTuplet, CompletedTuplet, LoweredEvent,
-    LoweringState, PendingTie,
+    ActiveTuplet, CompletedTuplet, LoweredEvent, LoweringState, PendingTie, is_note_atom,
+    lowered_timed_note, note_signature,
 };
 
+use crate::diagnostic::{Diagnostic, Span};
 use crate::lower::accidental::accidental_from_field_sign;
 use crate::lower::align::{align_lyrics, align_symbols};
 use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::lower::timeline::build_voice_timeline;
-use crate::diagnostic::{Diagnostic, Span};
-use crate::parse::field::{
-    FieldState, KeyMode,
-    KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned, StemDirection, UnitNoteLength, VoiceDefinition,
-};
 use crate::model::{
-    AccidentalPolicy, AccidentalScope,
-    BarlineKind,
-    Event, EventAttachments, Fraction,
-    KeyAccidentalModel, KeySignatureModel,
-    LoweredEventAtom, LoweredEventAtomKind,
-    MeterModel, Part, PartId, PreservedDirective,
-    Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    Staff, StaffId, StemDirectionModel,
-    TextLine,
-    TimelineEventKind, VoiceId,
-    VoicePropertiesModel, VoiceTimeline, lcm,
+    AccidentalPolicy, AccidentalScope, BarlineKind, Event, EventAttachments, Fraction,
+    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel,
+    Part, PartId, PreservedDirective, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
+    ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId, StemDirectionModel, TextLine,
+    TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
+use crate::parse::field::{
+    FieldState, KeyMode, KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned,
+    StemDirection, UnitNoteLength, VoiceDefinition,
+};
 use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
-    BarlineSyntax,
-    InlineFieldSyntax, LyricLineSyntax,
-    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine,
-    ParsedTuneMusic, PreservedDirectiveSyntax,
-    ScoreDirectiveSyntax, SymbolLineSyntax,
+    BarlineSyntax, InlineFieldSyntax, LyricLineSyntax, MusicFieldLine, MusicFieldLineKind,
+    MusicItem, MusicLine, ParsedTuneMusic, PreservedDirectiveSyntax, ScoreDirectiveSyntax,
+    SymbolLineSyntax,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +48,6 @@ pub struct LoweredMusic {
     pub preserved_directives: Vec<PreservedDirective>,
     pub post_tune_lyrics: Vec<TextLine>,
 }
-
 
 pub(crate) fn lower_tune_music(
     tune_music: &ParsedTuneMusic,
@@ -283,7 +273,8 @@ impl MultiVoiceLowering {
                 self.apply_meter_change(&Spanned::new(meter, inline.value.span));
             }
             'L' => {
-                if let Some(unit) = crate::parse::field::parse_unit_note_length(&inline.value.value) {
+                if let Some(unit) = crate::parse::field::parse_unit_note_length(&inline.value.value)
+                {
                     self.apply_unit_change(&Spanned::new(unit, inline.value.span));
                 }
             }
@@ -956,9 +947,6 @@ pub(crate) fn meter_duration(kind: &MeterKind) -> Option<Fraction> {
     }
 }
 
-
-
-
 fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
     let raw = barline.raw.strip_prefix('.').unwrap_or(&barline.raw);
     if barline.kind == BarlineKind::RepeatStart {
@@ -972,20 +960,12 @@ fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
     vec![barline.kind]
 }
 
-
-
-
-
-
-
-
 pub(crate) fn default_tuplet_q(p: u32) -> u32 {
     match p {
         2 | 4 | 8 => 3,
         _ => 2,
     }
 }
-
 
 #[cfg(test)]
 #[path = "mod_tests.rs"]

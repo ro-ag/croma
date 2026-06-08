@@ -1,5 +1,5 @@
 use crate::diagnostic::Span;
-use crate::lower::{key_fifths, lowered_timed_note, LoweringState};
+use crate::lower::{LoweringState, key_fifths, lowered_timed_note};
 use crate::model::{Accidental, LoweredEventAtomKind};
 use crate::parse::field::{AccidentalSign, KeySignature};
 

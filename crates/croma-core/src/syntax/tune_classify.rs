@@ -890,4 +890,3 @@ fn tokenize_music_line(line: &str, line_offset: usize, tokens: &mut Vec<SurfaceT
         }
     }
 }
-

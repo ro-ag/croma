@@ -1,12 +1,11 @@
 //! Timeline -> semantic-model lowering of voices, measures, and events.
 
-use crate::parse::field::FieldState;
 use crate::model::{
-    Accidental, AccidentalMark, ChordEvent, ChordMemberEvent, Fraction, Measure,
-    MeasureBarline, MeasureId, NoteEvent, Pitch, RepeatEndingModel, RestEvent, StaffId,
-    TimedEvent, TimedEventKind, TimelineEventKind, Voice, VoiceMeasureTimeline,
-    VoiceTimedEvent, VoiceTimeline,
+    Accidental, AccidentalMark, ChordEvent, ChordMemberEvent, Fraction, Measure, MeasureBarline,
+    MeasureId, NoteEvent, Pitch, RepeatEndingModel, RestEvent, StaffId, TimedEvent, TimedEventKind,
+    TimelineEventKind, Voice, VoiceMeasureTimeline, VoiceTimedEvent, VoiceTimeline,
 };
+use crate::parse::field::FieldState;
 
 use crate::lower::{extend_span, meter_duration};
 

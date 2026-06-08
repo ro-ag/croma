@@ -56,7 +56,6 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-
     pub(super) fn parse_decoration(&mut self, delimiter: char) {
         let allowed = match delimiter {
             '!' => self.dialect.decoration_delimiter == DecorationDelimiter::Bang,
@@ -120,7 +119,6 @@ impl<'line> MusicLineParser<'line> {
         });
     }
 
-
     pub(super) fn parse_invalid_decoration(&mut self, delimiter: char) {
         let start = self.index;
         self.bump_char();
@@ -139,7 +137,6 @@ impl<'line> MusicLineParser<'line> {
             "Decoration delimiter is not enabled by the current ABC dialect state",
         );
     }
-
 
     pub(super) fn parse_shorthand_decoration(&mut self) {
         let start = self.index;
@@ -172,7 +169,6 @@ impl<'line> MusicLineParser<'line> {
             kind,
         });
     }
-
 
     pub(super) fn parse_overlay(&mut self) {
         self.flush_pending_attachments();

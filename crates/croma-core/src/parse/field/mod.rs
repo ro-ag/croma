@@ -10,15 +10,15 @@ use crate::options::{AbcSpecVersion, ParseMode, ParseOptions};
 use crate::source::SourceText;
 use crate::syntax::tune::{ContinuationKind, LineContext, LineKind, SurfaceMap};
 
+pub(crate) use key::parse_key;
 use meter::ensure_default_unit_note_length;
+pub(crate) use meter::{parse_meter, parse_unit_note_length};
 use misc::{
     invalid_field_warning, parse_version_line, parse_version_value, split_first_word,
     trimmed_uncommented_span, unknown_field_warning, unknown_instruction_warning,
 };
 use tempo::{parse_decoration_delimiter, parse_line_break_mode, parse_macro, parse_user_symbol};
 use voice::parse_voice;
-pub(crate) use key::parse_key;
-pub(crate) use meter::{parse_meter, parse_unit_note_length};
 pub(crate) use voice::{parse_score_directive, parse_voice_for_music};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

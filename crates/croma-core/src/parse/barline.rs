@@ -1,8 +1,8 @@
 //! Barline and repeat-ending spelling parsing.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
-use crate::model::BarlineKind;
 use crate::lower::abc_barline_reference;
+use crate::model::BarlineKind;
 use crate::parse::music::{MusicLineParser, is_barline_char};
 use crate::syntax::{
     BarlineSyntax, MalformedSyntaxKind, MusicItem, MusicTokenKind, VariantEndingPart,
@@ -62,7 +62,6 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-
     pub(super) fn parse_colon(&mut self) {
         if self.starts_with("::") {
             self.parse_barline(false);
@@ -79,7 +78,6 @@ impl<'line> MusicLineParser<'line> {
             "A repeat dot must be part of a barline spelling",
         );
     }
-
 
     pub(super) fn parse_variant_ending(&mut self, shorthand: bool) {
         let start = self.index;
@@ -136,7 +134,6 @@ impl<'line> MusicLineParser<'line> {
                 }));
         }
     }
-
 }
 
 fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
@@ -157,7 +154,6 @@ fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
     }
 }
 
-
 fn invalid_repeat_ending_warning(span: Span) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,
@@ -170,7 +166,6 @@ fn invalid_repeat_ending_warning(span: Span) -> Diagnostic {
         "The repeat ending syntax was preserved and skipped.",
     ))
 }
-
 
 fn liberal_barline_warning(span: Span, raw: &str) -> Diagnostic {
     Diagnostic::new(
@@ -185,7 +180,6 @@ fn liberal_barline_warning(span: Span, raw: &str) -> Diagnostic {
     ))
 }
 
-
 fn barline_syntax_policy_info(span: Span, kind: BarlineKind) -> Diagnostic {
     Diagnostic::new(
         Severity::Info,
@@ -199,4 +193,3 @@ fn barline_syntax_policy_info(span: Span, kind: BarlineKind) -> Diagnostic {
     )
     .with_spec_reference(abc_barline_reference())
 }
-
