@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::model::{
-    AccidentalMark, AlignedLyric, AlignedSymbolKind, AnnotationPlacementModel, BarlineKind,
+    AccidentalMark, AlignedSymbolKind, AnnotationPlacementModel, BarlineKind,
     ChordEvent, DecorationAttachment, EventAttachments, Fraction, GraceNoteEvent, Measure,
     MeasureBarline, MeasureId, Part, Pitch, PreservedDirective, RestEvent, RestVisibility, Score,
     SlurRole, StaffId, TempoBeat, TempoModel, TextAttachment, TieRole, TimedEvent, TimedEventKind,
@@ -15,6 +15,7 @@ use grace::grace_export_pitch;
 mod attributes;
 mod grace;
 mod harmony;
+mod lyric;
 
 pub fn write_score_partwise(score: &Score) -> ParseReport<String> {
     let mut writer = MusicXmlWriter::new(score);
@@ -666,31 +667,6 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml
             .text_element("normal-notes", &time_modification.normal_notes.to_string());
         self.xml.end("time-modification");
-    }
-
-    fn write_lyrics(&mut self, lyrics: &[AlignedLyric]) {
-        for lyric in lyrics {
-            if matches!(
-                lyric.control,
-                crate::model::LyricControl::Skip | crate::model::LyricControl::Hyphen
-            ) {
-                continue;
-            }
-            let number = lyric.verse.to_string();
-            self.xml.start("lyric", &[("number", number.as_str())]);
-            match lyric.control {
-                crate::model::LyricControl::Syllable => {
-                    self.xml.text_element("syllabic", "single");
-                    self.xml.text_element("text", &lyric.text);
-                }
-                crate::model::LyricControl::Hyphen => {}
-                crate::model::LyricControl::Extender => {
-                    self.xml.empty("extend", &[]);
-                }
-                crate::model::LyricControl::Skip => {}
-            }
-            self.xml.end("lyric");
-        }
     }
 
     fn write_harmony_and_directions(
