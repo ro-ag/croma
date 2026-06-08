@@ -301,6 +301,10 @@ pub struct GraceGroupAttachment {
     pub slash: Option<Span>,
     pub note_count: u32,
     pub events: Vec<GraceEvent>,
+    /// Slurs that bind to the FIRST grace note of this group, e.g. the `(` in
+    /// `({grace}note)` opens before the grace group, so the slur starts on the
+    /// grace note rather than the following main note (ABC 2.1 §4.11 + §4.20).
+    pub slurs: Vec<SlurAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

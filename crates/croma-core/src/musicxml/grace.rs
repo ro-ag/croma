@@ -32,10 +32,24 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
         tuplet_numbers: &TupletNumbers,
     ) {
+        // Slurs that opened before the grace `{` (`({grace}note)`) bind to the
+        // FIRST grace note of the group; carry them as notations on that note
+        // only. Subsequent grace notes and the main note are unaffected.
+        let first_note_attachments = EventAttachments {
+            slurs: group.slurs.clone(),
+            ..EventAttachments::default()
+        };
+        let empty_attachments = EventAttachments::default();
+        let mut first_note = true;
         let mut first_chord_member = true;
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
+                    let attachments = if first_note {
+                        &first_note_attachments
+                    } else {
+                        &empty_attachments
+                    };
                     self.write_grace_note(
                         GraceNoteWrite {
                             note,
@@ -47,13 +61,20 @@ impl<'score> MusicXmlWriter<'score> {
                                 note.length_multiplier,
                             ),
                         },
+                        attachments,
                         sequence,
                         part,
                         tuplet_numbers,
                     );
+                    first_note = false;
                     first_chord_member = false;
                 }
                 GraceEventKind::Rest(rest) => {
+                    let attachments = if first_note {
+                        &first_note_attachments
+                    } else {
+                        &empty_attachments
+                    };
                     self.write_note(
                         NoteWrite {
                             pitch: None,
@@ -61,7 +82,7 @@ impl<'score> MusicXmlWriter<'score> {
                             duration: grace_base_unit(group.note_count),
                             source: event.source_span,
                             written_accidental: None,
-                            attachments: &EventAttachments::default(),
+                            attachments,
                             chord_member: false,
                             grace: true,
                             grace_slash: group.slash.is_some(),
@@ -70,10 +91,16 @@ impl<'score> MusicXmlWriter<'score> {
                         part,
                         tuplet_numbers,
                     );
+                    first_note = false;
                     first_chord_member = false;
                 }
                 GraceEventKind::Chord(notes) => {
                     for note in notes {
+                        let attachments = if first_note {
+                            &first_note_attachments
+                        } else {
+                            &empty_attachments
+                        };
                         self.write_grace_note(
                             GraceNoteWrite {
                                 note,
@@ -85,10 +112,12 @@ impl<'score> MusicXmlWriter<'score> {
                                     note.length_multiplier,
                                 ),
                             },
+                            attachments,
                             sequence,
                             part,
                             tuplet_numbers,
                         );
+                        first_note = false;
                         first_chord_member = false;
                     }
                 }
@@ -99,6 +128,7 @@ impl<'score> MusicXmlWriter<'score> {
     fn write_grace_note(
         &mut self,
         grace_note: GraceNoteWrite<'_>,
+        attachments: &EventAttachments,
         sequence: &MeasureSequence<'score>,
         part: &Part,
         tuplet_numbers: &TupletNumbers,
@@ -110,7 +140,7 @@ impl<'score> MusicXmlWriter<'score> {
                 duration: grace_note.display_duration,
                 source: grace_note.source,
                 written_accidental: grace_note.note.written_accidental.as_ref(),
-                attachments: &EventAttachments::default(),
+                attachments,
                 chord_member: grace_note.chord_member,
                 grace: true,
                 grace_slash: grace_note.slash,
