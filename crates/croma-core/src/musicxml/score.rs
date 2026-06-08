@@ -60,7 +60,7 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.start("measure", &[("number", number.as_str())]);
             if measure_position == 0 {
                 self.write_attributes(part);
-                self.write_initial_directions(part, part_index == 0);
+                self.write_initial_directions(part_index == 0);
             }
 
             if pending_left_repeat {

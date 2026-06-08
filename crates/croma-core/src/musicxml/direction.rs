@@ -1,13 +1,13 @@
 use crate::model::{
-    AlignedSymbolKind, AnnotationPlacementModel, EventAttachments, Part, PreservedDirective,
-    TempoBeat, TempoModel, TextAttachment,
+    AlignedSymbolKind, AnnotationPlacementModel, EventAttachments, Part, TempoBeat, TempoModel,
+    TextAttachment,
 };
 
 use super::notation::{DirectionSymbol, decoration_notation, symbol_direction};
 use super::{MeasureSequence, MusicXmlWriter, unsupported_decoration_warning};
 
 impl<'score> MusicXmlWriter<'score> {
-    pub(crate) fn write_initial_directions(&mut self, part: &Part, is_first_part: bool) {
+    pub(crate) fn write_initial_directions(&mut self, is_first_part: bool) {
         // Score-level directions (tempo and preserved `%%` directives) belong to
         // the score once, not to every part. With one part per voice, emitting
         // them in each part duplicated them N times. `W:` post-tune verses are
@@ -20,9 +20,10 @@ impl<'score> MusicXmlWriter<'score> {
         } else if let Some(tempo) = &self.score.metadata.tempo {
             self.write_direction_words(&tempo.text, None, Some("1"), Some(1));
         }
-        for directive in &self.score.metadata.preserved_directives {
-            self.write_preserved_directive(directive, part);
-        }
+        // Preserved `%%`/`%%MIDI` stylesheet directives are kept on the model
+        // for round-trip/formatter use, but they control playback/formatting,
+        // not printed musical text. abc2xml emits nothing for them, so the
+        // MusicXML writer must not render them as visible <words> directions.
     }
 
     /// Emit a `Q:` tempo as a MusicXML `<metronome>` direction (matching the
@@ -67,15 +68,6 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml
             .empty("sound", &[("tempo", &format!("{sound_tempo:.2}"))]);
         self.xml.end("direction");
-    }
-
-    fn write_preserved_directive(&mut self, directive: &PreservedDirective, _part: &Part) {
-        let text = if directive.value.text.is_empty() {
-            format!("%%{}", directive.name.text)
-        } else {
-            format!("%%{} {}", directive.name.text, directive.value.text)
-        };
-        self.write_direction_words(&text, None, Some("1"), Some(1));
     }
 
     pub(crate) fn write_harmony_and_directions(
