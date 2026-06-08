@@ -415,7 +415,62 @@ impl LoweringState {
             return;
         };
         for slur in std::mem::take(&mut self.pending_slur_starts) {
-            self.attach_slur(event_index, slur.pair_id, SlurRole::Start, slur.marker);
+            // `({grace}note)`: when the slur `(` opens BEFORE a leading grace
+            // group of the first timed note, the grace is the first note of the
+            // slurred series (ABC 2.1 §4.11 + §4.20 construct order), so the slur
+            // starts on that grace note. Pick the earliest leading grace group
+            // whose span follows the slur `(`. Otherwise (`{grace}(note)`, or no
+            // grace) keep the slur on the timed note.
+            if let Some(grace_index) = self.leading_grace_group_after(event_index, slur.marker.span)
+            {
+                self.attach_slur_to_grace(
+                    event_index,
+                    grace_index,
+                    slur.pair_id,
+                    SlurRole::Start,
+                    slur.marker,
+                );
+            } else {
+                self.attach_slur(event_index, slur.pair_id, SlurRole::Start, slur.marker);
+            }
+        }
+    }
+
+    /// Index, within the timed note's `grace_groups`, of the earliest leading
+    /// grace group whose `span.start` follows the given slur-open span (i.e. the
+    /// slur `(` was written before the grace `{`). `None` when no grace group
+    /// qualifies.
+    fn leading_grace_group_after(&self, event_index: usize, slur_span: Span) -> Option<usize> {
+        let LoweredEvent::Timed(timed) = self.lowered.get(event_index)? else {
+            return None;
+        };
+        timed
+            .attachments
+            .grace_groups
+            .iter()
+            .enumerate()
+            .filter(|(_, grace)| grace.span.start > slur_span.start)
+            .min_by_key(|(_, grace)| grace.span.start)
+            .map(|(index, _)| index)
+    }
+
+    fn attach_slur_to_grace(
+        &mut self,
+        event_index: usize,
+        grace_index: usize,
+        pair_id: u32,
+        role: SlurRole,
+        marker: SlurSyntax,
+    ) {
+        if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index)
+            && let Some(grace) = timed.attachments.grace_groups.get_mut(grace_index)
+        {
+            grace.slurs.push(SlurAttachment {
+                pair_id,
+                role,
+                span: marker.span,
+                dotted: marker.dotted,
+            });
         }
     }
 
@@ -502,6 +557,7 @@ fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
                     .iter()
                     .filter_map(grace_event_model)
                     .collect(),
+                slurs: Vec::new(),
             })
             .collect(),
         chord_symbols: bundle
