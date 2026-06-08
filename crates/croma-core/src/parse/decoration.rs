@@ -8,8 +8,8 @@ use crate::parse::music::{
     user_symbol_canonical_name,
 };
 use crate::syntax::{
-    DecorationKind, DecorationSyntax, MalformedSyntaxKind, MusicTokenKind, QuotedTextKind,
-    QuotedTextSyntax,
+    DecorationKind, DecorationSyntax, MalformedSyntaxKind, MusicItem, MusicTokenKind,
+    OverlaySyntax, QuotedTextKind, QuotedTextSyntax, SlurDirection, SlurSyntax, TieSyntax,
 };
 
 impl<'line> MusicLineParser<'line> {
@@ -173,4 +173,41 @@ impl<'line> MusicLineParser<'line> {
         });
     }
 
+
+    pub(super) fn parse_overlay(&mut self) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Overlay, span);
+        self.items.push(MusicItem::Overlay(OverlaySyntax { span }));
+    }
+
+    pub(super) fn parse_tie(&mut self, dotted: bool) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        if dotted {
+            self.bump_char();
+        }
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Tie, span);
+        self.items.push(MusicItem::Tie(TieSyntax { span, dotted }));
+    }
+
+    pub(super) fn parse_slur(&mut self, direction: SlurDirection, dotted: bool) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        if dotted {
+            self.bump_char();
+        }
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Slur, span);
+        self.items.push(MusicItem::Slur(SlurSyntax {
+            span,
+            dotted,
+            direction,
+        }));
+    }
 }

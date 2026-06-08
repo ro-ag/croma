@@ -1,8 +1,7 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::parse::field::{
-    AccidentalSign, DecorationDelimiter, DialectState, FieldState, InterpretationField, KeyMode,
-    KeySignature, KeyTonicAccidental, Meter, MeterKind, ParsedAbcFields, ParsedFieldKind,
-    ScoreDirective, Spanned, StemDirection, UnitNoteLength, VoiceDefinition, parse_voice_for_music,
+    AccidentalSign, FieldState, KeyMode,
+    KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned, StemDirection, UnitNoteLength, VoiceDefinition,
 };
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric, AlignedSymbol,
@@ -11,28 +10,24 @@ use crate::model::{
     GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
     LoweredEventAtom, LoweredEventAtomKind, LyricControl, Measure, MeasureBarline, MeasureId,
     MeterModel, NoteEvent, OverlaySegment, Part, PartId, Pitch, PreservedDirective,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
+    RepeatEndingModel, RepeatEndingPartModel, RestEvent, Score,
     ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
     SlurAttachment, SlurRole, Staff, StaffId, StemDirectionModel, TempoBeat, TempoModel,
     TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind,
     TimelineEventKind, TupletAttachment, TupletRole, Voice, VoiceId, VoiceMeasureTimeline,
     VoicePropertiesModel, VoiceTimedEvent, VoiceTimeline, lcm,
 };
-use crate::options::ParseMode;
 use crate::parse::ParseReport;
-use crate::source::SourceText;
-use crate::syntax::tune::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
+use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
-    AccidentalSyntax, AnnotationPlacement, AttachmentBundle, BarlineSyntax, BrokenRhythmDirection,
-    BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax, DecorationKind, DecorationSyntax,
-    GraceElementSyntax, GraceGroupSyntax, InlineFieldSyntax, LengthSyntax, LyricLineSyntax,
-    LyricTokenKind, LyricTokenSyntax, MalformedSyntax, MalformedSyntaxKind, MultiMeasureRestSyntax,
-    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine, MusicToken, MusicTokenKind,
-    NoteSyntax, OctaveMark, OctaveMarkSyntax, OverlaySyntax, ParsedMusicDocument, ParsedTuneMusic,
-    PitchSyntax, PreservedDirectiveSyntax, QuotedTextKind, QuotedTextSyntax, RestSyntax,
-    ScoreDirectiveSyntax, SlurDirection, SlurSyntax, SpacerSyntax, SpannedNumber, SymbolLineSyntax,
-    SymbolTokenKind, SymbolTokenSyntax, TieSyntax, TupletSyntax, UnsupportedSyntax,
-    UnsupportedSyntaxKind, VariantEndingPart, VariantEndingSyntax,
+    AnnotationPlacement, AttachmentBundle, BarlineSyntax, BrokenRhythmDirection,
+    BrokenRhythmSyntax, ChordSyntax, DecorationKind,
+    GraceElementSyntax, InlineFieldSyntax, LengthSyntax, LyricLineSyntax,
+    LyricTokenKind,
+    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine,
+    NoteSyntax, OctaveMark, OverlaySyntax, ParsedTuneMusic, PreservedDirectiveSyntax, QuotedTextKind, RestSyntax,
+    ScoreDirectiveSyntax, SlurDirection, SlurSyntax, SymbolLineSyntax,
+    SymbolTokenKind, TieSyntax, TupletSyntax, VariantEndingPart, VariantEndingSyntax,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3334,8 +3329,10 @@ pub(crate) fn abc_field_reference() -> SpecReference {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::RestVisibility;
     use crate::options::ParseOptions;
     use crate::parse::{parse_document, parse_tune_report_from_document};
+    use crate::syntax::{MalformedSyntax, MalformedSyntaxKind};
 
     fn events_for(source: &str) -> (Vec<Event>, Vec<Diagnostic>) {
         let document = parse_document(source, ParseOptions::default()).value;

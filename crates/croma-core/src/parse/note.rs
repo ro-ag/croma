@@ -1,7 +1,7 @@
 //! Note, rest, accidental, octave, length, chord, and grace parsing.
 
 use crate::diagnostic::Span;
-use crate::model::{Accidental, Fraction, Pitch, RestVisibility};
+use crate::model::{Accidental, Fraction, RestVisibility};
 use crate::music::invalid_tuplet_warning;
 use crate::parse::music::{MusicLineParser, invalid_length_warning, is_note_letter};
 use crate::syntax::{
