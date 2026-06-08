@@ -28,7 +28,7 @@ pub(crate) fn format(source: &str, options: ParseOptions) -> String {
     for (index, raw) in source.lines().enumerate() {
         let line = match music_lines.get(&index) {
             Some(music_line) if !music_line.tokens.is_empty() => {
-                format_music_line(source, music_line)
+                format_music_body_line(source, music_line, raw)
             }
             _ => raw.trim_end().to_string(),
         };
@@ -48,6 +48,37 @@ pub(crate) fn format(source: &str, options: ParseOptions) -> String {
     }
 
     out
+}
+
+/// Format a music body line: emit any pre-code prefix (e.g. a leading `V:1`
+/// voice marker, which is not covered by the music tokens) verbatim, then the
+/// token-reconstructed music.
+///
+/// Guarded by a never-drop-content invariant: if the reconstruction does not
+/// preserve the exact non-whitespace characters of the original line, we fall
+/// back to copying the line verbatim (trailing-trimmed only). This makes the
+/// engine lossless even where the tokens do not tile the whole line.
+fn format_music_body_line(source: &str, line: &MusicLine, raw: &str) -> String {
+    let prefix = source
+        .get(line.span.start..line.code_span.start)
+        .unwrap_or("")
+        .trim_start();
+    let code = format_music_line(source, line);
+    let candidate = format!("{prefix}{code}");
+    let candidate = candidate.trim_end();
+
+    if non_whitespace_eq(candidate, raw) {
+        candidate.to_string()
+    } else {
+        raw.trim_end().to_string()
+    }
+}
+
+/// True if `a` and `b` have the same non-whitespace characters in the same order.
+fn non_whitespace_eq(a: &str, b: &str) -> bool {
+    a.chars()
+        .filter(|c| !c.is_whitespace())
+        .eq(b.chars().filter(|c| !c.is_whitespace()))
 }
 
 /// Reconstruct one music line from its classified tokens: copy each top-level

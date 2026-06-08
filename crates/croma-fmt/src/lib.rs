@@ -158,4 +158,19 @@ mod tests {
         let out = fmt("X:1\nK:C\n{ge}A B\n");
         assert_eq!(out.matches("{ge}").count(), 1, "got: {out:?}");
     }
+
+    #[test]
+    fn inline_voice_prefix_is_never_dropped() {
+        // Regression: a leading `V:1` voice marker on a music line is not covered
+        // by the music tokens; it must survive (else notes move between voices).
+        let src = "X:1\nM:4/4\nL:1/8\nV:1\nV:2\nK:C\nV:1  CDE   FGA |\nV:2  C,2  x4    |\n";
+        let out = fmt(src);
+        assert!(out.contains("V:1  CDE FGA |"), "got: {out:?}");
+        assert!(out.contains("V:2  C,2 x4 |"), "got: {out:?}");
+        assert_eq!(fmt(&out), out, "not idempotent");
+        assert_eq!(
+            verify::pitch_seq_of(src, ParseOptions::default()),
+            verify::pitch_seq_of(&out, ParseOptions::default()),
+        );
+    }
 }
