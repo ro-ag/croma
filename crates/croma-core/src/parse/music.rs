@@ -6,6 +6,7 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference}
 use crate::lower::{abc_field_reference, music_code_span};
 use crate::model::RestVisibility;
 use crate::parse::ParseReport;
+use crate::parse::barline::barline_kind;
 use crate::parse::directive::{
     parse_preserved_stylesheet_directive, parse_score_stylesheet_directive,
 };
@@ -15,7 +16,7 @@ use crate::parse::field::{
 };
 use crate::parse::lyric::{parse_lyric_line, parse_symbol_line};
 use crate::source::SourceText;
-use crate::syntax::tune::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
+use crate::syntax::tune::{ContinuationKind, LineContext, LineKind, ScoreLineBreak, SurfaceMap};
 use crate::syntax::{
     AnnotationPlacement, AttachmentBundle, InlineFieldSyntax, MalformedSyntax, MalformedSyntaxKind,
     MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine, MusicToken, MusicTokenKind,
@@ -118,9 +119,10 @@ pub(crate) fn parse_music_document(
                 }
                 if let Some((voice_field, code_span)) = same_line_voice_music {
                     tune.body_fields.push(voice_field);
-                    if let Some(parsed_line) =
+                    if let Some(mut parsed_line) =
                         parse_music_code_line(source, fields, tune_index, line, code_span)
                     {
+                        merge_continued_barline_run(surface, tune, &mut parsed_line.line);
                         diagnostics.extend(parsed_line.diagnostics);
                         tune.lines.push(parsed_line.line);
                     }
@@ -146,9 +148,10 @@ pub(crate) fn parse_music_document(
             continue;
         }
         let code_span = music_code_span(line);
-        if let Some(parsed_line) =
+        if let Some(mut parsed_line) =
             parse_music_code_line(source, fields, tune_index, line, code_span)
         {
+            merge_continued_barline_run(surface, tune, &mut parsed_line.line);
             diagnostics.extend(parsed_line.diagnostics);
             tune.lines.push(parsed_line.line);
         }
@@ -160,6 +163,40 @@ pub(crate) fn parse_music_document(
 struct ParsedMusicLineWithDiagnostics {
     line: MusicLine,
     diagnostics: Vec<Diagnostic>,
+}
+
+fn merge_continued_barline_run(
+    surface: &SurfaceMap,
+    tune: &mut ParsedTuneMusic,
+    current: &mut MusicLine,
+) {
+    let Some(previous) = tune.lines.last_mut() else {
+        return;
+    };
+    if !surface.line_map.continuation_edges.iter().any(|edge| {
+        edge.kind == ContinuationKind::MusicBackslash
+            && edge.from_line == previous.line_index
+            && edge.to_line == current.line_index
+    }) {
+        return;
+    }
+
+    let Some(MusicItem::Barline(previous_barline)) = previous.items.last_mut() else {
+        return;
+    };
+    let Some(MusicItem::Barline(next_barline)) = current.items.first() else {
+        return;
+    };
+    if !previous_barline.raw.contains(']') {
+        return;
+    }
+
+    let raw = format!("{}{}", previous_barline.raw, next_barline.raw);
+    let raw_without_dot = raw.strip_prefix('.').unwrap_or(&raw);
+    previous_barline.kind = barline_kind(raw_without_dot, previous_barline.dotted);
+    previous_barline.span = Span::new(previous_barline.span.start, next_barline.span.end);
+    previous_barline.raw = raw;
+    current.items.remove(0);
 }
 
 fn parse_music_code_line(

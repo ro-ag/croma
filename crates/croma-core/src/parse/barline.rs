@@ -30,11 +30,9 @@ impl<'line> MusicLineParser<'line> {
                 break;
             }
             let ch = self.bump_char();
-            // `]` always closes a barline spelling (`|]`, `:|]`, `[|]`, `[::]`).
-            // Anything after it — e.g. the `|` in `|]|` — begins a new barline,
-            // so stop here instead of swallowing it into a single Liberal run
-            // and losing the section/final barline (ABC 2.1 §6).
-            if ch == Some(']') {
+            if ch == Some(']')
+                && !(self.peek_char() == Some('|') && self.peek_next_char() == Some('|'))
+            {
                 break;
             }
         }
@@ -136,7 +134,7 @@ impl<'line> MusicLineParser<'line> {
     }
 }
 
-fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
+pub(in crate::parse) fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
     if dotted {
         return BarlineKind::Dotted;
     }
@@ -150,8 +148,22 @@ fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
         ":|" | "::|" | ":||" | ":|]" => BarlineKind::RepeatEnd,
         "::" | ":|:" | ":||:" => BarlineKind::RepeatBoth,
         "[|]" => BarlineKind::Invisible,
+        _ if raw.contains(']') && has_repeat_end(raw) && has_repeat_start(raw) => {
+            BarlineKind::RepeatBoth
+        }
+        _ if raw.contains(']') && has_repeat_start(raw) => BarlineKind::RepeatStart,
+        _ if raw.contains(']') && has_repeat_end(raw) => BarlineKind::RepeatEnd,
+        _ if raw.starts_with("|]") => BarlineKind::Final,
         _ => BarlineKind::Liberal,
     }
+}
+
+fn has_repeat_start(raw: &str) -> bool {
+    raw.ends_with(':') && raw.as_bytes()[..raw.len().saturating_sub(1)].contains(&b'|')
+}
+
+fn has_repeat_end(raw: &str) -> bool {
+    raw.contains(":|")
 }
 
 fn invalid_repeat_ending_warning(span: Span) -> Diagnostic {
