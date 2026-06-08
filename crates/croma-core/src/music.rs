@@ -2389,6 +2389,7 @@ fn grace_note_event_model(note: &NoteSyntax) -> GraceNoteEvent {
                 .map(|accidental| accidental.span)
                 .unwrap_or(note.span),
         }),
+        length_multiplier: length_multiplier(note.length.as_ref()),
     }
 }
 
