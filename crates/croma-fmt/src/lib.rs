@@ -138,4 +138,24 @@ mod tests {
     fn empty_source_formats_to_empty() {
         assert_eq!(fmt(""), "");
     }
+
+    #[test]
+    fn chords_and_grace_groups_are_not_duplicated() {
+        // Top-level runs collapse to one space; bracket/brace contents and a
+        // chord length are preserved verbatim and never emitted twice.
+        let src = "X:1\nK:C\n[\"Cmaj\"abc]   [CE]2  |\n";
+        let out = fmt(src);
+        assert_eq!(out, "X:1\nK:C\n[\"Cmaj\"abc] [CE]2 |\n");
+        assert_eq!(fmt(&out), out, "not idempotent");
+        assert_eq!(
+            verify::pitch_seq_of(src, ParseOptions::default()),
+            verify::pitch_seq_of(&out, ParseOptions::default()),
+        );
+    }
+
+    #[test]
+    fn grace_group_appears_once() {
+        let out = fmt("X:1\nK:C\n{ge}A B\n");
+        assert_eq!(out.matches("{ge}").count(), 1, "got: {out:?}");
+    }
 }

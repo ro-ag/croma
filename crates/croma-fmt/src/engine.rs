@@ -50,14 +50,26 @@ pub(crate) fn format(source: &str, options: ParseOptions) -> String {
     out
 }
 
-/// Reconstruct one music line from its classified tokens: copy each non-space
-/// token verbatim, collapse each whitespace run to a single space, and drop
-/// leading/trailing whitespace.
+/// Reconstruct one music line from its classified tokens: copy each top-level
+/// non-space token verbatim, collapse each whitespace run to a single space, and
+/// drop leading/trailing whitespace.
+///
+/// The token list is not a clean tiling: a container token (`Chord`,
+/// `GraceGroup`, …) spans the whole `[...]`/`{...}` *and any leading
+/// attachments*, while the inner `Pitch`/`ChordSymbol`/`Length` tokens — and
+/// even a preceding `GraceGroup` token — are also listed with spans inside it,
+/// sometimes before the container in list order. We therefore emit only the
+/// top-level tokens (those not strictly contained in another), copying each
+/// verbatim so internal spacing is preserved and nothing is emitted twice.
 fn format_music_line(source: &str, line: &MusicLine) -> String {
+    let tokens = &line.tokens;
     let mut out = String::new();
     let mut pending_space = false;
 
-    for token in &line.tokens {
+    for (index, token) in tokens.iter().enumerate() {
+        if is_contained(token, tokens, index) {
+            continue; // nested inside a larger container token
+        }
         match token.kind {
             MusicTokenKind::Whitespace => pending_space = true,
             _ => {
@@ -72,4 +84,21 @@ fn format_music_line(source: &str, line: &MusicLine) -> String {
     }
 
     out.trim_end().to_string()
+}
+
+/// True if `token` (at `index`) is strictly contained within some other token —
+/// i.e. it is a child of a larger container and must not be emitted on its own.
+fn is_contained(
+    token: &croma_core::MusicToken,
+    tokens: &[croma_core::MusicToken],
+    index: usize,
+) -> bool {
+    let span = token.span;
+    let width = span.end.saturating_sub(span.start);
+    tokens.iter().enumerate().any(|(other_index, other)| {
+        other_index != index
+            && other.span.start <= span.start
+            && span.end <= other.span.end
+            && other.span.end.saturating_sub(other.span.start) > width
+    })
 }
