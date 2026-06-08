@@ -320,6 +320,9 @@ pub enum GraceEventKind {
 pub struct GraceNoteEvent {
     pub pitch: Pitch,
     pub written_accidental: Option<AccidentalMark>,
+    /// Written length modifier of the grace note relative to the grace base
+    /// unit (`/` -> 1/2, `2` -> 2, etc.; `1` when no modifier is written).
+    pub length_multiplier: Fraction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

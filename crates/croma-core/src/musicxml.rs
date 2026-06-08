@@ -536,7 +536,6 @@ impl<'score> MusicXmlWriter<'score> {
         tuplet_numbers: &TupletNumbers,
     ) {
         let mut first_chord_member = true;
-        let display_duration = grace_display_duration(group.note_count);
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
@@ -546,7 +545,10 @@ impl<'score> MusicXmlWriter<'score> {
                             source: event.source_span,
                             chord_member: false,
                             slash: group.slash.is_some(),
-                            display_duration,
+                            display_duration: grace_display_duration(
+                                group.note_count,
+                                note.length_multiplier,
+                            ),
                         },
                         sequence,
                         part,
@@ -559,7 +561,7 @@ impl<'score> MusicXmlWriter<'score> {
                         NoteWrite {
                             pitch: None,
                             rest: Some(rest),
-                            duration: display_duration,
+                            duration: grace_base_unit(group.note_count),
                             source: event.source_span,
                             written_accidental: None,
                             attachments: &EventAttachments::default(),
@@ -581,7 +583,10 @@ impl<'score> MusicXmlWriter<'score> {
                                 source: event.source_span,
                                 chord_member: !first_chord_member,
                                 slash: group.slash.is_some(),
-                                display_duration,
+                                display_duration: grace_display_duration(
+                                    group.note_count,
+                                    note.length_multiplier,
+                                ),
                             },
                             sequence,
                             part,
@@ -1795,7 +1800,10 @@ fn note_spelling(
     }
 }
 
-fn grace_display_duration(note_count: u32) -> Fraction {
+/// Count-based grace base unit, matching abc2xml: 1/8 for a single grace note in
+/// the group, 1/16 otherwise. The grace note's written length modifier is
+/// applied on top of this (see [`grace_display_duration`]).
+fn grace_base_unit(note_count: u32) -> Fraction {
     if note_count <= 1 {
         Fraction {
             numerator: 1,
@@ -1807,6 +1815,14 @@ fn grace_display_duration(note_count: u32) -> Fraction {
             denominator: 16,
         }
     }
+}
+
+/// Display duration of a single grace note: the count-based base unit scaled by
+/// the grace note's written length modifier (`/` -> 1/2, `2` -> 2, ...). The
+/// resulting fraction drives the `<type>`/`<dots>` spelling; grace notes still
+/// carry no `<duration>` element.
+fn grace_display_duration(note_count: u32, length_multiplier: Fraction) -> Fraction {
+    grace_base_unit(note_count).checked_mul(length_multiplier)
 }
 
 fn grace_export_pitch(
@@ -3218,6 +3234,39 @@ mod tests {
         assert_eq!(count(&export.musicxml, "<type>eighth</type>"), 1);
         assert_eq!(count(&export.musicxml, "<type>16th</type>"), 2);
         assert!(!export.musicxml.contains("<duration>0</duration>"));
+    }
+
+    #[test]
+    fn grace_note_length_modifiers_scale_display_type() {
+        // The graphic `<type>` of a grace note must reflect both the count-based
+        // base unit and the grace note's written length modifier, matching
+        // abc2xml: base 1/8 for a single grace, 1/16 for a group, then multiplied
+        // by the note's written length.
+        //   {B}      single, no modifier -> 1/8        -> eighth
+        //   {B/}     single, half        -> 1/8 * 1/2  -> 16th
+        //   {AG}     two graces          -> 1/16 each  -> 16th
+        //   {A/G/}   two graces, half    -> 1/16 * 1/2 -> 32nd
+        let cases = [
+            ("{B}C", "<type>eighth</type>", 1),
+            ("{B/}C", "<type>16th</type>", 1),
+            ("{AG}C", "<type>16th</type>", 2),
+            ("{A/G/}C", "<type>32nd</type>", 2),
+        ];
+        for (body, expected_type, expected_count) in cases {
+            let source = format!("X:1\nT:Grace Length\nM:4/4\nL:1/4\nK:C\n{body}|\n");
+            let export = export_musicxml(&source).expect("grace note should export");
+            assert_balanced_xml(&export.musicxml);
+            assert_eq!(
+                count(&export.musicxml, expected_type),
+                expected_count,
+                "grace body {body} should yield {expected_count}x {expected_type}",
+            );
+            // Grace notes carry no <duration> element regardless of modifier.
+            assert!(
+                !export.musicxml.contains("<duration>0</duration>"),
+                "grace body {body} must not emit a zero <duration>",
+            );
+        }
     }
 
     #[test]
