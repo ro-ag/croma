@@ -53,6 +53,7 @@ fn parse_voice_properties(properties: &Spanned<String>) -> VoiceProperties {
                 }
             }
             "octave" | "oct" => parsed.octave = Some(property.value.clone()),
+            "middle" | "m" => parsed.middle = Some(property.value.clone()),
             "transpose" | "transposition" | "score" | "sound" | "shift" => {
                 parsed.transpose = Some(property.value.clone());
             }

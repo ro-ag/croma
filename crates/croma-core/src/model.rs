@@ -463,6 +463,7 @@ pub struct VoicePropertiesModel {
     pub stem: Option<StemDirectionModel>,
     pub octave: Option<TextLine>,
     pub transpose: Option<TextLine>,
+    pub middle: Option<TextLine>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
