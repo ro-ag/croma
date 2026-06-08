@@ -1,129 +1,79 @@
-use std::collections::VecDeque;
-use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
+use anstream::stderr as color_stderr;
+use clap::Parser;
 use croma_core::{
-    AbcDocument, AbcSpecVersion, Diagnostic, LowerOptions, ParseMode, ParseOptions, ParseReport,
-    Score, Severity, SourceText, lower_score, parse_document, write_musicxml,
+    AbcDocument, Diagnostic, LowerOptions, ParseOptions, ParseReport, Score, Severity, SourceText,
+    lower_score, parse_document, write_musicxml,
 };
+use croma_fmt::{
+    Change, FixKind, FixResult, FormatOptions, auto_fix, format as fmt_format, is_formatted,
+};
+use owo_colors::OwoColorize;
 use serde_json::json;
 
+mod cli;
+
+use cli::{
+    CheckArgs, Cli, Command, CommonArgs, DiagnosticsFormat, DumpArgs, DumpKind, FmtArgs, XmlArgs,
+};
+
 fn main() -> ExitCode {
-    match run(env::args().skip(1)) {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            // clap renders help/version to stdout (exit 0) and errors to stderr
+            // (exit 2). Preserve that convention; the integration tests only
+            // require a non-zero exit and that usage is printed somewhere
+            // sensible, which clap handles.
+            error.print().ok();
+            return if error.use_stderr() {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            };
+        }
+    };
+
+    match run(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{}", error.message);
+            let _ = writeln!(color_stderr(), "{}", error.message);
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(args: impl IntoIterator<Item = String>) -> Result<ExitCode, CliError> {
-    let mut args: VecDeque<String> = args.into_iter().collect();
-    let mut options = CliOptions::default();
-
-    if args.is_empty() {
-        return Err(CliError::usage());
-    }
-
-    loop {
-        match consume_common_option(&mut args, &mut options)? {
-            CommonOption::Consumed => {}
-            CommonOption::Help => {
-                println!("{}", usage());
-                return Ok(ExitCode::SUCCESS);
-            }
-            CommonOption::NotCommon => break,
-        }
-    }
-
-    let Some(command) = args.pop_front() else {
-        return Err(CliError::usage());
-    };
-
-    match command.as_str() {
-        "xml" => run_xml(args, options),
-        "check" => run_check(args, options),
-        "dump" => run_dump(args, options),
-        "--help" | "-h" | "help" => {
-            println!("{}", usage());
-            Ok(ExitCode::SUCCESS)
-        }
-        _ => Err(CliError::usage_with(format!("unknown command `{command}`"))),
+fn run(cli: Cli) -> Result<ExitCode, CliError> {
+    match cli.command {
+        Command::Xml(args) => run_xml(args),
+        Command::Check(args) => run_check(args),
+        Command::Dump(args) => run_dump(args),
+        Command::Fmt(args) => run_fmt(args),
     }
 }
 
-fn run_xml(mut args: VecDeque<String>, mut options: CliOptions) -> Result<ExitCode, CliError> {
-    let mut input = None;
-    let mut output = None;
-
-    while !args.is_empty() {
-        match consume_common_option(&mut args, &mut options)? {
-            CommonOption::Consumed => continue,
-            CommonOption::Help => {
-                println!("{}", usage());
-                return Ok(ExitCode::SUCCESS);
-            }
-            CommonOption::NotCommon => {}
-        }
-
-        let Some(arg) = args.pop_front() else {
-            break;
-        };
-
-        match arg.as_str() {
-            "-o" | "--output" => {
-                if output.is_some() {
-                    return Err(CliError::usage_with(
-                        "output path was provided more than once",
-                    ));
-                }
-                let Some(path) = args.pop_front() else {
-                    return Err(CliError::usage_with("missing value for `-o`"));
-                };
-                output = Some(PathBuf::from(path));
-            }
-            _ if arg.starts_with("--output=") => {
-                if output.is_some() {
-                    return Err(CliError::usage_with(
-                        "output path was provided more than once",
-                    ));
-                }
-                let Some((_, path)) = arg.split_once('=') else {
-                    return Err(CliError::usage());
-                };
-                output = Some(PathBuf::from(path));
-            }
-            _ if arg.starts_with('-') => {
-                return Err(CliError::usage_with(format!("unknown option `{arg}`")));
-            }
-            _ => {
-                if input.is_some() {
-                    return Err(CliError::usage_with(
-                        "input path was provided more than once",
-                    ));
-                }
-                input = Some(PathBuf::from(arg));
-            }
-        }
-    }
-
-    let input = input.ok_or_else(|| CliError::usage_with("missing input ABC file"))?;
-    let source = read_source(&input)?;
-    let source_text = SourceText::with_file_name(source.clone(), input.display().to_string());
+fn run_xml(args: XmlArgs) -> Result<ExitCode, CliError> {
+    let XmlArgs {
+        file,
+        output,
+        common,
+    } = args;
+    let source = read_source(&file)?;
+    let source_text = SourceText::with_file_name(source.clone(), file.display().to_string());
     let PipelineResult {
         document: _document,
         score: _score,
         diagnostics,
         musicxml,
-    } = run_export_pipeline(&source, options.parse_options());
+    } = run_export_pipeline(&source, common.parse_options());
 
-    emit_diagnostics(&options, &source_text, &input, &diagnostics)?;
+    emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
 
-    if diagnostics_should_fail(&diagnostics, options.warnings_as_errors) {
+    if diagnostics_should_fail(&diagnostics, common.warnings_as_errors()) {
         return Ok(ExitCode::FAILURE);
     }
 
@@ -141,79 +91,40 @@ fn run_xml(mut args: VecDeque<String>, mut options: CliOptions) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_check(mut args: VecDeque<String>, mut options: CliOptions) -> Result<ExitCode, CliError> {
-    if args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
-    {
-        println!("{}", usage());
-        return Ok(ExitCode::SUCCESS);
-    }
+fn run_check(args: CheckArgs) -> Result<ExitCode, CliError> {
+    let CheckArgs { file, common } = args;
+    let source = read_source(&file)?;
+    let source_text = SourceText::with_file_name(source.clone(), file.display().to_string());
+    let CheckResult { diagnostics, .. } = run_check_pipeline(&source, common.parse_options());
 
-    let input = parse_single_input_command(&mut args, &mut options, "check")?;
-    let source = read_source(&input)?;
-    let source_text = SourceText::with_file_name(source.clone(), input.display().to_string());
-    let CheckResult { diagnostics, .. } = run_check_pipeline(&source, options.parse_options());
+    emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
 
-    emit_diagnostics(&options, &source_text, &input, &diagnostics)?;
-
-    if diagnostics_should_fail(&diagnostics, options.warnings_as_errors) {
+    if diagnostics_should_fail(&diagnostics, common.warnings_as_errors()) {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
     }
 }
 
-fn run_dump(mut args: VecDeque<String>, mut options: CliOptions) -> Result<ExitCode, CliError> {
-    let mut kind = None;
-    let mut input = None;
-
-    while !args.is_empty() {
-        match consume_common_option(&mut args, &mut options)? {
-            CommonOption::Consumed => continue,
-            CommonOption::Help => {
-                println!("{}", usage());
-                return Ok(ExitCode::SUCCESS);
-            }
-            CommonOption::NotCommon => {}
-        }
-
-        let Some(arg) = args.pop_front() else {
-            break;
-        };
-
-        if arg.starts_with('-') {
-            return Err(CliError::usage_with(format!("unknown option `{arg}`")));
-        }
-
-        if kind.is_none() {
-            kind = Some(DumpKind::parse(&arg)?);
-        } else if input.is_none() {
-            input = Some(PathBuf::from(arg));
-        } else {
-            return Err(CliError::usage_with("too many arguments for `dump`"));
-        }
-    }
-
-    let kind = kind.ok_or_else(|| CliError::usage_with("missing dump kind"))?;
-    let input = input.ok_or_else(|| CliError::usage_with("missing input ABC file"))?;
-    let source = read_source(&input)?;
-    let source_text = SourceText::with_file_name(source.clone(), input.display().to_string());
-    let report = parse_document(&source, options.parse_options());
+fn run_dump(args: DumpArgs) -> Result<ExitCode, CliError> {
+    let DumpArgs { kind, file, common } = args;
+    let source = read_source(&file)?;
+    let source_text = SourceText::with_file_name(source.clone(), file.display().to_string());
+    let report = parse_document(&source, common.parse_options());
     let document = report.value;
     let mut diagnostics = report.diagnostics;
 
     match kind {
         DumpKind::Tokens => {
-            emit_diagnostics(&options, &source_text, &input, &diagnostics)?;
-            if diagnostics_should_fail(&diagnostics, options.warnings_as_errors) {
+            emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
+            if diagnostics_should_fail(&diagnostics, common.warnings_as_errors()) {
                 return Ok(ExitCode::FAILURE);
             }
             println!("{:#?}", document.surface.tokens);
         }
         DumpKind::Tree => {
-            emit_diagnostics(&options, &source_text, &input, &diagnostics)?;
-            if diagnostics_should_fail(&diagnostics, options.warnings_as_errors) {
+            emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
+            if diagnostics_should_fail(&diagnostics, common.warnings_as_errors()) {
                 return Ok(ExitCode::FAILURE);
             }
             println!("LineMap:\n{:#?}", document.surface.line_map);
@@ -223,8 +134,8 @@ fn run_dump(mut args: VecDeque<String>, mut options: CliOptions) -> Result<ExitC
         DumpKind::Score => {
             let lower_report = lower_score(&document, LowerOptions);
             diagnostics.extend(lower_report.diagnostics);
-            emit_diagnostics(&options, &source_text, &input, &diagnostics)?;
-            if diagnostics_should_fail(&diagnostics, options.warnings_as_errors) {
+            emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
+            if diagnostics_should_fail(&diagnostics, common.warnings_as_errors()) {
                 return Ok(ExitCode::FAILURE);
             }
             let Some(score) = lower_report.value else {
@@ -238,39 +149,111 @@ fn run_dump(mut args: VecDeque<String>, mut options: CliOptions) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-fn parse_single_input_command(
-    args: &mut VecDeque<String>,
-    options: &mut CliOptions,
-    command: &'static str,
-) -> Result<PathBuf, CliError> {
-    let mut input = None;
+fn run_fmt(args: FmtArgs) -> Result<ExitCode, CliError> {
+    let FmtArgs {
+        file,
+        check,
+        write,
+        auto_fix: use_auto_fix,
+        common,
+    } = args;
 
-    while !args.is_empty() {
-        match consume_common_option(args, options)? {
-            CommonOption::Consumed => continue,
-            CommonOption::Help => {
-                return Err(CliError::usage());
-            }
-            CommonOption::NotCommon => {}
-        }
-
-        let Some(arg) = args.pop_front() else {
-            break;
-        };
-
-        if arg.starts_with('-') {
-            return Err(CliError::usage_with(format!("unknown option `{arg}`")));
-        }
-
-        if input.is_some() {
-            return Err(CliError::usage_with(format!(
-                "too many arguments for `{command}`"
-            )));
-        }
-        input = Some(PathBuf::from(arg));
+    if check && write {
+        return Err(CliError::message(
+            "`--check` and `--write` cannot be used together",
+        ));
     }
 
-    input.ok_or_else(|| CliError::usage_with(format!("missing input ABC file for `{command}`")))
+    let source = read_source(&file)?;
+    let options = FormatOptions {
+        parse: common.parse_options(),
+    };
+
+    if use_auto_fix {
+        let FixResult {
+            output,
+            changes,
+            skipped,
+        } = auto_fix(&source, options);
+        report_fixes(&changes, &skipped)?;
+
+        if check {
+            return check_result(output == source, &file);
+        }
+        if write {
+            write_output(&file, &output)?;
+        } else {
+            print!("{output}");
+            flush_stdout()?;
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if check {
+        return check_result(is_formatted(&source, options), &file);
+    }
+
+    let formatted = fmt_format(&source, options);
+    if write {
+        write_output(&file, &formatted)?;
+    } else {
+        print!("{formatted}");
+        flush_stdout()?;
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve a `--check` outcome: exit 0 (clean) or exit 1 with a `would reformat`
+/// note on stderr. `clean` is true when the file already matches the canonical
+/// (or auto-fixed) output.
+fn check_result(clean: bool, file: &Path) -> Result<ExitCode, CliError> {
+    if clean {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        let mut stderr = color_stderr();
+        writeln!(stderr, "would reformat: {}", file.display()).map_err(stderr_error)?;
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+/// Emit one stderr line per applied or skipped auto-fix change.
+fn report_fixes(changes: &[Change], skipped: &[Change]) -> Result<(), CliError> {
+    let mut stderr = color_stderr();
+    for change in changes {
+        writeln!(
+            stderr,
+            "fixed [{}] {}",
+            change.kind.label().green(),
+            fix_detail(change)
+        )
+        .map_err(stderr_error)?;
+    }
+    for change in skipped {
+        writeln!(
+            stderr,
+            "skipped (would change notes) [{}] {}",
+            change.kind.label().yellow(),
+            fix_detail(change)
+        )
+        .map_err(stderr_error)?;
+    }
+    Ok(())
+}
+
+/// A human-readable description of a curation. When the edit's before/after text
+/// is meaningful (chord unwrap, tempo collapse) show `` `before` -> `after` ``;
+/// otherwise (e.g. removing whitespace for a detached length) describe the kind.
+fn fix_detail(change: &Change) -> String {
+    if change.before.trim().is_empty() {
+        match change.kind {
+            FixKind::DetachedLength => "joined a length to its note".to_string(),
+            FixKind::ChordSymbolInBrackets => "moved chord symbol out of brackets".to_string(),
+            FixKind::DoubledTempo => "collapsed a doubled tempo".to_string(),
+        }
+    } else {
+        format!("`{}` -> `{}`", change.before, change.after)
+    }
 }
 
 fn run_check_pipeline(source: &str, options: ParseOptions) -> CheckResult {
@@ -342,69 +325,8 @@ fn flush_stdout() -> Result<(), CliError> {
         .map_err(|error| CliError::message(format!("failed to write stdout: {error}")))
 }
 
-fn consume_common_option(
-    args: &mut VecDeque<String>,
-    options: &mut CliOptions,
-) -> Result<CommonOption, CliError> {
-    let Some(arg) = args.front().map(String::as_str) else {
-        return Ok(CommonOption::NotCommon);
-    };
-
-    match arg {
-        "--strict" => {
-            args.pop_front();
-            options.set_parse_mode(ParseMode::Strict)?;
-            Ok(CommonOption::Consumed)
-        }
-        "--loose" => {
-            args.pop_front();
-            options.set_parse_mode(ParseMode::Loose)?;
-            Ok(CommonOption::Consumed)
-        }
-        "--recover" => {
-            args.pop_front();
-            options.set_parse_mode(ParseMode::Recover)?;
-            Ok(CommonOption::Consumed)
-        }
-        "--abc-2.2-draft" => {
-            args.pop_front();
-            options.spec = AbcSpecVersion::V22Draft;
-            Ok(CommonOption::Consumed)
-        }
-        "--warnings-as-errors" => {
-            args.pop_front();
-            options.warnings_as_errors = true;
-            Ok(CommonOption::Consumed)
-        }
-        "--diagnostics" => {
-            args.pop_front();
-            let Some(value) = args.pop_front() else {
-                return Err(CliError::usage_with("missing value for `--diagnostics`"));
-            };
-            options.diagnostics = DiagnosticsFormat::parse(&value)?;
-            Ok(CommonOption::Consumed)
-        }
-        "--help" | "-h" => {
-            args.pop_front();
-            Ok(CommonOption::Help)
-        }
-        _ if arg.starts_with("--diagnostics=") => {
-            let Some(arg) = args.pop_front() else {
-                return Err(CliError::usage());
-            };
-            let Some((_, value)) = arg.split_once('=') else {
-                return Err(CliError::usage());
-            };
-            options.diagnostics = DiagnosticsFormat::parse(value)?;
-            Ok(CommonOption::Consumed)
-        }
-        _ if arg.starts_with("--") => Err(CliError::usage_with(format!("unknown option `{arg}`"))),
-        _ => Ok(CommonOption::NotCommon),
-    }
-}
-
 fn emit_diagnostics(
-    options: &CliOptions,
+    common: &CommonArgs,
     source: &SourceText,
     path: &Path,
     diagnostics: &[Diagnostic],
@@ -413,17 +335,21 @@ fn emit_diagnostics(
         return Ok(());
     }
 
-    let mut stderr = io::stderr();
-    match options.diagnostics {
+    match common.diagnostics_format() {
         DiagnosticsFormat::Text => {
+            // Human-facing diagnostics route through anstream, which strips
+            // color when stderr is not a TTY or NO_COLOR is set.
+            let mut stderr = color_stderr();
             for diagnostic in diagnostics {
                 write_text_diagnostic(&mut stderr, source, path, diagnostic)?;
             }
         }
         DiagnosticsFormat::Json => {
+            // JSON must stay byte-identical and parseable: never colorize it.
+            // Write to the raw stderr handle so no ANSI processing applies.
             let payload = diagnostics_json(source, path, diagnostics)?;
-            writeln!(stderr, "{payload}")
-                .map_err(|error| CliError::message(format!("failed to write stderr: {error}")))?;
+            let mut stderr = io::stderr();
+            writeln!(stderr, "{payload}").map_err(stderr_error)?;
         }
     }
     Ok(())
@@ -436,6 +362,7 @@ fn write_text_diagnostic(
     diagnostic: &Diagnostic,
 ) -> Result<(), CliError> {
     let line_span = source.line_column_span(diagnostic.span);
+    let severity = colored_severity(diagnostic.severity);
     if let Some(line_span) = line_span {
         writeln!(
             output,
@@ -445,7 +372,7 @@ fn write_text_diagnostic(
             line_span.start.column,
             line_span.end.line,
             line_span.end.column,
-            severity_name(diagnostic.severity),
+            severity,
             diagnostic.code,
             diagnostic.message
         )
@@ -457,7 +384,7 @@ fn write_text_diagnostic(
             path.display(),
             diagnostic.span.start,
             diagnostic.span.end,
-            severity_name(diagnostic.severity),
+            severity,
             diagnostic.code,
             diagnostic.message
         )
@@ -564,13 +491,23 @@ fn severity_name(severity: Severity) -> &'static str {
     }
 }
 
-fn usage() -> &'static str {
-    "usage: croma [OPTIONS] <COMMAND>\n\ncommands:\n  xml <file.abc> [-o out.musicxml]\n  check <file.abc>\n  dump tokens <file.abc>\n  dump tree <file.abc>\n  dump score <file.abc>\n\noptions:\n  --strict\n  --loose\n  --recover\n  --abc-2.2-draft\n  --diagnostics text|json\n  --warnings-as-errors"
+/// Render a severity label colored by class (error=red, warning=yellow,
+/// info=blue). anstream strips the color when stderr is not a TTY, so the
+/// underlying text stays `error`/`warning`/`info`.
+fn colored_severity(severity: Severity) -> String {
+    let name = severity_name(severity);
+    match severity {
+        Severity::Error => name.red().to_string(),
+        Severity::Warning => name.yellow().to_string(),
+        Severity::Info => name.blue().to_string(),
+    }
 }
 
 #[derive(Debug)]
 struct PipelineResult {
+    #[allow(dead_code)]
     document: AbcDocument,
+    #[allow(dead_code)]
     score: Option<Score>,
     diagnostics: Vec<Diagnostic>,
     musicxml: Option<String>,
@@ -578,90 +515,11 @@ struct PipelineResult {
 
 #[derive(Debug)]
 struct CheckResult {
+    #[allow(dead_code)]
     document: AbcDocument,
+    #[allow(dead_code)]
     score: Option<Score>,
     diagnostics: Vec<Diagnostic>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum CommonOption {
-    Consumed,
-    Help,
-    NotCommon,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiagnosticsFormat {
-    Text,
-    Json,
-}
-
-impl DiagnosticsFormat {
-    fn parse(value: &str) -> Result<Self, CliError> {
-        match value {
-            "text" => Ok(Self::Text),
-            "json" => Ok(Self::Json),
-            _ => Err(CliError::usage_with(format!(
-                "invalid diagnostics format `{value}`"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DumpKind {
-    Tokens,
-    Tree,
-    Score,
-}
-
-impl DumpKind {
-    fn parse(value: &str) -> Result<Self, CliError> {
-        match value {
-            "tokens" => Ok(Self::Tokens),
-            "tree" => Ok(Self::Tree),
-            "score" => Ok(Self::Score),
-            _ => Err(CliError::usage_with(format!("invalid dump kind `{value}`"))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct CliOptions {
-    spec: AbcSpecVersion,
-    parse_mode: ParseMode,
-    parse_mode_seen: bool,
-    diagnostics: DiagnosticsFormat,
-    warnings_as_errors: bool,
-}
-
-impl Default for CliOptions {
-    fn default() -> Self {
-        Self {
-            spec: AbcSpecVersion::V21,
-            parse_mode: ParseMode::Strict,
-            parse_mode_seen: false,
-            diagnostics: DiagnosticsFormat::Text,
-            warnings_as_errors: false,
-        }
-    }
-}
-
-impl CliOptions {
-    fn parse_options(self) -> ParseOptions {
-        ParseOptions::new(self.spec, self.parse_mode)
-    }
-
-    fn set_parse_mode(&mut self, mode: ParseMode) -> Result<(), CliError> {
-        if self.parse_mode_seen {
-            return Err(CliError::usage_with(
-                "choose only one of --strict, --loose, or --recover",
-            ));
-        }
-        self.parse_mode = mode;
-        self.parse_mode_seen = true;
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -680,14 +538,6 @@ impl CliError {
         Self {
             message: message.into(),
         }
-    }
-
-    fn usage() -> Self {
-        Self::message(usage())
-    }
-
-    fn usage_with(message: impl Into<String>) -> Self {
-        Self::message(format!("{}\n\n{}", message.into(), usage()))
     }
 }
 

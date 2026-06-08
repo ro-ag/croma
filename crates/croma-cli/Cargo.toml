@@ -16,4 +16,8 @@ workspace = true
 
 [dependencies]
 croma-core = { path = "../croma-core" }
+croma-fmt = { path = "../croma-fmt" }
 serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+owo-colors = "4"
+anstream = "0.6"
