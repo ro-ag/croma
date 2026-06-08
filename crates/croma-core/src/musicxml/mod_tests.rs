@@ -880,6 +880,115 @@ fn slur_without_grace_still_spans_first_to_last_note() {
 }
 
 #[test]
+fn grace_before_slur_open_attaches_to_main_note_and_slur_starts_on_main() {
+    // ABC 2.1 §4.20: in `{g}(c4)` the grace group precedes the note `c`, so it
+    // attaches to `c`. The slur `(` opens AFTER the grace, so the slur starts on
+    // the MAIN note `c`, not on the grace. Before the fix the intervening slur
+    // flushed the grace into a standalone item that lowering dropped, losing the
+    // grace entirely.
+    let source = "X:1\nT:Grace Before Slur\nM:4/4\nL:1/8\nK:C\n{g}(c4) d|\n";
+    let export = export_musicxml(source).expect("grace-before-slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+
+    // The grace note is preserved.
+    let grace_note_start = export
+        .musicxml
+        .find("<grace/>")
+        .expect("grace note should be present");
+    let grace_note_end = export.musicxml[grace_note_start..]
+        .find("</note>")
+        .map(|offset| grace_note_start + offset)
+        .expect("grace note should be terminated");
+    let grace_note = &export.musicxml[grace_note_start..grace_note_end];
+
+    // The grace carries no slur — the slur opens after it.
+    assert!(
+        !grace_note.contains("<slur"),
+        "grace note must not carry a slur when the slur opens after it: {grace_note}"
+    );
+
+    // Exactly one slur start/stop overall.
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"stop\" number=\"1\"/>"),
+        1
+    );
+
+    // The slur start lands on the main note `c`, which is NOT a grace note.
+    let start_index = export
+        .musicxml
+        .find("<slur type=\"start\" number=\"1\"/>")
+        .expect("slur start should be present");
+    let main_note_start = export.musicxml[..start_index]
+        .rfind("<note")
+        .expect("slur start should be inside a note");
+    let main_note = &export.musicxml[main_note_start..start_index];
+    assert!(
+        !main_note.contains("<grace/>"),
+        "slur start should land on the main note, not the grace: {main_note}"
+    );
+}
+
+#[test]
+fn grace_before_slur_open_does_not_regress_slur_before_grace() {
+    // Phase-18 guard: `({g}c4)` keeps the slur start on the FIRST grace note. The
+    // grace-before-slur fix must not disturb this path.
+    let source = "X:1\nT:Slur Before Grace\nM:4/4\nL:1/4\nK:C\n({g}c4) d|\n";
+    let export = export_musicxml(source).expect("slur-before-grace score should export");
+
+    assert_balanced_xml(&export.musicxml);
+
+    let grace_note_start = export
+        .musicxml
+        .find("<grace/>")
+        .expect("grace note should be present");
+    let grace_note_end = export.musicxml[grace_note_start..]
+        .find("</note>")
+        .map(|offset| grace_note_start + offset)
+        .expect("grace note should be terminated");
+    let grace_note = &export.musicxml[grace_note_start..grace_note_end];
+    assert!(
+        grace_note.contains("<slur type=\"start\" number=\"1\"/>"),
+        "slur opening before the grace should start on the grace note: {grace_note}"
+    );
+}
+
+#[test]
+fn grace_before_plain_note_still_attaches() {
+    // Control: `{g}c4 d` (no slur) keeps the grace on `c` and emits no slur.
+    let source = "X:1\nT:Plain Grace\nM:4/4\nL:1/8\nK:C\n{g}c4 d|\n";
+    let export = export_musicxml(source).expect("plain grace score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 1);
+    assert!(!export.musicxml.contains("<slur"));
+}
+
+#[test]
+fn grace_orphaned_before_barline_is_voided_without_panic() {
+    // A grace group with no following note before a hard boundary (bar end / end
+    // of tune) is void per the dangling-grace policy: no panic, no grace emitted,
+    // sensible output. `c {g}|` flushes the grace at the barline; `{g}` at end of
+    // tune flushes at end-of-line. Neither should crash or emit a `<grace/>`.
+    for source in [
+        "X:1\nT:Orphan Grace Bar\nM:4/4\nL:1/4\nK:C\nc {g}| d|\n",
+        "X:1\nT:Orphan Grace End\nM:4/4\nL:1/4\nK:C\nc {g}\n",
+    ] {
+        let export = export_musicxml(source).expect("orphan-grace score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(
+            count(&export.musicxml, "<grace/>"),
+            0,
+            "an orphaned grace with no following note must be voided: {source}"
+        );
+    }
+}
+
+#[test]
 fn lyric_hyphen_controls_do_not_export_as_sung_text() {
     let source = "X:1\nT:Hyphen Lyrics\nM:4/4\nL:1/4\nK:C\nC D E F|\nw: A-des-te fi-del\n";
     let export = export_musicxml(source).expect("hyphen lyric score should export");

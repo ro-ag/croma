@@ -10,8 +10,9 @@ use crate::model::{
 use crate::parse::field::KeySignature;
 use crate::syntax::{
     AnnotationPlacement, AttachmentBundle, BrokenRhythmDirection, BrokenRhythmSyntax, ChordSyntax,
-    DecorationKind, GraceElementSyntax, LengthSyntax, NoteSyntax, OctaveMark, OverlaySyntax,
-    QuotedTextKind, RestSyntax, SlurDirection, SlurSyntax, TieSyntax, VariantEndingSyntax,
+    DecorationKind, GraceElementSyntax, GraceGroupSyntax, LengthSyntax, NoteSyntax, OctaveMark,
+    OverlaySyntax, QuotedTextKind, RestSyntax, SlurDirection, SlurSyntax, TieSyntax,
+    VariantEndingSyntax,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,15 @@ pub(crate) struct LoweringState {
     pub(crate) open_slurs: Vec<OpenSlur>,
     pub(crate) next_slur_id: u32,
     pub(crate) next_tuplet_id: u32,
+    /// Grace groups flushed out of the parser's pending attachments by an
+    /// intervening slur-open, decoration, or other flush trigger before their
+    /// note was parsed (ABC 2.1 §4.20: `{grace}(note)`). The parser emits these
+    /// as standalone `MusicItem::GraceGroup` items; we buffer them here and merge
+    /// them into the next timed event's grace groups so the grace still attaches
+    /// to the note it precedes. Dropped at hard boundaries (barline, voice
+    /// switch, end of tune) when no timed note follows — a grace with no
+    /// following note is void.
+    pub(crate) pending_grace_groups: Vec<GraceGroupSyntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +138,27 @@ impl LoweringState {
             open_slurs: Vec::new(),
             next_slur_id: 1,
             next_tuplet_id: 1,
+            pending_grace_groups: Vec::new(),
         }
+    }
+
+    /// Build the lowered attachment bundle for a timed event, prepending any
+    /// grace groups that the parser flushed ahead of their note (see
+    /// `pending_grace_groups`). Prepending preserves source order: a flushed
+    /// grace was written before the note's own attachments, and multiple flushed
+    /// graces keep their relative order. The buffer is drained once consumed.
+    fn take_timed_attachments(&mut self, bundle: &AttachmentBundle) -> EventAttachments {
+        let mut attachments = attachment_bundle_model(bundle);
+        if !self.pending_grace_groups.is_empty() {
+            let mut graces: Vec<_> = self
+                .pending_grace_groups
+                .drain(..)
+                .map(|grace| grace_group_attachment_model(&grace))
+                .collect();
+            graces.append(&mut attachments.grace_groups);
+            attachments.grace_groups = graces;
+        }
+        attachments
     }
 
     pub(crate) fn push_note_group(
@@ -145,6 +175,7 @@ impl LoweringState {
             written_accidental,
             note.accidental.map(|accidental| accidental.span),
         );
+        let attachments = self.take_timed_attachments(&note.attachments);
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -162,7 +193,7 @@ impl LoweringState {
                         .checked_mul(length_multiplier(note.length.as_ref())),
                 },
                 true,
-                attachment_bundle_model(&note.attachments),
+                attachments,
             )],
             line_index,
             source_order,
@@ -175,6 +206,7 @@ impl LoweringState {
         line_index: usize,
         source_order: u32,
     ) {
+        let attachments = self.take_timed_attachments(&rest.attachments);
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -187,7 +219,7 @@ impl LoweringState {
                         .checked_mul(length_multiplier(rest.length.as_ref())),
                 },
                 false,
-                attachment_bundle_model(&rest.attachments),
+                attachments,
             )],
             line_index,
             source_order,
@@ -218,6 +250,15 @@ impl LoweringState {
                 .push(variable_chord_duration_warning(chord.span));
         }
 
+        // Grace groups flushed ahead of this chord attach to the chord as a whole
+        // (its first member), mirroring chord-level attachments. Drain the buffer
+        // before the per-member closure, which borrows `self` immutably.
+        let mut pending_graces: Vec<GraceGroupAttachment> = self
+            .pending_grace_groups
+            .drain(..)
+            .map(|grace| grace_group_attachment_model(&grace))
+            .collect();
+
         let events = chord
             .members
             .iter()
@@ -236,6 +277,11 @@ impl LoweringState {
                 let mut attachments = attachment_bundle_model(&member.note.attachments);
                 if index == 0 {
                     attachments.extend(attachment_bundle_model(&chord.attachments));
+                    if !pending_graces.is_empty() {
+                        let mut graces = std::mem::take(&mut pending_graces);
+                        graces.append(&mut attachments.grace_groups);
+                        attachments.grace_groups = graces;
+                    }
                 }
                 (
                     LoweredEventAtom {
@@ -550,33 +596,37 @@ pub(crate) fn note_signature(kind: LoweredEventAtomKind) -> Option<(char, i8)> {
     }
 }
 
+fn grace_group_attachment_model(grace: &GraceGroupSyntax) -> GraceGroupAttachment {
+    GraceGroupAttachment {
+        span: grace.span,
+        slash: grace.slash_span,
+        note_count: grace
+            .elements
+            .iter()
+            .filter(|element| {
+                matches!(
+                    element,
+                    GraceElementSyntax::Note(_) | GraceElementSyntax::Chord(_)
+                )
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX),
+        events: grace
+            .elements
+            .iter()
+            .filter_map(grace_event_model)
+            .collect(),
+        slurs: Vec::new(),
+    }
+}
+
 fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
     EventAttachments {
         grace_groups: bundle
             .grace_groups
             .iter()
-            .map(|grace| GraceGroupAttachment {
-                span: grace.span,
-                slash: grace.slash_span,
-                note_count: grace
-                    .elements
-                    .iter()
-                    .filter(|element| {
-                        matches!(
-                            element,
-                            GraceElementSyntax::Note(_) | GraceElementSyntax::Chord(_)
-                        )
-                    })
-                    .count()
-                    .try_into()
-                    .unwrap_or(u32::MAX),
-                events: grace
-                    .elements
-                    .iter()
-                    .filter_map(grace_event_model)
-                    .collect(),
-                slurs: Vec::new(),
-            })
+            .map(grace_group_attachment_model)
             .collect(),
         chord_symbols: bundle
             .chord_symbols
