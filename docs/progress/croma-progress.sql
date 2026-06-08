@@ -167,6 +167,11 @@ INSERT INTO "metric" VALUES(93,'phase-11a','full_10k','mismatch_rows','229329','
 INSERT INTO "metric" VALUES(94,'phase-11a','full_10k','structural_matches','3396','3501',NULL,'files','+105');
 INSERT INTO "metric" VALUES(95,'phase-11a','full_10k','extra_in_croma','65318','57618',NULL,'rows','-7700');
 INSERT INTO "metric" VALUES(96,'phase-11a','full_10k','missing_in_croma','74485','67819',NULL,'rows','-6666');
+INSERT INTO "metric" VALUES(97,'phase-11i','full-10k','harmony','6131','5496','-635','mismatch_rows','baseline phase-11h');
+INSERT INTO "metric" VALUES(98,'phase-11i','full-10k','structural_matches','6443','6581','+138','files','net +138');
+INSERT INTO "metric" VALUES(99,'phase-11i','full-10k','mismatch_rows','203622','202005','-1617','rows','');
+INSERT INTO "metric" VALUES(100,'phase-11i','full-10k','croma_export_failures','65','65','0','files','unchanged');
+INSERT INTO "metric" VALUES(101,'phase-11i','full-10k','regressions_match_to_mismatch','0','0','0','files','per-file summary diff');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -213,6 +218,7 @@ INSERT INTO "phase" VALUES('phase-11e','work/phase-11e-repeat-start-placement','
 INSERT INTO "phase" VALUES('phase-11f','work/phase-11f-shorthand-decorations','merged',41,NULL,'13db6ef','extra_in_croma direction: ABC shorthand decorations emitted as <words> instead of MusicXML notations','Croma export bug fixed (spec-correct)','ABC 2.1 sec 4.14 single-char shorthand decorations (H fermata, T trill, u/v bowing, M/P mordents, S segno, O coda, L accent, ~ roll) and U:-defined symbols were stored as the raw char and exported as <words>, since the exporter only matched canonical long names (phase-10q). Now normalized to canonical names at parse time so they map through the existing notation/symbol/articulation path; ~ (roll, no clean MusicXML equivalent, abc2xml emits nothing) is suppressed (no words, no diagnostic). Full 10k: matches 5,556 -> 6,364 (+808); mismatch rows 210,106 -> 204,096 (-6,010); extra_in_croma -5,630, direction -585; zero match->mismatch regressions. Research-confirmed largest actionable clean signal.','Fix grace-note length modifiers (grace <type> from count only, ignores written length) for the duration category; then harmony chord-symbol diffs. Remaining missing/extra and accidental are mostly abc2xml reference artifacts (phantom measures, hardcoded L:1/8, courtesy naturals).','2026-06-08 02:02:37');
 INSERT INTO "phase" VALUES('phase-11g','work/phase-11g-grace-note-length','merged',42,NULL,'5f877ab','duration category: grace-note written length modifiers ignored (grace <type> from group count only)','Croma export bug fixed (spec-correct)','Grace note <type> was derived solely from the grace-group note count, discarding each grace note written length modifier (/,2). Now the grace length multiplier is threaded through grace_note_event_model and the display duration is base(count) x multiplier, matching abc2xml ({B}=eighth, {B/}=16th, {AG}=16th, {A/G/}=32nd); grace notes still emit <grace/> with no <duration>. Full 10k: matches 6,364 -> 6,410 (+46); mismatch rows 204,096 -> 203,761 (-335); duration -335, zero changes in every other category (no regressions). Remaining duration is largely abc2xml hardcoded L:1/8 default (reference artifact, Croma spec-correct per ABC 2.1 4.6).','Harmony chord-symbol diffs (6,270) next; or %%MIDI directives over-rendered as words. Remaining missing/extra, pitch, octave, measure_alignment, accidental are mostly abc2xml reference artifacts (phantom measures, hardcoded L:1/8, courtesy naturals) per the phase-11 research.','2026-06-08 02:13:28');
 INSERT INTO "phase" VALUES('phase-11h','work/phase-11h-harmony-chord-quality','in_progress',NULL,NULL,'dccb681','harmony category: chord-quality misclassified by substring heuristic (dim swallowed by minor branch; aug/sus/6/dim7 unhandled)','Croma export bug fixed (spec-correct)','parse_chord_symbol mapped chord text to MusicXML <kind> with a naive substring chain so Xdim became minor and Xdim7/X7dim became dominant. Reordered/extended to classify diminished, diminished-seventh, augmented, suspended (2/4), major/minor sixth, and changed the fallback from other to major to match abc2xml. Full 10k: matches 6,410 -> 6,443 (+33); mismatch rows 203,761 -> 203,622 (-139); harmony -139, all other categories unchanged, 0 regressions. Still heuristic; next phase replaces it with a complete enumerated chord/decoration base.','Build a comprehensive table-driven base of ALL ABC decorations and ALL chord qualities -> exact MusicXML notations/kind, replacing the substring heuristics in parse_chord_symbol and decoration mapping for precision (per maintainer guidance).','2026-06-08 02:27:25');
+INSERT INTO "phase" VALUES('phase-11i','work/phase-11i-chord-symbol-base','in_progress',NULL,NULL,'114bdcb','harmony category: replace substring chord-quality heuristic with a structural, table-driven parser matching abc2xml grammar (root/accidental, kind table, trailing add-degrees, bass)','Croma export bug fixed (spec-correct)','Rewrote parse_chord_symbol as a structural parser following the ABC 2.1 4.18 grammar as implemented by abc2xml: root [A-G][#b=]?, greedy longest-match quality from a closed kind table (incl half-diminished, 9th/11th/13th, augmented-seventh), optional suspended token (kept only as kind when standalone), zero-or-more trailing chord degrees [#b=]?(2|4|5|6|7|9|11|13) emitted as degree-type=add (mirrors abc2xml which never emits subtract/alter), optional /bass, trailing (...) suppressed; leftover text => not harmony (=> words). Fixed dash being mis-read as a root flat (it is the minor quality). harmony 6131->5496 (-635), structural_matches 6443->6581 (+138), mismatch_rows 203622->202005 (-1617), export_failures 65 unchanged, 0 files regressed match->mismatch, all other categories flat or improved.','Remaining harmony residual is largely abc2xml reference artifacts; triage duration (21,358 / single-category files), measure_alignment (15,044), pitch (13,921) next.','2026-06-08 02:43:15');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -311,6 +317,11 @@ INSERT INTO "validation" VALUES(87,'phase-11a','cargo test --workspace','pass','
 INSERT INTO "validation" VALUES(88,'phase-11a','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
 INSERT INTO "validation" VALUES(89,'phase-11a','cargo fmt --all -- --check','pass','clean');
 INSERT INTO "validation" VALUES(90,'phase-11a','full 10k report-only compare','pass','+105 matches, -14769 rows, no regressions');
+INSERT INTO "validation" VALUES(91,'phase-11i','cargo test --workspace','pass','188 core lib tests + workspace');
+INSERT INTO "validation" VALUES(92,'phase-11i','cargo clippy --workspace --all-targets -- -D warnings','pass','');
+INSERT INTO "validation" VALUES(93,'phase-11i','cargo fmt --all -- --check','pass','');
+INSERT INTO "validation" VALUES(94,'phase-11i','uv run python -m pytest tests -q','pass','6 passed');
+INSERT INTO "validation" VALUES(95,'phase-11i','git diff --check','pass','');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -325,7 +336,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',96);
+INSERT INTO "sqlite_sequence" VALUES('metric',101);
 INSERT INTO "sqlite_sequence" VALUES('artifact',30);
-INSERT INTO "sqlite_sequence" VALUES('validation',90);
+INSERT INTO "sqlite_sequence" VALUES('validation',95);
 COMMIT;
