@@ -706,27 +706,6 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    pub(super) fn parse_broken_rhythm(&mut self) {
-        let start = self.index;
-        let Some(marker) = self.bump_char() else {
-            return;
-        };
-        while self.peek_char() == Some(marker) {
-            self.bump_char();
-        }
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::BrokenRhythm, span);
-        self.items.push(MusicItem::BrokenRhythm(BrokenRhythmSyntax {
-            span,
-            direction: if marker == '<' {
-                BrokenRhythmDirection::LeftShorter
-            } else {
-                BrokenRhythmDirection::RightShorter
-            },
-            count: u8::try_from(self.index - start).unwrap_or(u8::MAX),
-        }));
-    }
-
     pub(super) fn parse_overlay(&mut self) {
         self.flush_pending_attachments();
         let start = self.index;
@@ -762,42 +741,6 @@ impl<'line> MusicLineParser<'line> {
             dotted,
             direction,
         }));
-    }
-
-    pub(super) fn parse_tuplet(&mut self) {
-        self.flush_pending_attachments();
-        let start = self.index;
-        self.bump_char();
-        let Some(p) = self.parse_number_token() else {
-            let span = self.span(start, self.index);
-            self.push_token(MusicTokenKind::Malformed, span);
-            self.push_malformed(
-                span,
-                MalformedSyntaxKind::InvalidTuplet,
-                "abc.music.invalid_tuplet",
-                "Tuplet specifier must start with a number",
-            );
-            return;
-        };
-
-        let mut q = None;
-        let mut r = None;
-        if self.peek_char() == Some(':') {
-            self.bump_char();
-            q = self.parse_number_token();
-            if self.peek_char() == Some(':') {
-                self.bump_char();
-                r = self.parse_number_token();
-            }
-        }
-
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Tuplet, span);
-        if !(2..=9).contains(&p.value) {
-            self.diagnostics.push(invalid_tuplet_warning(span));
-        }
-        self.items
-            .push(MusicItem::Tuplet(TupletSyntax { span, p, q, r }));
     }
 
     pub(super) fn take_pending_attachments(&mut self) -> AttachmentBundle {
