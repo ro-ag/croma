@@ -600,6 +600,81 @@ fn parses_chord_internal_tie_marker_on_member() {
 }
 
 #[test]
+fn unclosed_chord_scan_stops_at_barline() {
+    // An unclosed `[` followed by a space then a barline must not consume the
+    // following measures. The chord scan stops at `|`, emitting an
+    // unclosed-chord diagnostic for the partial run, and the real notes after
+    // the barline survive as ordinary music.
+    let document_report = parse_document(
+        "X:1\nL:1/8\nK:C\n[ |: CDEF | GABc |\n",
+        ParseOptions::default(),
+    );
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the unclosed bracket should yield exactly one unclosed-chord diagnostic"
+    );
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['C', 'D', 'E', 'F', 'G', 'A', 'B', 'c'],
+        "all notes after the unclosed bracket must survive"
+    );
+}
+
+#[test]
+fn valid_chord_before_barline_does_not_swallow_following_note() {
+    // Guard: a closed chord immediately followed by a barline parses as a chord
+    // then a barline, with no unclosed-chord diagnostic and the following note
+    // intact.
+    let document_report = parse_document("X:1\nL:1/8\nK:C\n[CEG]|D\n", ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        0,
+        "a closed chord must not report an unclosed-chord diagnostic"
+    );
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let chord = tune_music.lines[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MusicItem::Chord(chord) => Some(chord),
+            _ => None,
+        })
+        .expect("expected chord");
+    assert_eq!(chord.members.len(), 3);
+    let trailing_note = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        trailing_note,
+        vec!['D'],
+        "the D after the barline must survive"
+    );
+}
+
+#[test]
 fn lowers_chord_member_and_outer_duration_multipliers() {
     let (events, diagnostics) = events_for("X:1\nL:1/8\nK:C\n[C2E2G2]3\n");
     assert!(diagnostics.is_empty());
