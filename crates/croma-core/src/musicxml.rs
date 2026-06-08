@@ -1977,17 +1977,43 @@ fn parse_chord_symbol(text: &str) -> Option<ParsedChordSymbol> {
     } else {
         None
     };
+    // Classify the chord quality the same way abc2xml's chord grammar does, so
+    // music21 (which ignores the cosmetic `text=` attribute and re-renders from
+    // <kind>) produces an identical figure. Specific qualities must be tested
+    // before the generic `7`/`m` heuristics: e.g. `dim` contains an `m` and
+    // `dim7` contains a `7`, so without ordering they would misclassify as
+    // minor/dominant. Kinds use the standard MusicXML <kind> enum values and the
+    // default is `major` (abc2xml's fallback), not `other`.
     let lower = text.to_ascii_lowercase();
-    let kind = if lower.contains("maj7") {
+    let kind = if lower.contains("maj7") || lower.contains("ma7") {
         "major-seventh"
+    } else if lower.contains("dim7") || lower.contains("o7") {
+        "diminished-seventh"
+    } else if lower.contains("dim") || lower.contains('°') {
+        "diminished"
+    } else if lower.contains("aug") || lower.contains('+') {
+        "augmented"
+    } else if lower.contains("sus2") {
+        "suspended-second"
+    } else if lower.contains("sus") {
+        "suspended-fourth"
+    } else if lower.contains("maj") {
+        // `maj6` / bare `maj` resolve to a plain major triad in abc2xml (the
+        // trailing `6` is parsed as an ignored chord degree), while `maj7` is
+        // already handled above.
+        "major"
+    } else if lower.contains("m6") || lower.contains("min6") || lower.contains("mi6") {
+        "minor-sixth"
+    } else if lower.contains('6') {
+        "major-sixth"
     } else if lower.contains("m7") || lower.contains("min7") {
         "minor-seventh"
     } else if lower.contains('7') {
         "dominant"
-    } else if lower.contains('m') || lower.contains("min") {
+    } else if lower.contains('m') {
         "minor"
     } else {
-        "other"
+        "major"
     };
     Some(ParsedChordSymbol {
         root_step: root.step,
@@ -2368,6 +2394,39 @@ mod tests {
         assert!(export.musicxml.contains("<bass-step>E</bass-step>"));
         assert!(!export.musicxml.contains("<words>G7</words>"));
         assert!(!export.musicxml.contains("<words>C/E</words>"));
+    }
+
+    #[test]
+    fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
+        // Each chord symbol must classify to the same <kind> abc2xml emits, so
+        // music21 re-renders identical figures from <kind> (it ignores text=).
+        let cases = [
+            ("F#dim", "diminished"),
+            ("Cdim7", "diminished-seventh"),
+            ("Caug", "augmented"),
+            ("C+", "augmented"),
+            ("Dsus4", "suspended-fourth"),
+            ("Dsus2", "suspended-second"),
+            ("Cmaj7", "major-seventh"),
+            ("Cm6", "minor-sixth"),
+            ("C6", "major-sixth"),
+            ("Cm7", "minor-seventh"),
+            ("C7", "dominant"),
+            ("Cm", "minor"),
+            ("C", "major"),
+        ];
+        for (symbol, expected_kind) in cases {
+            let source = format!("X:1\nM:4/4\nL:1/4\nK:C\n\"{symbol}\"C4|\n");
+            let export =
+                export_musicxml(&source).unwrap_or_else(|_| panic!("chord {symbol} should export"));
+            assert_balanced_xml(&export.musicxml);
+            let expected = format!("<kind text=\"{symbol}\">{expected_kind}</kind>");
+            assert!(
+                export.musicxml.contains(&expected),
+                "chord {symbol} should map to {expected_kind}; got:\n{}",
+                export.musicxml
+            );
+        }
     }
 
     #[test]
