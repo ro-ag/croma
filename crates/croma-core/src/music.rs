@@ -4837,15 +4837,27 @@ impl<'line> MusicLineParser<'line> {
         };
         let span = self.span(start, self.index);
         self.push_token(MusicTokenKind::Decoration, span);
-        let kind = if self.is_user_symbol(symbol) {
-            DecorationKind::UserDefined
+        let (name, kind) = if let Some(replacement) = self.user_symbol_replacement(symbol) {
+            // A `U:`-defined symbol expands to its replacement so it maps through
+            // the same canonical decoration path as the long-form name. If the
+            // replacement is not a resolvable `!...!` decoration, fall back to
+            // the raw letter (the exporter keeps the existing words behavior).
+            (
+                user_symbol_canonical_name(&replacement).unwrap_or_else(|| symbol.to_string()),
+                DecorationKind::UserDefined,
+            )
         } else {
-            DecorationKind::Shorthand
+            // Standard single-char shorthand: normalize to the canonical name so
+            // all existing notation/symbol/dynamic emission logic just works.
+            (
+                shorthand_canonical_name(symbol).unwrap_or_else(|| symbol.to_string()),
+                DecorationKind::Shorthand,
+            )
         };
         self.pending_attachments.decorations.push(DecorationSyntax {
             span,
             name_span: span,
-            name: symbol.to_string(),
+            name,
             kind,
         });
     }
@@ -5301,6 +5313,17 @@ impl<'line> MusicLineParser<'line> {
             .any(|definition| definition.symbol.value == symbol)
     }
 
+    /// The `U:`-defined replacement text for `symbol`, if one is in scope. The
+    /// last definition wins, matching ABC redefinition semantics.
+    fn user_symbol_replacement(&self, symbol: char) -> Option<String> {
+        self.dialect
+            .user_symbols
+            .iter()
+            .rev()
+            .find(|definition| definition.symbol.value == symbol)
+            .map(|definition| definition.replacement.value.clone())
+    }
+
     fn parse_malformed_single(
         &mut self,
         kind: MalformedSyntaxKind,
@@ -5552,6 +5575,52 @@ fn is_note_letter(ch: char) -> bool {
 
 fn is_barline_char(ch: char) -> bool {
     matches!(ch, '|' | '[' | ']' | ':')
+}
+
+/// Canonical decoration name for an ABC 2.1 §4.14 single-char shorthand, so the
+/// shorthand maps through the same export path as the long-form `!...!` name.
+///
+/// `.` (staccato) is intentionally left untouched: it is already handled as the
+/// canonical `"."` by the exporter and shares this code path via `parse_dot`.
+fn shorthand_canonical_name(symbol: char) -> Option<String> {
+    let canonical = match symbol {
+        '~' => "roll",
+        'H' => "fermata",
+        'L' => "accent",
+        'M' => "lowermordent",
+        'O' => "coda",
+        'P' => "uppermordent",
+        'S' => "segno",
+        'T' => "trill",
+        'u' => "upbow",
+        'v' => "downbow",
+        _ => return None,
+    };
+    Some(canonical.to_string())
+}
+
+/// Canonical decoration name for a `U:`-defined replacement. Replacements are
+/// stored verbatim (e.g. `!trill!`); strip the `!...!` delimiters and, when the
+/// inner text is itself a single-char shorthand, normalize it too.
+fn user_symbol_canonical_name(replacement: &str) -> Option<String> {
+    let trimmed = replacement.trim();
+    let inner = trimmed
+        .strip_prefix('!')
+        .and_then(|rest| rest.strip_suffix('!'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('+')
+                .and_then(|rest| rest.strip_suffix('+'))
+        })?;
+    if inner.is_empty() {
+        return None;
+    }
+    if let Some(symbol) = inner.chars().next().filter(|_| inner.chars().count() == 1)
+        && let Some(canonical) = shorthand_canonical_name(symbol)
+    {
+        return Some(canonical);
+    }
+    Some(inner.to_string())
 }
 
 fn is_escaped(text: &str, offset: usize) -> bool {
@@ -6416,7 +6485,9 @@ mod tests {
                 .iter()
                 .map(|decoration| decoration.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["v", "."]
+            // `v` (down-bow shorthand) normalizes to its canonical decoration
+            // name; `.` (staccato) is handled separately and stays as-is.
+            vec!["downbow", "."]
         );
         assert_eq!(
             note.accidental.map(|accidental| accidental.sign),
@@ -6488,7 +6559,9 @@ mod tests {
             note.attachments.decorations[0].kind,
             DecorationKind::UserDefined
         );
-        assert_eq!(note.attachments.decorations[0].name, "W");
+        // The `U:`-defined symbol expands to its canonical decoration name so it
+        // maps through the same export path as the long-form `!trill!`.
+        assert_eq!(note.attachments.decorations[0].name, "trill");
 
         let legacy_allowed = parse_document(
             "X:1\nI:decoration +\nK:C\n+trill+C\n",
