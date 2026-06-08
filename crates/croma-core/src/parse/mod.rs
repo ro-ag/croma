@@ -1,4 +1,5 @@
 pub mod field;
+pub mod lyric;
 pub mod music;
 
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
