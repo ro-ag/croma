@@ -986,6 +986,17 @@ impl<'score> MusicXmlWriter<'score> {
             }
             self.xml.end("bass");
         }
+        // Trailing chord degrees are emitted as added degrees, mirroring
+        // abc2xml (which only ever produces `degree-type = add`).
+        for degree in &chord.degrees {
+            self.xml.start("degree", &[]);
+            self.xml
+                .text_element("degree-value", &degree.value.to_string());
+            self.xml
+                .text_element("degree-alter", &degree.alter.to_string());
+            self.xml.text_element("degree-type", "add");
+            self.xml.end("degree");
+        }
         self.xml.end("harmony");
         true
     }
@@ -1967,61 +1978,211 @@ struct ParsedChordSymbol {
     bass_step: Option<char>,
     bass_alter: i8,
     kind: &'static str,
+    degrees: Vec<ChordDegree>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ChordDegree {
+    value: u8,
+    alter: i8,
+}
+
+/// Chord-quality token table, mirroring abc2xml's `compChordTab`
+/// (`docs/.../abc2xml.py`). Ordered longest-token-first so a greedy prefix
+/// match consumes the maximal quality (e.g. `maj7` before `m`/`ma`). The first
+/// matched token determines `<kind>`; this is the closed MusicXML kind enum
+/// that ABC commonly uses. Anything not listed falls back to `major`, matching
+/// abc2xml's `chordTab.get(token, 'major')`.
+const CHORD_QUALITY_TABLE: &[(&str, &str)] = &[
+    // Seventh chords (longest first).
+    ("maj7", "major-seventh"),
+    ("Maj7", "major-seventh"),
+    ("min7", "minor-seventh"),
+    ("dim7", "diminished-seventh"),
+    ("aug7", "augmented-seventh"),
+    ("mi7b5", "half-diminished"),
+    ("m7b5", "half-diminished"),
+    ("ma7", "major-seventh"),
+    ("M7", "major-seventh"),
+    ("mi7", "minor-seventh"),
+    ("m7", "minor-seventh"),
+    ("o7", "diminished-seventh"),
+    ("-7", "minor-seventh"),
+    ("+7", "augmented-seventh"),
+    ("7", "dominant"),
+    // Sixth chords.
+    ("min6", "minor-sixth"),
+    ("ma6", "major-sixth"),
+    ("M6", "major-sixth"),
+    ("mi6", "minor-sixth"),
+    ("m6", "minor-sixth"),
+    ("6", "major-sixth"),
+    // Ninth chords.
+    ("maj9", "major-ninth"),
+    ("Maj9", "major-ninth"),
+    ("min9", "minor-ninth"),
+    ("ma9", "major-ninth"),
+    ("M9", "major-ninth"),
+    ("mi9", "minor-ninth"),
+    ("m9", "minor-ninth"),
+    ("9", "dominant-ninth"),
+    // Eleventh chords.
+    ("maj11", "major-11th"),
+    ("Maj11", "major-11th"),
+    ("min11", "minor-11th"),
+    ("ma11", "major-11th"),
+    ("M11", "major-11th"),
+    ("mi11", "minor-11th"),
+    ("m11", "minor-11th"),
+    ("11", "dominant-11th"),
+    // Thirteenth chords.
+    ("maj13", "major-13th"),
+    ("Maj13", "major-13th"),
+    ("min13", "minor-13th"),
+    ("ma13", "major-13th"),
+    ("M13", "major-13th"),
+    ("mi13", "minor-13th"),
+    ("m13", "minor-13th"),
+    ("13", "dominant-13th"),
+    // Triads (must come after the extended qualities above).
+    ("maj", "major"),
+    ("Maj", "major"),
+    ("aug", "augmented"),
+    ("dim", "diminished"),
+    ("min", "minor"),
+    ("ma", "major"),
+    ("mi", "minor"),
+    ("M", "major"),
+    ("m", "minor"),
+    ("o", "diminished"),
+    ("+", "augmented"),
+    ("-", "minor"),
+];
+
+/// Suspended-quality tokens. abc2xml parses an optional suspended token *after*
+/// the main quality but keeps only the first kind token for `<kind>`; when a
+/// suspended token stands alone it determines the kind. Ordered longest-first.
+const SUSPENDED_TABLE: &[(&str, &str)] = &[
+    ("sus4", "suspended-fourth"),
+    ("sus2", "suspended-second"),
+    ("sus", "suspended-fourth"),
+];
+
+/// Structural chord-symbol parser following the ABC 2.1 §4.18 grammar as
+/// implemented by abc2xml (the comparison baseline):
+///
+/// ```text
+/// chordsym = root accidental? quality? suspended? degree* ("/" bass)?
+/// ```
+///
+/// Returns `None` (so the symbol is emitted as plain `<words>`) when any part
+/// fails to parse or unconsumed text remains, exactly mirroring abc2xml's
+/// pyparsing behaviour (e.g. `Cadd9`, `Cbb`, `NC` are not harmony). A trailing
+/// parenthesised group is suppressed.
 fn parse_chord_symbol(text: &str) -> Option<ParsedChordSymbol> {
-    let (root_text, bass_text) = text.split_once('/').unwrap_or((text, ""));
-    let root = parse_chord_tone(root_text)?;
-    let bass = if text.contains('/') {
-        Some(parse_chord_tone(bass_text)?)
-    } else {
-        None
+    let trimmed = text.trim();
+    // A trailing parenthesised group is dropped by abc2xml (`C(no3)` -> major).
+    let core = match trimmed.find('(') {
+        Some(open) if trimmed.ends_with(')') => trimmed[..open].trim_end(),
+        _ => trimmed,
     };
-    // Classify the chord quality the same way abc2xml's chord grammar does, so
-    // music21 (which ignores the cosmetic `text=` attribute and re-renders from
-    // <kind>) produces an identical figure. Specific qualities must be tested
-    // before the generic `7`/`m` heuristics: e.g. `dim` contains an `m` and
-    // `dim7` contains a `7`, so without ordering they would misclassify as
-    // minor/dominant. Kinds use the standard MusicXML <kind> enum values and the
-    // default is `major` (abc2xml's fallback), not `other`.
-    let lower = text.to_ascii_lowercase();
-    let kind = if lower.contains("maj7") || lower.contains("ma7") {
-        "major-seventh"
-    } else if lower.contains("dim7") || lower.contains("o7") {
-        "diminished-seventh"
-    } else if lower.contains("dim") || lower.contains('°') {
-        "diminished"
-    } else if lower.contains("aug") || lower.contains('+') {
-        "augmented"
-    } else if lower.contains("sus2") {
-        "suspended-second"
-    } else if lower.contains("sus") {
-        "suspended-fourth"
-    } else if lower.contains("maj") {
-        // `maj6` / bare `maj` resolve to a plain major triad in abc2xml (the
-        // trailing `6` is parsed as an ignored chord degree), while `maj7` is
-        // already handled above.
-        "major"
-    } else if lower.contains("m6") || lower.contains("min6") || lower.contains("mi6") {
-        "minor-sixth"
-    } else if lower.contains('6') {
-        "major-sixth"
-    } else if lower.contains("m7") || lower.contains("min7") {
-        "minor-seventh"
-    } else if lower.contains('7') {
-        "dominant"
-    } else if lower.contains('m') {
-        "minor"
-    } else {
-        "major"
+
+    let (root, rest) = parse_chord_tone(core)?;
+    // The bass `/X` is split off the tail first; the rest before it is the
+    // quality + degrees.
+    let (quality_part, bass) = match rest.split_once('/') {
+        Some((head, bass_text)) => {
+            let (bass_tone, bass_rest) = parse_chord_tone(bass_text)?;
+            if !bass_rest.is_empty() {
+                return None;
+            }
+            (head, Some(bass_tone))
+        }
+        None => (rest, None),
     };
+
+    let quality = quality_part.trim();
+    // Optional quality token (greedy longest prefix), then optional suspended
+    // token. The kind comes from the first matched token; abc2xml drops the
+    // suspended token from <kind> when a quality precedes it.
+    let mut remaining = quality;
+    let mut kind = "major";
+    let mut matched_any = false;
+    if let Some((token, mapped)) = match_prefix(remaining, CHORD_QUALITY_TABLE) {
+        kind = mapped;
+        matched_any = true;
+        remaining = &remaining[token.len()..];
+    }
+    if let Some((token, mapped)) = match_prefix(remaining, SUSPENDED_TABLE) {
+        if !matched_any {
+            kind = mapped;
+        }
+        remaining = &remaining[token.len()..];
+    }
+
+    // Zero or more trailing chord degrees: `[#=b]?(2|4|5|6|7|9|11|13)`.
+    let mut degrees = Vec::new();
+    loop {
+        let trimmed_remaining = remaining.trim_start();
+        match parse_chord_degree(trimmed_remaining) {
+            Some((degree, after)) => {
+                degrees.push(degree);
+                remaining = after;
+            }
+            None => {
+                remaining = trimmed_remaining;
+                break;
+            }
+        }
+    }
+
+    if !remaining.is_empty() {
+        // Unconsumed text means this is not a recognised chord symbol.
+        return None;
+    }
+
     Some(ParsedChordSymbol {
         root_step: root.step,
         root_alter: root.alter,
         bass_step: bass.map(|tone| tone.step),
         bass_alter: bass.map(|tone| tone.alter).unwrap_or(0),
         kind,
+        degrees,
     })
+}
+
+/// Returns the matching `(token, mapped_value)` for the longest table entry
+/// that is a prefix of `text`, or `None`.
+fn match_prefix(
+    text: &str,
+    table: &[(&'static str, &'static str)],
+) -> Option<(&'static str, &'static str)> {
+    table
+        .iter()
+        .find(|(token, _)| text.starts_with(token))
+        .map(|(token, mapped)| (*token, *mapped))
+}
+
+/// Parses one chord degree `[#=b]?(2|4|5|6|7|9|11|13)` from the start of `text`,
+/// returning the degree and the unconsumed tail.
+fn parse_chord_degree(text: &str) -> Option<(ChordDegree, &str)> {
+    let (alter, after_accidental) = match text.as_bytes().first() {
+        Some(b'#') => (1, &text[1..]),
+        Some(b'b') => (-1, &text[1..]),
+        Some(b'=') => (0, &text[1..]),
+        _ => (0, text),
+    };
+    // Match the two-digit degrees before the single-digit ones.
+    for value in [13u8, 11, 9, 7, 6, 5, 4, 2] {
+        let token = value.to_string();
+        if after_accidental.starts_with(&token) {
+            return Some((
+                ChordDegree { value, alter },
+                &after_accidental[token.len()..],
+            ));
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2030,18 +2191,35 @@ struct ChordTone {
     alter: i8,
 }
 
-fn parse_chord_tone(text: &str) -> Option<ChordTone> {
-    let mut chars = text.trim_start().chars().peekable();
-    let step = chars.next()?.to_ascii_uppercase();
+/// Parses a chord root/bass tone `[A-G][#b]?` from the start of `text`,
+/// returning the tone and the unconsumed tail. Only a single accidental is
+/// accepted, matching abc2xml (which rejects `Cbb`/`C##`).
+fn parse_chord_tone(text: &str) -> Option<(ChordTone, &str)> {
+    let mut chars = text.char_indices();
+    let (_, first) = chars.next()?;
+    let step = first.to_ascii_uppercase();
     if !matches!(step, 'A'..='G') {
         return None;
     }
-    let alter = match chars.peek().copied() {
-        Some('#') => 1,
-        Some('b' | '-') => -1,
+    let mut consumed = first.len_utf8();
+    // Only a single `#`/`b`/`=` accidental, like abc2xml's `chord_accidental`.
+    // A `-` is the minor-quality token, never a root/bass flat.
+    let alter = match text[consumed..].chars().next() {
+        Some('#') => {
+            consumed += 1;
+            1
+        }
+        Some('b') => {
+            consumed += 1;
+            -1
+        }
+        Some('=') => {
+            consumed += 1;
+            0
+        }
         _ => 0,
     };
-    Some(ChordTone { step, alter })
+    Some((ChordTone { step, alter }, &text[consumed..]))
 }
 
 fn annotation_text(annotation: &TextAttachment) -> &str {
@@ -2347,7 +2525,9 @@ mod tests {
                 .musicxml
                 .contains("Fast &amp; &lt; &gt; &quot; &apos;")
         );
-        assert!(export.musicxml.contains("text=\"G7&amp;&lt;&gt;&apos;\""));
+        // `G7&<>'` has junk after the quality token, so (like abc2xml) it is
+        // not a recognised chord symbol and is emitted as escaped words.
+        assert!(export.musicxml.contains("G7&amp;&lt;&gt;&apos;"));
         assert!(export.musicxml.contains("Ann &amp; &lt; &gt; &apos;"));
         assert!(export.musicxml.contains("lyr&amp;&lt;&gt;&apos;"));
         assert!(
@@ -2359,7 +2539,9 @@ mod tests {
 
     #[test]
     fn slash_chord_symbols_export_bass_step_and_alter() {
-        let source = "X:1\nT:Slash Chords\nM:4/4\nL:1/4\nK:C\n\"C/E\"C \"D-/A-\"D|\n";
+        // `Db/Ab` uses `b` as the root/bass flat (abc2xml's chord accidental);
+        // `-` is reserved for the minor quality and is not a flat.
+        let source = "X:1\nT:Slash Chords\nM:4/4\nL:1/4\nK:C\n\"C/E\"C \"Db/Ab\"D|\n";
         let export = export_musicxml(source).expect("slash chords should export");
 
         assert_balanced_xml(&export.musicxml);
@@ -2405,15 +2587,34 @@ mod tests {
             ("Cdim7", "diminished-seventh"),
             ("Caug", "augmented"),
             ("C+", "augmented"),
+            ("Co", "diminished"),
+            ("C-", "minor"),
             ("Dsus4", "suspended-fourth"),
             ("Dsus2", "suspended-second"),
+            ("Csus", "suspended-fourth"),
             ("Cmaj7", "major-seventh"),
+            ("CM7", "major-seventh"),
             ("Cm6", "minor-sixth"),
             ("C6", "major-sixth"),
             ("Cm7", "minor-seventh"),
             ("C7", "dominant"),
             ("Cm", "minor"),
             ("C", "major"),
+            // Ninth / eleventh / thirteenth kinds.
+            ("C9", "dominant-ninth"),
+            ("Cmaj9", "major-ninth"),
+            ("Cm9", "minor-ninth"),
+            ("C11", "dominant-11th"),
+            ("Cm11", "minor-11th"),
+            ("C13", "dominant-13th"),
+            ("Cmaj13", "major-13th"),
+            ("Cm13", "minor-13th"),
+            // Half-diminished.
+            ("Cm7b5", "half-diminished"),
+            ("Cmin7b5", "minor-seventh"),
+            // Suspended after a seventh keeps only the first kind token.
+            ("C7sus4", "dominant"),
+            ("Cmaj7sus4", "major-seventh"),
         ];
         for (symbol, expected_kind) in cases {
             let source = format!("X:1\nM:4/4\nL:1/4\nK:C\n\"{symbol}\"C4|\n");
@@ -2427,6 +2628,89 @@ mod tests {
                 export.musicxml
             );
         }
+    }
+
+    #[test]
+    fn power_chord_exports_major_kind_with_add_fifth_degree() {
+        // abc2xml has no `power` quality: `A5` parses as a major triad with a
+        // trailing `5` chord degree, emitted as an added fifth.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"A5\"C4|\n";
+        let export = export_musicxml(source).expect("power chord should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains("<root-step>A</root-step>"));
+        assert!(export.musicxml.contains(">major</kind>"));
+        assert!(export.musicxml.contains("<degree-value>5</degree-value>"));
+        assert!(export.musicxml.contains("<degree-alter>0</degree-alter>"));
+        assert!(export.musicxml.contains("<degree-type>add</degree-type>"));
+    }
+
+    #[test]
+    fn altered_trailing_degrees_export_as_add_with_alter() {
+        // Trailing chord degrees with a `#`/`b` accidental become added degrees
+        // with the corresponding alter, matching abc2xml exactly.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"C7b9#5\"C4|\n";
+        let export = export_musicxml(source).expect("altered chord should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains(">dominant</kind>"));
+        assert!(export.musicxml.contains("<degree-value>9</degree-value>"));
+        assert!(export.musicxml.contains("<degree-alter>-1</degree-alter>"));
+        assert!(export.musicxml.contains("<degree-value>5</degree-value>"));
+        assert!(export.musicxml.contains("<degree-alter>1</degree-alter>"));
+        assert_eq!(count(&export.musicxml, "<degree>"), 2);
+    }
+
+    #[test]
+    fn add_and_omit_word_chords_export_as_words_not_harmony() {
+        // abc2xml's chord grammar has no `add`/`no` tokens, so these symbols do
+        // not parse as harmony at all and fall through to plain text.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"Cadd9\"C \"C9no3\"D \"Cadd11\"E|\n";
+        let export = export_musicxml(source).expect("word chords should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<harmony>"), 0);
+        assert!(export.musicxml.contains("<words>Cadd9</words>"));
+        assert!(export.musicxml.contains("<words>C9no3</words>"));
+        assert!(export.musicxml.contains("<words>Cadd11</words>"));
+    }
+
+    #[test]
+    fn double_accidental_and_garbage_roots_are_not_harmony() {
+        // abc2xml accepts only a single root accidental and rejects unparsable
+        // tails, so these fall through to words rather than fake harmony.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"Cbb\"C \"C##\"D \"Cx\"E \"NC\"F|\n";
+        let export = export_musicxml(source).expect("garbage chords should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<harmony>"), 0);
+        assert!(export.musicxml.contains("<words>Cbb</words>"));
+        assert!(export.musicxml.contains("<words>C##</words>"));
+        assert!(export.musicxml.contains("<words>Cx</words>"));
+        assert!(export.musicxml.contains("<words>NC</words>"));
+    }
+
+    #[test]
+    fn parenthesized_chord_suffix_is_suppressed() {
+        // A trailing parenthesized group is dropped: `C(no3)` is a plain major.
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"C(no3)\"C4|\n";
+        let export = export_musicxml(source).expect("parenthesized chord should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_eq!(count(&export.musicxml, "<harmony>"), 1);
+        assert!(export.musicxml.contains(">major</kind>"));
+        assert_eq!(count(&export.musicxml, "<degree>"), 0);
+    }
+
+    #[test]
+    fn slash_chord_with_quality_keeps_kind_and_bass() {
+        let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"Cm7/Bb\"C4|\n";
+        let export = export_musicxml(source).expect("slash chord should export");
+
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.musicxml.contains(">minor-seventh</kind>"));
+        assert!(export.musicxml.contains("<bass-step>B</bass-step>"));
+        assert!(export.musicxml.contains("<bass-alter>-1</bass-alter>"));
     }
 
     #[test]
