@@ -6,7 +6,7 @@
 pub mod diagnostic;
 pub mod error;
 pub mod model;
-pub mod music;
+mod lower;
 pub mod musicxml;
 pub mod options;
 pub mod parse;

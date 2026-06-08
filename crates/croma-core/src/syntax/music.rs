@@ -3,7 +3,7 @@
 
 use crate::diagnostic::Span;
 use crate::model::{Accidental, BarlineKind, Fraction, RestVisibility};
-use crate::music::default_tuplet_q;
+use crate::lower::default_tuplet_q;
 use crate::syntax::field::{
     InlineFieldSyntax, MalformedSyntax, MusicFieldLine, PreservedDirectiveSyntax,
     ScoreDirectiveSyntax, UnsupportedSyntax,

@@ -2,7 +2,7 @@
 
 use crate::diagnostic::Span;
 use crate::model::{Accidental, Fraction, RestVisibility};
-use crate::music::invalid_tuplet_warning;
+use crate::lower::invalid_tuplet_warning;
 use crate::parse::music::{MusicLineParser, invalid_length_warning, is_note_letter};
 use crate::syntax::{
     AccidentalSyntax, ChordMemberSyntax, ChordSyntax, GraceElementSyntax, GraceGroupSyntax,
