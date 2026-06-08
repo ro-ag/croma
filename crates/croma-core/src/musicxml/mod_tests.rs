@@ -527,6 +527,164 @@ fn excessive_repeat_dots_are_liberal_policy_not_repeat_count() {
 }
 
 #[test]
+fn trailing_split_barline_does_not_emit_phantom_empty_measure() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF| |\n";
+    let export = export_musicxml(source).expect("trailing split barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn trailing_thin_thick_then_thin_barline_does_not_emit_phantom_measure() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF|]|\n";
+    let export = export_musicxml(source).expect("trailing |]| should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn trailing_split_barline_with_space_does_not_emit_phantom_measure() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF| | \n";
+    let export = export_musicxml(source).expect("trailing split barline with space should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn split_barline_between_content_is_a_single_boundary() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF| | GABc|\n";
+    let export = export_musicxml(source).expect("interior split barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+}
+
+#[test]
+fn mid_tune_final_then_repeat_start_does_not_emit_phantom_measure() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF|]\n|: GABc :|\n";
+    let export = export_musicxml(source).expect("final then repeat-start should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+    assert!(has_barline(&measures[1], "left", None, Some("forward")));
+    assert!(has_barline(&measures[1], "right", None, Some("backward")));
+}
+
+#[test]
+fn contiguous_double_barline_stays_single_measure() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF||\n";
+    let export = export_musicxml(source).expect("double barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn separate_content_lines_keep_two_measures() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF|\nGABc|\n";
+    let export = export_musicxml(source).expect("two content lines should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+}
+
+#[test]
+fn leading_rest_measure_is_preserved_not_phantom() {
+    let source = "X:1\nL:1/8\nK:C\nz4|CDEF|\n";
+    let export = export_musicxml(source).expect("leading rest measure should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(measures[0].notes.iter().any(|note| note.rest));
+    assert_eq!(note_steps(&measures[1]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn consecutive_leading_barlines_keep_single_empty_pickup_measure() {
+    // abc2xml preserves exactly one leading empty (pickup) measure; the extra
+    // bar lines coalesce into the same boundary rather than opening phantoms.
+    let source = "X:1\nL:1/8\nK:C\n| | | |CDEF|\n";
+    let export = export_musicxml(source).expect("leading bar-line run should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(!measures[0].notes.iter().any(|note| note.rest));
+    assert!(measures[0].notes.is_empty());
+    assert_eq!(note_steps(&measures[1]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn multi_voice_tacet_barline_only_measure_is_kept_aligned() {
+    // In a multi-voice score, a voice line that is only a bar line is a
+    // legitimate *tacet* bar: the voice rests through that measure but must keep
+    // an empty measure so it stays measure-aligned with its siblings (this is
+    // exactly the corpus pattern `[V:4]  |` / `[V:2] [|]`). The single-voice
+    // phantom-collapse must NOT fire here: with the over-aggressive
+    // (ungated) bar-line-only coalescing, V2's trailing `| |` tacet measure is
+    // wrongly popped and V2 shrinks to 2 measures, breaking alignment. The
+    // single-voice gate keeps it at 3.
+    //
+    // Each `[V:n] ...` line continues that voice. V2's final continuation line
+    // is a bare bar-line run (`| |`) — a bar-line-only trailing measure that the
+    // `finish()` trailing-pop would remove in single-voice music, but must be
+    // preserved here.
+    let source = concat!(
+        "X:1\nM:2/4\nL:1/8\nK:C\n",
+        "[V:1] CDEF |\n[V:2] EFGA |\n",
+        "[V:1] GABc |\n[V:2] EDCB, |\n",
+        "[V:1] cBAG |\n[V:2] | |\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice tacet bar should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let parts = part_bodies(&export.musicxml);
+    assert_eq!(parts.len(), 2, "expected two voices/parts");
+
+    let v1_measures = musicxml_measures(&parts[0]);
+    let v2_measures = musicxml_measures(&parts[1]);
+    assert_eq!(
+        v1_measures.len(),
+        3,
+        "V1 should have three measures: {:?}",
+        measure_numbers(&v1_measures)
+    );
+    assert_eq!(
+        v2_measures.len(),
+        v1_measures.len(),
+        "V2 tacet bar must be kept so voices stay measure-aligned: {:?} vs {:?}",
+        measure_numbers(&v2_measures),
+        measure_numbers(&v1_measures)
+    );
+    // The trailing (third) tacet measure of V2 carries no sounding notes.
+    assert!(
+        v2_measures[2].notes.iter().all(|note| note.rest) || v2_measures[2].notes.is_empty(),
+        "V2 trailing measure should be a tacet bar, not real notes"
+    );
+}
+
+#[test]
 fn words_containing_double_colon_pipe_do_not_emit_repeat_barlines() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |]\nW::| Cross over two couples\n";
     let export = export_musicxml(source).expect("words field should not affect barlines");

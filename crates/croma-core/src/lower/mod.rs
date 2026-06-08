@@ -505,10 +505,16 @@ impl MultiVoiceLowering {
         meter_duration: Option<Fraction>,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Vec<VoiceTimeline> {
+        // A bar-line-only "phantom" measure is only safe to coalesce in a
+        // single-voice tune. In multi-voice music a voice line that is just a
+        // bar line is a legitimate *tacet* bar (the voice rests for that
+        // measure) that abc2xml keeps so the voice stays measure-aligned with
+        // its siblings, so it must not be collapsed.
+        let single_voice = self.voices.len() == 1;
         let mut voices = self
             .voices
             .into_iter()
-            .map(|voice| build_voice_timeline(voice, meter_duration, diagnostics))
+            .map(|voice| build_voice_timeline(voice, meter_duration, single_voice, diagnostics))
             .collect::<Vec<_>>();
         if voices.len() > 1 {
             voices.retain(|voice| {
