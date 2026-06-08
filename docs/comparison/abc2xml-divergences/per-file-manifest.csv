@@ -501,6 +501,7 @@ tune_009395.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,18,18,0
 tune_009396.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,18,18,0
 tune_009721.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,73,73,0
 tune_010025.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,32,32,0
+tune_010027.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,32,32,0
 tune_010185.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,12,12,0
 tune_010346.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,26,26,0
 tune_010349.abc,ARTIFACT_ACCIDENTAL_ALTER,1,accidental,18,18,0
@@ -2508,7 +2509,6 @@ tune_009980.abc,CASCADE,2,missing_in_croma,21,21,0
 tune_009983.abc,CASCADE,2,barline|missing_in_croma,17,17,0
 tune_009984.abc,CASCADE,2,barline|missing_in_croma,17,17,0
 tune_010018.abc,CASCADE,2,missing_in_croma,11,11,0
-tune_010027.abc,CASCADE,2,accidental|barline,32,32,0
 tune_010065.abc,CASCADE,2,missing_in_croma,53,53,0
 tune_010085.abc,CASCADE,2,missing_in_croma,18,18,0
 tune_010154.abc,CASCADE,2,missing_in_croma,10,10,0
@@ -2642,6 +2642,8 @@ tune_014112.abc,CASCADE,2,barline|missing_in_croma,10,10,0
 tune_014113.abc,CASCADE,2,barline|missing_in_croma,10,10,0
 tune_014203.abc,CASCADE,2,barline|missing_in_croma,17,17,0
 tune_014294.abc,CASCADE,2,barline|missing_in_croma,18,18,0
+tune_014316.abc,CASCADE,2,barline|missing_in_croma,22,22,0
+tune_014317.abc,CASCADE,2,barline|missing_in_croma,22,22,0
 tune_014361.abc,CASCADE,2,missing_in_croma,31,31,0
 tune_014392.abc,CASCADE,2,measure_alignment,16,16,0
 tune_014499.abc,CASCADE,2,missing_in_croma,22,22,0
@@ -2950,8 +2952,6 @@ tune_015025.abc,EXPORT_FAILURE_NO_MUSIC,0,,-1,1,
 tune_015112.abc,EXPORT_FAILURE_NO_MUSIC,0,,-1,1,
 tune_015396.abc,EXPORT_FAILURE_NO_MUSIC,0,,-1,4,
 tune_015399.abc,EXPORT_FAILURE_NO_MUSIC,0,,-1,4,
-tune_014316.abc,RESIDUAL_PHANTOM_CROMA,143,barline|duration|extra_in_croma|measure_alignment|missing_in_croma|octave|pitch|voice,23,22,-1
-tune_014317.abc,RESIDUAL_PHANTOM_CROMA,143,barline|duration|extra_in_croma|measure_alignment|missing_in_croma|octave|pitch|voice,23,22,-1
 tune_005286.abc,TIE_SLUR_EDGE,4,tie,13,13,0
 tune_008437.abc,TIE_SLUR_EDGE,4,slur,29,29,0
 tune_013483.abc,TIE_SLUR_EDGE,4,slur,26,26,0

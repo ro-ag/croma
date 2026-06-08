@@ -572,6 +572,60 @@ fn split_barline_between_content_is_a_single_boundary() {
 }
 
 #[test]
+fn thick_barline_then_repeat_start_run_is_a_single_boundary() {
+    let source = "X:1\nL:1/8\nM:C\nK:C\nCDEF]||: GA |\n";
+    let export = export_musicxml(source).expect("]||: barline run should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A']);
+    assert!(has_barline(&measures[1], "left", None, Some("forward")));
+}
+
+#[test]
+fn thick_barline_run_after_second_ending_does_not_emit_phantom_measure() {
+    let source = "X:1\nL:1/8\nM:C\nK:C\n[1 C2:|[2 C3]||: GA |\n";
+    let export = export_musicxml(source).expect("second-ending ]||: run should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C']);
+    assert_eq!(note_steps(&measures[1]), vec!['C']);
+    assert_eq!(note_steps(&measures[2]), vec!['G', 'A']);
+    assert!(has_barline(&measures[2], "left", None, Some("forward")));
+}
+
+#[test]
+fn continued_thick_barline_run_after_second_ending_does_not_emit_phantom_measure() {
+    let source = "X:1\nL:1/8\nM:C\nK:C\n[1 C2:|[2 C3]\\\n||: GA |\n";
+    let export = export_musicxml(source).expect("continued second-ending ]||: run should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C']);
+    assert_eq!(note_steps(&measures[1]), vec!['C']);
+    assert_eq!(note_steps(&measures[2]), vec!['G', 'A']);
+    assert!(has_barline(&measures[2], "left", None, Some("forward")));
+}
+
+#[test]
+fn double_barline_repeat_start_between_content_is_a_single_boundary() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF||: GABc|\n";
+    let export = export_musicxml(source).expect("||: repeat-start should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+    assert!(has_barline(&measures[1], "left", None, Some("forward")));
+}
+
+#[test]
 fn mid_tune_final_then_repeat_start_does_not_emit_phantom_measure() {
     let source = "X:1\nL:1/8\nK:C\nCDEF|]\n|: GABc :|\n";
     let export = export_musicxml(source).expect("final then repeat-start should export");
@@ -844,6 +898,23 @@ fn section_final_barline_followed_by_regular_is_preserved() {
         has_barline(&measures[1], "right", Some("light-heavy"), None),
         "the section final barline after measure 2 must be preserved"
     );
+}
+
+#[test]
+fn trailing_section_final_then_regular_spelling_keeps_final_barline() {
+    let source = "X:1\nL:1/8\nK:C\nCDEF|]|\n";
+    let export = export_musicxml(source).expect("trailing |]| should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1"]);
+    assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        None
+    ));
 }
 
 #[test]
