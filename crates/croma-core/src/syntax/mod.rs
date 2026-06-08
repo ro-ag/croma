@@ -4,8 +4,28 @@
 //! and music-line parsing: the tune/line surface structure (`tune`) and the
 //! music-line `*Syntax` types.
 
+pub mod field;
+pub mod lyric;
+pub mod music;
 pub mod tune;
 
+pub use field::{
+    InlineFieldSyntax, MalformedSyntax, MalformedSyntaxKind, MusicFieldLine, MusicFieldLineKind,
+    PreservedDirectiveSyntax, ScoreDirectiveSyntax, UnsupportedSyntax, UnsupportedSyntaxKind,
+};
+pub use lyric::{
+    LyricLineSyntax, LyricTokenKind, LyricTokenSyntax, SymbolLineSyntax, SymbolTokenKind,
+    SymbolTokenSyntax,
+};
+pub use music::{
+    AccidentalSyntax, AnnotationPlacement, AttachmentBundle, BarlineSyntax, BrokenRhythmDirection,
+    BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax, DecorationKind, DecorationSyntax,
+    GraceElementSyntax, GraceGroupSyntax, LengthSyntax, MultiMeasureRestSyntax, MusicItem,
+    MusicLine, MusicToken, MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax,
+    OverlaySyntax, ParsedMusicDocument, ParsedTuneMusic, PitchSyntax, QuotedTextKind,
+    QuotedTextSyntax, RestSyntax, SlurDirection, SlurSyntax, SpacerSyntax, SpannedNumber,
+    TieSyntax, TupletSyntax, VariantEndingPart, VariantEndingSyntax,
+};
 pub use tune::{
     ClassifiedLine, ContinuationEdge, ContinuationKind, FieldHeader, LineContext, LineKind,
     LineMap, NonNoteItem, NonNoteKind, ScoreLineBreak, SourceBlock, SourceBlockKind, SurfaceKind,

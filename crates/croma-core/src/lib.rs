@@ -23,7 +23,7 @@ pub use model::{
     MeterModel, NoteEvent, Part, Pitch, Rational, RestEvent, RestVisibility, Score, ScoreMetadata,
     Staff, StaffId, TimedEvent, TimedEventKind, Tune, TupletAttachment, TupletRole, Voice,
 };
-pub use music::{
+pub use syntax::{
     BarlineSyntax, LengthSyntax, MusicItem, MusicLine, MusicToken, MusicTokenKind,
     ParsedMusicDocument, ParsedTuneMusic,
 };

@@ -3,8 +3,9 @@ use crate::error::{CromaError, Result};
 use crate::fields::{ParsedAbcFields, ParsedFieldKind, parse_fields};
 use crate::model::{Score, TextLine, Tune};
 use crate::music::{
-    ParsedMusicDocument, ScoreModelInput, build_score_model, lower_tune_music, parse_music_document,
+    ScoreModelInput, build_score_model, lower_tune_music, parse_music_document,
 };
+use crate::syntax::ParsedMusicDocument;
 use crate::options::ParseOptions;
 use crate::source::SourceText;
 use crate::syntax::tune::{SurfaceMap, analyze_source};
