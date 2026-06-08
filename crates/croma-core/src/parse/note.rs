@@ -167,6 +167,17 @@ impl<'line> MusicLineParser<'line> {
                     break;
                 }
                 ch if ch.is_whitespace() => self.parse_whitespace(),
+                '|' => {
+                    // A chord can never span a bar line (ABC 2.1 §4.18: chords
+                    // are note groups within a measure). An unclosed `[` would
+                    // otherwise consume the following bar lines and discard the
+                    // intervening measures. Stop the member scan at the bar
+                    // line, leaving `self.index` AT the `|` so the caller's main
+                    // loop re-reads it as a bar line. `closed` stays false, so
+                    // the unclosed-chord recovery below preserves the partial
+                    // `[...` run actually consumed.
+                    break;
+                }
                 '^' | '_' | '=' => {
                     let Some(accidental) = self.parse_accidental_token() else {
                         continue;
