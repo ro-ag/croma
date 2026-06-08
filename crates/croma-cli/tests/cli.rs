@@ -103,8 +103,11 @@ fn invalid_command_exits_nonzero_and_prints_usage() {
 
     assert_failure(&output);
     let stderr = stderr(&output);
-    assert!(stderr.contains("unknown command `nope`"));
-    assert!(stderr.contains("usage: croma"));
+    // Wording updated for clap: the hand-rolled parser said "unknown command
+    // `nope`" / "usage: croma"; clap emits "unrecognized subcommand 'nope'" and
+    // a "Usage:" line. Behavior preserved: non-zero exit plus usage on stderr.
+    assert!(stderr.contains("unrecognized subcommand 'nope'"));
+    assert!(stderr.contains("Usage: croma"));
 }
 
 #[test]
@@ -118,7 +121,10 @@ fn invalid_option_combination_exits_nonzero() {
     ]);
 
     assert_failure(&output);
-    assert!(stderr(&output).contains("choose only one of --strict, --loose, or --recover"));
+    // Wording updated for clap: conflicting parse-mode flags are now enforced by
+    // a clap ArgGroup, which reports "cannot be used with". Behavior preserved:
+    // non-zero exit when more than one of --strict/--loose/--recover is given.
+    assert!(stderr(&output).contains("cannot be used with"));
 }
 
 #[test]
@@ -146,6 +152,72 @@ fn warnings_as_errors_turns_warning_only_input_into_failure() {
     let warnings_as_errors = run_croma([os("check"), os("--warnings-as-errors"), file.as_os_str()]);
     assert_failure(&warnings_as_errors);
     assert!(stderr(&warnings_as_errors).contains("warning[abc.field.unknown]"));
+}
+
+#[test]
+fn fmt_writes_canonical_formatting_to_stdout() {
+    let dir = TestDir::new("fmt-stdout");
+    let file = dir.write("unformatted.abc", "X:1\nK:C\nC   D  |\n");
+    let output = run_croma([os("fmt"), file.as_os_str()]);
+
+    assert_success(&output);
+    assert!(stdout(&output).contains("C D |"));
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn fmt_check_exits_zero_when_already_formatted() {
+    let dir = TestDir::new("fmt-check-clean");
+    let file = dir.write("formatted.abc", "X:1\nK:C\nC D |\n");
+    let output = run_croma([os("fmt"), os("--check"), file.as_os_str()]);
+
+    assert_success(&output);
+    assert!(stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn fmt_check_exits_one_and_reports_when_unformatted() {
+    let dir = TestDir::new("fmt-check-dirty");
+    let file = dir.write("unformatted.abc", "X:1\nK:C\nC   D  |\n");
+    let output = run_croma([os("fmt"), os("--check"), file.as_os_str()]);
+
+    assert_failure(&output);
+    assert!(stdout(&output).is_empty());
+    assert!(stderr(&output).contains("would reformat:"));
+    assert!(stderr(&output).contains("unformatted.abc"));
+}
+
+#[test]
+fn fmt_write_updates_file_in_place() {
+    let dir = TestDir::new("fmt-write");
+    let file = dir.write("unformatted.abc", "X:1\nK:C\nC   D  |\n");
+    let output = run_croma([os("fmt"), os("-w"), file.as_os_str()]);
+
+    assert_success(&output);
+    assert!(stdout(&output).is_empty());
+    assert!(read_file(&file).contains("C D |"));
+}
+
+#[test]
+fn fmt_auto_fix_applies_detached_length_and_reports_it() {
+    let dir = TestDir::new("fmt-auto-fix");
+    let file = dir.write("detached.abc", "X:1\nK:C\ng 2\n");
+    let output = run_croma([os("fmt"), os("--auto-fix"), file.as_os_str()]);
+
+    assert_success(&output);
+    assert!(stdout(&output).contains("g2"));
+    assert!(stderr(&output).contains("fixed"));
+    assert!(stderr(&output).contains("detached-length"));
+}
+
+#[test]
+fn fmt_check_and_write_together_is_a_usage_error() {
+    let dir = TestDir::new("fmt-check-write");
+    let file = dir.write("unformatted.abc", "X:1\nK:C\nC   D  |\n");
+    let output = run_croma([os("fmt"), os("--check"), os("-w"), file.as_os_str()]);
+
+    assert_failure(&output);
 }
 
 #[test]
