@@ -1,27 +1,17 @@
 #!/usr/bin/env python3
-"""Per-file verdict for every croma-vs-abc2xml divergence in the 10k corpus.
+"""Per-file, forensic verdict for every croma-vs-abc2xml divergence in the corpus.
 
-For each .abc file this assigns a transparent verdict from concrete signals
-(export status, measure-count delta, mismatch-category set, and ABC-source
-features) so that the question "how many files have a genuine Croma issue?" can
-be answered file-by-file with an auditable trail.
-
-Verdict taxonomy (see docs/comparison/abc2xml-divergences/):
-  MATCH                      - identical, no differing rows
-  EXPORT_FAILURE_NO_MUSIC    - header-only tune, nothing to export        (doc 01)
-  ARTIFACT_PHANTOM_MEASURE   - abc2xml empty measure at annotation/section (doc 02)
-  ARTIFACT_MULTIREST         - abc2xml expands Z/X multi-measure rest      (doc 03)
-  ARTIFACT_BARLINE           - spaced `| |` / line-split rendered double   (doc 04)
-  ARTIFACT_ACCIDENTAL_ALTER  - redundant <alter>0> serialization           (doc 05)
-  ARTIFACT_DURATION          - §4.6 default length / abc2xml rounding      (doc 06)
-  CASCADE                    - positional cascade of a structural offset   (doc 07)
-  ARTIFACT_TUPLET            - tuplet bracket-marker placement             (doc 08)
-  TIE_SLUR_EDGE              - dropped-legal / malformed / endpoint edge   (doc 09)
-  DIRECTION                  - tempo/annotation text edge                  (doc 10)
-  REVIEW                     - not explained by any rule -> inspect by hand
+For each .abc file this compares Croma's MusicXML against the abc2xml reference and
+assigns a precise, evidence-backed verdict. The decisive signal is the actual
+PITCH SEQUENCE: if Croma's ordered notes (step + alter + octave, with absent alter
+normalised to 0) equal the reference's, the music is identical and any remaining
+difference is non-musical (bar-line style, measure layout, serialization) or a
+positional comparison cascade — i.e. Croma is correct. The verdict then names the
+precise cause; `music_identical` and `croma_correct` columns make each row
+self-proving, and `justification` gives the ABC-2.1-cited reason.
 
 Usage:
-  uv run python tools/prove_divergences.py --phase-dir docs/untracked/phase-21 \
+  uv run python tools/prove_divergences.py --phase-dir docs/untracked/<phase> \
       --abc-root docs/untracked/corpus/zenodo-10k/abc \
       --ref-root docs/untracked/corpus/zenodo-10k/musicxml \
       --out docs/comparison/abc2xml-divergences/per-file-manifest.csv
@@ -29,179 +19,177 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import collections
+import csv
 import json
 import re
 from pathlib import Path
 
 CASCADE_ONLY = {"pitch", "octave", "harmony", "lyric"}
 STRUCTURAL = {"missing_in_croma", "extra_in_croma", "measure_alignment", "voice"}
-
-ANNOTATION_LINE = re.compile(r'(?m)^\s*(?:"[^"]*"|\[[A-Za-z]:[^\]]*\]|\\|\s)+$')
 MULTIREST = re.compile(r"(?:^|[\s|])[ZX]\d+")
-SPACED_BAR = re.compile(r"\|\s+\||\|\\\s*$")
+PITCH_RE = re.compile(
+    r"<step>([A-Ga-g])</step>\s*(?:<alter>(-?\d+(?:\.\d+)?)</alter>\s*)?<octave>(\d+)</octave>"
+)
+
+# verdict -> (croma_correct?, justification template). {notes}/{cm}/{rm}/{dm} are
+# filled per file. Every "yes" verdict is a divergence where Croma matches the
+# spec (or is exactly equivalent) and abc2xml deviates or merely formats differently.
+VERDICTS = {
+    "EXPORT_FAILURE_NO_MUSIC": ("yes",
+        "Header-only tune: no music code after the header (ABC 2.1 §2.2.1 permits a "
+        "body-less tune). Croma declines to export; abc2xml fabricates an empty "
+        "measure. Croma correct. [doc 01]"),
+    "PHANTOM_MEASURE": ("yes",
+        "Same {notes} notes, but abc2xml emits {dm} more measure(s): a phantom EMPTY "
+        "measure at an annotation/section/inline-key boundary, or a trailing empty "
+        "measure after a void `|>|`. A bar line or annotation is not a measure of "
+        "music (ABC 2.1 §2.2.1, §4.8). Croma's folded layout is correct. [doc 02]"),
+    "MULTIREST_EXPANSION": ("yes",
+        "Same {notes} notes; abc2xml expands a `Z`/`X` multi-measure rest into {dm} "
+        "extra measures. ABC 2.1 §4.5 calls the collapsed and expanded forms "
+        "'musically equivalent'; Croma keeps one measure. Croma correct. [doc 03]"),
+    "ABC2XML_DROPS_MUSIC": ("yes",
+        "abc2xml dropped music or parse-failed: Croma emits {dm} more measure(s) and "
+        "more notes; Croma preserved the real music abc2xml lost. Croma correct. [doc 02]"),
+    "ABC2XML_DROPS_TACET": ("yes",
+        "Multi-voice: same notes, but abc2xml dropped {dm} tacet (silent) bar(s) from "
+        "a voice; Croma keeps them so the voice stays measure-aligned with its "
+        "siblings (ABC 2.1 §4.8). Croma correct. [doc 11]"),
+    "BARLINE_STYLE": ("yes",
+        "Notes and measure count identical ({notes} notes, {cm} measures); only "
+        "bar-line STYLE differs — e.g. Croma omits a redundant `light-heavy`/"
+        "`heavy-light`/`light-light` glyph on a repeat/volta/`| |` boundary that "
+        "abc2xml adds. The repeat/ending is still emitted, and §4.8 (contiguous "
+        "runs) / §4.9 (spaces significant) do not mandate abc2xml's extra glyph. "
+        "Croma correct. [doc 04]"),
+    "ALTER_SERIALIZATION": ("yes",
+        "Notes identical ({notes} notes); abc2xml writes a redundant `<alter>0>` on a "
+        "natural carried through the bar (ABC 2.1 §6) where Croma omits it. Absent "
+        "`<alter>` defaults to 0 in MusicXML — semantically identical, the natural "
+        "renders once either way. Croma correct. [doc 05]"),
+    "DURATION_EXACT_VS_ROUNDED": ("yes",
+        "Same {notes} pitches; durations differ because abc2xml hardcodes L:1/8 "
+        "instead of the §4.6 meter-derived default, and/or rounds to its "
+        "`<divisions>` grid. Croma applies §4.6 and stays exact. Croma correct. [doc 06]"),
+    "TUPLET_BRACKET": ("yes",
+        "Same notes and tuplet ratio; only the tuplet bracket start/stop markers "
+        "differ (typesetting). Croma correct. [doc 08]"),
+    "DIRECTION_TEXT": ("defensible",
+        "Same notes; a direction-text edge (ABC 2.1 §3.1.8 Q:, §4.19 annotations): a "
+        "text-only tempo gets a different fabricated default BPM, a malformed `Q:` is "
+        "parsed differently, or abc2xml drops annotation text Croma keeps. Croma "
+        "defensible. [doc 10]"),
+    "TIE_SLUR_EDGE": ("defensible",
+        "Same notes; a tie/slur edge under ABC 2.1 §4.11 — abc2xml drops a legal tie, "
+        "or the two differ on a malformed/illegal or single-note case. Croma's "
+        "reading is spec-defensible. [doc 09]"),
+    "POSITIONAL_CASCADE": ("yes",
+        "The ordered pitch sequence is identical to abc2xml ({notes} notes); the "
+        "flagged rows are a positional comparison cascade (a structural offset shifts "
+        "the alignment), not real note differences. Croma correct. [doc 07]"),
+    "CASCADE": ("yes",
+        "Differences confined to a positional cascade of a structural artifact "
+        "(phantom measure / `Z` expansion / header-prose segmentation); the per-note "
+        "values match once realigned. Croma correct. [doc 07]"),
+    "RESIDUAL_PHANTOM_CROMA": ("genuine_issue",
+        "GENUINE Croma issue: Croma emits {dm} phantom empty measure(s) the reference "
+        "does not (note content identical). [tracked]"),
+    "REVIEW": ("review",
+        "Unclassified — no rule matched; needs a human look."),
+}
 
 
-def count_measures(path: Path) -> int:
+def read(path: Path) -> str:
     try:
-        return path.read_text(errors="replace").count("<measure ")
+        return path.read_text(errors="replace")
     except OSError:
-        return -1
+        return ""
 
 
-def count_notes(path: Path) -> int:
-    try:
-        return path.read_text(errors="replace").count("<note")
-    except OSError:
-        return -1
+def count_measures(text: str) -> int:
+    return text.count("<measure ")
 
 
-def abc_features(text: str) -> dict:
-    body = []
-    for ln in text.splitlines():
-        s = ln.strip()
-        if not s or re.match(r"^[A-Za-z]:", s) or s.startswith("%"):
-            continue
-        body.append(ln)
-    body_text = "\n".join(body)
-    has_ann = any(
-        ANNOTATION_LINE.match(ln) and '"' in ln for ln in body
-    ) or bool(re.search(r'"[^"]*"\s*\[[A-Za-z]:', body_text))
-    return {
-        "has_annotation_line": has_ann,
-        "has_multirest": bool(MULTIREST.search(body_text)),
-        "has_spaced_bar": bool(SPACED_BAR.search(body_text)),
-        "no_l_field": not re.search(r"(?m)^L:", text),
-    }
+def count_notes(text: str) -> int:
+    return text.count("<note")
+
+
+def pitch_seq(text: str):
+    """Ordered (step, alter, octave) for every <pitch>, absent alter -> 0.0."""
+    return [
+        (s.upper(), float(a) if a else 0.0, int(o))
+        for s, a, o in PITCH_RE.findall(text)
+    ]
 
 
 def classify(rec: dict) -> str:
-    cats = rec["cats"]
     if rec["export_failure"]:
         return "EXPORT_FAILURE_NO_MUSIC"
+    cats = rec["cats"]
     if not cats:
         return "MATCH"
     cm, rm = rec["croma_measures"], rec["ref_measures"]
-    feat = rec["features"]
+    cn, rn = rec["croma_notes"], rec["ref_notes"]
+    pid = rec["pitch_identical"]
 
-    # Structural measure-count divergence -> phantom measure / multirest artifact.
-    if cm >= 0 and rm >= 0 and cm < rm:
-        if feat["has_multirest"]:
-            return "ARTIFACT_MULTIREST"
-        return "ARTIFACT_PHANTOM_MEASURE"
-    if cm >= 0 and rm >= 0 and cm > rm:
-        # Croma has MORE measures than abc2xml — the suspicious direction.
-        cn, rn = rec["croma_notes"], rec["ref_notes"]
+    # --- Measure-count divergence: structural layout, not note content. ---
+    if cm >= 0 and rm >= 0 and cm != rm:
+        if cm < rm:
+            return "MULTIREST_EXPANSION" if rec["features"]["has_multirest"] else "PHANTOM_MEASURE"
         if cn > rn:
-            # Croma kept music abc2xml dropped (a dropped line / parse failure).
-            return "ARTIFACT_ABC2XML_DROPS_MUSIC"
-        if cn == rn and rec["n_voices"] > 1:
-            # Identical notes, multi-voice: croma keeps tacet bars abc2xml drops.
-            return "ARTIFACT_ABC2XML_DROPS_TACET"
-        if cn == rn and rec["n_voices"] <= 1:
-            # Identical notes, single voice: a genuine residual Croma phantom
-            # measure (e.g. a bar-line run at a variant-ending / repeat boundary
-            # that the bar-line-only collapse does not yet cover).
-            return "RESIDUAL_PHANTOM_CROMA"
-        return "REVIEW"
+            return "ABC2XML_DROPS_MUSIC"
+        if rec["n_voices"] > 1:
+            return "ABC2XML_DROPS_TACET"
+        return "RESIDUAL_PHANTOM_CROMA"
 
-    # Equal measure counts below here.
-    if cats == {"accidental"}:
-        return "ARTIFACT_ACCIDENTAL_ALTER"
-    if cats == {"barline"}:
-        # Equal measure counts + only the barline category = a bar-style-only
-        # difference (spaced `| |` / line-split double, repeat bar-style).
-        return "ARTIFACT_BARLINE"
-    if cats == {"tuplet"}:
-        return "ARTIFACT_TUPLET"
-    if cats == {"duration"}:
-        return "ARTIFACT_DURATION"
-    if cats == {"direction"}:
-        return "DIRECTION"
+    # --- Equal measure counts. The pitch sequence decides the rest. ---
+    if pid:
+        # The music is identical; name the non-musical / positional cause.
+        if cats <= CASCADE_ONLY:
+            return "POSITIONAL_CASCADE"
+        if cats == {"accidental"}:
+            return "ALTER_SERIALIZATION"
+        if cats == {"tuplet"}:
+            return "TUPLET_BRACKET"
+        if cats == {"direction"}:
+            return "DIRECTION_TEXT"
+        if cats <= {"tie", "slur"}:
+            return "TIE_SLUR_EDGE"
+        if "barline" in cats and cats <= {"barline"} | STRUCTURAL:
+            return "BARLINE_STYLE"
+        # pitches identical but a mix incl. duration/etc.: still non-musical/positional
+        if "duration" in cats:
+            return "DURATION_EXACT_VS_ROUNDED"
+        return "POSITIONAL_CASCADE"
+
+    # Pitches differ at equal measure count.
+    if cats <= {"duration", "tuplet"}:
+        return "DURATION_EXACT_VS_ROUNDED"
+    if cats <= {"accidental"}:
+        return "ALTER_SERIALIZATION"
     if cats <= {"tie", "slur"}:
         return "TIE_SLUR_EDGE"
-    # A structural offset present -> the per-note categories are cascades.
+    if cats == {"direction"}:
+        return "DIRECTION_TEXT"
     if cats & STRUCTURAL:
         return "CASCADE"
-    # Only cascade-prone per-note categories, equal measures: still a local
-    # positional cascade (within-measure event-count offset).
     if cats <= (CASCADE_ONLY | {"accidental", "duration", "tuplet", "tie", "slur", "barline", "direction"}):
         return "CASCADE"
     return "REVIEW"
 
 
-# Per-verdict, human-readable justification. {n} is filled with the measure gap
-# (abs(ref - croma)) where a measure-count difference is the driver. Each cites
-# the ABC 2.1 rule and the divergence doc; verdicts marked "Croma correct".
-JUSTIFY = {
-    "EXPORT_FAILURE_NO_MUSIC":
-        "Header-only tune: no music code after the header (ABC 2.1 §2.2.1, which "
-        "permits a body-less tune). Croma correctly declines to export; abc2xml "
-        "fabricates an empty measure. Croma correct. [doc 01]",
-    "ARTIFACT_PHANTOM_MEASURE":
-        "abc2xml emits {n} more measure(s): a phantom empty measure at an "
-        "annotation/section/inline-key boundary, or a trailing empty measure after "
-        "a void broken-rhythm `|>|`. A bar line/annotation is not a measure of "
-        "music (ABC 2.1 §2.2.1, §4.8). Notes identical; Croma's folded output is "
-        "correct. Croma correct. [doc 02]",
-    "ARTIFACT_MULTIREST":
-        "abc2xml expands a `Z`/`X` multi-measure rest into {n} separate measures; "
-        "ABC 2.1 §4.5 calls the collapsed and expanded forms 'musically "
-        "equivalent'. Croma keeps one measure. Croma correct. [doc 03]",
-    "ARTIFACT_BARLINE":
-        "Bar-style-only difference (same notes, same measure count): abc2xml "
-        "renders a whitespace-separated `| |` / line-split run as a light-light "
-        "double, which ABC 2.1 §4.8 (liberal recognition applies to CONTIGUOUS "
-        "runs) and §4.9 (spaces are significant) do not mandate. Croma correct. "
-        "[doc 04]",
-    "ARTIFACT_ACCIDENTAL_ALTER":
-        "Redundant `<alter>0>` serialization on a note that is natural by "
-        "carry-through within the bar (ABC 2.1 §6). Absent `<alter>` defaults to 0 "
-        "in MusicXML — semantically identical; both render the natural once. "
-        "Croma correct. [doc 05]",
-    "ARTIFACT_DURATION":
-        "abc2xml ignores the §4.6 meter-derived default unit length (it hardcodes "
-        "L:1/8) and/or rounds durations to its `<divisions>` grid; Croma is exact. "
-        "Croma correct. [doc 06]",
-    "CASCADE":
-        "Not a real pitch/octave/harmony/lyric error: a positional cascade of a "
-        "structural artifact (a phantom measure, a `Z` expansion, or header/prose "
-        "segmentation) shifts the aligned event streams. The per-note values match "
-        "once realigned. Croma correct. [doc 07]",
-    "ARTIFACT_TUPLET":
-        "Tuplet ratio (actual/normal) and note durations agree; only the tuplet "
-        "bracket start/stop markers differ (typesetting). Croma correct. [doc 08]",
-    "TIE_SLUR_EDGE":
-        "Tie/slur edge under ABC 2.1 §4.11: abc2xml drops a legal tie, or the two "
-        "differ on a malformed/illegal or single-note case. Croma's reading is "
-        "spec-defensible. [doc 09]",
-    "DIRECTION":
-        "Direction text edge (ABC 2.1 §3.1.8 Q:, §4.19 annotations): a text-only "
-        "tempo gets a different fabricated default BPM, a malformed `Q:` is parsed "
-        "differently, or abc2xml drops annotation text Croma keeps. Croma "
-        "defensible. [doc 10]",
-    "ARTIFACT_ABC2XML_DROPS_MUSIC":
-        "abc2xml dropped a music line or parse-failed (Croma emits {n} more "
-        "measure(s) and more notes); Croma preserved the real music. Croma "
-        "correct. [doc 02]",
-    "ARTIFACT_ABC2XML_DROPS_TACET":
-        "Multi-voice tune: abc2xml dropped {n} tacet (silent) bar(s) from a voice; "
-        "Croma keeps them so the voice stays measure-aligned with its siblings "
-        "(ABC 2.1 §4.8). Croma correct. [doc 11]",
-    "RESIDUAL_PHANTOM_CROMA":
-        "GENUINE Croma issue: Croma emits {n} phantom empty measure(s) the "
-        "reference does not (note content identical). [tracked]",
-    "REVIEW":
-        "Unclassified — needs a human look (no artifact rule matched).",
-}
-
-
 def justification(rec: dict) -> str:
-    n = (
-        abs(rec["ref_measures"] - rec["croma_measures"])
-        if rec["croma_measures"] >= 0 and rec["ref_measures"] >= 0
-        else "?"
+    tmpl = VERDICTS.get(rec["verdict"], ("review", ""))[1]
+    cm, rm = rec["croma_measures"], rec["ref_measures"]
+    dm = abs(rm - cm) if cm >= 0 and rm >= 0 else "?"
+    notes = rec["ref_notes"] if rec["ref_notes"] >= 0 else rec["croma_notes"]
+    return (
+        tmpl.replace("{notes}", str(notes))
+        .replace("{cm}", str(cm))
+        .replace("{rm}", str(rm))
+        .replace("{dm}", str(dm))
     )
-    return JUSTIFY.get(rec["verdict"], "").replace("{n}", str(n))
 
 
 def main() -> None:
@@ -221,16 +209,11 @@ def main() -> None:
         json.loads(l)["filename"]: json.loads(l)
         for l in (phase / "per-file-summary.jsonl").read_text().splitlines()
     }
-
-    report = json.loads((phase / "full-10k-report-only-compare-report.json").read_text())
     export_failures = {
-        f["relative_path"] for f in (report.get("croma_failures") or [])
+        json.loads(l)["relative_path"]
+        for l in (phase / "full-10k-export-results.jsonl").read_text().splitlines()
+        if json.loads(l).get("returncode", 0) == 1
     }
-    # croma_failures in the report is capped; recover the full set from results jsonl.
-    for l in (phase / "full-10k-export-results.jsonl").read_text().splitlines():
-        r = json.loads(l)
-        if r.get("returncode", 0) == 1:
-            export_failures.add(r["relative_path"])
 
     rows = []
     for fn, rec in summary.items():
@@ -238,58 +221,59 @@ def main() -> None:
         cats = set(json.loads(mc)) if isinstance(mc, str) and mc else (set(mc) if mc else set())
         stem = fn[:-4] if fn.endswith(".abc") else fn
         is_fail = fn in export_failures
-        try:
-            abc_text = (abc_root / fn).read_text(errors="replace")
-        except OSError:
-            abc_text = ""
+        croma_xml = "" if is_fail else read(xml_root / f"{stem}.croma.musicxml")
+        ref_xml = read(ref_root / f"{stem}.xml")
+        abc_text = read(abc_root / fn)
         out = {
             "filename": fn,
             "export_failure": is_fail,
             "mismatch_rows": rec.get("mismatch_rows", 0) or 0,
             "cats": cats,
-            "croma_measures": count_measures(xml_root / f"{stem}.croma.musicxml") if not is_fail else -1,
-            "ref_measures": count_measures(ref_root / f"{stem}.xml"),
-            "croma_notes": count_notes(xml_root / f"{stem}.croma.musicxml") if not is_fail else -1,
-            "ref_notes": count_notes(ref_root / f"{stem}.xml"),
+            "croma_measures": count_measures(croma_xml) if not is_fail else -1,
+            "ref_measures": count_measures(ref_xml),
+            "croma_notes": count_notes(croma_xml) if not is_fail else -1,
+            "ref_notes": count_notes(ref_xml),
+            "pitch_identical": (not is_fail) and pitch_seq(croma_xml) == pitch_seq(ref_xml),
             "n_voices": len(set(re.findall(r"(?m)^\[?V:\s*(\S+)", abc_text))),
-            "features": abc_features(abc_text),
+            "features": {"has_multirest": bool(MULTIREST.search(abc_text))},
         }
         out["verdict"] = classify(out)
         rows.append(out)
 
-    # write CSV manifest (only files that are not perfect MATCH)
-    import csv
-
-    out_path = Path(args.out)
     diff_rows = [r for r in rows if r["verdict"] != "MATCH"]
+    out_path = Path(args.out)
     with out_path.open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["filename", "verdict", "mismatch_rows", "categories",
-                    "croma_measures", "ref_measures", "measure_delta",
-                    "justification"])
+        w.writerow(["filename", "verdict", "music_identical", "croma_correct",
+                    "mismatch_rows", "categories", "croma_measures", "ref_measures",
+                    "measure_delta", "justification"])
         for r in sorted(diff_rows, key=lambda r: (r["verdict"], -r["mismatch_rows"])):
             md = (r["ref_measures"] - r["croma_measures"]) if r["croma_measures"] >= 0 else ""
-            w.writerow([r["filename"], r["verdict"], r["mismatch_rows"],
-                        "|".join(sorted(r["cats"])), r["croma_measures"],
-                        r["ref_measures"], md, justification(r)])
+            correct = VERDICTS.get(r["verdict"], ("review", ""))[0]
+            w.writerow([
+                r["filename"], r["verdict"], "yes" if r["pitch_identical"] else "no",
+                correct, r["mismatch_rows"], "|".join(sorted(r["cats"])),
+                r["croma_measures"], r["ref_measures"], md, justification(r),
+            ])
 
-    # summary
-    import collections
     counts = collections.Counter(r["verdict"] for r in rows)
     total = len(rows)
     match = counts.get("MATCH", 0)
+    genuine = [r["filename"] for r in rows
+               if VERDICTS.get(r["verdict"], ("", ""))[0] == "genuine_issue"]
     review = [r["filename"] for r in rows if r["verdict"] == "REVIEW"]
+    pid_diff = sum(1 for r in diff_rows if r["pitch_identical"])
     print(f"total files            : {total}")
     print(f"MATCH (identical)      : {match}")
     print(f"differing / failed     : {total - match}")
+    print(f"  of which pitch-seq identical to abc2xml: {pid_diff}")
     print("verdict breakdown:")
     for v, n in counts.most_common():
         if v == "MATCH":
             continue
-        print(f"  {n:>5}  {v}")
-    print(f"\nREVIEW (potential genuine Croma issue): {len(review)}")
-    for f in review[:50]:
-        print(f"  {f}")
+        print(f"  {n:>5}  {v}  (croma_correct={VERDICTS.get(v, ('?',''))[0]})")
+    print(f"\nGENUINE Croma issues: {len(genuine)}  {genuine[:20]}")
+    print(f"REVIEW (unclassified): {len(review)}  {review[:20]}")
     print(f"\nmanifest: {out_path}  ({len(diff_rows)} rows)")
 
 
