@@ -2,7 +2,7 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference}
 use crate::model::Fraction;
 use crate::options::{AbcSpecVersion, ParseMode, ParseOptions};
 use crate::source::SourceText;
-use crate::surface::{ContinuationKind, LineContext, LineKind, SurfaceMap};
+use crate::syntax::tune::{ContinuationKind, LineContext, LineKind, SurfaceMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedAbcFields {
@@ -541,7 +541,7 @@ impl<'source> FieldParser<'source> {
         }
     }
 
-    fn parse_version_line(&mut self, line: &crate::surface::ClassifiedLine) {
+    fn parse_version_line(&mut self, line: &crate::syntax::tune::ClassifiedLine) {
         let Some(line_text) = self.source.slice(line.text_span) else {
             return;
         };
@@ -573,7 +573,7 @@ impl<'source> FieldParser<'source> {
         self.apply_version_directive(field_index, line.context, version.as_ref(), value_span);
     }
 
-    fn parse_information_field(&mut self, line: &crate::surface::ClassifiedLine) {
+    fn parse_information_field(&mut self, line: &crate::syntax::tune::ClassifiedLine) {
         let Some(field_header) = line.field else {
             return;
         };
@@ -594,7 +594,7 @@ impl<'source> FieldParser<'source> {
         self.apply_field_state(field_index);
     }
 
-    fn parse_field_continuation(&mut self, line: &crate::surface::ClassifiedLine) {
+    fn parse_field_continuation(&mut self, line: &crate::syntax::tune::ClassifiedLine) {
         let Some(marker_span) = line.marker_span else {
             return;
         };
@@ -616,7 +616,7 @@ impl<'source> FieldParser<'source> {
 
     fn field_value(
         &self,
-        line: &crate::surface::ClassifiedLine,
+        line: &crate::syntax::tune::ClassifiedLine,
         value_span: Span,
     ) -> Spanned<String> {
         let mut spans = vec![trimmed_uncommented_span(self.source, line, value_span)];
@@ -1896,7 +1896,7 @@ fn trim_value_span(value: &str, start_offset: usize) -> Spanned<String> {
 
 fn trimmed_uncommented_span(
     source: &SourceText,
-    line: &crate::surface::ClassifiedLine,
+    line: &crate::syntax::tune::ClassifiedLine,
     value_span: Span,
 ) -> Span {
     let end = line
@@ -2080,7 +2080,7 @@ mod tests {
             report
                 .value
                 .surface
-                .tokens_of_kind(crate::surface::SurfaceKind::Note)
+                .tokens_of_kind(crate::syntax::tune::SurfaceKind::Note)
                 .count(),
             1
         );
