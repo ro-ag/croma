@@ -13,6 +13,7 @@ use crate::parse::ParseReport;
 use grace::grace_export_pitch;
 
 mod attributes;
+mod barline;
 mod grace;
 mod harmony;
 mod lyric;
@@ -795,76 +796,6 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.text_element("staff", &staff.to_string());
         }
         self.xml.end("direction");
-    }
-
-    fn write_barline(
-        &mut self,
-        location: BarlineLocation,
-        kind: BarlineKind,
-        ending_children: &[EndingChild<'_>],
-    ) {
-        match kind {
-            BarlineKind::Regular | BarlineKind::Liberal if ending_children.is_empty() => {
-                return;
-            }
-            _ => {}
-        }
-        let location = location.as_str();
-        self.xml.start("barline", &[("location", location)]);
-        match kind {
-            BarlineKind::Double => self.xml.text_element("bar-style", "light-light"),
-            BarlineKind::Final => self.xml.text_element("bar-style", "light-heavy"),
-            BarlineKind::Initial => self.xml.text_element("bar-style", "heavy-light"),
-            BarlineKind::RepeatStart => {
-                self.xml.empty("repeat", &[("direction", "forward")]);
-            }
-            BarlineKind::RepeatEnd => {
-                self.xml.empty("repeat", &[("direction", "backward")]);
-            }
-            BarlineKind::RepeatBoth => {
-                self.xml.empty("repeat", &[("direction", "backward")]);
-            }
-            BarlineKind::Dotted => self.xml.text_element("bar-style", "dotted"),
-            BarlineKind::Invisible => self.xml.text_element("bar-style", "none"),
-            BarlineKind::Regular | BarlineKind::Liberal => {}
-        }
-        for child in ending_children {
-            self.xml.empty(
-                "ending",
-                &[
-                    ("number", child.number),
-                    (
-                        "type",
-                        match child.kind {
-                            EndingType::Start => "start",
-                            EndingType::Stop => "stop",
-                        },
-                    ),
-                ],
-            );
-        }
-        self.xml.end("barline");
-    }
-
-    fn write_ending_barline(
-        &mut self,
-        location: BarlineLocation,
-        endings: &[String],
-        ending_type: EndingType,
-        repeat_kind: Option<BarlineKind>,
-    ) {
-        let children = endings
-            .iter()
-            .map(|number| EndingChild {
-                number: number.as_str(),
-                kind: ending_type,
-            })
-            .collect::<Vec<_>>();
-        self.write_barline(
-            location,
-            repeat_kind.unwrap_or(BarlineKind::Regular),
-            &children,
-        );
     }
 
     fn write_forward(&mut self, duration: Fraction) {
@@ -1674,13 +1605,13 @@ fn symbol_direction(name: &str) -> Option<DirectionSymbol> {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum BarlineLocation {
+pub(crate) enum BarlineLocation {
     Left,
     Right,
 }
 
 impl BarlineLocation {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Left => "left",
             Self::Right => "right",
@@ -1689,14 +1620,9 @@ impl BarlineLocation {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum EndingType {
+pub(crate) enum EndingType {
     Start,
     Stop,
-}
-
-struct EndingChild<'a> {
-    number: &'a str,
-    kind: EndingType,
 }
 
 trait FractionExt {
