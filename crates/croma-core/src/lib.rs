@@ -10,7 +10,7 @@ pub mod model;
 pub mod music;
 pub mod musicxml;
 pub mod options;
-pub mod parser;
+pub mod parse;
 pub mod source;
 pub mod syntax;
 
@@ -28,7 +28,7 @@ pub use syntax::{
     ParsedMusicDocument, ParsedTuneMusic,
 };
 pub use options::{AbcSpecVersion, ExportOptions, LowerOptions, ParseMode, ParseOptions};
-pub use parser::{AbcDocument, ParseReport};
+pub use parse::{AbcDocument, ParseReport};
 pub use source::{LineColumn, LineColumnSpan, LineEnding, SourceLine, SourceText};
 
 #[cfg(test)]
@@ -49,11 +49,11 @@ pub fn export_musicxml(source: &str) -> Result<MusicXmlExport> {
 }
 
 pub fn parse_document(source: &str, options: ParseOptions) -> ParseReport<AbcDocument> {
-    parser::parse_document(source, options)
+    parse::parse_document(source, options)
 }
 
 pub fn lower_score(document: &AbcDocument, _options: LowerOptions) -> ParseReport<Option<Score>> {
-    let report = parser::parse_tune_report_from_document(document);
+    let report = parse::parse_tune_report_from_document(document);
     ParseReport {
         value: report.value.map(|tune| tune.score),
         diagnostics: report.diagnostics,
@@ -81,7 +81,7 @@ pub fn export_musicxml_with_options(
         value: document,
         mut diagnostics,
     } = parse_report;
-    let tune_report = parser::parse_tune_report_from_document(&document);
+    let tune_report = parse::parse_tune_report_from_document(&document);
     diagnostics.extend(tune_report.diagnostics);
 
     let Some(tune) = tune_report.value else {

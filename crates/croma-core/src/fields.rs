@@ -1994,7 +1994,7 @@ fn abc_field_reference() -> SpecReference {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_document;
+    use crate::parse::parse_document;
 
     #[test]
     fn missing_l_defaults_from_meter() {
