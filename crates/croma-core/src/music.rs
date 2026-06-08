@@ -21,7 +21,7 @@ use crate::model::{
 use crate::options::ParseMode;
 use crate::parser::ParseReport;
 use crate::source::SourceText;
-use crate::surface::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
+use crate::syntax::tune::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParsedMusicDocument {
@@ -696,7 +696,7 @@ fn parse_music_code_line(
     source: &SourceText,
     fields: &ParsedAbcFields,
     tune_index: usize,
-    line: &crate::surface::ClassifiedLine,
+    line: &crate::syntax::tune::ClassifiedLine,
     code_span: Span,
 ) -> Option<ParsedMusicLineWithDiagnostics> {
     let line_text = source.slice(line.text_span)?;
@@ -740,7 +740,7 @@ fn parse_music_code_line(
 
 fn same_line_voice_music(
     fields: &ParsedAbcFields,
-    line: &crate::surface::ClassifiedLine,
+    line: &crate::syntax::tune::ClassifiedLine,
 ) -> Option<(MusicFieldLine, Span)> {
     let field = fields
         .fields
@@ -849,7 +849,7 @@ fn looks_like_same_line_music(value: &str) -> bool {
 
 fn music_field_for_line(
     fields: &ParsedAbcFields,
-    line: &crate::surface::ClassifiedLine,
+    line: &crate::syntax::tune::ClassifiedLine,
 ) -> Option<MusicFieldLine> {
     let field = fields
         .fields
@@ -976,7 +976,7 @@ fn tune_index_for_line_context(context: LineContext) -> Option<usize> {
 
 fn parse_score_stylesheet_directive(
     source: &SourceText,
-    line: &crate::surface::ClassifiedLine,
+    line: &crate::syntax::tune::ClassifiedLine,
 ) -> Option<(usize, ScoreDirectiveSyntax)> {
     let tune_index = match line.context {
         LineContext::TuneHeader { tune_index } | LineContext::TuneBody { tune_index } => tune_index,
@@ -1023,7 +1023,7 @@ fn parse_score_stylesheet_directive(
 
 fn parse_preserved_stylesheet_directive(
     source: &SourceText,
-    line: &crate::surface::ClassifiedLine,
+    line: &crate::syntax::tune::ClassifiedLine,
 ) -> Option<(usize, PreservedDirectiveSyntax)> {
     let tune_index = match line.context {
         LineContext::TuneHeader { tune_index } | LineContext::TuneBody { tune_index } => tune_index,
@@ -4204,7 +4204,7 @@ impl LoweringState {
     }
 }
 
-fn music_code_span(line: &crate::surface::ClassifiedLine) -> Span {
+fn music_code_span(line: &crate::syntax::tune::ClassifiedLine) -> Span {
     let mut end = line.text_span.end;
     if let Some(comment_span) = line.trailing_comment {
         end = end.min(comment_span.start);

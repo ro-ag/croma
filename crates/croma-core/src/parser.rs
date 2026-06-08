@@ -7,7 +7,7 @@ use crate::music::{
 };
 use crate::options::ParseOptions;
 use crate::source::SourceText;
-use crate::surface::{SurfaceMap, analyze_source};
+use crate::syntax::tune::{SurfaceMap, analyze_source};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseReport<T> {
