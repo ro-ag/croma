@@ -400,6 +400,9 @@ impl MultiVoiceLowering {
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
                     self.current_state().reset_measure_accidentals_at_barline();
+                    // A grace flushed ahead of its note but with no note before the
+                    // bar is void (ABC 2.1 §4.20): drop the buffer at the boundary.
+                    self.current_state().pending_grace_groups.clear();
                     for kind in barline_lowering_kinds(barline) {
                         self.current_state()
                             .lowered
@@ -415,8 +418,19 @@ impl MultiVoiceLowering {
                     }
                 }
                 MusicItem::InlineField(inline) => self.apply_inline_field(inline),
-                MusicItem::GraceGroup(_)
-                | MusicItem::ChordSymbol(_)
+                MusicItem::GraceGroup(grace) => {
+                    // A grace group becomes a standalone item only when the parser
+                    // flushed it ahead of its note (e.g. an intervening slur-open
+                    // `{g}(c)`, decoration, or other flush trigger). Per ABC 2.1
+                    // §4.20 the grace still attaches to the note it precedes, so
+                    // buffer it and merge it into the next timed event. If a hard
+                    // boundary (barline / voice switch / end of tune) arrives
+                    // first, the buffer is dropped and the grace is voided.
+                    self.current_state()
+                        .pending_grace_groups
+                        .push(grace.clone());
+                }
+                MusicItem::ChordSymbol(_)
                 | MusicItem::Annotation(_)
                 | MusicItem::Decoration(_)
                 | MusicItem::Unsupported(_)
