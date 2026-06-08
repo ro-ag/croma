@@ -12,7 +12,7 @@ pub mod musicxml;
 pub mod options;
 pub mod parser;
 pub mod source;
-pub mod surface;
+pub mod syntax;
 
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
