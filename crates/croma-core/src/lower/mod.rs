@@ -11,45 +11,41 @@ pub(crate) mod voice;
 pub(crate) use crate::lower::diagnostics::*;
 pub(crate) use crate::lower::voice::{
     is_note_atom, lowered_timed_note, note_signature, ActiveTuplet, CompletedTuplet, LoweredEvent,
-    LoweredTimedEvent, LoweringState, PendingTie,
+    LoweringState, PendingTie,
 };
 
-use crate::lower::accidental::{
-    accidental_from_field_sign, key_accidental_policy, KeyAccidentalPolicy, MeasureAccidental,
-};
+use crate::lower::accidental::accidental_from_field_sign;
 use crate::lower::align::{align_lyrics, align_symbols};
 use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::lower::timeline::build_voice_timeline;
-use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+use crate::diagnostic::{Diagnostic, Span};
 use crate::parse::field::{
     FieldState, KeyMode,
     KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned, StemDirection, UnitNoteLength, VoiceDefinition,
 };
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope,
-    AlignedSymbolKind, AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent,
-    DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
-    LoweredEventAtom, LoweredEventAtomKind, LyricControl, Measure, MeasureBarline, MeasureId,
-    MeterModel, NoteEvent, OverlaySegment, Part, PartId, Pitch, PreservedDirective,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, Score,
+    AccidentalPolicy, AccidentalScope,
+    BarlineKind,
+    Event, EventAttachments, Fraction,
+    KeyAccidentalModel, KeySignatureModel,
+    LoweredEventAtom, LoweredEventAtomKind,
+    MeterModel, Part, PartId, PreservedDirective,
+    Score,
     ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, StemDirectionModel,
-    TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind,
-    TimelineEventKind, TupletAttachment, TupletRole, Voice, VoiceId, VoiceMeasureTimeline,
-    VoicePropertiesModel, VoiceTimedEvent, VoiceTimeline, lcm,
+    Staff, StaffId, StemDirectionModel,
+    TextLine,
+    TimelineEventKind, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
-    AnnotationPlacement, AttachmentBundle, BarlineSyntax, BrokenRhythmDirection,
-    BrokenRhythmSyntax, ChordSyntax, DecorationKind,
-    GraceElementSyntax, InlineFieldSyntax, LengthSyntax, LyricLineSyntax,
+    BarlineSyntax,
+    InlineFieldSyntax, LyricLineSyntax,
     MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine,
-    NoteSyntax, OctaveMark, OverlaySyntax, ParsedTuneMusic, PreservedDirectiveSyntax, QuotedTextKind, RestSyntax,
-    ScoreDirectiveSyntax, SlurDirection, SlurSyntax, SymbolLineSyntax,
-    TieSyntax, TupletSyntax, VariantEndingPart, VariantEndingSyntax,
+    ParsedTuneMusic, PreservedDirectiveSyntax,
+    ScoreDirectiveSyntax, SymbolLineSyntax,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

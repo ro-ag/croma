@@ -1,8 +1,14 @@
     use super::*;
-    use crate::model::RestVisibility;
+    use crate::model::{
+        Accidental, AlignedSymbolKind, LyricControl, RestVisibility, TieRole, TimedEvent,
+        TimedEventKind,
+    };
     use crate::options::ParseOptions;
     use crate::parse::{parse_document, parse_tune_report_from_document};
-    use crate::syntax::{MalformedSyntax, MalformedSyntaxKind};
+    use crate::syntax::{
+        AnnotationPlacement, DecorationKind, MalformedSyntax, MalformedSyntaxKind, OctaveMark,
+        QuotedTextKind, VariantEndingPart,
+    };
 
     fn events_for(source: &str) -> (Vec<Event>, Vec<Diagnostic>) {
         let document = parse_document(source, ParseOptions::default()).value;
