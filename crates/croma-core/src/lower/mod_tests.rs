@@ -564,6 +564,42 @@ fn parses_chord_with_inside_and_outside_decorations() {
 }
 
 #[test]
+fn parses_chord_internal_tie_marker_on_member() {
+    let document_report = parse_document("X:1\nL:1/8\nK:C\n[DA-]\n", ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(
+            &document_report.diagnostics,
+            "abc.music.unknown_chord_token"
+        ),
+        0,
+        "chord-internal tie must not be reported as an unknown chord token"
+    );
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let chord = tune_music.lines[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MusicItem::Chord(chord) => Some(chord),
+            _ => None,
+        })
+        .expect("expected chord");
+
+    assert_eq!(chord.members.len(), 2);
+    assert!(
+        chord.members[0].tie.is_none(),
+        "D member must not carry a tie"
+    );
+    assert!(
+        chord.members[1].tie.is_some(),
+        "A member must carry the internal tie marker"
+    );
+}
+
+#[test]
 fn lowers_chord_member_and_outer_duration_multipliers() {
     let (events, diagnostics) = events_for("X:1\nL:1/8\nK:C\n[C2E2G2]3\n");
     assert!(diagnostics.is_empty());

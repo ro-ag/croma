@@ -8,7 +8,7 @@ use crate::syntax::{
     AccidentalSyntax, BrokenRhythmDirection, BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax,
     GraceElementSyntax, GraceGroupSyntax, LengthSyntax, MalformedSyntax, MalformedSyntaxKind,
     MultiMeasureRestSyntax, MusicItem, MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax,
-    PitchSyntax, RestSyntax, SpannedNumber, TupletSyntax,
+    PitchSyntax, RestSyntax, SpannedNumber, TieSyntax, TupletSyntax,
 };
 
 impl<'line> MusicLineParser<'line> {
@@ -173,9 +173,11 @@ impl<'line> MusicLineParser<'line> {
                     };
                     if self.peek_char().is_some_and(is_note_letter) {
                         if let Some(note) = self.parse_note_syntax(Some(accidental)) {
+                            let tie = self.parse_chord_member_tie();
                             members.push(ChordMemberSyntax {
                                 span: note.span,
                                 note,
+                                tie,
                             });
                         }
                     } else {
@@ -189,10 +191,23 @@ impl<'line> MusicLineParser<'line> {
                 }
                 'A'..='G' | 'a'..='g' => {
                     if let Some(note) = self.parse_note_syntax(None) {
+                        let tie = self.parse_chord_member_tie();
                         members.push(ChordMemberSyntax {
                             span: note.span,
                             note,
+                            tie,
                         });
+                    }
+                }
+                '-' => {
+                    // A tie marker that is not directly after a member note
+                    // (e.g. `[-CE]` or a doubled `--`). Attach it to the most
+                    // recent member if one exists, otherwise drop it.
+                    if let Some(tie) = self.parse_chord_member_tie()
+                        && let Some(last) = members.last_mut()
+                        && last.tie.is_none()
+                    {
+                        last.tie = Some(tie);
                     }
                 }
                 '"' => self.parse_quoted_text(),
@@ -241,6 +256,23 @@ impl<'line> MusicLineParser<'line> {
             members,
             length,
         }));
+    }
+
+    /// Consume an optional tie marker (`-`) following a chord member note and
+    /// return it as a [`TieSyntax`]. ABC 2.1 §4.11 allows ties on chord members
+    /// (`[DA-]`). Returns `None` when the next character is not a tie.
+    fn parse_chord_member_tie(&mut self) -> Option<TieSyntax> {
+        if self.peek_char() != Some('-') {
+            return None;
+        }
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Tie, span);
+        Some(TieSyntax {
+            span,
+            dotted: false,
+        })
     }
 
     pub(super) fn parse_grace_group(&mut self) {
