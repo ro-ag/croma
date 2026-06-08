@@ -5,7 +5,6 @@
 
 pub mod diagnostic;
 pub mod error;
-pub mod fields;
 pub mod model;
 pub mod music;
 pub mod musicxml;
@@ -16,7 +15,9 @@ pub mod syntax;
 
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
-pub use fields::{DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField};
+pub use parse::field::{
+    DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField,
+};
 pub use model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, BarlineKind, ChordEvent,
     ChordMemberEvent, Event, EventAttachments, Fraction, KeySignatureModel, Measure, MeasureId,

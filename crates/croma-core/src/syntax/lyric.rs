@@ -2,7 +2,7 @@
 //! lyric lines and `s:` symbol lines.
 
 use crate::diagnostic::Span;
-use crate::fields::Spanned;
+use crate::parse::field::Spanned;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LyricLineSyntax {
