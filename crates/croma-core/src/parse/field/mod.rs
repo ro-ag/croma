@@ -1,5 +1,6 @@
 pub(crate) mod key;
 pub(crate) mod meter;
+pub(crate) mod tempo;
 pub(crate) mod voice;
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
@@ -9,6 +10,7 @@ use crate::source::SourceText;
 use crate::syntax::tune::{ContinuationKind, LineContext, LineKind, SurfaceMap};
 
 use meter::{default_unit_note_length_for_meter, ensure_default_unit_note_length};
+use tempo::{parse_decoration_delimiter, parse_line_break_mode, parse_macro, parse_user_symbol};
 use voice::{parse_voice, upsert_voice_definition};
 pub(crate) use key::parse_key;
 pub(crate) use meter::{parse_meter, parse_unit_note_length};
@@ -1357,52 +1359,6 @@ fn mode_for_version(version: &AbcVersion) -> Option<ParseMode> {
         }
         (Some(_), Some(_)) => Some(ParseMode::Loose),
         _ => None,
-    }
-}
-
-fn parse_line_break_mode(value: &str) -> Option<LineBreakMode> {
-    let mut mode = LineBreakMode::none();
-    let mut saw_token = false;
-    for token in value.split_whitespace() {
-        saw_token = true;
-        match token.to_ascii_lowercase().as_str() {
-            "<eol>" => mode.end_of_line = true,
-            "<none>" => mode = LineBreakMode::none(),
-            "$" => mode.dollar = true,
-            "!" => mode.bang = true,
-            _ => return None,
-        }
-    }
-    saw_token.then_some(mode)
-}
-
-fn parse_decoration_delimiter(value: &str) -> Option<DecorationDelimiter> {
-    match value.trim() {
-        "!" => Some(DecorationDelimiter::Bang),
-        "+" => Some(DecorationDelimiter::Plus),
-        _ => None,
-    }
-}
-
-fn parse_user_symbol(value: Spanned<String>) -> UserSymbol {
-    let (left, right) = split_assignment(value);
-    let symbol = left.value.chars().next().map(|symbol| {
-        Spanned::new(
-            symbol,
-            Span::new(left.span.start, left.span.start + symbol.len_utf8()),
-        )
-    });
-    UserSymbol {
-        symbol,
-        replacement: right,
-    }
-}
-
-fn parse_macro(value: Spanned<String>) -> MacroDefinition {
-    let (left, right) = split_assignment(value);
-    MacroDefinition {
-        name: left,
-        replacement: right,
     }
 }
 
