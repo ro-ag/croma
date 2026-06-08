@@ -740,6 +740,146 @@ fn chords_grace_tuplets_ties_slurs_and_lyrics_export() {
 }
 
 #[test]
+fn slur_opening_before_grace_group_starts_on_first_grace_note() {
+    // ABC 2.1 §4.11 + §4.20: in `({grace}note)` the slur opens before the grace
+    // group, so it must start on the FIRST grace note, not the following main
+    // note. The main note carries only the matching stop.
+    let source = "X:1\nT:Grace Slur\nM:4/4\nL:1/4\nK:C\n({g}c4)|\n";
+    let export = export_musicxml(source).expect("grace-slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+
+    // The grace note carries the slur start inside its own notations.
+    let grace_note_start = export
+        .musicxml
+        .find("<grace/>")
+        .expect("grace note should be present");
+    let grace_note_end = export.musicxml[grace_note_start..]
+        .find("</note>")
+        .map(|offset| grace_note_start + offset)
+        .expect("grace note should be terminated");
+    let grace_note = &export.musicxml[grace_note_start..grace_note_end];
+    assert!(
+        grace_note.contains("<notations>"),
+        "grace note should carry notations: {grace_note}"
+    );
+    assert!(
+        grace_note.contains("<slur type=\"start\" number=\"1\"/>"),
+        "grace note should carry the slur start: {grace_note}"
+    );
+
+    // There is exactly one slur start and one slur stop overall (no degenerate
+    // start+stop on the main note).
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"stop\" number=\"1\"/>"),
+        1
+    );
+
+    // The slur stop lands on the main note, which is NOT a grace note.
+    let stop_index = export
+        .musicxml
+        .find("<slur type=\"stop\" number=\"1\"/>")
+        .expect("slur stop should be present");
+    let main_note_start = export.musicxml[..stop_index]
+        .rfind("<note")
+        .expect("slur stop should be inside a note");
+    let main_note = &export.musicxml[main_note_start..stop_index];
+    assert!(
+        !main_note.contains("<grace/>"),
+        "slur stop should land on the main note, not a grace note: {main_note}"
+    );
+    assert!(
+        !main_note.contains("<slur type=\"start\""),
+        "main note must not carry a degenerate slur start: {main_note}"
+    );
+}
+
+#[test]
+fn slur_opening_after_a_grace_starts_on_main_note_not_grace() {
+    // Discrimination guard: `{g}c(de)` — the grace `{g}` leads note `c`, but the
+    // slur opens AFTER it, before `d`. The slurred note `d` has NO leading grace
+    // group, so the slur must start on `d` and the grace `G` must stay clean.
+    // This proves the span check only re-targets a grace the slur actually
+    // encloses (the `({grace}note)` form in
+    // `slur_opening_before_grace_group_starts_on_first_grace_note`).
+    let source = "X:1\nT:Grace Then Slur\nM:4/4\nL:1/4\nK:C\n{g}c(de)|\n";
+    let export = export_musicxml(source).expect("grace-then-slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+
+    // The grace G carries no slur.
+    let grace_note_start = export
+        .musicxml
+        .find("<grace/>")
+        .expect("grace note should be present");
+    let grace_note_end = export.musicxml[grace_note_start..]
+        .find("</note>")
+        .map(|offset| grace_note_start + offset)
+        .expect("grace note should be terminated");
+    let grace_note = &export.musicxml[grace_note_start..grace_note_end];
+    assert!(
+        !grace_note.contains("<slur"),
+        "grace note must not carry a slur when the slur opens after it: {grace_note}"
+    );
+
+    // The slur start lands on a non-grace main note (D).
+    let start_index = export
+        .musicxml
+        .find("<slur type=\"start\" number=\"1\"/>")
+        .expect("slur start should be present");
+    let main_note_start = export.musicxml[..start_index]
+        .rfind("<note")
+        .expect("slur start should be inside a note");
+    let main_note = &export.musicxml[main_note_start..start_index];
+    assert!(
+        !main_note.contains("<grace/>"),
+        "slur start should land on the main note: {main_note}"
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<slur type=\"stop\" number=\"1\"/>")
+    );
+}
+
+#[test]
+fn slur_without_grace_still_spans_first_to_last_note() {
+    // Guard: a plain `(DEF)` slur still spans D->F unchanged, and a plain grace
+    // note with no slur emits no notations.
+    let source = "X:1\nT:Plain Slur\nM:4/4\nL:1/4\nK:C\n(DEF) {g}A|\n";
+    let export = export_musicxml(source).expect("plain slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"stop\" number=\"1\"/>"),
+        1
+    );
+
+    // The lone grace note (the `{g}` before `A`) carries no notations/slur.
+    let grace_note_start = export
+        .musicxml
+        .find("<grace/>")
+        .expect("grace note should be present");
+    let grace_note_end = export.musicxml[grace_note_start..]
+        .find("</note>")
+        .map(|offset| grace_note_start + offset)
+        .expect("grace note should be terminated");
+    let grace_note = &export.musicxml[grace_note_start..grace_note_end];
+    assert!(
+        !grace_note.contains("<notations>") && !grace_note.contains("<slur"),
+        "plain grace note should carry no notations: {grace_note}"
+    );
+}
+
+#[test]
 fn lyric_hyphen_controls_do_not_export_as_sung_text() {
     let source = "X:1\nT:Hyphen Lyrics\nM:4/4\nL:1/4\nK:C\nC D E F|\nw: A-des-te fi-del\n";
     let export = export_musicxml(source).expect("hyphen lyric score should export");
