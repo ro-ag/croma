@@ -838,6 +838,74 @@ fn bare_voice_switch_keeps_each_header_clef() {
 }
 
 #[test]
+fn key_field_octave_property_shifts_single_voice() {
+    // `octave=1` on a header `K:` line (ABC 2.1 §4.6 allows clef/octave on K:)
+    // shifts every note up one octave, exactly like abc2xml. The baseline (no
+    // `octave=`) writes `C` at octave 4; with `octave=1` it must be octave 5.
+    let baseline = export_musicxml("X:1\nL:1/4\nK:C\nC2 C2|\n").expect("baseline should export");
+    assert!(baseline.musicxml.contains("<octave>4</octave>"));
+    assert!(!baseline.musicxml.contains("<octave>5</octave>"));
+
+    let shifted =
+        export_musicxml("X:1\nL:1/4\nK:C octave=1\nC2 C2|\n").expect("octave=1 should export");
+    assert_balanced_xml(&shifted.musicxml);
+    assert!(
+        shifted.musicxml.contains("<octave>5</octave>"),
+        "octave=1 on K: should shift C from octave 4 to 5"
+    );
+    assert!(!shifted.musicxml.contains("<octave>4</octave>"));
+}
+
+#[test]
+fn key_field_clef_shorthand_scopes_to_current_voice_only() {
+    // `K:C treble+8` / `K:C treble-8` appearing after a `V:n` switch scope to the
+    // voice currently in scope only (abc2xml semantics), and must NOT leak into
+    // other voices. V:1 gets +8 (C octave 4 -> 5); V:2 gets -8 (C octave 4 -> 3).
+    let source = concat!(
+        "X:1\nL:1/4\n",
+        "K:C\n",
+        "V:1\n",
+        "K:C treble+8\n",
+        "C2 C2|\n",
+        "V:2\n",
+        "K:C treble-8\n",
+        "C2 C2|\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice K: clef score should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let p1 = export
+        .musicxml
+        .split("<part id=\"P2\">")
+        .next()
+        .expect("part P1 segment");
+    let p2 = export
+        .musicxml
+        .split("<part id=\"P2\">")
+        .nth(1)
+        .expect("part P2 segment");
+
+    // V:1 shifted up: octave 5, never octave 4 or 3.
+    assert!(
+        p1.contains("<octave>5</octave>"),
+        "V:1 K:C treble+8 should shift C to octave 5"
+    );
+    assert!(
+        !p1.contains("<octave>3</octave>"),
+        "V:1 shift must not be the V:2 (-8) shift"
+    );
+    // V:2 shifted down: octave 3, and crucially NOT octave 5 (no leak from V:1).
+    assert!(
+        p2.contains("<octave>3</octave>"),
+        "V:2 K:C treble-8 should shift C to octave 3"
+    );
+    assert!(
+        !p2.contains("<octave>5</octave>"),
+        "V:1's +8 shift must not leak into V:2"
+    );
+}
+
+#[test]
 fn unclosed_decoration_does_not_swallow_following_notes() {
     // `!f2e2f2` is a stray `!` before notes (a deprecated line-break or
     // typo), not a decoration named "f2e2f2". The notes must survive.

@@ -30,7 +30,7 @@ use crate::model::{
 use crate::parse::ParseReport;
 use crate::parse::field::{
     FieldState, KeyMode, KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned,
-    StemDirection, UnitNoteLength, VoiceDefinition,
+    StemDirection, UnitNoteLength, VoiceDefinition, VoiceProperties,
 };
 use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
@@ -188,6 +188,18 @@ impl MultiVoiceLowering {
             .unwrap_or_else(|| default_voice_definition(fallback_span));
         lowering.current_voice = initial.value.id.value.clone();
         lowering.ensure_voice(initial);
+
+        // The tune header `K:` may carry clef/octave/middle/transpose modifiers
+        // (ABC 2.1 §4.6, e.g. `K: Dm octave=1`). Unlike body `K:` lines, the
+        // header key is seeded directly rather than via `apply_key_change`, so
+        // merge its modifiers into the initial (current) voice here. In a
+        // single-voice tune that is the whole tune; abc2xml does the same.
+        if let Some(key) = field_state.key.as_ref() {
+            let key_props = key_clef_properties_model(&key.value.properties);
+            if key_props != VoicePropertiesModel::default() {
+                merge_voice_properties(&mut lowering.current_state().properties, key_props);
+            }
+        }
         lowering
     }
 
@@ -246,6 +258,16 @@ impl MultiVoiceLowering {
         for voice in &mut self.voices {
             voice.set_key(Some(&key.value));
         }
+        // A K: field may carry clef/octave/middle/transpose modifiers
+        // (ABC 2.1 §4.6, e.g. `K:C treble+8`, `K: Dm octave=1`). These scope to
+        // the CURRENT voice only — exactly like abc2xml's doClef on K: fields —
+        // and must not broadcast to the other voices. Merge them into the active
+        // voice's properties so `voice_octave_shift` applies the resulting shift
+        // to the notes that follow.
+        let key_props = key_clef_properties_model(&key.value.properties);
+        if key_props != VoicePropertiesModel::default() {
+            merge_voice_properties(&mut self.current_state().properties, key_props);
+        }
     }
 
     /// Apply an inline `[K:..]` key change to the currently-active voice only.
@@ -260,6 +282,17 @@ impl MultiVoiceLowering {
             return;
         }
         self.current_state().set_key(Some(&key.value));
+        self.apply_inline_key_clef_properties(&key.value);
+    }
+
+    /// Merge clef/octave/middle/transpose modifiers carried on a `[K:..]` field
+    /// into the current voice's properties (ABC 2.1 §4.6). Scoped to the active
+    /// voice, like a whole-line K: change.
+    fn apply_inline_key_clef_properties(&mut self, key: &KeySignature) {
+        let key_props = key_clef_properties_model(&key.properties);
+        if key_props != VoicePropertiesModel::default() {
+            merge_voice_properties(&mut self.current_state().properties, key_props);
+        }
     }
 
     /// Apply an inline information field (`[M:..]`, `[K:..]`, `[L:..]`) that
@@ -282,9 +315,13 @@ impl MultiVoiceLowering {
                 let key = crate::parse::field::parse_key(&inline.value.value, inline.value.span);
                 // An inline `[K:..]` that carries no key information — e.g. a
                 // clef-only change such as `[K:clef=bass]` — must leave the
-                // current key signature untouched rather than reset it.
+                // current key signature untouched rather than reset it. Its
+                // clef/octave/middle/transpose modifiers still apply, scoped to
+                // the current voice (ABC 2.1 §4.6).
                 if inline_key_changes_signature(&key) {
                     self.apply_inline_key_change(&Spanned::new(key, inline.value.span));
+                } else if !key_is_invalid_for_lowering(&key) {
+                    self.apply_inline_key_clef_properties(&key);
                 }
             }
             _ => {}
@@ -577,6 +614,20 @@ fn voice_properties_model(voice: &VoiceDefinition) -> VoicePropertiesModel {
             .middle
             .as_ref()
             .map(text_line_from_spanned),
+    }
+}
+
+/// Build a `VoicePropertiesModel` carrying only the clef/octave/middle/transpose
+/// modifiers a `K:` field may declare (ABC 2.1 §4.6). All naming/stem fields are
+/// left `None` so that merging into a voice never disturbs its name or stem — a
+/// K: field never sets those.
+fn key_clef_properties_model(properties: &VoiceProperties) -> VoicePropertiesModel {
+    VoicePropertiesModel {
+        clef: properties.clef.as_ref().map(text_line_from_spanned),
+        octave: properties.octave.as_ref().map(text_line_from_spanned),
+        transpose: properties.transpose.as_ref().map(text_line_from_spanned),
+        middle: properties.middle.as_ref().map(text_line_from_spanned),
+        ..VoicePropertiesModel::default()
     }
 }
 

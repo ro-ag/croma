@@ -32,10 +32,22 @@ pub(super) fn upsert_voice_definition(
     }
 }
 
-fn parse_voice_properties(properties: &Spanned<String>) -> VoiceProperties {
+pub(super) fn parse_voice_properties(properties: &Spanned<String>) -> VoiceProperties {
     let mut parsed = VoiceProperties::default();
     for property in voice_property_tokens(&properties.value, properties.span.start) {
         let key_lower = property.key.value.to_ascii_lowercase();
+        // A bare clef shorthand carries no `=` — its value is empty and the whole
+        // token sits in `key`. `treble+8`, `bass`, `alto`, etc. (optionally with a
+        // `±8`/`±15` octave suffix) name a clef just like `clef=treble+8` does, so
+        // record it as the clef. ABC 2.1 §4.6 permits the bare form on V: and K:
+        // fields alike, and abc2xml accepts it.
+        if property.value.value.is_empty()
+            && parsed.clef.is_none()
+            && is_bare_clef_shorthand(&key_lower)
+        {
+            parsed.clef = Some(property.key.clone());
+            continue;
+        }
         match key_lower.as_str() {
             "name" => parsed.name = Some(property.value.clone()),
             "nm" => parsed.nm = Some(property.value.clone()),
@@ -61,6 +73,14 @@ fn parse_voice_properties(properties: &Spanned<String>) -> VoiceProperties {
         }
     }
     parsed
+}
+
+/// Whether a bare (no `=`) token names a clef shorthand, e.g. `treble`, `bass`,
+/// `alto`, `tenor`, `perc`, or `none`, optionally with a `±8`/`±15` octave
+/// suffix (`treble+8`, `bass-15`). The input is already lowercased.
+fn is_bare_clef_shorthand(token: &str) -> bool {
+    const CLEF_NAMES: [&str; 6] = ["treble", "alto", "tenor", "bass", "perc", "none"];
+    CLEF_NAMES.iter().any(|name| token.starts_with(name))
 }
 
 fn voice_property_tokens(value: &str, offset: usize) -> Vec<VoiceProperty> {

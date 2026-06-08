@@ -72,6 +72,55 @@ fn parses_key_modes_and_explicit_accidentals() {
 }
 
 #[test]
+fn key_field_captures_octave_property() {
+    let report = parse_document("X:1\nK: Dm octave=1\nC\n", ParseOptions::default());
+    let tune = report.value.fields.tune(0).expect("expected tune fields");
+    let key = tune.header.key.as_ref().expect("expected key");
+
+    assert_eq!(
+        key.value.tonic,
+        Some(KeyTonic {
+            step: 'D',
+            accidental: None
+        })
+    );
+    assert_eq!(key.value.mode, KeyMode::Minor);
+    assert_eq!(
+        key.value
+            .properties
+            .octave
+            .as_ref()
+            .map(|value| value.value.as_str()),
+        Some("1")
+    );
+    // The tonic/mode token (`Dm`) must not be misread as a clef shorthand.
+    assert!(key.value.properties.clef.is_none());
+}
+
+#[test]
+fn key_field_captures_bare_clef_shorthand() {
+    let report = parse_document("X:1\nK:C treble+8\nC\n", ParseOptions::default());
+    let tune = report.value.fields.tune(0).expect("expected tune fields");
+    let key = tune.header.key.as_ref().expect("expected key");
+
+    assert_eq!(
+        key.value.tonic,
+        Some(KeyTonic {
+            step: 'C',
+            accidental: None
+        })
+    );
+    assert_eq!(
+        key.value
+            .properties
+            .clef
+            .as_ref()
+            .map(|value| value.value.as_str()),
+        Some("treble+8")
+    );
+}
+
+#[test]
 fn unknown_fields_warn_and_stay_out_of_music() {
     let report = parse_document("X:1\nK:C\nY:ABC\nC\n", ParseOptions::default());
 
