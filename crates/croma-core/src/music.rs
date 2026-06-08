@@ -19,7 +19,7 @@ use crate::model::{
     VoicePropertiesModel, VoiceTimedEvent, VoiceTimeline, lcm,
 };
 use crate::options::ParseMode;
-use crate::parser::ParseReport;
+use crate::parse::ParseReport;
 use crate::source::SourceText;
 use crate::syntax::tune::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
 use crate::syntax::{
@@ -5556,7 +5556,7 @@ fn abc_field_reference() -> SpecReference {
 mod tests {
     use super::*;
     use crate::options::ParseOptions;
-    use crate::parser::{parse_document, parse_tune_report_from_document};
+    use crate::parse::{parse_document, parse_tune_report_from_document};
 
     fn events_for(source: &str) -> (Vec<Event>, Vec<Diagnostic>) {
         let document = parse_document(source, ParseOptions::default()).value;

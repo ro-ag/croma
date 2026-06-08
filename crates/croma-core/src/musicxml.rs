@@ -9,7 +9,7 @@ use crate::model::{
     TempoBeat, TempoModel, TextAttachment, TieRole, TimedEvent, TimedEventKind, TimelineEventKind,
     TupletAttachment, TupletRole, VoiceTimedEvent,
 };
-use crate::parser::ParseReport;
+use crate::parse::ParseReport;
 
 pub fn write_score_partwise(score: &Score) -> ParseReport<String> {
     let mut writer = MusicXmlWriter::new(score);
@@ -3699,7 +3699,7 @@ mod tests {
     fn semantic_onset_gaps_emit_forward() {
         let source = "X:1\nL:1/8\nK:C\nC D|\n";
         let document = parse_document(source, ParseOptions::default());
-        let tune = crate::parser::parse_tune_report_from_document(&document.value)
+        let tune = crate::parse::parse_tune_report_from_document(&document.value)
             .value
             .expect("expected tune");
         let mut score = tune.score;
@@ -3822,7 +3822,7 @@ mod tests {
     fn non_integral_duration_reports_precise_writer_diagnostic() {
         let source = "X:1\nL:1/8\nK:C\nC D|\n";
         let document = parse_document(source, ParseOptions::default());
-        let tune = crate::parser::parse_tune_report_from_document(&document.value)
+        let tune = crate::parse::parse_tune_report_from_document(&document.value)
             .value
             .expect("expected tune");
         let mut score = tune.score;
@@ -3843,7 +3843,7 @@ mod tests {
     fn unsupported_note_type_duration_reports_precise_writer_diagnostic() {
         let source = "X:1\nL:1/8\nK:C\nC|\n";
         let document = parse_document(source, ParseOptions::default());
-        let tune = crate::parser::parse_tune_report_from_document(&document.value)
+        let tune = crate::parse::parse_tune_report_from_document(&document.value)
             .value
             .expect("expected tune");
         let mut score = tune.score;
