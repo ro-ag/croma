@@ -1,3 +1,4 @@
+pub mod barline;
 pub mod directive;
 pub mod field;
 pub mod lyric;

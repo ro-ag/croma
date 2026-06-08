@@ -480,19 +480,19 @@ pub(super) fn trim_spanned_string(value: &str, offset: usize) -> Spanned<String>
     )
 }
 
-struct MusicLineParser<'line> {
-    text: &'line str,
-    line_offset: usize,
-    index: usize,
-    dialect: DialectState,
-    pending_attachments: AttachmentBundle,
-    tokens: Vec<MusicToken>,
-    items: Vec<MusicItem>,
-    diagnostics: Vec<Diagnostic>,
+pub(crate) struct MusicLineParser<'line> {
+    pub(super) text: &'line str,
+    pub(super) line_offset: usize,
+    pub(super) index: usize,
+    pub(super) dialect: DialectState,
+    pub(super) pending_attachments: AttachmentBundle,
+    pub(super) tokens: Vec<MusicToken>,
+    pub(super) items: Vec<MusicItem>,
+    pub(super) diagnostics: Vec<Diagnostic>,
 }
 
 impl<'line> MusicLineParser<'line> {
-    fn new(text: &'line str, line_offset: usize, dialect: DialectState) -> Self {
+    pub(super) fn new(text: &'line str, line_offset: usize, dialect: DialectState) -> Self {
         Self {
             text,
             line_offset,
@@ -505,7 +505,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse(&mut self, line_index: usize, span: Span, code_span: Span) -> MusicLine {
+    pub(super) fn parse(&mut self, line_index: usize, span: Span, code_span: Span) -> MusicLine {
         while self.index < self.text.len() {
             let Some(ch) = self.peek_char() else {
                 break;
@@ -571,7 +571,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse_whitespace(&mut self) {
+    pub(super) fn parse_whitespace(&mut self) {
         let start = self.index;
         while self.peek_char().is_some_and(char::is_whitespace) {
             self.bump_char();
@@ -579,7 +579,7 @@ impl<'line> MusicLineParser<'line> {
         self.push_token(MusicTokenKind::Whitespace, self.span(start, self.index));
     }
 
-    fn parse_accidental_or_malformed(&mut self) {
+    pub(super) fn parse_accidental_or_malformed(&mut self) {
         let Some(accidental) = self.parse_accidental_token() else {
             return;
         };
@@ -597,7 +597,7 @@ impl<'line> MusicLineParser<'line> {
         );
     }
 
-    fn parse_note(&mut self, accidental: Option<AccidentalSyntax>) {
+    pub(super) fn parse_note(&mut self, accidental: Option<AccidentalSyntax>) {
         let attachments = self.take_pending_attachments();
         let core_start = accidental
             .as_ref()
@@ -640,7 +640,7 @@ impl<'line> MusicLineParser<'line> {
         self.items.push(MusicItem::Note(note));
     }
 
-    fn parse_accidental_token(&mut self) -> Option<AccidentalSyntax> {
+    pub(super) fn parse_accidental_token(&mut self) -> Option<AccidentalSyntax> {
         let start = self.index;
         let sign = if self.starts_with("__") {
             self.index += 2;
@@ -661,7 +661,7 @@ impl<'line> MusicLineParser<'line> {
         Some(AccidentalSyntax { sign, span })
     }
 
-    fn parse_octave_marks(&mut self) -> Vec<OctaveMarkSyntax> {
+    pub(super) fn parse_octave_marks(&mut self) -> Vec<OctaveMarkSyntax> {
         let mut marks = Vec::new();
         while let Some(ch @ ('\'' | ',')) = self.peek_char() {
             let start = self.index;
@@ -680,7 +680,7 @@ impl<'line> MusicLineParser<'line> {
         marks
     }
 
-    fn parse_rest(&mut self, visibility: RestVisibility) {
+    pub(super) fn parse_rest(&mut self, visibility: RestVisibility) {
         let attachments = self.take_pending_attachments();
         let start = self.index;
         self.bump_char();
@@ -710,7 +710,7 @@ impl<'line> MusicLineParser<'line> {
         }));
     }
 
-    fn parse_multi_measure_rest(&mut self, visibility: RestVisibility) {
+    pub(super) fn parse_multi_measure_rest(&mut self, visibility: RestVisibility) {
         self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
@@ -732,7 +732,7 @@ impl<'line> MusicLineParser<'line> {
             }));
     }
 
-    fn parse_spacer(&mut self) {
+    pub(super) fn parse_spacer(&mut self) {
         self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
@@ -741,7 +741,7 @@ impl<'line> MusicLineParser<'line> {
         self.items.push(MusicItem::Spacer(SpacerSyntax { span }));
     }
 
-    fn parse_dot(&mut self) {
+    pub(super) fn parse_dot(&mut self) {
         if self.peek_next_char() == Some('-') {
             self.parse_tie(true);
             return;
@@ -765,7 +765,7 @@ impl<'line> MusicLineParser<'line> {
         self.parse_shorthand_decoration();
     }
 
-    fn parse_left_bracket(&mut self) {
+    pub(super) fn parse_left_bracket(&mut self) {
         if self.is_inline_field_start() {
             self.flush_pending_attachments();
             self.parse_inline_field();
@@ -787,76 +787,7 @@ impl<'line> MusicLineParser<'line> {
         self.parse_chord();
     }
 
-    fn parse_barline(&mut self, dotted: bool) {
-        self.flush_pending_attachments();
-        let start = self.index;
-        if dotted {
-            self.bump_char();
-        }
-        let scan_start = self.index;
-        while self.peek_char().is_some_and(is_barline_char) {
-            // `[` is a barline character (it leads `[|`, `[::]`), but a `[`
-            // encountered partway through the scan opens a separate construct —
-            // a chord (`|[G2C,2]`), variant ending (`|[1`) or inline field
-            // (`|[M:3/8]`) — unless it continues a `[|`. Stop there so that `[`
-            // is parsed on its own instead of being swallowed into the barline.
-            if self.peek_char() == Some('[')
-                && self.index != scan_start
-                && self.peek_next_char() != Some('|')
-            {
-                break;
-            }
-            let ch = self.bump_char();
-            // `]` always closes a barline spelling (`|]`, `:|]`, `[|]`, `[::]`).
-            // Anything after it — e.g. the `|` in `|]|` — begins a new barline,
-            // so stop here instead of swallowing it into a single Liberal run
-            // and losing the section/final barline (ABC 2.1 §6).
-            if ch == Some(']') {
-                break;
-            }
-        }
-        let span = self.span(start, self.index);
-        let raw = self.text[start..self.index].to_owned();
-        let raw_without_dot = raw.strip_prefix('.').unwrap_or(&raw);
-        let kind = barline_kind(raw_without_dot, dotted);
-
-        self.push_token(MusicTokenKind::Barline, span);
-        if kind == BarlineKind::Liberal {
-            self.diagnostics.push(liberal_barline_warning(span, &raw));
-        } else if kind == BarlineKind::Dotted || kind == BarlineKind::Invisible {
-            self.diagnostics
-                .push(barline_syntax_policy_info(span, kind));
-        }
-        self.items.push(MusicItem::Barline(BarlineSyntax {
-            span,
-            kind,
-            dotted,
-            raw,
-        }));
-
-        if self.peek_char().is_some_and(|ch| ch.is_ascii_digit()) {
-            self.parse_variant_ending(true);
-        }
-    }
-
-    fn parse_colon(&mut self) {
-        if self.starts_with("::") {
-            self.parse_barline(false);
-            return;
-        }
-        if self.peek_next_char() == Some('|') {
-            self.parse_barline(false);
-            return;
-        }
-        self.flush_pending_attachments();
-        self.parse_malformed_single(
-            MalformedSyntaxKind::InvalidBarline,
-            "abc.music.invalid_barline",
-            "A repeat dot must be part of a barline spelling",
-        );
-    }
-
-    fn parse_inline_field(&mut self) {
+    pub(super) fn parse_inline_field(&mut self) {
         let start = self.index;
         self.bump_char();
         let marker_start = self.index;
@@ -902,7 +833,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse_quoted_text(&mut self) {
+    pub(super) fn parse_quoted_text(&mut self) {
         let start = self.index;
         self.bump_char();
         let mut closed = false;
@@ -945,7 +876,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse_open_paren(&mut self) {
+    pub(super) fn parse_open_paren(&mut self) {
         if self.peek_next_char().is_some_and(|ch| ch.is_ascii_digit()) {
             self.parse_tuplet();
         } else {
@@ -953,7 +884,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse_decoration(&mut self, delimiter: char) {
+    pub(super) fn parse_decoration(&mut self, delimiter: char) {
         let allowed = match delimiter {
             '!' => self.dialect.decoration_delimiter == DecorationDelimiter::Bang,
             '+' => {
@@ -1016,7 +947,7 @@ impl<'line> MusicLineParser<'line> {
         });
     }
 
-    fn parse_invalid_decoration(&mut self, delimiter: char) {
+    pub(super) fn parse_invalid_decoration(&mut self, delimiter: char) {
         let start = self.index;
         self.bump_char();
         while let Some(ch) = self.peek_char() {
@@ -1035,7 +966,7 @@ impl<'line> MusicLineParser<'line> {
         );
     }
 
-    fn parse_shorthand_decoration(&mut self) {
+    pub(super) fn parse_shorthand_decoration(&mut self) {
         let start = self.index;
         let Some(symbol) = self.bump_char() else {
             return;
@@ -1067,7 +998,7 @@ impl<'line> MusicLineParser<'line> {
         });
     }
 
-    fn parse_broken_rhythm(&mut self) {
+    pub(super) fn parse_broken_rhythm(&mut self) {
         let start = self.index;
         let Some(marker) = self.bump_char() else {
             return;
@@ -1088,7 +1019,7 @@ impl<'line> MusicLineParser<'line> {
         }));
     }
 
-    fn parse_overlay(&mut self) {
+    pub(super) fn parse_overlay(&mut self) {
         self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
@@ -1097,7 +1028,7 @@ impl<'line> MusicLineParser<'line> {
         self.items.push(MusicItem::Overlay(OverlaySyntax { span }));
     }
 
-    fn parse_tie(&mut self, dotted: bool) {
+    pub(super) fn parse_tie(&mut self, dotted: bool) {
         self.flush_pending_attachments();
         let start = self.index;
         if dotted {
@@ -1109,7 +1040,7 @@ impl<'line> MusicLineParser<'line> {
         self.items.push(MusicItem::Tie(TieSyntax { span, dotted }));
     }
 
-    fn parse_slur(&mut self, direction: SlurDirection, dotted: bool) {
+    pub(super) fn parse_slur(&mut self, direction: SlurDirection, dotted: bool) {
         self.flush_pending_attachments();
         let start = self.index;
         if dotted {
@@ -1125,7 +1056,7 @@ impl<'line> MusicLineParser<'line> {
         }));
     }
 
-    fn parse_tuplet(&mut self) {
+    pub(super) fn parse_tuplet(&mut self) {
         self.flush_pending_attachments();
         let start = self.index;
         self.bump_char();
@@ -1161,63 +1092,7 @@ impl<'line> MusicLineParser<'line> {
             .push(MusicItem::Tuplet(TupletSyntax { span, p, q, r }));
     }
 
-    fn parse_variant_ending(&mut self, shorthand: bool) {
-        let start = self.index;
-        if !shorthand {
-            self.bump_char();
-        }
-
-        let mut endings = Vec::new();
-        while let Some(first) = self.parse_number_token() {
-            if self.peek_char() == Some('-') {
-                self.bump_char();
-                if let Some(second) = self.parse_number_token() {
-                    endings.push(VariantEndingPart::Range {
-                        start: first,
-                        end: second,
-                        span: Span::new(first.span.start, second.span.end),
-                    });
-                } else {
-                    endings.push(VariantEndingPart::Single(first));
-                    self.diagnostics
-                        .push(invalid_repeat_ending_warning(self.span(start, self.index)));
-                    break;
-                }
-            } else {
-                endings.push(VariantEndingPart::Single(first));
-            }
-
-            if self.peek_char() == Some(',') {
-                self.bump_char();
-                continue;
-            }
-            break;
-        }
-
-        if !shorthand && self.peek_char() == Some(']') {
-            self.bump_char();
-        }
-
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::RepeatEnding, span);
-        if endings.is_empty() {
-            self.push_malformed(
-                span,
-                MalformedSyntaxKind::InvalidRepeatEnding,
-                "abc.music.invalid_repeat_ending",
-                "Repeat ending did not contain an ending number",
-            );
-        } else {
-            self.items
-                .push(MusicItem::VariantEnding(VariantEndingSyntax {
-                    span,
-                    shorthand,
-                    endings,
-                }));
-        }
-    }
-
-    fn parse_chord(&mut self) {
+    pub(super) fn parse_chord(&mut self) {
         let attachments = self.take_pending_attachments();
         let start = attachments
             .span_start()
@@ -1313,7 +1188,7 @@ impl<'line> MusicLineParser<'line> {
         }));
     }
 
-    fn parse_grace_group(&mut self) {
+    pub(super) fn parse_grace_group(&mut self) {
         let start = self.index;
         self.bump_char();
         let slash_span = if self.peek_char() == Some('/') {
@@ -1421,7 +1296,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn parse_note_syntax(&mut self, accidental: Option<AccidentalSyntax>) -> Option<NoteSyntax> {
+    pub(super) fn parse_note_syntax(&mut self, accidental: Option<AccidentalSyntax>) -> Option<NoteSyntax> {
         let attachments = self.take_pending_attachments();
         let core_start = accidental
             .as_ref()
@@ -1461,7 +1336,7 @@ impl<'line> MusicLineParser<'line> {
         })
     }
 
-    fn parse_rest_syntax(&mut self, visibility: RestVisibility) -> RestSyntax {
+    pub(super) fn parse_rest_syntax(&mut self, visibility: RestVisibility) -> RestSyntax {
         let attachments = self.take_pending_attachments();
         let start = self.index;
         self.bump_char();
@@ -1491,11 +1366,11 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn take_pending_attachments(&mut self) -> AttachmentBundle {
+    pub(super) fn take_pending_attachments(&mut self) -> AttachmentBundle {
         std::mem::take(&mut self.pending_attachments)
     }
 
-    fn flush_pending_attachments(&mut self) {
+    pub(super) fn flush_pending_attachments(&mut self) {
         let attachments = self.take_pending_attachments();
         for grace in attachments.grace_groups {
             self.items.push(MusicItem::GraceGroup(grace));
@@ -1511,7 +1386,7 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn is_user_symbol(&self, symbol: char) -> bool {
+    pub(super) fn is_user_symbol(&self, symbol: char) -> bool {
         self.dialect
             .user_symbols
             .iter()
@@ -1520,7 +1395,7 @@ impl<'line> MusicLineParser<'line> {
 
     /// The `U:`-defined replacement text for `symbol`, if one is in scope. The
     /// last definition wins, matching ABC redefinition semantics.
-    fn user_symbol_replacement(&self, symbol: char) -> Option<String> {
+    pub(super) fn user_symbol_replacement(&self, symbol: char) -> Option<String> {
         self.dialect
             .user_symbols
             .iter()
@@ -1529,7 +1404,7 @@ impl<'line> MusicLineParser<'line> {
             .map(|definition| definition.replacement.value.clone())
     }
 
-    fn parse_malformed_single(
+    pub(super) fn parse_malformed_single(
         &mut self,
         kind: MalformedSyntaxKind,
         code: &'static str,
@@ -1543,7 +1418,7 @@ impl<'line> MusicLineParser<'line> {
         self.push_malformed(span, kind, code, message);
     }
 
-    fn parse_malformed_digits(&mut self) {
+    pub(super) fn parse_malformed_digits(&mut self) {
         self.flush_pending_attachments();
         let start = self.index;
         while self.peek_char().is_some_and(|ch| ch.is_ascii_digit()) {
@@ -1569,14 +1444,14 @@ impl<'line> MusicLineParser<'line> {
         }
     }
 
-    fn previous_non_whitespace_char(&self, before: usize) -> Option<char> {
+    pub(super) fn previous_non_whitespace_char(&self, before: usize) -> Option<char> {
         self.text[..before]
             .chars()
             .rev()
             .find(|ch| !ch.is_whitespace())
     }
 
-    fn parse_unsupported_single(
+    pub(super) fn parse_unsupported_single(
         &mut self,
         kind: UnsupportedSyntaxKind,
         code: &'static str,
@@ -1592,7 +1467,7 @@ impl<'line> MusicLineParser<'line> {
         self.push_unsupported_diagnostic(span, code, message);
     }
 
-    fn parse_length_suffix(&mut self) -> Option<LengthSyntax> {
+    pub(super) fn parse_length_suffix(&mut self) -> Option<LengthSyntax> {
         let start = self.index;
         let numerator = self.parse_number_token();
         let mut slash_count = 0u8;
@@ -1654,7 +1529,7 @@ impl<'line> MusicLineParser<'line> {
         })
     }
 
-    fn parse_number_token(&mut self) -> Option<SpannedNumber> {
+    pub(super) fn parse_number_token(&mut self) -> Option<SpannedNumber> {
         let start = self.index;
         while self.peek_char().is_some_and(|ch| ch.is_ascii_digit()) {
             self.bump_char();
@@ -1674,18 +1549,18 @@ impl<'line> MusicLineParser<'line> {
         Some(SpannedNumber { value, span })
     }
 
-    fn is_inline_field_start(&self) -> bool {
+    pub(super) fn is_inline_field_start(&self) -> bool {
         let mut chars = self.text[self.index..].chars();
         matches!(chars.next(), Some('['))
             && chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
             && matches!(chars.next(), Some(':'))
     }
 
-    fn push_token(&mut self, kind: MusicTokenKind, span: Span) {
+    pub(super) fn push_token(&mut self, kind: MusicTokenKind, span: Span) {
         self.tokens.push(MusicToken { kind, span });
     }
 
-    fn push_malformed(
+    pub(super) fn push_malformed(
         &mut self,
         span: Span,
         kind: MalformedSyntaxKind,
@@ -1703,7 +1578,7 @@ impl<'line> MusicLineParser<'line> {
         );
     }
 
-    fn push_unsupported_diagnostic(
+    pub(super) fn push_unsupported_diagnostic(
         &mut self,
         span: Span,
         code: &'static str,
@@ -1718,46 +1593,28 @@ impl<'line> MusicLineParser<'line> {
         );
     }
 
-    fn peek_char(&self) -> Option<char> {
+    pub(super) fn peek_char(&self) -> Option<char> {
         self.text[self.index..].chars().next()
     }
 
-    fn peek_next_char(&self) -> Option<char> {
+    pub(super) fn peek_next_char(&self) -> Option<char> {
         let mut chars = self.text[self.index..].chars();
         chars.next()?;
         chars.next()
     }
 
-    fn bump_char(&mut self) -> Option<char> {
+    pub(super) fn bump_char(&mut self) -> Option<char> {
         let ch = self.peek_char()?;
         self.index += ch.len_utf8();
         Some(ch)
     }
 
-    fn starts_with(&self, pattern: &str) -> bool {
+    pub(super) fn starts_with(&self, pattern: &str) -> bool {
         self.text[self.index..].starts_with(pattern)
     }
 
-    fn span(&self, start: usize, end: usize) -> Span {
+    pub(super) fn span(&self, start: usize, end: usize) -> Span {
         Span::new(self.line_offset + start, self.line_offset + end)
-    }
-}
-
-fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
-    if dotted {
-        return BarlineKind::Dotted;
-    }
-
-    match raw {
-        "|" => BarlineKind::Regular,
-        "||" => BarlineKind::Double,
-        "|]" => BarlineKind::Final,
-        "[|" => BarlineKind::Initial,
-        "|:" | "|::" | "||:" | "[|:" => BarlineKind::RepeatStart,
-        ":|" | "::|" | ":||" | ":|]" => BarlineKind::RepeatEnd,
-        "::" | ":|:" | ":||:" => BarlineKind::RepeatBoth,
-        "[|]" => BarlineKind::Invisible,
-        _ => BarlineKind::Liberal,
     }
 }
 
@@ -1765,7 +1622,7 @@ fn is_note_letter(ch: char) -> bool {
     matches!(ch, 'A'..='G' | 'a'..='g')
 }
 
-fn is_barline_char(ch: char) -> bool {
+pub(super) fn is_barline_char(ch: char) -> bool {
     matches!(ch, '|' | '[' | ']' | ':')
 }
 
@@ -1853,46 +1710,6 @@ fn invalid_length_warning(span: Span, message: &'static str) -> Diagnostic {
     .with_recovery_note(RecoveryNote::new(
         "The length suffix was preserved and a safe duration was used.",
     ))
-}
-
-fn invalid_repeat_ending_warning(span: Span) -> Diagnostic {
-    Diagnostic::new(
-        Severity::Warning,
-        "abc.music.invalid_repeat_ending",
-        "Repeat ending range is malformed",
-        span,
-    )
-    .with_spec_reference(abc_barline_reference())
-    .with_recovery_note(RecoveryNote::new(
-        "The repeat ending syntax was preserved and skipped.",
-    ))
-}
-
-fn liberal_barline_warning(span: Span, raw: &str) -> Diagnostic {
-    Diagnostic::new(
-        Severity::Warning,
-        "abc.music.barline.liberal",
-        format!("Liberal barline spelling `{raw}` was normalized as a measure boundary"),
-        span,
-    )
-    .with_spec_reference(abc_barline_reference())
-    .with_recovery_note(RecoveryNote::new(
-        "The exact spelling is preserved in syntax; lowering uses a regular barline.",
-    ))
-}
-
-fn barline_syntax_policy_info(span: Span, kind: BarlineKind) -> Diagnostic {
-    Diagnostic::new(
-        Severity::Info,
-        "abc.music.barline.policy",
-        match kind {
-            BarlineKind::Dotted => "Dotted barline was preserved for MusicXML export policy",
-            BarlineKind::Invisible => "Invisible barline was preserved for MusicXML export policy",
-            _ => "Barline was preserved for MusicXML export policy",
-        },
-        span,
-    )
-    .with_spec_reference(abc_barline_reference())
 }
 
 fn unsupported_directive_warning(span: Span) -> Diagnostic {
