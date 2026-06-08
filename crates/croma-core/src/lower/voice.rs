@@ -63,6 +63,11 @@ pub(crate) struct LoweringState {
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) active_tuplets: Vec<ActiveTuplet>,
     pub(crate) pending_broken: Option<PendingBrokenRhythm>,
+    /// Whether a timed note group has been emitted in the *current* measure and
+    /// can therefore serve as the left operand of a broken-rhythm sign. Reset to
+    /// `false` at every barline so a `>`/`<` arriving right after a bar does not
+    /// bind backward across it (ABC 2.1 §4.4).
+    pub(crate) broken_left_available: bool,
     pub(crate) key_accidentals: Vec<KeyAccidentalPolicy>,
     pub(crate) accidental_state: Vec<MeasureAccidental>,
     pub(crate) pending_ties: Vec<PendingTie>,
@@ -114,6 +119,7 @@ impl LoweringState {
             diagnostics: Vec::new(),
             active_tuplets: Vec::new(),
             pending_broken: None,
+            broken_left_available: false,
             key_accidentals: key_accidental_policy(key),
             accidental_state: Vec::new(),
             pending_ties: Vec::new(),
@@ -298,6 +304,9 @@ impl LoweringState {
         self.attach_pending_slur_starts(&group);
         self.finish_pending_tie_if_possible(&group);
         self.time_groups.push(group);
+        // A timed note now exists in the current measure, so a following `>`/`<`
+        // has a valid left operand (ABC 2.1 §4.4).
+        self.broken_left_available = true;
     }
 
     fn consume_group_multiplier(&mut self) -> (Fraction, Option<PendingBrokenRhythm>) {
@@ -317,10 +326,16 @@ impl LoweringState {
 
     pub(crate) fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
         let (left_multiplier, right_multiplier) = broken_rhythm_multipliers(marker);
-        let Some(group) = self.time_groups.last() else {
-            self.diagnostics
-                .push(broken_rhythm_without_left_warning(marker.span));
-            return;
+        // The left operand must belong to the *current* measure. After a barline
+        // (or at the very start of the voice) there is no previous note for a
+        // leading broken-rhythm sign, so it is void (ABC 2.1 §4.4).
+        let group = match self.time_groups.last() {
+            Some(group) if self.broken_left_available => group,
+            _ => {
+                self.diagnostics
+                    .push(broken_rhythm_without_left_warning(marker.span));
+                return;
+            }
         };
 
         if self.pending_broken.is_some() {
@@ -401,6 +416,9 @@ impl LoweringState {
             self.diagnostics
                 .push(broken_rhythm_without_right_warning(pending.span));
         }
+        // No note from before the bar can serve as the left operand of a
+        // broken-rhythm sign that appears after it (ABC 2.1 §4.4).
+        self.broken_left_available = false;
     }
 
     fn attach_pending_slur_starts(&mut self, group: &[usize]) {
