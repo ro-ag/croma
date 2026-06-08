@@ -609,9 +609,11 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
 }
 
 /// Octave displacement declared by a voice's clef octave suffix
-/// (`clef=treble-8` → -1, `+8` → +1, `±15` → ±2) plus any explicit `octave=`
-/// property. abc2xml writes the note octaves shifted by this amount (and marks
-/// the clef with a matching `clef-octave-change`).
+/// (`clef=treble-8` → -1, `+8` → +1, `±15` → ±2), any explicit `octave=`
+/// property, and any `middle=` clef modifier (which sets the pitch on the middle
+/// staff line and so shifts the written→sounding octave). abc2xml writes the
+/// note octaves shifted by the total amount (and marks the clef with a matching
+/// `clef-octave-change` for the clef suffix part).
 fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
     let mut shift = 0;
     if let Some(clef) = properties.clef.as_ref() {
@@ -631,7 +633,38 @@ fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
     {
         shift += value;
     }
+    if let Some(middle) = properties.middle.as_ref() {
+        shift += middle_octave_shift(middle.text.as_str());
+    }
     shift
+}
+
+/// Octave shift declared by a `middle=<pitch>` clef modifier, replicating
+/// abc2xml's `gtrans` computation (a single pitch letter `[A-Ga-g]` optionally
+/// followed by octave marks `,`/`'`). Returns 0 for malformed input.
+pub(crate) fn middle_octave_shift(text: &str) -> i8 {
+    let text = text.trim();
+    let mut chars = text.chars();
+    let Some(note) = chars.next() else {
+        return 0;
+    };
+    if !note.is_ascii_alphabetic() || !matches!(note.to_ascii_uppercase(), 'A'..='G') {
+        return 0;
+    }
+    let octstr = &text[note.len_utf8()..];
+    if !octstr.chars().all(|ch| matches!(ch, ',' | '\'')) {
+        return 0;
+    }
+    let n_up = note.to_ascii_uppercase();
+    let base: i32 = if note.is_ascii_uppercase() { 4 } else { 5 };
+    let marks = octstr.chars().count() as i32;
+    let octnum = base + if octstr.contains('\'') { marks } else { -marks };
+    let gtrans = (if matches!(n_up, 'A' | 'F' | 'D') {
+        3
+    } else {
+        4
+    }) - octnum;
+    gtrans as i8
 }
 
 fn length_multiplier(length: Option<&LengthSyntax>) -> Fraction {
@@ -749,3 +782,7 @@ fn unclosed_slur_warning(span: Span) -> Diagnostic {
         "The open slur marker was preserved and skipped during lowering.",
     ))
 }
+
+#[cfg(test)]
+#[path = "voice_tests.rs"]
+mod tests;

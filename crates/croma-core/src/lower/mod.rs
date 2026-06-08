@@ -522,6 +522,9 @@ fn merge_voice_properties(existing: &mut VoicePropertiesModel, incoming: VoicePr
     if incoming.transpose.is_some() {
         existing.transpose = incoming.transpose;
     }
+    if incoming.middle.is_some() {
+        existing.middle = incoming.middle;
+    }
 }
 
 fn voice_properties_model(voice: &VoiceDefinition) -> VoicePropertiesModel {
@@ -567,6 +570,11 @@ fn voice_properties_model(voice: &VoiceDefinition) -> VoicePropertiesModel {
         transpose: voice
             .parsed_properties
             .transpose
+            .as_ref()
+            .map(text_line_from_spanned),
+        middle: voice
+            .parsed_properties
+            .middle
             .as_ref()
             .map(text_line_from_spanned),
     }
