@@ -1,5 +1,5 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
-use crate::fields::{
+use crate::parse::field::{
     AccidentalSign, DecorationDelimiter, DialectState, FieldState, InterpretationField, KeyMode,
     KeySignature, KeyTonicAccidental, Meter, MeterKind, ParsedAbcFields, ParsedFieldKind,
     ScoreDirective, Spanned, StemDirection, UnitNoteLength, VoiceDefinition, parse_voice_for_music,
@@ -369,7 +369,7 @@ fn music_field_for_line(
         }
         ParsedFieldKind::LyricLine(value)
         | ParsedFieldKind::SymbolLine(value)
-        | ParsedFieldKind::TextMetadata(crate::fields::TextMetadataField { value, .. }) => {
+        | ParsedFieldKind::TextMetadata(crate::parse::field::TextMetadataField { value, .. }) => {
             value.clone()
         }
         ParsedFieldKind::Interpretation(InterpretationField::Score { directive }) => {
@@ -497,7 +497,7 @@ fn parse_score_stylesheet_directive(
     let value_start = name_span.end;
     let value_text = &text[value_start.saturating_sub(line.content_span.start)..];
     let value = trim_spanned_string(value_text, value_start);
-    let directive = crate::fields::parse_score_directive(value.clone());
+    let directive = crate::parse::field::parse_score_directive(value.clone());
     Some((
         tune_index,
         ScoreDirectiveSyntax {
@@ -1070,16 +1070,16 @@ impl MultiVoiceLowering {
     fn apply_inline_field(&mut self, inline: &InlineFieldSyntax) {
         match inline.code {
             'M' => {
-                let meter = crate::fields::parse_meter(&inline.value.value);
+                let meter = crate::parse::field::parse_meter(&inline.value.value);
                 self.apply_meter_change(&Spanned::new(meter, inline.value.span));
             }
             'L' => {
-                if let Some(unit) = crate::fields::parse_unit_note_length(&inline.value.value) {
+                if let Some(unit) = crate::parse::field::parse_unit_note_length(&inline.value.value) {
                     self.apply_unit_change(&Spanned::new(unit, inline.value.span));
                 }
             }
             'K' => {
-                let key = crate::fields::parse_key(&inline.value.value, inline.value.span);
+                let key = crate::parse::field::parse_key(&inline.value.value, inline.value.span);
                 // An inline `[K:..]` that carries no key information — e.g. a
                 // clef-only change such as `[K:clef=bass]` — must leave the
                 // current key signature untouched rather than reset it.
@@ -2646,22 +2646,22 @@ fn score_directive_model(syntax: &ScoreDirectiveSyntax) -> ScoreDirectiveModel {
             .map(|token| ScoreDirectiveTokenModel {
                 span: token.span,
                 kind: match &token.kind {
-                    crate::fields::ScoreDirectiveTokenKind::Voice(id) => {
+                    crate::parse::field::ScoreDirectiveTokenKind::Voice(id) => {
                         ScoreDirectiveTokenKindModel::Voice(id.clone())
                     }
-                    crate::fields::ScoreDirectiveTokenKind::GroupStart(ch) => {
+                    crate::parse::field::ScoreDirectiveTokenKind::GroupStart(ch) => {
                         ScoreDirectiveTokenKindModel::GroupStart(*ch)
                     }
-                    crate::fields::ScoreDirectiveTokenKind::GroupEnd(ch) => {
+                    crate::parse::field::ScoreDirectiveTokenKind::GroupEnd(ch) => {
                         ScoreDirectiveTokenKindModel::GroupEnd(*ch)
                     }
-                    crate::fields::ScoreDirectiveTokenKind::StaffSeparator => {
+                    crate::parse::field::ScoreDirectiveTokenKind::StaffSeparator => {
                         ScoreDirectiveTokenKindModel::StaffSeparator
                     }
-                    crate::fields::ScoreDirectiveTokenKind::MeasureSeparator => {
+                    crate::parse::field::ScoreDirectiveTokenKind::MeasureSeparator => {
                         ScoreDirectiveTokenKindModel::MeasureSeparator
                     }
-                    crate::fields::ScoreDirectiveTokenKind::FloatingVoiceMarker => {
+                    crate::parse::field::ScoreDirectiveTokenKind::FloatingVoiceMarker => {
                         ScoreDirectiveTokenKindModel::FloatingVoiceMarker
                     }
                 },
@@ -4169,7 +4169,7 @@ impl<'line> MusicLineParser<'line> {
             );
             let voice = (code == 'V').then(|| {
                 Spanned::new(
-                    crate::fields::parse_voice_for_music(value.clone()),
+                    crate::parse::field::parse_voice_for_music(value.clone()),
                     value.span,
                 )
             });
