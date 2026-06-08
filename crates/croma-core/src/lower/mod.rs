@@ -1,13 +1,17 @@
+pub(crate) mod accidental;
 mod align;
 mod semantic;
 mod tempo;
 
+use crate::lower::accidental::{
+    accidental_from_field_sign, key_accidental_policy, KeyAccidentalPolicy, MeasureAccidental,
+};
 use crate::lower::align::{align_lyrics, align_symbols};
 use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::parse::field::{
-    AccidentalSign, FieldState, KeyMode,
+    FieldState, KeyMode,
     KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned, StemDirection, UnitNoteLength, VoiceDefinition,
 };
 use crate::model::{
@@ -928,7 +932,7 @@ pub(crate) fn extend_span(current: Span, next: Span) -> Span {
     Span::new(current.start.min(next.start), current.end.max(next.end))
 }
 
-fn lowered_timed_note(event: Option<&LoweredEvent>) -> Option<&LoweredTimedEvent> {
+pub(crate) fn lowered_timed_note(event: Option<&LoweredEvent>) -> Option<&LoweredTimedEvent> {
     match event {
         Some(LoweredEvent::Timed(timed))
             if matches!(timed.event.kind, LoweredEventAtomKind::Note { .. }) =>
@@ -939,11 +943,11 @@ fn lowered_timed_note(event: Option<&LoweredEvent>) -> Option<&LoweredTimedEvent
     }
 }
 
-fn is_note_atom(event: LoweredEventAtom) -> bool {
+pub(crate) fn is_note_atom(event: LoweredEventAtom) -> bool {
     matches!(event.kind, LoweredEventAtomKind::Note { .. })
 }
 
-fn note_signature(kind: LoweredEventAtomKind) -> Option<(char, i8)> {
+pub(crate) fn note_signature(kind: LoweredEventAtomKind) -> Option<(char, i8)> {
     match kind {
         LoweredEventAtomKind::Note { step, octave, .. } => Some((step, octave)),
         LoweredEventAtomKind::Rest { .. } => None,
@@ -1079,66 +1083,6 @@ fn grace_note_event_model(note: &NoteSyntax) -> GraceNoteEvent {
                 .unwrap_or(note.span),
         }),
         length_multiplier: length_multiplier(note.length.as_ref()),
-    }
-}
-
-fn key_accidental_policy(key: Option<&KeySignature>) -> Vec<KeyAccidentalPolicy> {
-    let Some(key) = key else {
-        return Vec::new();
-    };
-    let mut accidentals = key_signature_accidentals(key);
-    for explicit in &key.accidentals {
-        let step = explicit.note.value.to_ascii_uppercase();
-        let accidental = accidental_from_field_sign(explicit.sign);
-        if let Some(existing) = accidentals.iter_mut().find(|entry| entry.step == step) {
-            existing.accidental = accidental;
-            existing.span = explicit.span;
-        } else {
-            accidentals.push(KeyAccidentalPolicy {
-                step,
-                accidental,
-                span: explicit.span,
-            });
-        }
-    }
-    accidentals
-}
-
-fn key_signature_accidentals(key: &KeySignature) -> Vec<KeyAccidentalPolicy> {
-    let fifths = key_fifths(key);
-    let key_span = Span::new(0, 0);
-    if fifths > 0 {
-        ['F', 'C', 'G', 'D', 'A', 'E', 'B']
-            .into_iter()
-            .take(fifths as usize)
-            .map(|step| KeyAccidentalPolicy {
-                step,
-                accidental: Accidental::Sharp,
-                span: key_span,
-            })
-            .collect()
-    } else if fifths < 0 {
-        ['B', 'E', 'A', 'D', 'G', 'C', 'F']
-            .into_iter()
-            .take(fifths.unsigned_abs() as usize)
-            .map(|step| KeyAccidentalPolicy {
-                step,
-                accidental: Accidental::Flat,
-                span: key_span,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
-
-fn accidental_from_field_sign(sign: AccidentalSign) -> Accidental {
-    match sign {
-        AccidentalSign::DoubleFlat => Accidental::DoubleFlat,
-        AccidentalSign::Flat => Accidental::Flat,
-        AccidentalSign::Natural => Accidental::Natural,
-        AccidentalSign::Sharp => Accidental::Sharp,
-        AccidentalSign::DoubleSharp => Accidental::DoubleSharp,
     }
 }
 
@@ -1398,7 +1342,7 @@ fn key_is_invalid_for_lowering(key: &KeySignature) -> bool {
         )
 }
 
-fn key_fifths(key: &KeySignature) -> i8 {
+pub(crate) fn key_fifths(key: &KeySignature) -> i8 {
     let Some(tonic) = key.tonic else {
         return 0;
     };
@@ -1487,7 +1431,7 @@ fn preserved_directive_model(syntax: &PreservedDirectiveSyntax) -> PreservedDire
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
-enum LoweredEvent {
+pub(crate) enum LoweredEvent {
     Timed(LoweredTimedEvent),
     Untimed(Event),
     Overlay(OverlaySyntax),
@@ -1495,92 +1439,77 @@ enum LoweredEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LoweredTimedEvent {
-    event: LoweredEventAtom,
-    line_index: usize,
-    source_order: u32,
-    alignable: bool,
-    attachments: EventAttachments,
+pub(crate) struct LoweredTimedEvent {
+    pub(crate) event: LoweredEventAtom,
+    pub(crate) line_index: usize,
+    pub(crate) source_order: u32,
+    pub(crate) alignable: bool,
+    pub(crate) attachments: EventAttachments,
 }
 
 #[derive(Debug, Clone)]
-struct ActiveTuplet {
-    pair_id: u32,
-    span: Span,
-    remaining: u32,
-    actual_notes: u32,
-    normal_notes: u32,
-    multiplier: Fraction,
-    groups: Vec<Vec<usize>>,
+pub(crate) struct ActiveTuplet {
+    pub(crate) pair_id: u32,
+    pub(crate) span: Span,
+    pub(crate) remaining: u32,
+    pub(crate) actual_notes: u32,
+    pub(crate) normal_notes: u32,
+    pub(crate) multiplier: Fraction,
+    pub(crate) groups: Vec<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CompletedTuplet {
-    pair_id: u32,
-    span: Span,
-    actual_notes: u32,
-    normal_notes: u32,
-    groups: Vec<Vec<usize>>,
+pub(crate) struct CompletedTuplet {
+    pub(crate) pair_id: u32,
+    pub(crate) span: Span,
+    pub(crate) actual_notes: u32,
+    pub(crate) normal_notes: u32,
+    pub(crate) groups: Vec<Vec<usize>>,
 }
 
 #[derive(Debug)]
-struct LoweringState {
-    id: VoiceId,
-    properties: VoicePropertiesModel,
-    source_span: Span,
-    unit: Fraction,
-    lowered: Vec<LoweredEvent>,
-    time_groups: Vec<Vec<usize>>,
-    diagnostics: Vec<Diagnostic>,
-    active_tuplets: Vec<ActiveTuplet>,
-    pending_broken: Option<PendingBrokenRhythm>,
-    key_accidentals: Vec<KeyAccidentalPolicy>,
-    accidental_state: Vec<MeasureAccidental>,
-    pending_tie: Option<PendingTie>,
-    next_tie_id: u32,
-    pending_slur_starts: Vec<OpenSlur>,
-    open_slurs: Vec<OpenSlur>,
-    next_slur_id: u32,
-    next_tuplet_id: u32,
+pub(crate) struct LoweringState {
+    pub(crate) id: VoiceId,
+    pub(crate) properties: VoicePropertiesModel,
+    pub(crate) source_span: Span,
+    pub(crate) unit: Fraction,
+    pub(crate) lowered: Vec<LoweredEvent>,
+    pub(crate) time_groups: Vec<Vec<usize>>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) active_tuplets: Vec<ActiveTuplet>,
+    pub(crate) pending_broken: Option<PendingBrokenRhythm>,
+    pub(crate) key_accidentals: Vec<KeyAccidentalPolicy>,
+    pub(crate) accidental_state: Vec<MeasureAccidental>,
+    pub(crate) pending_tie: Option<PendingTie>,
+    pub(crate) next_tie_id: u32,
+    pub(crate) pending_slur_starts: Vec<OpenSlur>,
+    pub(crate) open_slurs: Vec<OpenSlur>,
+    pub(crate) next_slur_id: u32,
+    pub(crate) next_tuplet_id: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingBrokenRhythm {
-    span: Span,
-    left_group: Vec<usize>,
-    left_multiplier: Fraction,
-    right_multiplier: Fraction,
+pub(crate) struct PendingBrokenRhythm {
+    pub(crate) span: Span,
+    pub(crate) left_group: Vec<usize>,
+    pub(crate) left_multiplier: Fraction,
+    pub(crate) right_multiplier: Fraction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct KeyAccidentalPolicy {
-    step: char,
-    accidental: Accidental,
-    span: Span,
+pub(crate) struct PendingTie {
+    pub(crate) event_index: usize,
+    pub(crate) marker: TieSyntax,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MeasureAccidental {
-    step: char,
-    octave: i8,
-    accidental: Accidental,
-    span: Span,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PendingTie {
-    event_index: usize,
-    marker: TieSyntax,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OpenSlur {
-    pair_id: u32,
-    marker: SlurSyntax,
+pub(crate) struct OpenSlur {
+    pub(crate) pair_id: u32,
+    pub(crate) marker: SlurSyntax,
 }
 
 impl LoweringState {
-    fn new(
+    pub(crate) fn new(
         id: VoiceId,
         properties: VoicePropertiesModel,
         unit: Fraction,
@@ -1608,7 +1537,7 @@ impl LoweringState {
         }
     }
 
-    fn push_note_group(&mut self, note: &NoteSyntax, line_index: usize, source_order: u32) {
+    pub(crate) fn push_note_group(&mut self, note: &NoteSyntax, line_index: usize, source_order: u32) {
         let octave = lowered_octave(note) + voice_octave_shift(&self.properties);
         let written_accidental = note.accidental.map(|accidental| accidental.sign);
         let (effective_accidental, accidental_source) = self.effective_accidental(
@@ -1641,7 +1570,7 @@ impl LoweringState {
         );
     }
 
-    fn push_rest_group(&mut self, rest: &RestSyntax, line_index: usize, source_order: u32) {
+    pub(crate) fn push_rest_group(&mut self, rest: &RestSyntax, line_index: usize, source_order: u32) {
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -1661,7 +1590,7 @@ impl LoweringState {
         );
     }
 
-    fn push_chord_group(&mut self, chord: &ChordSyntax, line_index: usize, source_order: u32) {
+    pub(crate) fn push_chord_group(&mut self, chord: &ChordSyntax, line_index: usize, source_order: u32) {
         if chord.members.is_empty() {
             return;
         }
@@ -1720,7 +1649,7 @@ impl LoweringState {
         self.push_time_group(events, line_index, source_order);
     }
 
-    fn push_time_group(
+    pub(crate) fn push_time_group(
         &mut self,
         events: Vec<(LoweredEventAtom, bool, EventAttachments)>,
         line_index: usize,
@@ -1768,7 +1697,7 @@ impl LoweringState {
         (multiplier, pending_broken)
     }
 
-    fn record_tuplet_group(&mut self, group: &[usize]) {
+    pub(crate) fn record_tuplet_group(&mut self, group: &[usize]) {
         let mut completed = Vec::new();
         for tuplet in &mut self.active_tuplets {
             if tuplet.remaining == 0 {
@@ -1792,7 +1721,7 @@ impl LoweringState {
         }
     }
 
-    fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
+    pub(crate) fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
         let (left_multiplier, right_multiplier) = broken_rhythm_multipliers(marker);
         let Some(group) = self.time_groups.last() else {
             self.diagnostics
@@ -1828,7 +1757,7 @@ impl LoweringState {
         }
     }
 
-    fn start_tuplet(&mut self, tuplet: &TupletSyntax) {
+    pub(crate) fn start_tuplet(&mut self, tuplet: &TupletSyntax) {
         let p = tuplet.p.value;
         let q = tuplet.q_value();
         let r = tuplet.r_value();
@@ -1849,7 +1778,7 @@ impl LoweringState {
         });
     }
 
-    fn apply_tie(&mut self, tie: TieSyntax) {
+    pub(crate) fn apply_tie(&mut self, tie: TieSyntax) {
         let Some(event_index) = self.last_note_event_index() else {
             self.diagnostics.push(unmatched_tie_warning(tie.span));
             return;
@@ -1866,7 +1795,7 @@ impl LoweringState {
         }
     }
 
-    fn apply_slur(&mut self, slur: SlurSyntax) {
+    pub(crate) fn apply_slur(&mut self, slur: SlurSyntax) {
         match slur.direction {
             SlurDirection::Start => {
                 let open = OpenSlur {
@@ -1906,108 +1835,12 @@ impl LoweringState {
         }
     }
 
-    fn effective_accidental(
-        &mut self,
-        step: char,
-        octave: i8,
-        written: Option<Accidental>,
-        written_span: Option<Span>,
-    ) -> (Option<Accidental>, Option<Span>) {
-        let step = step.to_ascii_uppercase();
-        if let Some(accidental) = written {
-            let span = written_span
-                .unwrap_or_else(|| Span::new(self.source_span.end, self.source_span.end));
-            self.set_measure_accidental(step, octave, accidental, span);
-            return (Some(accidental), Some(span));
-        }
-
-        if let Some(accidental) = self
-            .accidental_state
-            .iter()
-            .rev()
-            .find(|entry| entry.step == step && entry.octave == octave)
-        {
-            return (Some(accidental.accidental), Some(accidental.span));
-        }
-
-        self.key_accidentals
-            .iter()
-            .find(|entry| entry.step == step)
-            .map(|entry| (Some(entry.accidental), Some(entry.span)))
-            .unwrap_or((None, None))
-    }
-
-    fn set_measure_accidental(
-        &mut self,
-        step: char,
-        octave: i8,
-        accidental: Accidental,
-        span: Span,
-    ) {
-        if let Some(entry) = self
-            .accidental_state
-            .iter_mut()
-            .find(|entry| entry.step == step && entry.octave == octave)
-        {
-            entry.accidental = accidental;
-            entry.span = span;
-        } else {
-            self.accidental_state.push(MeasureAccidental {
-                step,
-                octave,
-                accidental,
-                span,
-            });
-        }
-    }
-
-    fn reset_measure_accidentals(&mut self) {
-        self.accidental_state.clear();
-    }
-
-    /// Reset measure accidentals at a bar line, but preserve the accidental of a
-    /// note whose tie is still open.
-    ///
-    /// Per ABC 2.1 §4.20 a tie continues the same sounding pitch across the bar
-    /// line; the bar must not cancel it. Without this, the stop note would be
-    /// re-resolved against the key signature, changing the tied pitch. Normal
-    /// (non-tied) accidentals are still cleared as usual.
-    fn reset_measure_accidentals_at_barline(&mut self) {
-        let preserved = self.pending_tie.and_then(|tie| {
-            lowered_timed_note(self.lowered.get(tie.event_index)).and_then(|timed| {
-                if let LoweredEventAtomKind::Note {
-                    step,
-                    octave,
-                    effective_accidental,
-                    accidental_source,
-                    ..
-                } = timed.event.kind
-                {
-                    effective_accidental.map(|accidental| MeasureAccidental {
-                        step: step.to_ascii_uppercase(),
-                        octave,
-                        accidental,
-                        span: accidental_source.unwrap_or_else(|| {
-                            Span::new(self.source_span.end, self.source_span.end)
-                        }),
-                    })
-                } else {
-                    None
-                }
-            })
-        });
-        self.accidental_state.clear();
-        if let Some(accidental) = preserved {
-            self.accidental_state.push(accidental);
-        }
-    }
-
-    fn set_key(&mut self, key: Option<&KeySignature>) {
+    pub(crate) fn set_key(&mut self, key: Option<&KeySignature>) {
         self.key_accidentals = key_accidental_policy(key);
         self.reset_measure_accidentals();
     }
 
-    fn finish_open_tuplets_at_boundary(&mut self) {
+    pub(crate) fn finish_open_tuplets_at_boundary(&mut self) {
         for tuplet in std::mem::take(&mut self.active_tuplets) {
             if tuplet.remaining > 0 {
                 self.diagnostics
@@ -2016,21 +1849,21 @@ impl LoweringState {
         }
     }
 
-    fn finish_pending_broken_at_boundary(&mut self) {
+    pub(crate) fn finish_pending_broken_at_boundary(&mut self) {
         if let Some(pending) = self.pending_broken.take() {
             self.diagnostics
                 .push(broken_rhythm_without_right_warning(pending.span));
         }
     }
 
-    fn finish_pending_tie_at_boundary(&mut self, _span: Span) {
+    pub(crate) fn finish_pending_tie_at_boundary(&mut self, _span: Span) {
         if let Some(tie) = self.pending_tie.take() {
             self.diagnostics
                 .push(unmatched_tie_warning(tie.marker.span));
         }
     }
 
-    fn finish_pending_tie_if_group_is_not_note(
+    pub(crate) fn finish_pending_tie_if_group_is_not_note(
         &mut self,
         events: &[(LoweredEventAtom, bool, EventAttachments)],
     ) {
@@ -2040,7 +1873,7 @@ impl LoweringState {
         self.finish_pending_tie_at_boundary(self.source_span);
     }
 
-    fn finish_pending_tie_if_possible(&mut self, group: &[usize]) {
+    pub(crate) fn finish_pending_tie_if_possible(&mut self, group: &[usize]) {
         let Some(tie) = self.pending_tie else {
             return;
         };
@@ -2097,7 +1930,7 @@ impl LoweringState {
         }
     }
 
-    fn last_note_event_index(&self) -> Option<usize> {
+    pub(crate) fn last_note_event_index(&self) -> Option<usize> {
         self.lowered
             .iter()
             .enumerate()
@@ -2165,7 +1998,7 @@ impl LoweringState {
         }
     }
 
-    fn finish_open_constructs(&mut self) {
+    pub(crate) fn finish_open_constructs(&mut self) {
         self.finish_pending_broken_at_boundary();
         self.finish_pending_tie_at_boundary(self.source_span);
         self.finish_open_tuplets_at_boundary();
