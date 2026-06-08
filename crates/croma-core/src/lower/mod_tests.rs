@@ -1610,6 +1610,128 @@ fn broken_rhythm_without_neighbors_diagnoses_and_keeps_timing_stable() {
 }
 
 #[test]
+fn broken_rhythm_after_barline_does_not_bind_across_bar() {
+    // ABC 2.1 §4.4: `>` dots the *previous* note. After a barline there is no
+    // previous note for a leading `>`, so it must be void: `c2` keeps 1/4 and
+    // `d` keeps 1/8 instead of dotting `c2` across the bar.
+    let source = "X:1\nL:1/8\nK:C\nc2|>d e\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.broken_rhythm.missing_left"),
+        ">"
+    );
+    let durations = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| event.duration)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        durations,
+        vec![
+            Fraction::new(2, 8),
+            Fraction::new(1, 8),
+            Fraction::new(1, 8)
+        ]
+    );
+}
+
+#[test]
+fn broken_rhythm_after_barline_single_note_left_does_not_bind() {
+    let source = "X:1\nL:1/8\nK:C\nB|>d e\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.broken_rhythm.missing_left"),
+        ">"
+    );
+    let durations = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| event.duration)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        durations,
+        vec![
+            Fraction::new(1, 8),
+            Fraction::new(1, 8),
+            Fraction::new(1, 8)
+        ]
+    );
+}
+
+#[test]
+fn broken_rhythm_within_measure_still_applies() {
+    let source = "X:1\nL:1/8\nK:C\na>b\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let durations = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| event.duration)
+        .collect::<Vec<_>>();
+    assert_eq!(durations, vec![Fraction::new(3, 16), Fraction::new(1, 16)]);
+}
+
+#[test]
+fn broken_rhythm_dangling_right_still_void() {
+    let source = "X:1\nL:1/8\nK:C\nA>|B c\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(
+            source,
+            &diagnostics,
+            "abc.music.broken_rhythm.missing_right"
+        ),
+        ">"
+    );
+    let durations = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| event.duration)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        durations,
+        vec![
+            Fraction::new(1, 8),
+            Fraction::new(1, 8),
+            Fraction::new(1, 8)
+        ]
+    );
+}
+
+#[test]
+fn broken_rhythm_same_measure_multi_unit_left_still_applies() {
+    let source = "X:1\nL:1/8\nK:C\nc2>d e\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let durations = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| event.duration)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        durations,
+        vec![
+            Fraction::new(3, 8),
+            Fraction::new(1, 16),
+            Fraction::new(1, 8)
+        ]
+    );
+}
+
+#[test]
+fn broken_rhythm_grace_transparency_still_applies() {
+    let source = "X:1\nL:1/8\nK:C\nc>{g}d\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let durations = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| event.duration)
+        .collect::<Vec<_>>();
+    assert_eq!(durations, vec![Fraction::new(3, 16), Fraction::new(1, 16)]);
+}
+
+#[test]
 fn short_tuplet_does_not_consume_notes_after_barline() {
     let source = "X:1\nL:1/8\nK:C\n(3C|D E|\n";
     let (tune, diagnostics) = tune_for(source);
