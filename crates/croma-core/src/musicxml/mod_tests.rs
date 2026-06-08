@@ -803,6 +803,18 @@ fn clef_octave_suffix_shifts_notes_and_marks_the_clef() {
 }
 
 #[test]
+fn voice_middle_modifier_shifts_octave() {
+    // `clef=bass middle=d` declares d on the middle staff line, which shifts the
+    // written->sounding octave down by two (abc2xml gtrans = -2). A lowercase
+    // `e` (octave 5 written) therefore sounds in octave 3.
+    let source = "X:1\nT:Bass test\nM:C\nL:1/4\nK:C\nV:1 clef=bass middle=d\ne e e e |\n";
+    let export = export_musicxml(source).expect("bass middle=d score should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<octave>3</octave>"));
+    assert!(!export.musicxml.contains("<octave>5</octave>"));
+}
+
+#[test]
 fn bare_voice_switch_keeps_each_header_clef() {
     // Header voice definitions carry clefs; a later bare `V:n` switch in the
     // body must not wipe them. Each voice keeps its own clef and octave.

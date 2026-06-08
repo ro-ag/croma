@@ -78,6 +78,7 @@ pub enum MusicTokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum MusicItem {
     Note(NoteSyntax),
     Rest(RestSyntax),
