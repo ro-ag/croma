@@ -146,32 +146,34 @@ impl LoweringState {
     /// re-resolved against the key signature, changing the tied pitch. Normal
     /// (non-tied) accidentals are still cleared as usual.
     pub(crate) fn reset_measure_accidentals_at_barline(&mut self) {
-        let preserved = self.pending_tie.and_then(|tie| {
-            lowered_timed_note(self.lowered.get(tie.event_index)).and_then(|timed| {
-                if let LoweredEventAtomKind::Note {
-                    step,
-                    octave,
-                    effective_accidental,
-                    accidental_source,
-                    ..
-                } = timed.event.kind
-                {
-                    effective_accidental.map(|accidental| MeasureAccidental {
-                        step: step.to_ascii_uppercase(),
+        let preserved: Vec<MeasureAccidental> = self
+            .pending_ties
+            .iter()
+            .filter_map(|tie| {
+                lowered_timed_note(self.lowered.get(tie.event_index)).and_then(|timed| {
+                    if let LoweredEventAtomKind::Note {
+                        step,
                         octave,
-                        accidental,
-                        span: accidental_source.unwrap_or_else(|| {
-                            Span::new(self.source_span.end, self.source_span.end)
-                        }),
-                    })
-                } else {
-                    None
-                }
+                        effective_accidental,
+                        accidental_source,
+                        ..
+                    } = timed.event.kind
+                    {
+                        effective_accidental.map(|accidental| MeasureAccidental {
+                            step: step.to_ascii_uppercase(),
+                            octave,
+                            accidental,
+                            span: accidental_source.unwrap_or_else(|| {
+                                Span::new(self.source_span.end, self.source_span.end)
+                            }),
+                        })
+                    } else {
+                        None
+                    }
+                })
             })
-        });
+            .collect();
         self.accidental_state.clear();
-        if let Some(accidental) = preserved {
-            self.accidental_state.push(accidental);
-        }
+        self.accidental_state.extend(preserved);
     }
 }

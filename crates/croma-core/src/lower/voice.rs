@@ -65,7 +65,7 @@ pub(crate) struct LoweringState {
     pub(crate) pending_broken: Option<PendingBrokenRhythm>,
     pub(crate) key_accidentals: Vec<KeyAccidentalPolicy>,
     pub(crate) accidental_state: Vec<MeasureAccidental>,
-    pub(crate) pending_tie: Option<PendingTie>,
+    pub(crate) pending_ties: Vec<PendingTie>,
     pub(crate) next_tie_id: u32,
     pub(crate) pending_slur_starts: Vec<OpenSlur>,
     pub(crate) open_slurs: Vec<OpenSlur>,
@@ -84,6 +84,9 @@ pub(crate) struct PendingBrokenRhythm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PendingTie {
     pub(crate) event_index: usize,
+    /// Pitch signature `(step, octave)` of the start note, captured when the
+    /// tie was registered. Used to match the correct member in the next group.
+    pub(crate) signature: (char, i8),
     pub(crate) marker: TieSyntax,
 }
 
@@ -113,7 +116,7 @@ impl LoweringState {
             pending_broken: None,
             key_accidentals: key_accidental_policy(key),
             accidental_state: Vec::new(),
-            pending_tie: None,
+            pending_ties: Vec::new(),
             next_tie_id: 1,
             pending_slur_starts: Vec::new(),
             open_slurs: Vec::new(),
@@ -247,6 +250,21 @@ impl LoweringState {
             })
             .collect();
         self.push_time_group(events, line_index, source_order);
+
+        // Register chord-internal tie markers (`[DA-]`) as pending ties keyed to
+        // the specific member that carried the `-`. This runs after the group is
+        // pushed so the member indices exist and so the tie matches the *next*
+        // group (not within the same chord). The just-pushed group's indices map
+        // one-to-one to `chord.members` in order.
+        if chord.members.iter().any(|member| member.tie.is_some())
+            && let Some(group) = self.time_groups.last().cloned()
+        {
+            for (member, &event_index) in chord.members.iter().zip(group.iter()) {
+                if let Some(marker) = member.tie {
+                    self.register_pending_tie(event_index, marker);
+                }
+            }
+        }
     }
 
     pub(crate) fn push_time_group(

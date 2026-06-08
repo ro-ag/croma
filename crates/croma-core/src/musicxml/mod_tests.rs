@@ -1206,6 +1206,55 @@ fn ties_across_barlines_export_start_and_stop_without_diagnostic() {
 }
 
 #[test]
+fn whole_chord_tie_ties_every_matching_member() {
+    // `[CE]-[CE]` ties both chord members across the two chords.
+    let source = "X:1\nM:4/4\nL:1/2\nK:C\n[CE]-[CE]|\n";
+    let export = export_musicxml(source).expect("whole-chord tie should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    // Both members tie: two starts + two stops for each of <tie> and <tied>.
+    assert_eq!(count(&export.musicxml, "<tie type=\"start\"/>"), 2);
+    assert_eq!(count(&export.musicxml, "<tie type=\"stop\"/>"), 2);
+    assert_eq!(count(&export.musicxml, "<tied type=\"start\""), 2);
+    assert_eq!(count(&export.musicxml, "<tied type=\"stop\""), 2);
+}
+
+#[test]
+fn chord_internal_tie_ties_only_the_marked_member() {
+    // `[DA-]2[FA]`: A continues into the next chord, D does not.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n[DA-]2[FA]|\n";
+    let export = export_musicxml(source).expect("chord-internal tie should export");
+    assert_balanced_xml(&export.musicxml);
+    // Exactly one tied pair (the A member); D is not tied.
+    assert_eq!(count(&export.musicxml, "<tie type=\"start\"/>"), 1);
+    assert_eq!(count(&export.musicxml, "<tie type=\"stop\"/>"), 1);
+    assert_eq!(count(&export.musicxml, "<tied type=\"start\""), 1);
+    assert_eq!(count(&export.musicxml, "<tied type=\"stop\""), 1);
+}
+
+#[test]
+fn standalone_tie_remains_a_single_pair_and_untied_chord_has_no_tied() {
+    // Regression guard: plain single-note tie keeps exactly one pair.
+    let single =
+        export_musicxml("X:1\nM:4/4\nL:1/2\nK:C\nC2-C2|\n").expect("single tie should export");
+    assert_eq!(count(&single.musicxml, "<tie type=\"start\"/>"), 1);
+    assert_eq!(count(&single.musicxml, "<tie type=\"stop\"/>"), 1);
+    assert_eq!(count(&single.musicxml, "<tied type=\"start\""), 1);
+    assert_eq!(count(&single.musicxml, "<tied type=\"stop\""), 1);
+
+    // A chord with no tie marker emits no <tied>.
+    let chord =
+        export_musicxml("X:1\nM:4/4\nL:1/1\nK:C\n[CE]|\n").expect("untied chord should export");
+    assert!(!chord.musicxml.contains("<tied "));
+    assert!(!chord.musicxml.contains("<tie "));
+}
+
+#[test]
 fn grace_notes_export_reference_compatible_display_types_without_duration() {
     let source = "X:1\nT:Grace Display\nM:4/4\nL:1/4\nK:C\n{g}C {de}D|\n";
     let export = export_musicxml(source).expect("grace note should export");
