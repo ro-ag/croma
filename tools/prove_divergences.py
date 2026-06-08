@@ -48,6 +48,13 @@ def count_measures(path: Path) -> int:
         return -1
 
 
+def count_notes(path: Path) -> int:
+    try:
+        return path.read_text(errors="replace").count("<note")
+    except OSError:
+        return -1
+
+
 def abc_features(text: str) -> dict:
     body = []
     for ln in text.splitlines():
@@ -82,13 +89,28 @@ def classify(rec: dict) -> str:
             return "ARTIFACT_MULTIREST"
         return "ARTIFACT_PHANTOM_MEASURE"
     if cm >= 0 and rm >= 0 and cm > rm:
-        return "REVIEW"  # croma adding measures is suspicious -> inspect
+        # Croma has MORE measures than abc2xml — the suspicious direction.
+        cn, rn = rec["croma_notes"], rec["ref_notes"]
+        if cn > rn:
+            # Croma kept music abc2xml dropped (a dropped line / parse failure).
+            return "ARTIFACT_ABC2XML_DROPS_MUSIC"
+        if cn == rn and rec["n_voices"] > 1:
+            # Identical notes, multi-voice: croma keeps tacet bars abc2xml drops.
+            return "ARTIFACT_ABC2XML_DROPS_TACET"
+        if cn == rn and rec["n_voices"] <= 1:
+            # Identical notes, single voice: a genuine residual Croma phantom
+            # measure (e.g. a bar-line run at a variant-ending / repeat boundary
+            # that the bar-line-only collapse does not yet cover).
+            return "RESIDUAL_PHANTOM_CROMA"
+        return "REVIEW"
 
     # Equal measure counts below here.
     if cats == {"accidental"}:
         return "ARTIFACT_ACCIDENTAL_ALTER"
     if cats == {"barline"}:
-        return "ARTIFACT_BARLINE" if feat["has_spaced_bar"] else "REVIEW"
+        # Equal measure counts + only the barline category = a bar-style-only
+        # difference (spaced `| |` / line-split double, repeat bar-style).
+        return "ARTIFACT_BARLINE"
     if cats == {"tuplet"}:
         return "ARTIFACT_TUPLET"
     if cats == {"duration"}:
@@ -152,6 +174,9 @@ def main() -> None:
             "cats": cats,
             "croma_measures": count_measures(xml_root / f"{stem}.croma.musicxml") if not is_fail else -1,
             "ref_measures": count_measures(ref_root / f"{stem}.xml"),
+            "croma_notes": count_notes(xml_root / f"{stem}.croma.musicxml") if not is_fail else -1,
+            "ref_notes": count_notes(ref_root / f"{stem}.xml"),
+            "n_voices": len(set(re.findall(r"(?m)^\[?V:\s*(\S+)", abc_text))),
             "features": abc_features(abc_text),
         }
         out["verdict"] = classify(out)

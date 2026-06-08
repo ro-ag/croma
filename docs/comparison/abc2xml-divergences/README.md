@@ -23,11 +23,17 @@ Full 10k report-only comparison (`music21` + Polars, positional alignment):
 | **Files with ≥1 differing row** | **2,906** | 29.1% |
 | Total differing rows | 187,908 | — |
 
-The 2,906 differing files are explained **in full** by the classes below. After
-the parser-quality phases (see `docs/progress/`), **no class contains a
-remaining genuine Croma bug** — every residual is an `abc2xml` reference
-artifact, a benign serialization difference, malformed input, a positional
-**cascade** of one of those, or an intentional Croma feature.
+The differing files are classified **per file** by
+[`tools/prove_divergences.py`](../../../tools/prove_divergences.py) into the
+manifest [`per-file-manifest.csv`](per-file-manifest.csv). The headline
+"how many files have a genuine Croma issue?" answer is in
+[`00-SUMMARY.md`](00-SUMMARY.md):
+
+> **7,031 match; 2,969 differ; of those, exactly 2 carry a genuine Croma issue**
+> (a narrow phantom-measure edge — `tune_014316`/`tune_014317`). The other 2,967
+> are an `abc2xml` reference artifact, a benign serialization difference,
+> malformed input, a positional **cascade** of one of those, or a case where
+> Croma is the more spec-correct of the two.
 
 ## Verdict summary
 
