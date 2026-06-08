@@ -4,42 +4,21 @@
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::parse::field::{
-    AccidentalSign, DecorationDelimiter, DialectState, FieldState, InterpretationField, KeyMode,
-    KeySignature, KeyTonicAccidental, Meter, MeterKind, ParsedAbcFields, ParsedFieldKind,
-    ScoreDirective, Spanned, StemDirection, UnitNoteLength, VoiceDefinition, parse_voice_for_music,
+    DialectState, InterpretationField, ParsedAbcFields, ParsedFieldKind,
+    ScoreDirective, Spanned, parse_voice_for_music,
 };
-use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric, AlignedSymbol,
-    AlignedSymbolKind, AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent,
-    DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
-    LoweredEventAtom, LoweredEventAtomKind, LyricControl, Measure, MeasureBarline, MeasureId,
-    MeterModel, NoteEvent, OverlaySegment, Part, PartId, Pitch, PreservedDirective,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, StemDirectionModel, TempoBeat, TempoModel,
-    TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind,
-    TimelineEventKind, TupletAttachment, TupletRole, Voice, VoiceId, VoiceMeasureTimeline,
-    VoicePropertiesModel, VoiceTimedEvent, VoiceTimeline, lcm,
-};
-use crate::options::ParseMode;
+use crate::model::RestVisibility;
 use crate::parse::ParseReport;
 use crate::source::SourceText;
 use crate::syntax::tune::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
 use crate::syntax::{
-    AccidentalSyntax, AnnotationPlacement, AttachmentBundle, BarlineSyntax, BrokenRhythmDirection,
-    BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax, DecorationKind, DecorationSyntax,
-    GraceElementSyntax, GraceGroupSyntax, InlineFieldSyntax, LengthSyntax, LyricLineSyntax,
-    LyricTokenKind, LyricTokenSyntax, MalformedSyntax, MalformedSyntaxKind, MultiMeasureRestSyntax,
-    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine, MusicToken, MusicTokenKind,
-    NoteSyntax, OctaveMark, OctaveMarkSyntax, OverlaySyntax, ParsedMusicDocument, ParsedTuneMusic,
-    PitchSyntax, PreservedDirectiveSyntax, QuotedTextKind, QuotedTextSyntax, RestSyntax,
-    ScoreDirectiveSyntax, SlurDirection, SlurSyntax, SpacerSyntax, SpannedNumber, SymbolLineSyntax,
-    SymbolTokenKind, SymbolTokenSyntax, TieSyntax, TupletSyntax, UnsupportedSyntax,
-    UnsupportedSyntaxKind, VariantEndingPart, VariantEndingSyntax,
+    AnnotationPlacement, AttachmentBundle, InlineFieldSyntax, MalformedSyntax, MalformedSyntaxKind,
+    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine, MusicToken, MusicTokenKind, ParsedMusicDocument, ParsedTuneMusic, QuotedTextKind,
+    ScoreDirectiveSyntax, SlurDirection, SpacerSyntax, UnsupportedSyntax,
+    UnsupportedSyntaxKind,
 };
 use crate::music::{
-    abc_barline_reference, abc_field_reference, invalid_tuplet_warning, music_code_span,
+    abc_field_reference, music_code_span,
 };
 use crate::parse::directive::{
     parse_preserved_stylesheet_directive, parse_score_stylesheet_directive,
@@ -704,43 +683,6 @@ impl<'line> MusicLineParser<'line> {
         } else {
             self.parse_slur(SlurDirection::Start, false);
         }
-    }
-
-    pub(super) fn parse_overlay(&mut self) {
-        self.flush_pending_attachments();
-        let start = self.index;
-        self.bump_char();
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Overlay, span);
-        self.items.push(MusicItem::Overlay(OverlaySyntax { span }));
-    }
-
-    pub(super) fn parse_tie(&mut self, dotted: bool) {
-        self.flush_pending_attachments();
-        let start = self.index;
-        if dotted {
-            self.bump_char();
-        }
-        self.bump_char();
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Tie, span);
-        self.items.push(MusicItem::Tie(TieSyntax { span, dotted }));
-    }
-
-    pub(super) fn parse_slur(&mut self, direction: SlurDirection, dotted: bool) {
-        self.flush_pending_attachments();
-        let start = self.index;
-        if dotted {
-            self.bump_char();
-        }
-        self.bump_char();
-        let span = self.span(start, self.index);
-        self.push_token(MusicTokenKind::Slur, span);
-        self.items.push(MusicItem::Slur(SlurSyntax {
-            span,
-            dotted,
-            direction,
-        }));
     }
 
     pub(super) fn take_pending_attachments(&mut self) -> AttachmentBundle {
