@@ -129,6 +129,81 @@ def classify(rec: dict) -> str:
     return "REVIEW"
 
 
+# Per-verdict, human-readable justification. {n} is filled with the measure gap
+# (abs(ref - croma)) where a measure-count difference is the driver. Each cites
+# the ABC 2.1 rule and the divergence doc; verdicts marked "Croma correct".
+JUSTIFY = {
+    "EXPORT_FAILURE_NO_MUSIC":
+        "Header-only tune: no music code after the header (ABC 2.1 §2.2.1, which "
+        "permits a body-less tune). Croma correctly declines to export; abc2xml "
+        "fabricates an empty measure. Croma correct. [doc 01]",
+    "ARTIFACT_PHANTOM_MEASURE":
+        "abc2xml emits {n} more measure(s): a phantom empty measure at an "
+        "annotation/section/inline-key boundary, or a trailing empty measure after "
+        "a void broken-rhythm `|>|`. A bar line/annotation is not a measure of "
+        "music (ABC 2.1 §2.2.1, §4.8). Notes identical; Croma's folded output is "
+        "correct. Croma correct. [doc 02]",
+    "ARTIFACT_MULTIREST":
+        "abc2xml expands a `Z`/`X` multi-measure rest into {n} separate measures; "
+        "ABC 2.1 §4.5 calls the collapsed and expanded forms 'musically "
+        "equivalent'. Croma keeps one measure. Croma correct. [doc 03]",
+    "ARTIFACT_BARLINE":
+        "Bar-style-only difference (same notes, same measure count): abc2xml "
+        "renders a whitespace-separated `| |` / line-split run as a light-light "
+        "double, which ABC 2.1 §4.8 (liberal recognition applies to CONTIGUOUS "
+        "runs) and §4.9 (spaces are significant) do not mandate. Croma correct. "
+        "[doc 04]",
+    "ARTIFACT_ACCIDENTAL_ALTER":
+        "Redundant `<alter>0>` serialization on a note that is natural by "
+        "carry-through within the bar (ABC 2.1 §6). Absent `<alter>` defaults to 0 "
+        "in MusicXML — semantically identical; both render the natural once. "
+        "Croma correct. [doc 05]",
+    "ARTIFACT_DURATION":
+        "abc2xml ignores the §4.6 meter-derived default unit length (it hardcodes "
+        "L:1/8) and/or rounds durations to its `<divisions>` grid; Croma is exact. "
+        "Croma correct. [doc 06]",
+    "CASCADE":
+        "Not a real pitch/octave/harmony/lyric error: a positional cascade of a "
+        "structural artifact (a phantom measure, a `Z` expansion, or header/prose "
+        "segmentation) shifts the aligned event streams. The per-note values match "
+        "once realigned. Croma correct. [doc 07]",
+    "ARTIFACT_TUPLET":
+        "Tuplet ratio (actual/normal) and note durations agree; only the tuplet "
+        "bracket start/stop markers differ (typesetting). Croma correct. [doc 08]",
+    "TIE_SLUR_EDGE":
+        "Tie/slur edge under ABC 2.1 §4.11: abc2xml drops a legal tie, or the two "
+        "differ on a malformed/illegal or single-note case. Croma's reading is "
+        "spec-defensible. [doc 09]",
+    "DIRECTION":
+        "Direction text edge (ABC 2.1 §3.1.8 Q:, §4.19 annotations): a text-only "
+        "tempo gets a different fabricated default BPM, a malformed `Q:` is parsed "
+        "differently, or abc2xml drops annotation text Croma keeps. Croma "
+        "defensible. [doc 10]",
+    "ARTIFACT_ABC2XML_DROPS_MUSIC":
+        "abc2xml dropped a music line or parse-failed (Croma emits {n} more "
+        "measure(s) and more notes); Croma preserved the real music. Croma "
+        "correct. [doc 02]",
+    "ARTIFACT_ABC2XML_DROPS_TACET":
+        "Multi-voice tune: abc2xml dropped {n} tacet (silent) bar(s) from a voice; "
+        "Croma keeps them so the voice stays measure-aligned with its siblings "
+        "(ABC 2.1 §4.8). Croma correct. [doc 11]",
+    "RESIDUAL_PHANTOM_CROMA":
+        "GENUINE Croma issue: Croma emits {n} phantom empty measure(s) the "
+        "reference does not (note content identical). [tracked]",
+    "REVIEW":
+        "Unclassified — needs a human look (no artifact rule matched).",
+}
+
+
+def justification(rec: dict) -> str:
+    n = (
+        abs(rec["ref_measures"] - rec["croma_measures"])
+        if rec["croma_measures"] >= 0 and rec["ref_measures"] >= 0
+        else "?"
+    )
+    return JUSTIFY.get(rec["verdict"], "").replace("{n}", str(n))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase-dir", required=True)
@@ -190,12 +265,13 @@ def main() -> None:
     with out_path.open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["filename", "verdict", "mismatch_rows", "categories",
-                    "croma_measures", "ref_measures", "measure_delta"])
+                    "croma_measures", "ref_measures", "measure_delta",
+                    "justification"])
         for r in sorted(diff_rows, key=lambda r: (r["verdict"], -r["mismatch_rows"])):
             md = (r["ref_measures"] - r["croma_measures"]) if r["croma_measures"] >= 0 else ""
             w.writerow([r["filename"], r["verdict"], r["mismatch_rows"],
                         "|".join(sorted(r["cats"])), r["croma_measures"],
-                        r["ref_measures"], md])
+                        r["ref_measures"], md, justification(r)])
 
     # summary
     import collections

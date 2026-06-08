@@ -4,8 +4,11 @@
 
 Every one of the 10,000 corpus tunes is given a per-file verdict by
 [`tools/prove_divergences.py`](../../../tools/prove_divergences.py); the full
-result is the auditable manifest [`per-file-manifest.csv`](per-file-manifest.csv)
-(one row per differing file: filename, verdict, categories, measure counts).
+result is the auditable manifest [`per-file-manifest.csv`](per-file-manifest.csv),
+**one row per differing file** with columns: `filename, verdict, mismatch_rows,
+categories, croma_measures, ref_measures, measure_delta, justification`. The
+`justification` column is a plain-language, ABC-2.1-cited reason for that file's
+divergence (and which divergence doc covers it), so every file stands on its own.
 
 ## The numbers (current `main`)
 
