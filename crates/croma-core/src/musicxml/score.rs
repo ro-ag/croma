@@ -313,17 +313,30 @@ fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
     )
 }
 
-fn unique_endings(measures: &[&Measure]) -> Vec<String> {
-    let mut endings = measures
+/// Render one volta bracket's passes as a single MusicXML `ending-number`
+/// value: a comma-separated list of its parts (e.g. `1,3`). A bracket may list
+/// several passes (`|1,3`), and the MusicXML `<ending>` `number` attribute is
+/// itself a comma list, so the whole bracket is ONE element — not one element
+/// per pass. No space follows the comma, matching abc2xml's output.
+fn ending_number_string(ending: &crate::model::RepeatEndingModel) -> String {
+    ending
+        .endings
         .iter()
-        .flat_map(|measure| &measure.repeat_endings)
-        .flat_map(|ending| &ending.endings)
-        .map(|ending| match ending {
+        .map(|part| match part {
             crate::model::RepeatEndingPartModel::Single(number) => number.to_string(),
             crate::model::RepeatEndingPartModel::Range { start, end } => {
                 format!("{start}-{end}")
             }
         })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn unique_endings(measures: &[&Measure]) -> Vec<String> {
+    let mut endings = measures
+        .iter()
+        .flat_map(|measure| &measure.repeat_endings)
+        .map(ending_number_string)
         .collect::<Vec<_>>();
     endings.sort();
     endings.dedup();
