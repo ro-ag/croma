@@ -8,6 +8,7 @@ pub mod field;
 pub mod lyric;
 pub mod music;
 pub mod tune;
+mod tune_classify;
 
 pub use field::{
     InlineFieldSyntax, MalformedSyntax, MalformedSyntaxKind, MusicFieldLine, MusicFieldLineKind,
