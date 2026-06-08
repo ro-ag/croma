@@ -1,6 +1,6 @@
 //! Music-line parser: text -> surface music AST.
 //!
-//! The lowering half (text-AST -> model) remains in `crate::music`.
+//! The lowering half (text-AST -> model) remains in `crate::lower`.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::parse::field::{
@@ -17,7 +17,7 @@ use crate::syntax::{
     ScoreDirectiveSyntax, SlurDirection, SpacerSyntax, UnsupportedSyntax,
     UnsupportedSyntaxKind,
 };
-use crate::music::{
+use crate::lower::{
     abc_field_reference, music_code_span,
 };
 use crate::parse::directive::{

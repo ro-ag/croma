@@ -2,7 +2,7 @@
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::model::BarlineKind;
-use crate::music::abc_barline_reference;
+use crate::lower::abc_barline_reference;
 use crate::parse::music::{MusicLineParser, is_barline_char};
 use crate::syntax::{
     BarlineSyntax, MalformedSyntaxKind, MusicItem, MusicTokenKind, VariantEndingPart,
