@@ -1,6 +1,6 @@
 # How many .abc files have a genuine Croma issue?
 
-**Short answer: 2 of 10,000.**
+**Short answer: 0 of 10,000.**
 
 Every one of the 10,000 corpus tunes is given a per-file verdict by
 [`tools/prove_divergences.py`](../../../tools/prove_divergences.py); the full
@@ -18,8 +18,8 @@ result is the auditable manifest [`per-file-manifest.csv`](per-file-manifest.csv
 
 | Verdict | Files | Croma correct? | Doc |
 |---|--:|:--:|---|
-| CASCADE | 1,948 | ✅ positional cascade of a structural artifact | [07](07-cascade-artifacts.md) |
-| ARTIFACT_ACCIDENTAL_ALTER | 576 | ✅ redundant `<alter>0>` — semantically identical | [05](05-accidental-alter.md) |
+| CASCADE | 1,949 | ✅ positional cascade of a structural artifact | [07](07-cascade-artifacts.md) |
+| ARTIFACT_ACCIDENTAL_ALTER | 577 | ✅ redundant `<alter>0>` — semantically identical | [05](05-accidental-alter.md) |
 | ARTIFACT_PHANTOM_MEASURE | 240 | ✅ abc2xml empty measure at annotation/section/`\|>\|` | [02](02-phantom-measures.md) |
 | ARTIFACT_BARLINE | 69 | ✅ spaced `\| \|` / line-split / repeat bar-style | [04](04-barline-spaced-double.md) |
 | EXPORT_FAILURE_NO_MUSIC | 65 | ✅ header-only tune — nothing to export | [01](01-export-failures.md) |
@@ -30,25 +30,10 @@ result is the auditable manifest [`per-file-manifest.csv`](per-file-manifest.csv
 | ARTIFACT_MULTIREST | 6 | ✅ `Z`/`X` expansion (spec: "equivalent") | [03](03-multi-measure-rest.md) |
 | ARTIFACT_ABC2XML_DROPS_MUSIC | 4 | ✅ abc2xml dropped a line / parse-failed; Croma kept it | [02](02-phantom-measures.md) |
 | ARTIFACT_ABC2XML_DROPS_TACET | 2 | ✅ abc2xml dropped multi-voice tacet bars; Croma kept them | [11](11-multipart-and-partgroup.md) |
-| **RESIDUAL_PHANTOM_CROMA** | **2** | ❌ **genuine Croma issue** | below |
 
-**2,967 files** are Croma-correct (abc2xml artifact, benign serialization,
-positional cascade, or Croma feature). **2 files** carry a genuine — but narrow —
-Croma defect.
-
-## The 2 genuine-issue files
-
-`tune_014316.abc`, `tune_014317.abc` — Croma emits **one phantom empty
-measure** at a variant-ending + double-bar-repeat boundary (`… [2 C3] ||: …`).
-The note content is identical (53 = 53 notes); only an extra empty `<measure>`
-is inserted (Croma 23 vs reference 22).
-
-This is the **same class** of bug fixed in phase-22 (a run of bar-line tokens is
-a single boundary, ABC 2.1 §4.8), but the phase-22 collapse only handles a
-measure whose events are *all* bar lines; here the phantom measure also carries
-a variant-ending / repeat-start event, so it slips through. It is a known
-residual edge (2 files), tracked for a follow-up fix rather than risk the
-delicate repeat/variant lowering for two tunes.
+All **2,969 differing files** are Croma-correct (abc2xml artifact, benign
+serialization, positional cascade, or Croma feature). There are **0 known genuine
+Croma issues** in this manifest.
 
 ## Note on direction of correctness
 
