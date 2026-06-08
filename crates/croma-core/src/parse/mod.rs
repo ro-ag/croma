@@ -1,12 +1,12 @@
 pub mod field;
+pub mod music;
 
 use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
 use crate::parse::field::{ParsedAbcFields, ParsedFieldKind, parse_fields};
+use crate::parse::music::parse_music_document;
 use crate::model::{Score, TextLine, Tune};
-use crate::music::{
-    ScoreModelInput, build_score_model, lower_tune_music, parse_music_document,
-};
+use crate::music::{ScoreModelInput, build_score_model, lower_tune_music};
 use crate::syntax::ParsedMusicDocument;
 use crate::options::ParseOptions;
 use crate::source::SourceText;
