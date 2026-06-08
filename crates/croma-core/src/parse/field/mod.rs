@@ -162,6 +162,7 @@ pub struct VoiceProperties {
     pub stem: Option<Spanned<StemDirection>>,
     pub octave: Option<Spanned<String>>,
     pub transpose: Option<Spanned<String>>,
+    pub middle: Option<Spanned<String>>,
     pub other: Vec<VoiceProperty>,
 }
 
