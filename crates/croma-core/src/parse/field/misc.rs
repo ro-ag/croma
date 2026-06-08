@@ -2,9 +2,9 @@
 //! text unescaping, field diagnostics, and the `FieldParser` state-application
 //! pass.
 
-use super::*;
 use super::meter::{default_unit_note_length_for_meter, ensure_default_unit_note_length};
 use super::voice::upsert_voice_definition;
+use super::*;
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::options::{AbcSpecVersion, ParseMode};
 use crate::source::SourceText;

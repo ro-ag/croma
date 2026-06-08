@@ -5,8 +5,8 @@
 
 pub mod diagnostic;
 pub mod error;
-pub mod model;
 mod lower;
+pub mod model;
 pub mod musicxml;
 pub mod options;
 pub mod parse;
@@ -15,22 +15,22 @@ pub mod syntax;
 
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
-pub use parse::field::{
-    DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField,
-};
 pub use model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, BarlineKind, ChordEvent,
     ChordMemberEvent, Event, EventAttachments, Fraction, KeySignatureModel, Measure, MeasureId,
     MeterModel, NoteEvent, Part, Pitch, Rational, RestEvent, RestVisibility, Score, ScoreMetadata,
     Staff, StaffId, TimedEvent, TimedEventKind, Tune, TupletAttachment, TupletRole, Voice,
 };
+pub use options::{AbcSpecVersion, ExportOptions, LowerOptions, ParseMode, ParseOptions};
+pub use parse::field::{
+    DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField,
+};
+pub use parse::{AbcDocument, ParseReport};
+pub use source::{LineColumn, LineColumnSpan, LineEnding, SourceLine, SourceText};
 pub use syntax::{
     BarlineSyntax, LengthSyntax, MusicItem, MusicLine, MusicToken, MusicTokenKind,
     ParsedMusicDocument, ParsedTuneMusic,
 };
-pub use options::{AbcSpecVersion, ExportOptions, LowerOptions, ParseMode, ParseOptions};
-pub use parse::{AbcDocument, ParseReport};
-pub use source::{LineColumn, LineColumnSpan, LineEnding, SourceLine, SourceText};
 
 #[cfg(test)]
 pub(crate) mod test_support;

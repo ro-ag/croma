@@ -52,7 +52,11 @@ pub(super) fn default_unit_note_length_for_meter(meter: &Meter) -> NoteLengthFra
     }
 }
 
-pub(super) fn ensure_default_unit_note_length(state: &mut FieldState, span: Span, options: ParseOptions) {
+pub(super) fn ensure_default_unit_note_length(
+    state: &mut FieldState,
+    span: Span,
+    options: ParseOptions,
+) {
     if state.unit_note_length.is_some() {
         return;
     }

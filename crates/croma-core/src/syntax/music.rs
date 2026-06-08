@@ -2,8 +2,8 @@
 //! music line into notes, rests, chords, decorations, and barlines.
 
 use crate::diagnostic::Span;
-use crate::model::{Accidental, BarlineKind, Fraction, RestVisibility};
 use crate::lower::default_tuplet_q;
+use crate::model::{Accidental, BarlineKind, Fraction, RestVisibility};
 use crate::syntax::field::{
     InlineFieldSyntax, MalformedSyntax, MusicFieldLine, PreservedDirectiveSyntax,
     ScoreDirectiveSyntax, UnsupportedSyntax,

@@ -1,9 +1,7 @@
 //! Lyric and symbol line alignment onto voice timelines.
 
 use crate::diagnostic::Diagnostic;
-use crate::model::{
-    AlignedLyric, AlignedSymbol, AlignedSymbolKind, LyricControl, VoiceTimeline,
-};
+use crate::model::{AlignedLyric, AlignedSymbol, AlignedSymbolKind, LyricControl, VoiceTimeline};
 use crate::syntax::{LyricLineSyntax, LyricTokenKind, SymbolLineSyntax, SymbolTokenKind};
 
 use crate::lower::{

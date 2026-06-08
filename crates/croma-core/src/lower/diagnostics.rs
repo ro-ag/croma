@@ -16,9 +16,6 @@ pub(crate) fn invalid_tuplet_warning(span: Span) -> Diagnostic {
     ))
 }
 
-
-
-
 pub(crate) fn barline_export_policy_info(span: Span, kind: BarlineKind) -> Diagnostic {
     Diagnostic::new(
         Severity::Info,
@@ -150,8 +147,6 @@ pub(crate) fn invalid_key_change_warning(span: Span) -> Diagnostic {
         "Lowering continued with the previous valid key signature.",
     ))
 }
-
-
 
 pub(crate) fn abc_barline_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.8 repeat/bar symbols")

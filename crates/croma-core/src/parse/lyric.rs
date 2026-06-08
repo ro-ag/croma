@@ -8,7 +8,11 @@ use crate::syntax::{
     SymbolTokenKind, SymbolTokenSyntax,
 };
 
-pub(super) fn parse_lyric_line(line_index: usize, span: Span, value: Spanned<String>) -> LyricLineSyntax {
+pub(super) fn parse_lyric_line(
+    line_index: usize,
+    span: Span,
+    value: Spanned<String>,
+) -> LyricLineSyntax {
     let tokens = parse_lyric_tokens(&value.value, value.span.start);
     LyricLineSyntax {
         line_index,
@@ -176,7 +180,11 @@ fn flush_lyric_syllable(
     });
 }
 
-pub(super) fn parse_symbol_line(line_index: usize, span: Span, value: Spanned<String>) -> SymbolLineSyntax {
+pub(super) fn parse_symbol_line(
+    line_index: usize,
+    span: Span,
+    value: Spanned<String>,
+) -> SymbolLineSyntax {
     let tokens = parse_symbol_tokens(&value.value, value.span.start);
     SymbolLineSyntax {
         line_index,

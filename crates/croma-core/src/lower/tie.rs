@@ -1,7 +1,7 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::{
-    abc_slur_reference, is_note_atom, lowered_timed_note, note_signature, LoweredEvent,
-    LoweringState, PendingTie,
+    LoweredEvent, LoweringState, PendingTie, abc_slur_reference, is_note_atom, lowered_timed_note,
+    note_signature,
 };
 use crate::model::{EventAttachments, LoweredEventAtom, TieAttachment, TieRole};
 use crate::syntax::TieSyntax;

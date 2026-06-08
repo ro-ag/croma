@@ -3,27 +3,25 @@
 //! The lowering half (text-AST -> model) remains in `crate::lower`.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
-use crate::parse::field::{
-    DialectState, InterpretationField, ParsedAbcFields, ParsedFieldKind,
-    ScoreDirective, Spanned, parse_voice_for_music,
-};
+use crate::lower::{abc_field_reference, music_code_span};
 use crate::model::RestVisibility;
 use crate::parse::ParseReport;
+use crate::parse::directive::{
+    parse_preserved_stylesheet_directive, parse_score_stylesheet_directive,
+};
+use crate::parse::field::{
+    DialectState, InterpretationField, ParsedAbcFields, ParsedFieldKind, ScoreDirective, Spanned,
+    parse_voice_for_music,
+};
+use crate::parse::lyric::{parse_lyric_line, parse_symbol_line};
 use crate::source::SourceText;
 use crate::syntax::tune::{LineContext, LineKind, ScoreLineBreak, SurfaceMap};
 use crate::syntax::{
     AnnotationPlacement, AttachmentBundle, InlineFieldSyntax, MalformedSyntax, MalformedSyntaxKind,
-    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine, MusicToken, MusicTokenKind, ParsedMusicDocument, ParsedTuneMusic, QuotedTextKind,
-    ScoreDirectiveSyntax, SlurDirection, SpacerSyntax, UnsupportedSyntax,
-    UnsupportedSyntaxKind,
+    MusicFieldLine, MusicFieldLineKind, MusicItem, MusicLine, MusicToken, MusicTokenKind,
+    ParsedMusicDocument, ParsedTuneMusic, QuotedTextKind, ScoreDirectiveSyntax, SlurDirection,
+    SpacerSyntax, UnsupportedSyntax, UnsupportedSyntaxKind,
 };
-use crate::lower::{
-    abc_field_reference, music_code_span,
-};
-use crate::parse::directive::{
-    parse_preserved_stylesheet_directive, parse_score_stylesheet_directive,
-};
-use crate::parse::lyric::{parse_lyric_line, parse_symbol_line};
 
 pub(crate) fn parse_music_document(
     source: &SourceText,

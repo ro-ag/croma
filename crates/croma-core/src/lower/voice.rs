@@ -1,11 +1,11 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
-use crate::lower::accidental::{key_accidental_policy, KeyAccidentalPolicy, MeasureAccidental};
+use crate::lower::accidental::{KeyAccidentalPolicy, MeasureAccidental, key_accidental_policy};
 use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference};
 use crate::model::{
-    Accidental, AccidentalMark, AnnotationPlacementModel, DecorationAttachment, DecorationSourceKind,
-    Event, EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment,
-    GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind, Pitch, RestEvent, SlurAttachment,
-    SlurRole, TextAttachment, VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AnnotationPlacementModel, DecorationAttachment,
+    DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent, GraceEventKind,
+    GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind, Pitch, RestEvent,
+    SlurAttachment, SlurRole, TextAttachment, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::field::KeySignature;
 use crate::syntax::{
@@ -122,7 +122,12 @@ impl LoweringState {
         }
     }
 
-    pub(crate) fn push_note_group(&mut self, note: &NoteSyntax, line_index: usize, source_order: u32) {
+    pub(crate) fn push_note_group(
+        &mut self,
+        note: &NoteSyntax,
+        line_index: usize,
+        source_order: u32,
+    ) {
         let octave = lowered_octave(note) + voice_octave_shift(&self.properties);
         let written_accidental = note.accidental.map(|accidental| accidental.sign);
         let (effective_accidental, accidental_source) = self.effective_accidental(
@@ -155,7 +160,12 @@ impl LoweringState {
         );
     }
 
-    pub(crate) fn push_rest_group(&mut self, rest: &RestSyntax, line_index: usize, source_order: u32) {
+    pub(crate) fn push_rest_group(
+        &mut self,
+        rest: &RestSyntax,
+        line_index: usize,
+        source_order: u32,
+    ) {
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -175,7 +185,12 @@ impl LoweringState {
         );
     }
 
-    pub(crate) fn push_chord_group(&mut self, chord: &ChordSyntax, line_index: usize, source_order: u32) {
+    pub(crate) fn push_chord_group(
+        &mut self,
+        chord: &ChordSyntax,
+        line_index: usize,
+        source_order: u32,
+    ) {
         if chord.members.is_empty() {
             return;
         }

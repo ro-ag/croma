@@ -1,7 +1,7 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::{
-    abc_tuplet_reference, invalid_tuplet_warning, lowered_timed_note, ActiveTuplet,
-    CompletedTuplet, LoweredEvent, LoweringState,
+    ActiveTuplet, CompletedTuplet, LoweredEvent, LoweringState, abc_tuplet_reference,
+    invalid_tuplet_warning, lowered_timed_note,
 };
 use crate::model::{Fraction, TupletAttachment, TupletRole};
 use crate::syntax::TupletSyntax;
