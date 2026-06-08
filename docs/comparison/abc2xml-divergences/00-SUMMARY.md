@@ -1,53 +1,61 @@
-# How many .abc files have a genuine Croma issue?
+# Croma vs abc2xml — per-file verdict summary
 
-**Short answer: 0 of 10,000.**
+**Genuine Croma issues across the 10,000-tune corpus: 0.**
 
-Every one of the 10,000 corpus tunes is given a per-file verdict by
-[`tools/prove_divergences.py`](../../../tools/prove_divergences.py); the full
-result is the auditable manifest [`per-file-manifest.csv`](per-file-manifest.csv),
-**one row per differing file** with columns: `filename, verdict, mismatch_rows,
-categories, croma_measures, ref_measures, measure_delta, justification`. The
-`justification` column is a plain-language, ABC-2.1-cited reason for that file's
-divergence (and which divergence doc covers it), so every file stands on its own.
+Every tune is given a forensic, per-file verdict by
+[`tools/prove_divergences.py`](../../../tools/prove_divergences.py). The decisive
+signal is the **actual note sequence**: the prover extracts Croma's ordered pitches
+(step + alter + octave) and the reference's, and compares them. The full result is
+the auditable manifest [`per-file-manifest.csv`](per-file-manifest.csv), one row per
+differing file with columns:
 
-## The numbers (current `main`)
+`filename, verdict, music_identical, croma_correct, mismatch_rows, categories,
+croma_measures, ref_measures, measure_delta, justification`
 
-| Outcome | Files | Meaning |
-|---|--:|---|
-| **MATCH** | **7,031** | Identical to the reference (pitch/duration/structure). |
-| **Differ** | **2,969** | At least one differing row — every one classified below. |
+`justification` is a plain-language, ABC-2.1-cited reason for that file's
+divergence — so each row stands on its own.
 
-### Of the 2,969 differing files
+## Headline
 
-| Verdict | Files | Croma correct? | Doc |
-|---|--:|:--:|---|
-| CASCADE | 1,949 | ✅ positional cascade of a structural artifact | [07](07-cascade-artifacts.md) |
-| ARTIFACT_ACCIDENTAL_ALTER | 577 | ✅ redundant `<alter>0>` — semantically identical | [05](05-accidental-alter.md) |
-| ARTIFACT_PHANTOM_MEASURE | 240 | ✅ abc2xml empty measure at annotation/section/`\|>\|` | [02](02-phantom-measures.md) |
-| ARTIFACT_BARLINE | 69 | ✅ spaced `\| \|` / line-split / repeat bar-style | [04](04-barline-spaced-double.md) |
-| EXPORT_FAILURE_NO_MUSIC | 65 | ✅ header-only tune — nothing to export | [01](01-export-failures.md) |
-| DIRECTION | 24 | ✅ tempo/annotation text edge | [10](10-directions.md) |
-| TIE_SLUR_EDGE | 16 | ✅ dropped-legal / malformed / endpoint | [09](09-ties-and-slurs.md) |
-| ARTIFACT_DURATION | 10 | ✅ §4.6 default length / abc2xml rounding | [06](06-duration.md) |
-| ARTIFACT_TUPLET | 7 | ✅ bracket-marker placement | [08](08-tuplet.md) |
-| ARTIFACT_MULTIREST | 6 | ✅ `Z`/`X` expansion (spec: "equivalent") | [03](03-multi-measure-rest.md) |
-| ARTIFACT_ABC2XML_DROPS_MUSIC | 4 | ✅ abc2xml dropped a line / parse-failed; Croma kept it | [02](02-phantom-measures.md) |
-| ARTIFACT_ABC2XML_DROPS_TACET | 2 | ✅ abc2xml dropped multi-voice tacet bars; Croma kept them | [11](11-multipart-and-partgroup.md) |
+| | Files | % |
+|---|--:|--:|
+| Note content **identical** to abc2xml (7,031 exact + 2,707 pitch-identical) | **9,738** | **97.4%** |
+| Differ in some non-note way / Croma more correct | 262 | 2.6% |
+| **Genuine Croma issues** | **0** | 0% |
+| Unclassified (`REVIEW`) | 0 | 0% |
 
-All **2,969 differing files** are Croma-correct (abc2xml artifact, benign
-serialization, positional cascade, or Croma feature). There are **0 known genuine
-Croma issues** in this manifest.
+`croma_correct` over all 2,969 differing files: **2,929 `yes`**, **40 `defensible`**,
+0 genuine issues, 0 review.
 
-## Note on direction of correctness
+## Verdict breakdown (the 2,969 differing files)
 
-Several verdicts are cases where Croma **diverges from abc2xml because Croma is
-the correct one** (the spec, not abc2xml, is the authority):
+| Verdict | Files | `music_identical` | Croma correct? |
+|---|--:|:--:|:--:|
+| `POSITIONAL_CASCADE` — pitches identical, comparison alignment shifted | 1,447 | yes | ✅ |
+| `ALTER_SERIALIZATION` — redundant `<alter>0>` on a carried natural | 577 | mostly | ✅ |
+| `BARLINE_STYLE` — same notes/measures, only a bar-line glyph differs | 389 | yes | ✅ |
+| `PHANTOM_MEASURE` — abc2xml inserts an empty measure Croma omits | 240 | mostly | ✅ |
+| `DURATION_EXACT_VS_ROUNDED` — abc2xml hardcodes L:1/8 / rounds; Croma exact | 104 | mostly | ✅ |
+| `CASCADE` — positional cascade of a structural artifact | 88 | — | ✅ |
+| `EXPORT_FAILURE_NO_MUSIC` — header-only tune, nothing to export | 65 | n/a | ✅ |
+| `DIRECTION_TEXT` — tempo/annotation text edge | 24 | yes | 🟡 defensible |
+| `TIE_SLUR_EDGE` — abc2xml drops a legal tie / malformed input | 16 | yes | 🟡 defensible |
+| `TUPLET_BRACKET` — same ratio, bracket marker placement | 7 | yes | ✅ |
+| `MULTIREST_EXPANSION` — abc2xml expands `Z`/`X`; spec calls them equivalent | 6 | yes | ✅ |
+| `ABC2XML_DROPS_MUSIC` — abc2xml dropped a line; Croma kept the music | 4 | no | ✅ |
+| `ABC2XML_DROPS_TACET` — abc2xml dropped multi-voice tacet bars | 2 | yes | ✅ |
 
-- the 240 `ARTIFACT_PHANTOM_MEASURE` include 4 `|>|` tunes where abc2xml keeps a
-  trailing empty measure after a void broken-rhythm `>`; Croma correctly drops it
-  (`|>|` ≡ `| |`, §4.4 + §4.8);
-- `ARTIFACT_ABC2XML_DROPS_MUSIC` / `DROPS_TACET` are tunes where abc2xml dropped
-  real music or tacet bars and Croma preserved them.
+In **every** verdict Croma either matches abc2xml exactly, is the *more*
+spec-correct of the two, or differs only in a presentation glyph the spec does not
+mandate. See [`MIGRATION.md`](MIGRATION.md) for the case this makes, and docs
+[01–11](.) for the spec citation behind each class.
+
+## The two formerly-residual tunes
+
+`tune_014316` / `tune_014317` (the only genuine Croma issue ever surfaced by this
+prover — a phantom measure from a `]||:` bar-line run) were **fixed**
+([PR #59](https://github.com/ro-ag/croma/pull/59)); they now match the reference
+measure count (22) and reduce to a small `BARLINE_STYLE` residual.
 
 ## Reproduce
 
@@ -59,5 +67,6 @@ uv run python tools/prove_divergences.py \
   --out docs/comparison/abc2xml-divergences/per-file-manifest.csv
 ```
 
-Prints the verdict breakdown and writes the per-file manifest. `REVIEW` (an
-unclassified file) must be 0 — any non-zero count is a file needing a human look.
+Prints the breakdown and the `GENUINE Croma issues` / `REVIEW` counts (both must be
+0) and writes the manifest. Any file can be re-checked against
+`target/debug/croma xml <file>` and its reference XML.

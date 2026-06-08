@@ -10,30 +10,33 @@ spec, its output is a *reference artifact* and Croma is correct.
 > write it) → `abc2xml` / other parsers (orientation only, never the oracle).
 > Spec citations below reference the ABC 2.1 standard text by section and line.
 
-## Headline numbers (current `main`)
+## Start here
 
-Full 10k report-only comparison (`music21` + Polars, positional alignment):
+- **[`00-SUMMARY.md`](00-SUMMARY.md)** — the authoritative per-file verdict
+  breakdown (the numbers below are derived there).
+- **[`MIGRATION.md`](MIGRATION.md)** — the evidence-based case for moving an
+  ABC → MusicXML pipeline from abc2xml to Croma.
+- **[`per-file-manifest.csv`](per-file-manifest.csv)** — every differing file with
+  its verdict, `music_identical`, `croma_correct`, and a spec-cited `justification`.
+
+## Headline numbers (current `main`)
 
 | Quantity | Count | % of 10k |
 |---|--:|--:|
-| Files attempted | 10,000 | 100% |
-| Croma export **failures** | 65 | 0.65% |
-| Exported & importable | 9,935 | 99.35% |
-| **Structural matches** (identical pitch/duration/structure) | **7,029** | 70.3% |
-| **Files with ≥1 differing row** | **2,906** | 29.1% |
-| Total differing rows | 187,908 | — |
+| Note content **identical** to abc2xml (7,031 exact + 2,707 pitch-identical) | **9,738** | **97.4%** |
+| Files that differ in some way | 2,969 | 29.7% |
+| **Genuine Croma issues** | **0** | 0% |
+| Unclassified (`REVIEW`) | 0 | 0% |
 
-The differing files are classified **per file** by
-[`tools/prove_divergences.py`](../../../tools/prove_divergences.py) into the
-manifest [`per-file-manifest.csv`](per-file-manifest.csv). The headline
-"how many files have a genuine Croma issue?" answer is in
-[`00-SUMMARY.md`](00-SUMMARY.md):
+Every one of the 2,969 differing files is classified `croma_correct` (2,929 `yes`,
+40 `defensible`): an `abc2xml` reference artifact, a benign serialization
+difference, malformed input, a positional **cascade** of one of those, or a case
+where Croma is the more spec-correct of the two. The two formerly-residual tunes
+(`tune_014316`/`tune_014317`) were fixed in
+[PR #59](https://github.com/ro-ag/croma/pull/59).
 
-> **7,031 match; 2,969 differ; of those, exactly 2 carry a genuine Croma issue**
-> (a narrow phantom-measure edge — `tune_014316`/`tune_014317`). The other 2,967
-> are an `abc2xml` reference artifact, a benign serialization difference,
-> malformed input, a positional **cascade** of one of those, or a case where
-> Croma is the more spec-correct of the two.
+The per-class table below is a **doc index** (class → spec citation); the
+authoritative per-file counts live in [`00-SUMMARY.md`](00-SUMMARY.md).
 
 ## Verdict summary
 
