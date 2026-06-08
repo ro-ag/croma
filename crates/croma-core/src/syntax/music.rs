@@ -246,6 +246,9 @@ pub struct ChordSyntax {
 pub struct ChordMemberSyntax {
     pub span: Span,
     pub note: NoteSyntax,
+    /// A tie marker (`-`) attached directly to this chord member, e.g. the `A`
+    /// in `[DA-]`. ABC 2.1 §4.11 allows ties into, out of, and between chords.
+    pub tie: Option<TieSyntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
