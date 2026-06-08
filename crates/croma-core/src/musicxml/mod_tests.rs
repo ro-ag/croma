@@ -1862,6 +1862,51 @@ fn unknown_directive_is_direction_metadata_not_music() {
     assert_eq!(count(&export.musicxml, "<note>"), 1);
 }
 
+#[test]
+fn unclosed_chord_bracket_before_barline_preserves_following_measures() {
+    // An unclosed `[` (here followed by a space then a repeat-start) must not
+    // swallow the real measures that follow it. The chord scan stops at the
+    // barline so `CDEF` and `GABc` survive as two measures.
+    let source = "X:1\nM:2/4\nL:1/8\nK:C\n[ |: CDEF | GABc |\n";
+    let export = export_musicxml(source).expect("unclosed chord run should still export");
+
+    assert!(
+        count(&export.musicxml, "<measure ") >= 2,
+        "expected at least two surviving measures, got {}",
+        count(&export.musicxml, "<measure ")
+    );
+    for step in ['C', 'D', 'E', 'F', 'G', 'A', 'B'] {
+        assert!(
+            export.musicxml.contains(&format!("<step>{step}</step>")),
+            "expected note {step} to survive the unclosed chord"
+        );
+    }
+}
+
+#[test]
+fn unclosed_chord_with_quoted_text_before_barline_preserves_measures() {
+    // A chord-symbol-like quoted text inside an unclosed bracket must also stop
+    // at the barline rather than eating the following measures.
+    let source = "X:1\nM:2/4\nL:1/8\nK:C\n[\"x\" CDEF | GABc |\n";
+    let export = export_musicxml(source).expect("unclosed quoted chord run should still export");
+
+    // The chord scan stops at the first bar line, so the measure that follows
+    // the unclosed bracket (`GABc`) is no longer swallowed. Before the fix the
+    // scan ran to end-of-line, eating both bar lines and discarding every
+    // following measure; now the music after the unclosed run survives.
+    assert!(
+        count(&export.musicxml, "<measure ") >= 1,
+        "expected at least one surviving measure, got {}",
+        count(&export.musicxml, "<measure ")
+    );
+    for step in ['G', 'A', 'B'] {
+        assert!(
+            export.musicxml.contains(&format!("<step>{step}</step>")),
+            "expected note {step} after the unclosed quoted chord to survive"
+        );
+    }
+}
+
 fn count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
