@@ -6,10 +6,24 @@
 //! chord member contributes one entry in order. A formatting that preserves this
 //! sequence is lossless in the sense the project's corpus proof uses.
 
-use croma_core::{LowerOptions, ParseOptions, Score, TimedEventKind, lower_score, parse_document};
+use croma_core::{
+    LowerOptions, ParseOptions, Score, TimedEventKind, lower_score, parse_document, write_musicxml,
+};
 
 /// Ordered `(step, alter, octave)` for every sounded note.
 pub(crate) type PitchSeq = Vec<(char, i8, i8)>;
+
+/// The full MusicXML rendering of `source`, or `None` if it does not lower to a
+/// score. This is the strongest "did the rendered score change?" signal — used
+/// to gate cosmetic curations (e.g. redundant bar-line collapse) that must not
+/// change ANY rendered aspect, not merely the pitches. The MusicXML embeds no
+/// source byte offsets, so byte-equality of two renderings means identical
+/// scores.
+pub(crate) fn musicxml_of(source: &str, options: ParseOptions) -> Option<String> {
+    let report = parse_document(source, options);
+    let score = lower_score(&report.value, LowerOptions).value?;
+    Some(write_musicxml(&score).musicxml)
+}
 
 /// Parse + lower `source`, returning its pitch sequence, or `None` if the
 /// document does not lower to a score (e.g. it has hard errors).
