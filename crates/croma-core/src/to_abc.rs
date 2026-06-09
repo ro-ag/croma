@@ -3,9 +3,7 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::TieRole;
-use crate::{
-    Accidental, AccidentalMark, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind,
-};
+use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AbcWriteOptions {}
@@ -15,6 +13,11 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     let mut out = String::new();
     let meta = &score.metadata;
     out.push_str(&format!("X:{}\n", meta.reference.text.trim()));
+    // `%%score` staff-grouping directives; the last voice-bearing one wins on
+    // re-parse, so re-emitting all in order is exact.
+    for directive in &meta.directives {
+        out.push_str(&format!("%%score {}\n", directive.value.text.trim()));
+    }
     if let Some(title) = &meta.title {
         out.push_str(&format!("T:{}\n", title.text.trim()));
     }
@@ -65,10 +68,114 @@ fn tempo_field(score: &Score) -> Option<String> {
 }
 
 fn write_body(score: &Score, unit: Rational) -> String {
+    let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
+    // Single default voice: no `V:` header line (the dominant corpus shape).
+    let single = score.parts.len() == 1
+        && score.parts[0].voices.len() == 1
+        && score.parts[0].voices[0].id.value == "1"
+        && score.parts[0].voices[0].properties == crate::model::VoicePropertiesModel::default();
+    let mut body = String::new();
+    for part in &score.parts {
+        for voice in &part.voices {
+            if !single {
+                body.push_str(&voice_header_line(voice));
+            }
+            body.push_str(&write_voice(voice, unit, key_fifths));
+        }
+    }
+    body
+}
+
+/// The `V:` header line for a voice: id plus its retained properties in a
+/// fixed canonical order, each echoing the model field under its parser key.
+fn voice_header_line(voice: &crate::model::Voice) -> String {
+    use crate::model::StemDirectionModel;
+    let p = &voice.properties;
+    let mut s = format!("V:{}", voice.id.value);
+    for (key, value) in [
+        ("name", &p.name),
+        ("nm", &p.nm),
+        ("subname", &p.subname),
+        ("snm", &p.snm),
+    ] {
+        if let Some(text) = value {
+            s.push_str(&format!(" {key}=\"{}\"", text.text.replace('"', "\\\"")));
+        }
+    }
+    if let Some(clef) = &p.clef {
+        s.push_str(&format!(" clef={}", clef.text));
+    }
+    if let Some(stem) = &p.stem {
+        s.push_str(match stem {
+            StemDirectionModel::Up => " stem=up",
+            StemDirectionModel::Down => " stem=down",
+        });
+    }
+    if let Some(octave) = &p.octave {
+        s.push_str(&format!(" octave={}", octave.text));
+    }
+    if let Some(transpose) = &p.transpose {
+        s.push_str(&format!(" transpose={}", transpose.text));
+    }
+    if let Some(middle) = &p.middle {
+        s.push_str(&format!(" middle={}", middle.text));
+    }
+    s.push('\n');
+    s
+}
+
+/// Replicates the parser's written->stored octave shift for a voice's
+/// `clef=` (`±8`/`±15`), `octave=` and `middle=` modifiers. Stored pitches
+/// already carry the shift, so the writer SUBTRACTS it to recover the written
+/// octave (the re-parse re-applies the echoed modifiers).
+fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
+    let mut shift = 0i8;
+    if let Some(clef) = properties.clef.as_ref() {
+        let clef = clef.text.as_str();
+        if clef.contains("-15") {
+            shift -= 2;
+        } else if clef.contains("+15") {
+            shift += 2;
+        } else if clef.contains("-8") {
+            shift -= 1;
+        } else if clef.contains("+8") {
+            shift += 1;
+        }
+    }
+    if let Some(octave) = properties.octave.as_ref()
+        && let Ok(value) = octave.text.trim().parse::<i8>()
+    {
+        shift += value;
+    }
+    if let Some(middle) = properties.middle.as_ref() {
+        shift += crate::lower::voice::middle_octave_shift(middle.text.as_str());
+    }
+    shift
+}
+
+/// A pitch moved back to its written octave for emission.
+fn shifted(pitch: &Pitch, shift: i8) -> Pitch {
+    Pitch {
+        octave: pitch.octave - shift,
+        ..*pitch
+    }
+}
+
+fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> String {
     let mut out = String::new();
-    let Some(voice) = score.parts.first().and_then(|p| p.voices.first()) else {
-        return out;
-    };
+    let shift = voice_octave_shift(&voice.properties);
+    // Overlay segments (`&`) grouped by the measure they belong to; spliced
+    // before that measure's closing barline, in segment order.
+    let mut overlays: std::collections::BTreeMap<u32, Vec<&crate::model::OverlaySegment>> =
+        std::collections::BTreeMap::new();
+    for measure in &voice.measures {
+        for segment in &measure.overlays {
+            overlays
+                .entry(segment.measure_index)
+                .or_default()
+                .push(segment);
+        }
+    }
     let (markers, scales) = tuplet_layout(&voice.events);
     // Adjacent barline pairs that lowering splits out of ONE source token must
     // be re-joined on emission: `||:` -> [Double, RepeatStart] and `[|:` ->
@@ -103,15 +210,39 @@ fn write_body(score: &Score, unit: Rational) -> String {
             _ => {}
         }
     }
-    let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
-    // Per-measure accidental state, keyed by (step, octave), reset at each
-    // barline — mirrors the parser so the writer only adds an explicit
+    // Per-measure accidental state, keyed by (step, written octave), reset at
+    // each barline — mirrors the parser so the writer only adds an explicit
     // accidental when the note's alter would not otherwise be reproduced.
     let mut measure_alters: std::collections::HashMap<(char, i8), i8> =
         std::collections::HashMap::new();
+    let mut current_measure: Option<u32> = None;
+    let mut measure_has_content = false;
     for (idx, event) in voice.events.iter().enumerate() {
         if skip[idx] {
             continue;
+        }
+        // Measure transition without a closing barline: flush that measure's
+        // overlays before anything from the new measure is emitted.
+        let m = event.measure.index;
+        if current_measure != Some(m) {
+            if let Some(prev) = current_measure
+                && let Some(segments) = overlays.remove(&prev)
+            {
+                for segment in segments {
+                    out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+                }
+            }
+            current_measure = Some(m);
+            measure_has_content = false;
+        }
+        // A closing barline: the measure's overlays go before it.
+        if measure_has_content
+            && matches!(event.kind, TimedEventKind::Barline(_))
+            && let Some(segments) = overlays.remove(&m)
+        {
+            for segment in segments {
+                out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+            }
         }
         // A tuplet marker `(p:q:r` opens before the first note/rest/chord of the
         // group.
@@ -121,26 +252,29 @@ fn write_body(score: &Score, unit: Rational) -> String {
         let tuplet = scales[idx];
         match &event.kind {
             TimedEventKind::Note(note) => {
+                measure_has_content = true;
                 let has_tie_stop = event
                     .attachments
                     .ties
                     .iter()
                     .any(|t| t.role == crate::model::TieRole::Stop);
-                out.push_str(&event_prefix(&event.attachments));
+                let written = shifted(&note.pitch, shift);
+                out.push_str(&event_prefix(&event.attachments, shift));
                 out.push_str(note_accidental(
-                    &note.pitch,
-                    note.written_accidental.as_ref(),
+                    &written,
+                    note.written_accidental.as_ref().map(|m| m.kind),
                     has_tie_stop,
                     key_fifths,
                     &mut measure_alters,
                 ));
-                out.push_str(&pitch_str(&note.pitch));
+                out.push_str(&pitch_str(&written));
                 out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
                 out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
             }
             TimedEventKind::Rest(rest) => {
-                out.push_str(&event_prefix(&event.attachments));
+                measure_has_content = true;
+                out.push_str(&event_prefix(&event.attachments, shift));
                 out.push(match rest.visibility {
                     RestVisibility::Visible => 'z',
                     RestVisibility::Invisible => 'x',
@@ -150,6 +284,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push(' ');
             }
             TimedEventKind::Chord(chord) => {
+                measure_has_content = true;
                 // Slurs can be recorded on the chord event, on individual
                 // members, or (redundantly) on both. Merge them, deduping by
                 // (pair_id, role), so `(`/`)` are emitted exactly once per
@@ -170,7 +305,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
                         }
                     }
                 }
-                out.push_str(&event_prefix(&merged));
+                out.push_str(&event_prefix(&merged, shift));
                 // Per-member lengths; factor out a shared length to the outer
                 // `[...]L` form when every member matches (e.g. `[CEG]2`), else
                 // emit each member's own length (e.g. `[d3f]`).
@@ -187,14 +322,15 @@ fn write_body(score: &Score, unit: Rational) -> String {
                         .ties
                         .iter()
                         .any(|t| t.role == TieRole::Stop);
+                    let written = shifted(&member.pitch, shift);
                     out.push_str(note_accidental(
-                        &member.pitch,
-                        member.written_accidental.as_ref(),
+                        &written,
+                        member.written_accidental.as_ref().map(|m| m.kind),
                         member_tie_stop,
                         key_fifths,
                         &mut measure_alters,
                     ));
-                    out.push_str(&pitch_str(&member.pitch));
+                    out.push_str(&pitch_str(&written));
                     if !uniform {
                         out.push_str(len);
                     }
@@ -224,8 +360,15 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push(' ');
             }
             TimedEventKind::Spacer => {
+                measure_has_content = true;
                 out.push_str("y ");
             }
+        }
+    }
+    // Flush overlays of the final measure (and any not reached via barlines).
+    for (_index, segments) in std::mem::take(&mut overlays) {
+        for segment in segments {
+            out.push_str(&overlay_str(segment, unit, key_fifths, shift));
         }
     }
     let mut body = format!("{}\n", out.trim_end());
@@ -304,7 +447,7 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 /// §4.11/§4.20). So grace comes first, then the event's own slur-opens and
 /// decorations, which therefore bind to the main note head:
 /// `"Gm"{gf}(!trill!note`.
-fn event_prefix(attachments: &crate::EventAttachments) -> String {
+fn event_prefix(attachments: &crate::EventAttachments, shift: i8) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
     // Grace groups FIRST: a quoted string written before a grace group is
@@ -318,7 +461,7 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
                 out.push('(');
             }
         }
-        out.push_str(&grace_str(grace));
+        out.push_str(&grace_str(grace, shift));
     }
     // Event slur-opens next: a quoted string written before a `(` is also
     // dropped by the parser (`"G7"(DE)` loses the chord symbol; `("G7"DE)`
@@ -355,9 +498,11 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
     out
 }
 
-/// A quoted ABC string with interior quotes escaped.
+/// A quoted ABC string. The parser stores quoted text in source-escaped form
+/// (an interior quote is kept as `\"`), so the text re-emits verbatim —
+/// escaping again would corrupt it.
 fn quoted_str(text: &str) -> String {
-    format!("\"{}\"", text.replace('"', "\\\""))
+    format!("\"{text}\"")
 }
 
 /// Reconstructed `w:` lyric lines.
@@ -409,7 +554,15 @@ fn lyric_lines(events: &[crate::TimedEvent]) -> Vec<String> {
             Some(tokens) => {
                 let body: Vec<String> = tokens
                     .iter()
-                    .map(|t| t.clone().unwrap_or_else(|| "*".to_string()))
+                    .map(|t| match t {
+                        // An orphan-Hyphen slot (hyphens with no syllable) is
+                        // XML-invisible and unencodable; a bare `--` would even
+                        // re-parse as TWO skips and shift every later syllable.
+                        // One `*` keeps the position and drops the orphan.
+                        Some(tok) if tok.chars().all(|c| c == '-') => "*".to_string(),
+                        Some(tok) => tok.clone(),
+                        None => "*".to_string(),
+                    })
                     .collect();
                 format!("w:{}", body.join(" "))
             }
@@ -621,7 +774,7 @@ fn key_alter(step: char, fifths: i8) -> i8 {
 /// State is keyed by (step, octave), matching the parser's per-octave carry.
 fn note_accidental(
     pitch: &Pitch,
-    written: Option<&AccidentalMark>,
+    written: Option<Accidental>,
     has_tie_stop: bool,
     key_fifths: i8,
     state: &mut std::collections::HashMap<(char, i8), i8>,
@@ -631,9 +784,9 @@ fn note_accidental(
         .get(&key)
         .copied()
         .unwrap_or_else(|| key_alter(pitch.step, key_fifths));
-    if let Some(mark) = written {
+    if let Some(kind) = written {
         state.insert(key, pitch.alter);
-        return accidental_glyph(mark.kind);
+        return accidental_glyph(kind);
     }
     if pitch.alter != expected {
         state.insert(key, pitch.alter);
@@ -643,6 +796,134 @@ fn note_accidental(
         return alter_glyph(pitch.alter);
     }
     ""
+}
+
+/// Alter value an explicit accidental denotes.
+fn accidental_alter(kind: Accidental) -> i8 {
+    match kind {
+        Accidental::DoubleFlat => -2,
+        Accidental::Flat => -1,
+        Accidental::Natural => 0,
+        Accidental::Sharp => 1,
+        Accidental::DoubleSharp => 2,
+    }
+}
+
+/// Render one `&` overlay segment: `& ` plus its events, grouping consecutive
+/// same-source chord members into `[...]` (mirroring the semantic lowering).
+/// The parser resets the measure accidental state at `&`, so the safety-net
+/// state starts fresh per segment.
+fn overlay_str(
+    segment: &crate::model::OverlaySegment,
+    unit: Rational,
+    key_fifths: i8,
+    shift: i8,
+) -> String {
+    use crate::model::TimelineEventKind;
+    let mut out = String::from("& ");
+    let mut state: std::collections::HashMap<(char, i8), i8> = std::collections::HashMap::new();
+    let events = &segment.events;
+    let mut i = 0;
+    while i < events.len() {
+        let event = &events[i];
+        match &event.kind {
+            TimelineEventKind::Note { .. } => {
+                let mut end = i + 1;
+                while end < events.len() && overlay_same_chord(event, &events[end]) {
+                    end += 1;
+                }
+                let group = &events[i..end];
+                let chord = group.len() > 1;
+                let mut lead = event.attachments.clone();
+                if chord {
+                    lead.ties.clear();
+                }
+                out.push_str(&event_prefix(&lead, shift));
+                let lengths: Vec<String> =
+                    group.iter().map(|e| length_str(e.duration, unit)).collect();
+                let uniform = lengths.windows(2).all(|w| w[0] == w[1]);
+                if chord {
+                    out.push('[');
+                }
+                for (e, len) in group.iter().zip(&lengths) {
+                    let TimelineEventKind::Note {
+                        step,
+                        octave,
+                        accidental,
+                        effective_accidental,
+                        ..
+                    } = &e.kind
+                    else {
+                        continue;
+                    };
+                    let alter = effective_accidental
+                        .map(accidental_alter)
+                        .unwrap_or_else(|| key_alter(*step, key_fifths));
+                    let has_tie_stop = e.attachments.ties.iter().any(|t| t.role == TieRole::Stop);
+                    let written = Pitch {
+                        step: *step,
+                        alter,
+                        octave: *octave - shift,
+                        spelling_source: e.span,
+                    };
+                    out.push_str(note_accidental(
+                        &written,
+                        *accidental,
+                        has_tie_stop,
+                        key_fifths,
+                        &mut state,
+                    ));
+                    out.push_str(&pitch_str(&written));
+                    if !chord || !uniform {
+                        out.push_str(len);
+                    }
+                    if chord && e.attachments.ties.iter().any(|t| t.role == TieRole::Start) {
+                        out.push('-');
+                    }
+                }
+                if chord {
+                    out.push(']');
+                    if let Some(len) = lengths.first().filter(|_| uniform) {
+                        out.push_str(len);
+                    }
+                }
+                out.push_str(&event_suffix(&lead));
+                out.push(' ');
+                i = end;
+                continue;
+            }
+            TimelineEventKind::Rest { visibility } => {
+                out.push_str(&event_prefix(&event.attachments, shift));
+                out.push(match visibility {
+                    RestVisibility::Visible => 'z',
+                    RestVisibility::Invisible => 'x',
+                });
+                out.push_str(&length_str(event.duration, unit));
+                out.push_str(&event_suffix(&event.attachments));
+                out.push(' ');
+            }
+            TimelineEventKind::Spacer => out.push_str("y "),
+            TimelineEventKind::Barline { kind } => {
+                out.push_str(barline_str(*kind));
+                out.push(' ');
+            }
+            TimelineEventKind::VariantEnding { .. } => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// True when `next` continues the chord group opened at `first` (same source
+/// token, same onset, flagged as a chord member).
+fn overlay_same_chord(
+    first: &crate::model::VoiceTimedEvent,
+    next: &crate::model::VoiceTimedEvent,
+) -> bool {
+    use crate::model::TimelineEventKind;
+    first.source_order == next.source_order
+        && first.onset == next.onset
+        && matches!(next.kind, TimelineEventKind::Note { chord: true, .. })
 }
 
 /// Pitch letter plus octave marks (middle C = octave 4: `C`=4, `c`=5).
@@ -695,7 +976,7 @@ fn length_ratio_str(mult: Rational) -> String {
 
 /// ABC grace group: `{...}` (or `{/...}` for an acciaccatura/slashed group).
 /// Grace-note lengths are relative to the grace base unit via `length_multiplier`.
-fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
+fn grace_str(group: &crate::model::GraceGroupAttachment, shift: i8) -> String {
     use crate::model::GraceEventKind;
     let mut out = String::from("{");
     if group.slash.is_some() {
@@ -710,7 +991,7 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
                         .map(|m| accidental_glyph(m.kind))
                         .unwrap_or(""),
                 );
-                out.push_str(&pitch_str(&note.pitch));
+                out.push_str(&pitch_str(&shifted(&note.pitch, shift)));
                 out.push_str(&length_ratio_str(note.length_multiplier));
             }
             GraceEventKind::Rest(_) => out.push('z'),
@@ -723,7 +1004,7 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
                             .map(|m| accidental_glyph(m.kind))
                             .unwrap_or(""),
                     );
-                    out.push_str(&pitch_str(&note.pitch));
+                    out.push_str(&pitch_str(&shifted(&note.pitch, shift)));
                     out.push_str(&length_ratio_str(note.length_multiplier));
                 }
                 out.push(']');
@@ -1325,6 +1606,84 @@ mod tests {
                 "fixture has no lyrics: {src:?}"
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    fn voice_shape(score: &crate::Score) -> Vec<(String, Vec<Option<String>>, usize)> {
+        score
+            .parts
+            .iter()
+            .flat_map(|p| {
+                p.voices.iter().map(|v| {
+                    let p = &v.properties;
+                    let texts = vec![
+                        p.name.as_ref().map(|t| t.text.clone()),
+                        p.nm.as_ref().map(|t| t.text.clone()),
+                        p.subname.as_ref().map(|t| t.text.clone()),
+                        p.snm.as_ref().map(|t| t.text.clone()),
+                        p.clef.as_ref().map(|t| t.text.clone()),
+                        p.stem.map(|s| format!("{s:?}")),
+                        p.octave.as_ref().map(|t| t.text.clone()),
+                        p.transpose.as_ref().map(|t| t.text.clone()),
+                        p.middle.as_ref().map(|t| t.text.clone()),
+                    ];
+                    (v.id.value.clone(), texts, v.events.len())
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn multi_voice_roundtrip() {
+        for src in [
+            "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nV:2\nE,F,G,A,|\n",
+            "X:1\nL:1/4\nK:C\nV:T name=\"Tenor\" clef=treble-8\nCDEF|\nV:B clef=bass\nC,D,E,F,|\n",
+            "X:1\nL:1/4\nK:C\nV:1 octave=-1\nCDEF|\nV:2 octave=1\nGABc|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(voice_shape(&s1), voice_shape(&s2), "{src:?} -> {abc:?}");
+        }
+    }
+
+    fn overlay_pitches(score: &crate::Score) -> Vec<(u32, char, i8)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for m in &voice.measures {
+                    for seg in &m.overlays {
+                        for e in &seg.events {
+                            if let crate::model::TimelineEventKind::Note { step, octave, .. } =
+                                e.kind
+                            {
+                                v.push((seg.measure_index, step, octave));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn overlays_roundtrip() {
+        for src in [
+            "X:1\nL:1/4\nK:C\nC2 E2 & G,2 B,2 |\n",
+            "X:1\nL:1/4\nK:C\nCDEF | G2 A2 & B,2 C2 | E4 |\n",
+            "X:1\nL:1/4\nK:C\nC2 E2 & G,2 B,2 & E,2 F,2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(
+                overlay_pitches(&s1),
+                overlay_pitches(&s2),
+                "{src:?} -> {abc:?}"
+            );
         }
     }
 
