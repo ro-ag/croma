@@ -110,11 +110,15 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push(' ');
             }
             TimedEventKind::Chord(chord) => {
-                // Slurs and ties can be recorded on the chord event, on
-                // individual members, or (redundantly) on both. Merge them,
-                // deduping by (pair_id, role), so the surrounding `(`, `)` and
-                // `-` are emitted exactly once per distinct slur/tie.
+                // Slurs can be recorded on the chord event, on individual
+                // members, or (redundantly) on both. Merge them, deduping by
+                // (pair_id, role), so `(`/`)` are emitted exactly once per
+                // distinct slur. Ties are NOT merged: a tie binds a specific
+                // member (`[dg-]` ties only g), so each is emitted inline after
+                // its member. A whole-chord tie (`[CE]2-`) also records ties on
+                // every member, so inline emission reproduces its sound exactly.
                 let mut merged = event.attachments.clone();
+                merged.ties.clear();
                 for member in &chord.members {
                     for slur in &member.attachments.slurs {
                         if !merged
@@ -123,15 +127,6 @@ fn write_body(score: &Score, unit: Rational) -> String {
                             .any(|x| x.pair_id == slur.pair_id && x.role == slur.role)
                         {
                             merged.slurs.push(*slur);
-                        }
-                    }
-                    for tie in &member.attachments.ties {
-                        if !merged
-                            .ties
-                            .iter()
-                            .any(|x| x.pair_id == tie.pair_id && x.role == tie.role)
-                        {
-                            merged.ties.push(*tie);
                         }
                     }
                 }
@@ -151,7 +146,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
                         .attachments
                         .ties
                         .iter()
-                        .any(|t| t.role == crate::model::TieRole::Stop);
+                        .any(|t| t.role == TieRole::Stop);
                     out.push_str(note_accidental(
                         &member.pitch,
                         member.written_accidental.as_ref(),
@@ -162,6 +157,14 @@ fn write_body(score: &Score, unit: Rational) -> String {
                     out.push_str(&pitch_str(&member.pitch));
                     if !uniform {
                         out.push_str(len);
+                    }
+                    if member
+                        .attachments
+                        .ties
+                        .iter()
+                        .any(|t| t.role == TieRole::Start)
+                    {
+                        out.push('-');
                     }
                 }
                 out.push(']');
@@ -250,16 +253,9 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
-    // Quoted strings: chord symbols (`"Gm"`) and annotations (`"^text"`). The
-    // annotation `text` already carries its placement char, and chord-symbol
-    // text never starts with one, so the parser re-distinguishes them; both
-    // simply re-emit as `"<text>"`.
-    for chord_symbol in &attachments.chord_symbols {
-        out.push_str(&format!("\"{}\"", chord_symbol.text));
-    }
-    for annotation in &attachments.annotations {
-        out.push_str(&format!("\"{}\"", annotation.text));
-    }
+    // Grace groups FIRST: a quoted string written before a grace group is
+    // silently dropped by the parser (`"F"{AB}c` loses the chord symbol;
+    // `{AB}"F"c` keeps it), so the canonical order is `({gf}"F"(!deco!note`.
     for grace in &attachments.grace_groups {
         // A slur recorded on the grace group binds to its first grace note, so
         // its `(` opens before the group (`({gf}` ...).
@@ -270,10 +266,23 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
         }
         out.push_str(&grace_str(grace));
     }
+    // Event slur-opens next: a quoted string written before a `(` is also
+    // dropped by the parser (`"G7"(DE)` loses the chord symbol; `("G7"DE)`
+    // keeps it).
     for slur in &attachments.slurs {
         if slur.role == SlurRole::Start {
             out.push('(');
         }
+    }
+    // Quoted strings: chord symbols (`"Gm"`) and annotations (`"^text"`). The
+    // annotation `text` already carries its placement char, and chord-symbol
+    // text never starts with one, so the parser re-distinguishes them; both
+    // simply re-emit as `"<text>"`.
+    for chord_symbol in &attachments.chord_symbols {
+        out.push_str(&format!("\"{}\"", chord_symbol.text));
+    }
+    for annotation in &attachments.annotations {
+        out.push_str(&format!("\"{}\"", annotation.text));
     }
     for deco in &attachments.decorations {
         out.push_str(&decoration_str(&deco.name));
@@ -839,6 +848,79 @@ mod tests {
                 "grace for {src:?} -> {abc:?}"
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    #[test]
+    fn chord_symbol_after_slur_open_survives() {
+        // `"G7"(DE)` is silently dropped by the parser; the writer must emit
+        // the slur-open first (`("G7"DE)`).
+        let src = "X:1\nL:1/8\nK:C\n(\"G7\"DE) F |\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(
+            text_attachments(&s1),
+            text_attachments(&s2),
+            "chord symbol lost: {abc:?}"
+        );
+        assert!(!text_attachments(&s1).is_empty());
+    }
+
+    #[test]
+    fn chord_symbol_after_grace_survives() {
+        // `"F"{AB}c` is silently dropped by the parser; the writer must emit
+        // the grace group first (`{AB}"F"c`) so the chord symbol survives.
+        let src = "X:1\nL:1/8\nK:C\n{AB}\"F\"c2 d2 |\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(
+            text_attachments(&s1),
+            text_attachments(&s2),
+            "chord symbol lost: {abc:?}"
+        );
+        assert!(!text_attachments(&s1).is_empty());
+    }
+
+    fn member_tie_starts(score: &crate::Score) -> Vec<Vec<bool>> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    if let crate::TimedEventKind::Chord(c) = &e.kind {
+                        v.push(
+                            c.members
+                                .iter()
+                                .map(|m| {
+                                    m.attachments.ties.iter().any(|t| t.role == TieRole::Start)
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn chord_member_ties_stay_per_member() {
+        // `[dg-]` ties only g; the writer must not promote it to a whole-chord
+        // tie (`[dg]-`), which would also tie d.
+        for src in [
+            "X:1\nL:1/8\nK:C\n[dg-]2 [dg]2 |\n",
+            "X:1\nL:1/8\nK:C\n[C-E]2 [CE]2 |\n",
+            "X:1\nL:1/8\nK:C\n[CE]2- [CE]2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                member_tie_starts(&s1),
+                member_tie_starts(&s2),
+                "member ties for {src:?} -> {abc:?}"
+            );
         }
     }
 
