@@ -20,9 +20,9 @@ pub(crate) fn auto_fix(source: &str, options: FormatOptions) -> FixResult {
     let baseline = pitch_seq_of(source, options.parse);
     let formatted = crate::engine::format(source, options.parse);
 
-    let mut candidates = collect_candidates(&formatted, options.parse);
+    let mut candidates = resolve_overlaps(collect_candidates(&formatted, options.parse));
     // Apply edits from the end of the buffer first so earlier byte offsets stay
-    // valid as we mutate; candidates never overlap.
+    // valid as we mutate; resolve_overlaps guarantees they never overlap.
     candidates.sort_by_key(|change| std::cmp::Reverse(change.span.start));
 
     let mut working = formatted;
@@ -57,6 +57,27 @@ pub(crate) fn auto_fix(source: &str, options: FormatOptions) -> FixResult {
     }
 }
 
+/// Drop candidates whose spans overlap, preferring the larger span (e.g. a
+/// whole-value doubled-tempo collapse over the field-spacing trim of its leading
+/// whitespace). The cumulative apply assumes non-overlapping edits.
+fn resolve_overlaps(mut candidates: Vec<Change>) -> Vec<Change> {
+    candidates.sort_by(|a, b| {
+        a.span
+            .start
+            .cmp(&b.span.start)
+            .then(b.span.end.cmp(&a.span.end))
+    });
+    let mut kept: Vec<Change> = Vec::new();
+    let mut last_end = 0;
+    for candidate in candidates {
+        if candidate.span.start >= last_end {
+            last_end = candidate.span.end;
+            kept.push(candidate);
+        }
+    }
+    kept
+}
+
 /// Detect every candidate curation in `source`.
 fn collect_candidates(source: &str, options: ParseOptions) -> Vec<Change> {
     let report = parse_document(source, options);
@@ -67,7 +88,34 @@ fn collect_candidates(source: &str, options: ParseOptions) -> Vec<Change> {
     chord_symbol_in_brackets(source, document, &mut candidates);
     doubled_tempo(source, document, &mut candidates);
     redundant_barlines(source, document, &mut candidates);
+    field_spacing(source, document, &mut candidates);
     candidates
+}
+
+/// `K: C` → `K:C`: remove whitespace between an information field's colon and
+/// its value. The ABC 2.1 spec writes fields with no space after the colon.
+/// Structure-gated, so an alignment-sensitive value (`w:`/`s:`) whose leading
+/// whitespace actually matters is reverted rather than mangled.
+fn field_spacing(source: &str, document: &croma_core::AbcDocument, out: &mut Vec<Change>) {
+    for field in &document.fields.fields {
+        let value = source
+            .get(field.value_span.start..field.value_span.end)
+            .unwrap_or("");
+        let leading = value.len() - value.trim_start().len();
+        if leading == 0 {
+            continue;
+        }
+        let span = Span {
+            start: field.value_span.start,
+            end: field.value_span.start + leading,
+        };
+        out.push(Change {
+            kind: FixKind::FieldSpacing,
+            span,
+            before: source.get(span.start..span.end).unwrap_or("").to_string(),
+            after: String::new(),
+        });
+    }
 }
 
 /// `| |` → `|`, `]||:` → `|:`: collapse a run of bar-line tokens (contiguous or
@@ -462,6 +510,47 @@ mod tests {
             final_bar.output.contains("|]"),
             "got: {:?}",
             final_bar.output
+        );
+    }
+
+    #[test]
+    fn trims_space_after_field_colon() {
+        let result = auto_fix("X:1\nT: My Tune\nK: C\nCDE\n", opts());
+        assert!(
+            result.output.contains("T:My Tune"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(result.output.contains("K:C"), "got: {:?}", result.output);
+        assert!(
+            result
+                .changes
+                .iter()
+                .filter(|c| c.kind == FixKind::FieldSpacing)
+                .count()
+                >= 2
+        );
+        // Structure gate: rendering identical.
+        assert_eq!(
+            musicxml_of("X:1\nT: My Tune\nK: C\nCDE\n", ParseOptions::default()),
+            musicxml_of(&result.output, ParseOptions::default()),
+        );
+    }
+
+    #[test]
+    fn field_spacing_does_not_overlap_doubled_tempo() {
+        // `Q: 1/4=1/4=160` triggers both detectors; overlap resolution keeps the
+        // whole-value tempo collapse, which already drops the leading space.
+        let result = auto_fix("X:1\nQ: 1/4=1/4=160\nK:C\nC\n", opts());
+        assert!(
+            result.output.contains("Q:1/4=160"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("1/4=1/4"),
+            "got: {:?}",
+            result.output
         );
     }
 
