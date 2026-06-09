@@ -68,6 +68,19 @@ fn dump_commands_emit_debug_output() {
 }
 
 #[test]
+fn dump_abc_roundtrips_a_simple_tune() {
+    let dir = TestDir::new("dump-abc");
+    let file = dir.write("t.abc", "X:1\nM:4/4\nL:1/8\nK:C\nCDEF GABc |\n");
+    let output = run_croma([os("dump"), os("abc"), file.as_os_str()]);
+    assert_success(&output);
+    let out = stdout(&output);
+    assert!(out.contains("K:C"), "missing key header in: {out:?}");
+    // The writer emits canonical, fully-spaced notes (beaming is not carried by
+    // the `Score` model), so the body is `C D E F ...`, not `CDEF`.
+    assert!(out.contains("C D E F"), "missing note body in: {out:?}");
+}
+
+#[test]
 fn json_diagnostics_are_parseable_when_diagnostics_exist() {
     let dir = TestDir::new("json-diagnostics");
     let file = dir.write("missing-key.abc", "X:1\nT:No Key\n");

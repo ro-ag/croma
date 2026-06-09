@@ -12,6 +12,7 @@ pub mod options;
 pub mod parse;
 pub mod source;
 pub mod syntax;
+pub mod to_abc;
 
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
@@ -31,6 +32,7 @@ pub use syntax::{
     BarlineSyntax, LengthSyntax, MusicItem, MusicLine, MusicToken, MusicTokenKind,
     ParsedMusicDocument, ParsedTuneMusic,
 };
+pub use to_abc::{AbcWriteOptions, write_abc};
 
 #[cfg(test)]
 pub(crate) mod test_support;

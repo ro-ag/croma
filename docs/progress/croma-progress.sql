@@ -39,6 +39,9 @@ INSERT INTO "artifact" VALUES(30,'phase-10-closure','closure_report','docs/progr
 INSERT INTO "artifact" VALUES(31,'phase-23','comparison','docs/untracked/phase-23-barline-run-phantom','Full 10k testbed output and comparison artifacts.');
 INSERT INTO "artifact" VALUES(32,'phase-23','manifest','docs/comparison/abc2xml-divergences/per-file-manifest.csv','Regenerated prover manifest with zero RESIDUAL_PHANTOM_CROMA and zero REVIEW.');
 INSERT INTO "artifact" VALUES(33,'phase-23','summary','docs/comparison/abc2xml-divergences/00-SUMMARY.md','Updated to 0 known genuine Croma issues.');
+INSERT INTO "artifact" VALUES(34,'phase-27-abc-writer','harness','tools/prove_abc_roundtrip.py','Local-only Score->ABC corpus round-trip prover (structural projection)');
+INSERT INTO "artifact" VALUES(35,'phase-27-abc-writer','report','docs/untracked/abc/abc-roundtrip-report.json','Generated run report (git-ignored)');
+INSERT INTO "artifact" VALUES(36,'phase-27-abc-writer','source','crates/croma-core/src/to_abc.rs','write_abc canonical ABC writer');
 CREATE TABLE memory (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -183,6 +186,9 @@ INSERT INTO "metric" VALUES(106,'phase-23','target-files','tune_014316_measures'
 INSERT INTO "metric" VALUES(107,'phase-23','target-files','tune_014317_measures','23','22','-1','measures','Note count stayed 53.');
 INSERT INTO "metric" VALUES(108,'phase-23','prover','RESIDUAL_PHANTOM_CROMA','2','0','-2','files','tools/prove_divergences.py verdict disappeared.');
 INSERT INTO "metric" VALUES(109,'phase-23','prover','REVIEW','0','0','0','files','No unclassified divergence files.');
+INSERT INTO "metric" VALUES(110,'phase-27-abc-writer','abc-roundtrip','in_scope_coverage',NULL,'31.49',NULL,'percent','3149/10000 tunes in slice-1 scope');
+INSERT INTO "metric" VALUES(111,'phase-27-abc-writer','abc-roundtrip','structural_diffs',NULL,'0',NULL,'count','0 over in-scope subset');
+INSERT INTO "metric" VALUES(112,'phase-27-abc-writer','abc-roundtrip','fmt_fixed_point',NULL,'1200',NULL,'count','1200/1200 in-scope sampled outputs are croma fmt fixed points');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -245,6 +251,7 @@ INSERT INTO "phase" VALUES('phase-23','work/phase-23-barline-run-phantom','compl
 INSERT INTO "phase" VALUES('phase-24-fmt','work/fmt-subcommand','merged',62,'https://github.com/ro-ag/croma/pull/62',NULL,'Build the croma fmt subcommand: canonical idempotent+lossless ABC formatter (croma-fmt rebuilt from stub) plus pitch-preserving --auto-fix curations, gated by runtime pitch-sequence verification','New feature (formatter gate lifted by abc2xml-divergence proof)','croma-fmt: span-anchored token-preserving engine; format/is_formatted/auto_fix with FixResult. Curations: detached length, chord-symbol-in-brackets unwrap, doubled tempo (each runtime-verified pitch-preserving). CLI migrated to clap (derive) + colored output; fmt has stdout/--check/-w/--auto-fix. 10k corpus round-trip: 0 notes changed, 0 idempotency failures, 2682 reformatted.','Iterate the --auto-fix catalogue: redundant bar-line collapse (phase 22/23 work) and %%MIDI/stylesheet directive placement; then per-field re-spacing/order with individual safety proofs','2026-06-08 21:21:17');
 INSERT INTO "phase" VALUES('phase-25-fmt-barline','work/fmt-barline-collapse','merged',63,'https://github.com/ro-ag/croma/pull/63',NULL,'auto-fix catalogue class 2: redundant bar-line collapse (spaced | | and ]||: runs) to canonical single boundary, preserving repeat/volta/final semantics','New auto-fix curation (formatter increment)','Added FixKind::RedundantBarline gated by a NEW structure-preserving gate (full MusicXML equality) distinct from the pitch-sequence gate used by rhythm/tempo repairs. Canonical-collapse heuristic proposes |, |:, :|, :|: and the gate proves each rendering-neutral (real || / |] left untouched). Corpus harness now also asserts canonical fmt yields byte-identical MusicXML. 10k: notes_changed 0, not_idempotent 0, canonical_xml_changed 0, auto_fixed 3290.','Auto-fix class 4: normalise %%MIDI/stylesheet directive placement (structure-gated); then per-field re-spacing/order with individual proofs','2026-06-09 00:20:15');
 INSERT INTO "phase" VALUES('phase-26-fmt-field-spacing','work/fmt-field-spacing','merged',64,'https://github.com/ro-ag/croma/pull/64',NULL,'auto-fix: field-value re-spacing — trim whitespace after a field colon (K: C -> K:C), spec-grounded no-space convention','New auto-fix curation (formatter increment)','Added FixKind::FieldSpacing, structure-gated (MusicXML equality) so alignment-sensitive w:/s: values are reverted; overlap resolution prevents Q: field-spacing colliding with doubled-tempo. 10k: notes_changed 0, not_idempotent 0, canonical_xml_changed 0, auto_fixed 7001.','Catalogue items exhausted except %%MIDI/stylesheet directive placement (deferred: croma does not render %%MIDI to MusicXML so the structure gate cannot protect it)','2026-06-09 01:19:04');
+INSERT INTO "phase" VALUES('phase-27-abc-writer','work/abc-writer','in_progress',65,'https://github.com/ro-ag/croma/pull/65','ffaf3cda9c0950082d23eea8f60f3152c3ceb48a','docs/superpowers/plans/2026-06-09-abc-writer.md (Score->ABC writer slice 1)','New feature (XML->ABC epic: Score->ABC canonical writer, slice 1)','Added croma_core::write_abc emitting canonical ABC (headers, single voice notes/rests/durations/accidentals/octaves, barlines+repeats+endings, ties); exposed via croma dump abc. Output is a croma fmt fixed point and round-trips with identical structural projection. Corpus: 3149/10000 in-scope (31.49%), 0 structural diffs.','Slice 2: grow in-scope coverage (chords -> tuplets -> voices -> lyrics ...) until full corpus round-trips; then MusicXML->Score reader (roxmltree, feature-gated).','2026-06-09 05:52:04');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -368,6 +375,12 @@ INSERT INTO "validation" VALUES(112,'phase-26-fmt-field-spacing','cargo test --w
 INSERT INTO "validation" VALUES(113,'phase-26-fmt-field-spacing','cargo clippy --workspace --all-targets -- -D warnings','pass','green');
 INSERT INTO "validation" VALUES(114,'phase-26-fmt-field-spacing','cargo fmt --all -- --check','pass','green');
 INSERT INTO "validation" VALUES(115,'phase-26-fmt-field-spacing','uv run python tools/prove_fmt_lossless.py (10k)','pass','10k: notes_changed=0, not_idempotent=0, canonical_xml_changed=0, auto_fixed=7001 (local only)');
+INSERT INTO "validation" VALUES(116,'phase-27-abc-writer','cargo test --workspace','pass','to_abc unit/projection round-trip + dump abc CLI test green');
+INSERT INTO "validation" VALUES(117,'phase-27-abc-writer','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
+INSERT INTO "validation" VALUES(118,'phase-27-abc-writer','cargo fmt --all -- --check','pass','clean');
+INSERT INTO "validation" VALUES(119,'phase-27-abc-writer','uv run pytest -q','pass','6 passed');
+INSERT INTO "validation" VALUES(120,'phase-27-abc-writer','cargo publish -p croma-core --dry-run','pass','no new dependency added by writer');
+INSERT INTO "validation" VALUES(121,'phase-27-abc-writer','uv run python tools/prove_abc_roundtrip.py --abc-root docs/untracked/corpus/zenodo-10k/abc','pass','total=10000 in_scope=3149 structural_diffs=0 errors=0 (local-only)');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -382,7 +395,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',109);
-INSERT INTO "sqlite_sequence" VALUES('artifact',33);
-INSERT INTO "sqlite_sequence" VALUES('validation',115);
+INSERT INTO "sqlite_sequence" VALUES('metric',112);
+INSERT INTO "sqlite_sequence" VALUES('artifact',36);
+INSERT INTO "sqlite_sequence" VALUES('validation',121);
 COMMIT;
