@@ -251,6 +251,7 @@ fn fix_detail(change: &Change) -> String {
             FixKind::ChordSymbolInBrackets => "moved chord symbol out of brackets".to_string(),
             FixKind::DoubledTempo => "collapsed a doubled tempo".to_string(),
             FixKind::RedundantBarline => "collapsed a redundant bar line".to_string(),
+            FixKind::FieldSpacing => "removed space after a field colon".to_string(),
         }
     } else {
         format!("`{}` -> `{}`", change.before, change.after)
