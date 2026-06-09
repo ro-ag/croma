@@ -36,6 +36,10 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
         .unwrap_or_else(|| "C".to_string());
     out.push_str(&format!("K:{key_display}\n"));
     out.push_str(&write_body(score, unit));
+    // Post-tune lyrics (`W:`) round-trip to identical <credit> entries.
+    for line in &meta.post_tune_lyrics {
+        out.push_str(&format!("W:{}\n", line.text));
+    }
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -66,6 +70,39 @@ fn write_body(score: &Score, unit: Rational) -> String {
         return out;
     };
     let (markers, scales) = tuplet_layout(&voice.events);
+    // Adjacent barline pairs that lowering splits out of ONE source token must
+    // be re-joined on emission: `||:` -> [Double, RepeatStart] and `[|:` ->
+    // [Initial, RepeatStart]. Both halves of a split token share the SAME
+    // source span — that distinguishes them from a real two-token `|| |:` pair
+    // (different spans), which must stay split or its phantom empty measure
+    // would collapse. Emitting a split pair as two spaced tokens creates a
+    // phantom empty measure when the pair leads the tune.
+    let mut joined: Vec<Option<&'static str>> = vec![None; voice.events.len()];
+    let mut skip = vec![false; voice.events.len()];
+    for i in 0..voice.events.len().saturating_sub(1) {
+        if skip[i] {
+            continue;
+        }
+        let (TimedEventKind::Barline(a), TimedEventKind::Barline(b)) =
+            (&voice.events[i].kind, &voice.events[i + 1].kind)
+        else {
+            continue;
+        };
+        if a.span != b.span {
+            continue;
+        }
+        match (a.kind, b.kind) {
+            (BarlineKind::Double, BarlineKind::RepeatStart) => {
+                joined[i] = Some("||:");
+                skip[i + 1] = true;
+            }
+            (BarlineKind::Initial, BarlineKind::RepeatStart) => {
+                joined[i] = Some("[|:");
+                skip[i + 1] = true;
+            }
+            _ => {}
+        }
+    }
     let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
     // Per-measure accidental state, keyed by (step, octave), reset at each
     // barline — mirrors the parser so the writer only adds an explicit
@@ -73,6 +110,9 @@ fn write_body(score: &Score, unit: Rational) -> String {
     let mut measure_alters: std::collections::HashMap<(char, i8), i8> =
         std::collections::HashMap::new();
     for (idx, event) in voice.events.iter().enumerate() {
+        if skip[idx] {
+            continue;
+        }
         // A tuplet marker `(p:q:r` opens before the first note/rest/chord of the
         // group.
         if let Some(marker) = &markers[idx] {
@@ -176,17 +216,31 @@ fn write_body(score: &Score, unit: Rational) -> String {
             }
             TimedEventKind::Barline(b) => {
                 measure_alters.clear();
-                out.push_str(barline_str(b.kind));
+                out.push_str(joined[idx].unwrap_or_else(|| barline_str(b.kind)));
                 out.push(' ');
             }
             TimedEventKind::RepeatEnding(r) => {
                 out.push_str(&ending_str(r));
                 out.push(' ');
             }
-            _ => {} // Spacer is out of scope
+            TimedEventKind::Spacer => {
+                out.push_str("y ");
+            }
         }
     }
-    format!("{}\n", out.trim_end())
+    let mut body = format!("{}\n", out.trim_end());
+    // Verse lines first, then symbol lines: each group must be internally
+    // adjacent (adjacency drives verse/layer numbering on re-parse), and both
+    // align over the same single block of notes emitted above.
+    for line in lyric_lines(&voice.events) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    for line in symbol_lines(&voice.events) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    body
 }
 
 /// Per-event tuplet open markers (`Some("(p:q:r")` at each group's first event).
@@ -279,15 +333,166 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
     // text never starts with one, so the parser re-distinguishes them; both
     // simply re-emit as `"<text>"`.
     for chord_symbol in &attachments.chord_symbols {
-        out.push_str(&format!("\"{}\"", chord_symbol.text));
+        out.push_str(&quoted_str(&chord_symbol.text));
+    }
+    // `s:`-aligned chord symbols re-emit INLINE: the exporter routes both
+    // through the same <harmony> path (inline ones first, aligned ones after),
+    // so inlining them here — after the event's own inline chord symbols —
+    // reproduces the MusicXML byte-for-byte. The other aligned kinds
+    // (Decoration/Annotation/Raw) render differently inline and are re-emitted
+    // as `s:` lines instead (see `symbol_lines`).
+    for symbol in &attachments.symbols {
+        if symbol.kind == crate::model::AlignedSymbolKind::ChordSymbol {
+            out.push_str(&quoted_str(&symbol.text));
+        }
     }
     for annotation in &attachments.annotations {
-        out.push_str(&format!("\"{}\"", annotation.text));
+        out.push_str(&quoted_str(&annotation.text));
     }
     for deco in &attachments.decorations {
         out.push_str(&decoration_str(&deco.name));
     }
     out
+}
+
+/// A quoted ABC string with interior quotes escaped.
+fn quoted_str(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\\\""))
+}
+
+/// Reconstructed `w:` lyric lines.
+///
+/// The writer emits the whole tune as ONE music line, so each verse is a single
+/// `w:` line over one alignment block covering every lyric-bearing event
+/// (single notes and chords; rests/spacers/barlines consume no position).
+/// Verse numbers come from line ADJACENCY on re-parse, so verse `k` is line `k`
+/// and gap verses are held with a placeholder all-skip line. Per event: a
+/// Syllable token (plus `-` for each Hyphen attachment, which the parser stores
+/// on the same note), `_` for an Extender, `*` for no lyric. Lines carrying
+/// syllables are padded with `*` to the full block length so re-parsing is
+/// warning-free (an under-filled syllable line warns).
+fn lyric_lines(events: &[crate::TimedEvent]) -> Vec<String> {
+    use crate::model::LyricControl;
+    let alignable: Vec<&crate::TimedEvent> = events
+        .iter()
+        .filter(|e| matches!(e.kind, TimedEventKind::Note(_) | TimedEventKind::Chord(_)))
+        .collect();
+    let total = alignable.len();
+    let mut verses: std::collections::BTreeMap<u32, Vec<Option<String>>> =
+        std::collections::BTreeMap::new();
+    let mut max_verse = 0u32;
+    for (pos, event) in alignable.iter().enumerate() {
+        // Chord lyrics are duplicated onto the first member; read the
+        // event-level copy only.
+        for lyric in &event.attachments.lyrics {
+            max_verse = max_verse.max(lyric.verse);
+            let slot = &mut verses
+                .entry(lyric.verse)
+                .or_insert_with(|| vec![None; total])[pos];
+            match lyric.control {
+                LyricControl::Syllable => slot
+                    .get_or_insert_with(String::new)
+                    .push_str(&lyric_escape(&lyric.text)),
+                LyricControl::Hyphen => slot.get_or_insert_with(String::new).push('-'),
+                LyricControl::Extender => *slot = Some("_".to_string()),
+                // Skip is never stored on a note (a `*` advances without
+                // attaching); defensive no-op.
+                LyricControl::Skip => {}
+            }
+        }
+    }
+    if verses.is_empty() {
+        return Vec::new();
+    }
+    (1..=max_verse)
+        .map(|v| match verses.get(&v) {
+            Some(tokens) => {
+                let body: Vec<String> = tokens
+                    .iter()
+                    .map(|t| t.clone().unwrap_or_else(|| "*".to_string()))
+                    .collect();
+                format!("w:{}", body.join(" "))
+            }
+            // A verse with no lyrics anywhere: hold its number with one skip.
+            None => "w:*".to_string(),
+        })
+        .collect()
+}
+
+/// Escape a stored lyric syllable back to `w:` token text: a stored space was
+/// written `~`, and the token metacharacters are backslash-escaped.
+fn lyric_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            ' ' => out.push('~'),
+            '\\' | '-' | '*' | '_' | '|' | '~' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Reconstructed `s:` symbol lines for the aligned symbols that cannot be
+/// inlined (Decoration/Annotation/Raw — inline forms render different MusicXML,
+/// e.g. `<notations>` instead of `<direction><words>`; ChordSymbol is inlined
+/// in `event_prefix` instead).
+///
+/// The writer emits the whole tune as ONE music line, so there is a single
+/// alignment block: every single note and chord consumes one `s:` position
+/// (rests/spacers/barlines do not). One `s:` line is emitted per layer, all
+/// adjacent (adjacency is what makes the parser number layers 1, 2, ...), with
+/// `*` padding for empty positions and trailing `*` runs trimmed.
+fn symbol_lines(events: &[crate::TimedEvent]) -> Vec<String> {
+    use crate::model::AlignedSymbolKind;
+    // (layer -> tokens per alignable position)
+    let mut layers: std::collections::BTreeMap<u32, Vec<Option<String>>> =
+        std::collections::BTreeMap::new();
+    let mut position = 0usize;
+    let total: usize = events
+        .iter()
+        .filter(|e| matches!(e.kind, TimedEventKind::Note(_) | TimedEventKind::Chord(_)))
+        .count();
+    for event in events {
+        if !matches!(
+            event.kind,
+            TimedEventKind::Note(_) | TimedEventKind::Chord(_)
+        ) {
+            continue;
+        }
+        // Chord-aligned symbols are duplicated onto the first member; read the
+        // event-level copy only.
+        for symbol in &event.attachments.symbols {
+            let token = match symbol.kind {
+                AlignedSymbolKind::ChordSymbol => continue, // inlined
+                AlignedSymbolKind::Decoration => format!("!{}!", symbol.text),
+                AlignedSymbolKind::Annotation => quoted_str(&symbol.text),
+                AlignedSymbolKind::Raw => symbol.text.clone(),
+            };
+            layers
+                .entry(symbol.layer)
+                .or_insert_with(|| vec![None; total])[position] = Some(token);
+        }
+        position += 1;
+    }
+    layers
+        .into_values()
+        .map(|tokens| {
+            let last = tokens
+                .iter()
+                .rposition(Option::is_some)
+                .map_or(0, |i| i + 1);
+            let body: Vec<String> = tokens[..last]
+                .iter()
+                .map(|t| t.clone().unwrap_or_else(|| "*".to_string()))
+                .collect();
+            format!("s:{}", body.join(" "))
+        })
+        .filter(|line| line != "s:")
+        .collect()
 }
 
 /// Canonical ABC for a decoration. Shorthands and long forms both normalize to
@@ -341,16 +546,19 @@ fn barline_str(kind: BarlineKind) -> &'static str {
         BarlineKind::RepeatStart => "|:",
         BarlineKind::RepeatEnd => ":|",
         BarlineKind::RepeatBoth => "::",
-        // Out of slice-1 scope: emit a plain bar so output still parses, but
-        // note this CHANGES the barline kind (e.g. Dotted -> Regular). Tunes
-        // containing these kinds are excluded from the corpus proof by the
-        // `_FORBIDDEN_BARLINE_RE` filter in `tools/prove_abc_roundtrip.py`; a
-        // future slice that admits them must drop that exclusion and add real
-        // emission here, or the round-trip silently regresses.
-        BarlineKind::Initial
-        | BarlineKind::Dotted
-        | BarlineKind::Invisible
-        | BarlineKind::Liberal => "|",
+        BarlineKind::Dotted => ".|",
+        BarlineKind::Invisible => "[|]",
+        // Initial emits as a plain bar: it never renders a <barline> element
+        // and segments measures exactly like Regular, so `|` is structurally
+        // faithful. The Initial+RepeatStart split pair is re-joined as `[|:`
+        // above.
+        BarlineKind::Initial => "|",
+        // Liberal must re-parse as Liberal: an empty measure between `|` and a
+        // Liberal is preserved, while between two plain `|` it is coalesced
+        // away — so substituting `|` can drop a measure. The original liberal
+        // spelling is not stored; `|||` is the most innocuous spelling that
+        // classifies as Liberal.
+        BarlineKind::Liberal => "|||",
     }
 }
 
@@ -921,6 +1129,202 @@ mod tests {
                 member_tie_starts(&s2),
                 "member ties for {src:?} -> {abc:?}"
             );
+        }
+    }
+
+    fn harmony_texts(score: &crate::Score) -> Vec<String> {
+        use crate::model::AlignedSymbolKind;
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for c in &e.attachments.chord_symbols {
+                        v.push(c.text.clone());
+                    }
+                    for s in &e.attachments.symbols {
+                        if s.kind == AlignedSymbolKind::ChordSymbol {
+                            v.push(s.text.clone());
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn aligned_chord_symbols_inline_roundtrip() {
+        // `s:`-aligned chord symbols re-emit inline; the <harmony> sequence
+        // (inline + aligned, in exporter order) must survive the round-trip.
+        let src = "X:1\nL:1/4\nK:C\nC \"D7\"D [EG] F |\ns:\"Gm\" * \"C\"\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(
+            harmony_texts(&s1),
+            harmony_texts(&s2),
+            "harmony for {abc:?}"
+        );
+        assert_eq!(harmony_texts(&s1).len(), 3);
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+    }
+
+    fn symbol_tokens(score: &crate::Score) -> Vec<(String, String)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for s in &e.attachments.symbols {
+                        if s.kind != crate::model::AlignedSymbolKind::ChordSymbol {
+                            v.push((format!("{:?}", s.kind), s.text.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn aligned_symbols_reemit_as_symbol_lines() {
+        // Decoration/Annotation/Raw aligned symbols re-emit as s: lines (their
+        // inline forms render different MusicXML), preserving kind + text +
+        // note alignment; layered (adjacent) s: lines round-trip too.
+        for src in [
+            "X:1\nL:1/4\nK:C\nCDEF|\ns:!trill! * \"^slow\" foo\n",
+            "X:1\nL:1/4\nK:C\nCD z EF|\ns:!trill! * !fermata!\ns:* +mordent+\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                symbol_tokens(&s1),
+                symbol_tokens(&s2),
+                "aligned symbols for {src:?} -> {abc:?}"
+            );
+            assert!(!symbol_tokens(&s1).is_empty());
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    fn measure_count(score: &crate::Score) -> u32 {
+        score.parts[0].voices[0]
+            .events
+            .iter()
+            .map(|e| e.measure.index)
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+
+    #[test]
+    fn exotic_barlines_roundtrip() {
+        // Dotted and Invisible keep their kind; Initial and Liberal normalize
+        // to Regular (structurally identical — neither renders a <barline>).
+        for (src, same_kinds) in [
+            ("X:1\nL:1/4\nK:C\nCD .| EF |\n", true),
+            ("X:1\nL:1/4\nK:C\nCD [|] EF |\n", true),
+            ("X:1\nL:1/4\nK:C\n[| CD EF |\n", false),
+            ("X:1\nL:1/4\nK:C\nCD ||| EF |\n", false),
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{abc:?}");
+            assert_eq!(measure_count(&s1), measure_count(&s2), "{abc:?}");
+            if same_kinds {
+                assert_eq!(barline_kinds(&s1), barline_kinds(&s2), "{abc:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_token_barline_pairs_rejoin() {
+        // `||:` lowers to [Double, RepeatStart] sharing one span; emitting the
+        // pair as two spaced tokens would phantom an empty leading measure.
+        for src in [
+            "X:1\nL:1/4\nK:C\n||: CDEF :|\n",
+            "X:1\nL:1/4\nK:C\n[|: CDEF :|\n",
+            "X:1\nL:1/4\nK:C\nCDEF ||: GABc :|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(measure_count(&s1), measure_count(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(barline_kinds(&s1), barline_kinds(&s2), "{src:?} -> {abc:?}");
+        }
+        // A real two-token `|| |:` pair mid-tune has distinct spans and must
+        // NOT be rejoined (its phantom measure is real).
+        let src = "X:1\nL:1/4\nK:C\nCDEF || |: GABc :|\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(measure_count(&s1), measure_count(&s2), "{abc:?}");
+    }
+
+    #[test]
+    fn spacers_roundtrip() {
+        // `y` spacers are zero-duration layout events; dropping them collapses
+        // spacer-only measures, so they are emitted. Also inside a tuplet the
+        // explicit `(p:q:r` span counts events, keeping the group intact.
+        for src in [
+            "X:1\nL:1/4\nK:C\nCD y EF | GA y2 BC |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3CDE y F2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(measure_count(&s1), measure_count(&s2), "{src:?} -> {abc:?}");
+            let spacers = |s: &crate::Score| {
+                s.parts[0].voices[0]
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::TimedEventKind::Spacer))
+                    .count()
+            };
+            assert_eq!(spacers(&s1), spacers(&s2), "{src:?} -> {abc:?}");
+        }
+    }
+
+    fn lyric_tokens(score: &crate::Score) -> Vec<(u32, String, String)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for l in &e.attachments.lyrics {
+                        v.push((l.verse, format!("{:?}", l.control), l.text.clone()));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn lyrics_roundtrip() {
+        for src in [
+            // syllables, hyphen, extender, skip, '~' space, across barlines
+            "X:1\nL:1/4\nK:C\nCDEF|GAB c|\nw:doe-ray me_ fa * la~la ti\n",
+            // multi-verse adjacency
+            "X:1\nL:1/4\nK:C\nCD EF|\nw:one two three four\nw:uno dos tres cuatro\n",
+            // verse gap (1 and 3) + chord consumes one position + rest skipped
+            "X:1\nL:1/4\nK:C\nC z [EG] F|\nw:a b c\nw:*\nw:x y z\n",
+            // escaped metacharacters in syllables
+            "X:1\nL:1/4\nK:C\nCD|\nw:a\\-b c\\*d\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                lyric_tokens(&s1),
+                lyric_tokens(&s2),
+                "lyrics for {src:?} -> {abc:?}"
+            );
+            assert!(
+                !lyric_tokens(&s1).is_empty(),
+                "fixture has no lyrics: {src:?}"
+            );
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
     }
 
