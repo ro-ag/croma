@@ -3,7 +3,9 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::TieRole;
-use crate::{Accidental, AccidentalMark, Pitch, Rational, RestVisibility, Score, TimedEventKind};
+use crate::{
+    Accidental, AccidentalMark, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AbcWriteOptions {}
@@ -87,10 +89,31 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push_str(&length_str(event.duration, unit));
                 out.push(' ');
             }
-            _ => {} // barlines/endings in later tasks
+            TimedEventKind::Barline(b) => {
+                out.push_str(barline_str(b.kind));
+                out.push(' ');
+            }
+            _ => {} // endings in later tasks
         }
     }
     format!("{}\n", out.trim_end())
+}
+
+/// Canonical ABC text for a barline kind.
+fn barline_str(kind: BarlineKind) -> &'static str {
+    match kind {
+        BarlineKind::Regular => "|",
+        BarlineKind::Double => "||",
+        BarlineKind::Final => "|]",
+        BarlineKind::RepeatStart => "|:",
+        BarlineKind::RepeatEnd => ":|",
+        BarlineKind::RepeatBoth => "::",
+        // out of slice-1 scope; emit a plain bar so output still parses
+        BarlineKind::Initial
+        | BarlineKind::Dotted
+        | BarlineKind::Invisible
+        | BarlineKind::Liberal => "|",
+    }
 }
 
 /// ABC accidental prefix for the originally written accidental, if any.
@@ -188,6 +211,38 @@ mod tests {
         ] {
             let (a, b) = roundtrip_pitches(src);
             assert_eq!(a, b, "pitch round-trip failed for {src:?}");
+        }
+    }
+
+    fn barline_kinds(score: &crate::Score) -> Vec<crate::BarlineKind> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    if let crate::TimedEventKind::Barline(b) = &e.kind {
+                        v.push(b.kind);
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn barlines_roundtrip() {
+        for src in [
+            "X:1\nL:1/4\nK:C\nCDEF | GABc |\n",
+            "X:1\nL:1/4\nK:C\n|: CDEF :| GABc |]\n",
+            "X:1\nL:1/4\nK:C\nCDEF || GABc\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                barline_kinds(&s1),
+                barline_kinds(&s2),
+                "barlines for {src:?} -> {abc:?}"
+            );
         }
     }
 }
