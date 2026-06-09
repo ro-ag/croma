@@ -100,16 +100,42 @@ fn write_body(score: &Score, unit: Rational) -> String {
 }
 
 /// Attachments emitted BEFORE a note/rest head, in canonical ABC order: one `(`
-/// per slur that starts on this event.
+/// per slur that starts on this event, then decorations (`!name!`, or `.` for
+/// staccato — matching the canonical `(!deco!note` ordering `croma fmt` emits).
 fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
+    // Quoted strings: chord symbols (`"Gm"`) and annotations (`"^text"`). The
+    // annotation `text` already carries its placement char, and chord-symbol
+    // text never starts with one, so the parser re-distinguishes them; both
+    // simply re-emit as `"<text>"`.
+    for chord_symbol in &attachments.chord_symbols {
+        out.push_str(&format!("\"{}\"", chord_symbol.text));
+    }
+    for annotation in &attachments.annotations {
+        out.push_str(&format!("\"{}\"", annotation.text));
+    }
     for slur in &attachments.slurs {
         if slur.role == SlurRole::Start {
             out.push('(');
         }
     }
+    for deco in &attachments.decorations {
+        out.push_str(&decoration_str(&deco.name));
+    }
     out
+}
+
+/// Canonical ABC for a decoration. Shorthands and long forms both normalize to
+/// the same canonical name on parse (`~`/`!roll!` -> "roll"), so the long
+/// `!name!` form re-parses to an identical decoration; `.` (staccato) keeps its
+/// shorthand, which is how the parser canonicalizes it.
+fn decoration_str(name: &str) -> String {
+    if name == "." {
+        ".".to_string()
+    } else {
+        format!("!{name}!")
+    }
 }
 
 /// Attachments emitted AFTER a note/rest (length suffix already written): the
@@ -356,6 +382,72 @@ mod tests {
                 pitch_seq(&s2),
                 "pitches for {src:?} -> {abc:?}"
             );
+        }
+    }
+
+    fn decoration_names(score: &crate::Score) -> Vec<String> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for d in &e.attachments.decorations {
+                        v.push(d.name.clone());
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn decorations_roundtrip() {
+        for src in [
+            "X:1\nL:1/8\nK:C\n!fermata!C .D ~E !trill!F |\n",
+            "X:1\nL:1/8\nK:C\n!accent!G !upbow!A !downbow!B |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                decoration_names(&s1),
+                decoration_names(&s2),
+                "decorations for {src:?} -> {abc:?}"
+            );
+        }
+    }
+
+    fn text_attachments(score: &crate::Score) -> Vec<String> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for c in &e.attachments.chord_symbols {
+                        v.push(format!("cs:{}", c.text));
+                    }
+                    for a in &e.attachments.annotations {
+                        v.push(format!("an:{}", a.text));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn chord_symbols_and_annotations_roundtrip() {
+        for src in [
+            "X:1\nL:1/8\nK:C\n\"Gm7\"C \"C\"D \"F#m\"E |\n",
+            "X:1\nL:1/8\nK:C\n\"^above\"C \"_below\"D \"<left\"E \">right\"F |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                text_attachments(&s1),
+                text_attachments(&s2),
+                "text attachments for {src:?} -> {abc:?}"
+            );
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
     }
 
