@@ -52,9 +52,6 @@ _FORBIDDEN_ATTACHMENTS = (
     "grace_groups",
     "lyrics",
     "symbols",
-    "chord_symbols",
-    "annotations",
-    "decorations",
 )
 _FORBIDDEN_ATTACH_RE = {
     f: re.compile(rf"{f}: \[\n") for f in _FORBIDDEN_ATTACHMENTS
@@ -69,6 +66,16 @@ _FORBIDDEN_BARLINE_RE = re.compile(
 # cannot round-trip and are out of slice-1 scope. Detected from the source.
 _HEADER_KEY_LINE_RE = re.compile(r"^\s*K:", re.MULTILINE)
 _INLINE_KEY_RE = re.compile(r"\[K:")
+# Voice overlays (`&` within a measure) are simultaneous voices stored in
+# `Measure.overlays`; the single-voice writer emits only the primary voice, so
+# overlay tunes are out of scope (belongs with multi-voice support).
+_OVERLAY_RE = re.compile(r"overlays: \[\n")
+# A measure-ending barline (Double/Final/Regular/RepeatEnd/RepeatBoth) as the
+# FIRST timeline event — before any note — renders to nothing in the forward
+# pipeline but, emitted by the writer, spawns a phantom leading empty measure on
+# re-parse (the `||:` -> `|| |:` case). A leading RepeatStart is fine. This is
+# the phantom-empty-measure / combined-barline class; out of scope for now.
+_MEASURE_ENDING = {"Regular", "Double", "Final", "RepeatEnd", "RepeatBoth"}
 # Key/voice transposition modifiers (`octave=`, `transpose=`) shift `pitch.octave`
 # at parse time; the writer emits the shifted pitch AND echoes the modifier, so a
 # re-parse shifts a second time. Out of slice-1 scope. Detected from the source.
@@ -100,11 +107,34 @@ def has_mid_tune_key_change(source: str) -> bool:
     return bool(_HEADER_KEY_LINE_RE.search(body) or _INLINE_KEY_RE.search(body))
 
 
+def has_leading_measure_ending_barline(score_dump: str) -> bool:
+    """True iff the first timeline event is a measure-ending barline."""
+    i = score_dump.find("events: [")
+    if i < 0:
+        return False
+    tail = score_dump[i + len("events: [") :]
+    # The TimedEvent's measure/onset/duration/source fields contain no event-kind
+    # variant names, so the first match here is the first event's kind.
+    first = re.search(r"kind: (Note|Rest|Chord|Spacer|Barline|RepeatEnding)", tail)
+    if not first or first.group(1) != "Barline":
+        return False
+    inner = re.search(
+        r"kind: (Regular|Double|Final|RepeatStart|RepeatEnd|RepeatBoth"
+        r"|Initial|Dotted|Invisible|Liberal)",
+        tail[first.end() : first.end() + 300],
+    )
+    return bool(inner and inner.group(1) in _MEASURE_ENDING)
+
+
 def is_in_scope(score_dump: str, source: str) -> bool:
-    """True iff the lowered Score uses only slice-1 constructs."""
+    """True iff the lowered Score uses only currently-supported constructs."""
     if score_dump.count("Part {") != 1 or score_dump.count("Voice {") != 1:
         return False
     if "kind: Chord(" in score_dump or "kind: Spacer" in score_dump:
+        return False
+    if _OVERLAY_RE.search(score_dump):
+        return False
+    if has_leading_measure_ending_barline(score_dump):
         return False
     if _FORBIDDEN_BARLINE_RE.search(score_dump):
         return False
@@ -143,15 +173,22 @@ def projection(xml: str):
                     ties = tuple(sorted(t.get("type") for t in el.findall("tie")))
                     # Slur start/stop on this note (number is not compared — it
                     # can be renumbered — only the per-note start/stop pattern).
-                    slurs = tuple(
-                        sorted(
-                            s.get("type")
-                            for s in el.iter("slur")
-                        )
+                    slurs = tuple(sorted(s.get("type") for s in el.iter("slur")))
+                    # Decorations: all element tags under <notations> except the
+                    # slur/tied markers handled separately (fermata, articulations
+                    # /staccato, ornaments/trill-mark, technical/up-bow, ...).
+                    notations = el.find("notations")
+                    decos = (
+                        tuple(sorted(
+                            e.tag for e in notations.iter()
+                            if e.tag not in ("notations", "slur", "tied")
+                        ))
+                        if notations is not None
+                        else ()
                     )
                     is_chord = el.find("chord") is not None
                     if el.find("rest") is not None:
-                        proj.append(("R", dur, slurs))
+                        proj.append(("R", dur, slurs, decos))
                     else:
                         pitch = el.find("pitch")
                         step = pitch.findtext("step") if pitch is not None else None
@@ -166,8 +203,24 @@ def projection(xml: str):
                                 dur,
                                 ties,
                                 slurs,
+                                decos,
                             )
                         )
+                elif el.tag == "harmony":
+                    # Chord symbol -> <harmony>: root + chord text (kind@text).
+                    root = el.find("root")
+                    kind = el.find("kind")
+                    proj.append((
+                        "HARMONY",
+                        root.findtext("root-step") if root is not None else None,
+                        root.findtext("root-alter") if root is not None else None,
+                        kind.get("text") if kind is not None else None,
+                    ))
+                # NOTE: <direction> (annotations, tempo text, dynamics) is
+                # intentionally NOT projected. It conflates annotation `"text"`
+                # with tempo text (`Q:"Moderato"`), which the writer drops by
+                # design (tempo is metadata, not structural music — see design
+                # doc). Annotations are emitted verbatim and unit-tested instead.
                 elif el.tag == "barline":
                     rep = el.find("repeat")
                     proj.append(
