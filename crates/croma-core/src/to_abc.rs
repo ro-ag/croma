@@ -93,10 +93,28 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push_str(barline_str(b.kind));
                 out.push(' ');
             }
-            _ => {} // endings in later tasks
+            TimedEventKind::RepeatEnding(r) => {
+                out.push_str(&ending_str(r));
+                out.push(' ');
+            }
+            _ => {} // Chord / Spacer are out of slice-1 scope
         }
     }
     format!("{}\n", out.trim_end())
+}
+
+/// Canonical ABC first/second-ending marker, e.g. `[1`, `[2`, `[1,3`, `[1-2`.
+fn ending_str(model: &crate::model::RepeatEndingModel) -> String {
+    use crate::model::RepeatEndingPartModel::{Range, Single};
+    let parts: Vec<String> = model
+        .endings
+        .iter()
+        .map(|p| match p {
+            Single(n) => n.to_string(),
+            Range { start, end } => format!("{start}-{end}"),
+        })
+        .collect();
+    format!("[{}", parts.join(","))
 }
 
 /// Canonical ABC text for a barline kind.
@@ -243,6 +261,49 @@ mod tests {
                 barline_kinds(&s2),
                 "barlines for {src:?} -> {abc:?}"
             );
+        }
+    }
+
+    fn ending_labels(score: &crate::Score) -> Vec<String> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    if let crate::TimedEventKind::RepeatEnding(r) = &e.kind {
+                        v.push(format!("{:?}", r.endings));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn endings_and_ties_roundtrip() {
+        let src = "X:1\nL:1/4\nK:C\n|: CDEF |1 GABc :|2 cBAG |]\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(ending_labels(&s1), ending_labels(&s2), "endings: {abc:?}");
+
+        let tie = score_of("X:1\nL:1/4\nK:C\nC2- C2 |\n");
+        let tie_abc = write_abc(&tie, AbcWriteOptions::default());
+        assert!(tie_abc.contains('-'), "tie not emitted: {tie_abc:?}");
+        assert_eq!(pitch_seq(&tie), pitch_seq(&score_of(&tie_abc)));
+    }
+
+    #[test]
+    fn output_is_a_write_abc_fixed_point() {
+        // Idempotency form (avoids a croma-fmt dev-dep cycle): writing the
+        // re-parsed Score yields byte-identical ABC.
+        for src in [
+            "X:1\nL:1/8\nK:C\nCDE FGA | c2 z2\n",
+            "X:1\nL:1/4\nK:C\n|: CDEF |1 GABc :|2 cBAG |]\n",
+            "X:1\nL:1/4\nK:C\nC2- C2 |\n",
+        ] {
+            let abc = write_abc(&score_of(src), AbcWriteOptions::default());
+            let rewritten = write_abc(&score_of(&abc), AbcWriteOptions::default());
+            assert_eq!(abc, rewritten, "write_abc not idempotent for {src:?}");
         }
     }
 }
