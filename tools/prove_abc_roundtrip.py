@@ -56,18 +56,13 @@ _INLINE_KEY_RE = re.compile(r"\[K:")
 # A slur that wraps only a grace group with no main note (`({Bc})`): the grace
 # close is immediately followed by the slur close. Degenerate; out of scope.
 _BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
-# Voice overlays (`&` within a measure) are simultaneous voices stored in
-# `Measure.overlays`; the single-voice writer emits only the primary voice, so
-# overlay tunes are out of scope (belongs with multi-voice support).
-_OVERLAY_RE = re.compile(r"overlays: \[\n")
-# Key/voice transposition modifiers (`octave=`, `transpose=`) shift `pitch.octave`
-# at parse time; the writer emits the shifted pitch AND echoes the modifier, so a
-# re-parse shifts a second time. Out of slice-1 scope. Detected from the source.
-_TRANSPOSE_MODIFIER_RE = re.compile(r"(?:octave|transpose)=")
-# A tuplet led by a rest (`(3z...`) leaves the rest unattributed and gives the
-# group no Start event, so the writer cannot place the opening marker. Rare; out
-# of scope for now. (Rests *inside* a tuplet, e.g. `(3Bz A`, are handled.)
-_REST_LED_TUPLET_RE = re.compile(r"\(\d[:\d]*[zx]")
+# A tuplet led by a rest (optionally behind a slur-open, `(3(z..`) has no Start
+# event, so the writer cannot place the opening marker. Out of scope.
+_REST_LED_TUPLET_RE = re.compile(r"\(\d[:\d]*\(*[zx]")
+# Inline `[I:tuplets ...]` directives change how later tuplets parse; out of
+# scope. (Other `[I:` fields, e.g. the display-only `[I:setbarnb`, are fine —
+# they alter nothing the projection sees.)
+_INLINE_INFO_RE = re.compile(r"\[I:tuplets")
 
 
 def _init_worker(croma: str) -> None:
@@ -97,15 +92,11 @@ def has_mid_tune_field_change(source: str) -> bool:
 
 def is_in_scope(score_dump: str, source: str) -> bool:
     """True iff the lowered Score uses only currently-supported constructs."""
-    if score_dump.count("Part {") != 1 or score_dump.count("Voice {") != 1:
-        return False
-    if _OVERLAY_RE.search(score_dump):
-        return False
     if has_mid_tune_field_change(source):
         return False
     if _BARE_GRACE_SLUR_RE.search(source):
         return False
-    if _TRANSPOSE_MODIFIER_RE.search(source):
+    if _INLINE_INFO_RE.search(source):
         return False
     return not _REST_LED_TUPLET_RE.search(source)
 
@@ -119,7 +110,7 @@ def projection(xml: str):
     root = ET.fromstring(xml)
     proj: list[tuple] = []
     for part in root.findall("part"):
-        proj.append(("PART",))
+        proj.append(("PART", part.get("id")))
         divisions = 1
         for measure in part.findall("measure"):
             proj.append(("MEASURE",))
@@ -128,6 +119,12 @@ def projection(xml: str):
                     div = el.findtext("divisions")
                     if div:
                         divisions = int(div)
+                elif el.tag in ("backup", "forward"):
+                    # Overlay/multi-voice separators: position + duration.
+                    proj.append((
+                        el.tag.upper(),
+                        Fraction(int(el.findtext("duration") or 0), divisions),
+                    ))
                 elif el.tag == "note":
                     dur_text = el.findtext("duration")
                     dur = (
@@ -173,9 +170,10 @@ def projection(xml: str):
                         )
                         for ly in el.findall("lyric")
                     )
+                    voice_num = el.findtext("voice")
                     is_chord = el.find("chord") is not None
                     if el.find("rest") is not None:
-                        proj.append(("R", dur, slurs, decos, ratio))
+                        proj.append(("R", dur, slurs, decos, ratio, voice_num))
                     else:
                         pitch = el.find("pitch")
                         step = pitch.findtext("step") if pitch is not None else None
@@ -194,6 +192,7 @@ def projection(xml: str):
                                 ratio,
                                 is_grace,
                                 lyrics,
+                                voice_num,
                             )
                         )
                 elif el.tag == "harmony":
