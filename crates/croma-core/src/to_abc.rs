@@ -126,7 +126,12 @@ fn barline_str(kind: BarlineKind) -> &'static str {
         BarlineKind::RepeatStart => "|:",
         BarlineKind::RepeatEnd => ":|",
         BarlineKind::RepeatBoth => "::",
-        // out of slice-1 scope; emit a plain bar so output still parses
+        // Out of slice-1 scope: emit a plain bar so output still parses, but
+        // note this CHANGES the barline kind (e.g. Dotted -> Regular). Tunes
+        // containing these kinds are excluded from the corpus proof by the
+        // `_FORBIDDEN_BARLINE_RE` filter in `tools/prove_abc_roundtrip.py`; a
+        // future slice that admits them must drop that exclusion and add real
+        // emission here, or the round-trip silently regresses.
         BarlineKind::Initial
         | BarlineKind::Dotted
         | BarlineKind::Invisible
