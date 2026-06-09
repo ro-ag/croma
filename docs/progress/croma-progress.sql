@@ -189,6 +189,7 @@ INSERT INTO "metric" VALUES(109,'phase-23','prover','REVIEW','0','0','0','files'
 INSERT INTO "metric" VALUES(110,'phase-27-abc-writer','abc-roundtrip','in_scope_coverage',NULL,'31.49',NULL,'percent','3149/10000 tunes in slice-1 scope');
 INSERT INTO "metric" VALUES(111,'phase-27-abc-writer','abc-roundtrip','structural_diffs',NULL,'0',NULL,'count','0 over in-scope subset');
 INSERT INTO "metric" VALUES(112,'phase-27-abc-writer','abc-roundtrip','fmt_fixed_point',NULL,'1200',NULL,'count','1200/1200 in-scope sampled outputs are croma fmt fixed points');
+INSERT INTO "metric" VALUES(113,'phase-28-abc-writer-coverage','abc-roundtrip','in_scope_coverage','31.49','56.99','25.5','percent','5699/10000 tunes; 0 structural diffs');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -252,6 +253,7 @@ INSERT INTO "phase" VALUES('phase-24-fmt','work/fmt-subcommand','merged',62,'htt
 INSERT INTO "phase" VALUES('phase-25-fmt-barline','work/fmt-barline-collapse','merged',63,'https://github.com/ro-ag/croma/pull/63',NULL,'auto-fix catalogue class 2: redundant bar-line collapse (spaced | | and ]||: runs) to canonical single boundary, preserving repeat/volta/final semantics','New auto-fix curation (formatter increment)','Added FixKind::RedundantBarline gated by a NEW structure-preserving gate (full MusicXML equality) distinct from the pitch-sequence gate used by rhythm/tempo repairs. Canonical-collapse heuristic proposes |, |:, :|, :|: and the gate proves each rendering-neutral (real || / |] left untouched). Corpus harness now also asserts canonical fmt yields byte-identical MusicXML. 10k: notes_changed 0, not_idempotent 0, canonical_xml_changed 0, auto_fixed 3290.','Auto-fix class 4: normalise %%MIDI/stylesheet directive placement (structure-gated); then per-field re-spacing/order with individual proofs','2026-06-09 00:20:15');
 INSERT INTO "phase" VALUES('phase-26-fmt-field-spacing','work/fmt-field-spacing','merged',64,'https://github.com/ro-ag/croma/pull/64',NULL,'auto-fix: field-value re-spacing — trim whitespace after a field colon (K: C -> K:C), spec-grounded no-space convention','New auto-fix curation (formatter increment)','Added FixKind::FieldSpacing, structure-gated (MusicXML equality) so alignment-sensitive w:/s: values are reverted; overlap resolution prevents Q: field-spacing colliding with doubled-tempo. 10k: notes_changed 0, not_idempotent 0, canonical_xml_changed 0, auto_fixed 7001.','Catalogue items exhausted except %%MIDI/stylesheet directive placement (deferred: croma does not render %%MIDI to MusicXML so the structure gate cannot protect it)','2026-06-09 01:19:04');
 INSERT INTO "phase" VALUES('phase-27-abc-writer','work/abc-writer','merged',65,'https://github.com/ro-ag/croma/pull/65','44cf113e682eca5629eb481b1d375de1984c71a5','docs/superpowers/plans/2026-06-09-abc-writer.md (Score->ABC writer slice 1)','New feature (XML->ABC epic: Score->ABC canonical writer, slice 1)','Added croma_core::write_abc emitting canonical ABC (headers, single voice notes/rests/durations/accidentals/octaves, barlines+repeats+endings, ties); exposed via croma dump abc. Output is a croma fmt fixed point and round-trips with identical structural projection. Corpus: 3149/10000 in-scope (31.49%), 0 structural diffs.','Slice 2: grow in-scope coverage (chords -> tuplets -> voices -> lyrics ...) until full corpus round-trips; then MusicXML->Score reader (roxmltree, feature-gated).','2026-06-09 05:52:04');
+INSERT INTO "phase" VALUES('phase-28-abc-writer-coverage','work/abc-writer-coverage','merged',66,'https://github.com/ro-ag/croma/pull/66','07451193a8bc52a2e2c2895a291447f4249bad98','Score->ABC writer coverage expansion','New feature (XML->ABC epic: writer construct coverage)','Added slurs, decorations, chord symbols, annotations, chords, tuplets, grace, and an accidental safety-net to write_abc; grew structural projection accordingly. Corpus in-scope coverage 31.5%->57.0%, 0 structural diffs.','Phase C lyrics (w: aligned line) then Phase D multi-voice (V:); then remainder (overlays, leading-barline, mid-tune key/meter need parser support).','2026-06-09 18:40:42');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -381,6 +383,7 @@ INSERT INTO "validation" VALUES(118,'phase-27-abc-writer','cargo fmt --all -- --
 INSERT INTO "validation" VALUES(119,'phase-27-abc-writer','uv run pytest -q','pass','6 passed');
 INSERT INTO "validation" VALUES(120,'phase-27-abc-writer','cargo publish -p croma-core --dry-run','pass','no new dependency added by writer');
 INSERT INTO "validation" VALUES(121,'phase-27-abc-writer','uv run python tools/prove_abc_roundtrip.py --abc-root docs/untracked/corpus/zenodo-10k/abc','pass','total=10000 in_scope=3149 structural_diffs=0 errors=0 (local-only)');
+INSERT INTO "validation" VALUES(122,'phase-28-abc-writer-coverage','uv run python tools/prove_abc_roundtrip.py --abc-root <10k>','pass','total=10000 in_scope=5699 structural_diffs=0 errors=0 (local-only)');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -395,7 +398,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',112);
+INSERT INTO "sqlite_sequence" VALUES('metric',113);
 INSERT INTO "sqlite_sequence" VALUES('artifact',36);
-INSERT INTO "sqlite_sequence" VALUES('validation',121);
+INSERT INTO "sqlite_sequence" VALUES('validation',122);
 COMMIT;
