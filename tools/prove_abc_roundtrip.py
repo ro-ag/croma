@@ -51,8 +51,11 @@ _FORBIDDEN_ATTACHMENTS = (
     "lyrics",
     "symbols",
 )
+# Anchored so `symbols` does not also match `chord_symbols` (and `lyrics` does
+# not match the metadata-level `post_tune_lyrics`, whose W: text renders only
+# as non-projected <direction> words).
 _FORBIDDEN_ATTACH_RE = {
-    f: re.compile(rf"{f}: \[\n") for f in _FORBIDDEN_ATTACHMENTS
+    f: re.compile(rf"(?<![_A-Za-z]){f}: \[\n") for f in _FORBIDDEN_ATTACHMENTS
 }
 # Barline kinds outside slice-1 scope (Regular/Double/Final/Repeat* are in).
 _FORBIDDEN_BARLINE_RE = re.compile(
