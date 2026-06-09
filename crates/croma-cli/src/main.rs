@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use anstream::stderr as color_stderr;
 use clap::Parser;
 use croma_core::{
-    AbcDocument, Diagnostic, LowerOptions, ParseOptions, ParseReport, Score, Severity, SourceText,
-    lower_score, parse_document, write_musicxml,
+    AbcDocument, AbcWriteOptions, Diagnostic, LowerOptions, ParseOptions, ParseReport, Score,
+    Severity, SourceText, lower_score, parse_document, write_abc, write_musicxml,
 };
 use croma_fmt::{
     Change, FixKind, FixResult, FormatOptions, auto_fix, format as fmt_format, is_formatted,
@@ -142,6 +142,18 @@ fn run_dump(args: DumpArgs) -> Result<ExitCode, CliError> {
                 return Ok(ExitCode::FAILURE);
             };
             println!("{score:#?}");
+        }
+        DumpKind::Abc => {
+            let lower_report = lower_score(&document, LowerOptions);
+            diagnostics.extend(lower_report.diagnostics);
+            emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
+            if diagnostics_should_fail(&diagnostics, common.warnings_as_errors()) {
+                return Ok(ExitCode::FAILURE);
+            }
+            let Some(score) = lower_report.value else {
+                return Ok(ExitCode::FAILURE);
+            };
+            print!("{}", write_abc(&score, AbcWriteOptions::default()));
         }
     }
 

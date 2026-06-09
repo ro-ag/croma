@@ -148,4 +148,5 @@ pub enum DumpKind {
     Tokens,
     Tree,
     Score,
+    Abc,
 }
