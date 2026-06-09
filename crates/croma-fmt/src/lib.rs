@@ -52,6 +52,9 @@ pub enum FixKind {
     /// A redundant bar-line run collapsed to its canonical boundary, e.g. the
     /// spaced `| |` → `|` or the run `]||:` → `|:`.
     RedundantBarline,
+    /// Whitespace after an information field's colon removed, e.g. `K: C` → `K:C`
+    /// (the ABC 2.1 spec's own field notation has no space after the colon).
+    FieldSpacing,
 }
 
 impl FixKind {
@@ -62,6 +65,7 @@ impl FixKind {
             FixKind::ChordSymbolInBrackets => "chord-symbol-in-brackets",
             FixKind::DoubledTempo => "doubled-tempo",
             FixKind::RedundantBarline => "redundant-barline",
+            FixKind::FieldSpacing => "field-spacing",
         }
     }
 
@@ -74,8 +78,10 @@ impl FixKind {
             FixKind::DetachedLength | FixKind::ChordSymbolInBrackets | FixKind::DoubledTempo => {
                 Gate::Pitch
             }
-            // A bar-line collapse must not change ANY rendered aspect.
-            FixKind::RedundantBarline => Gate::Structure,
+            // These must not change ANY rendered aspect; the structure gate
+            // reverts e.g. an alignment-sensitive `w:` lyric whose leading
+            // whitespace turns out to matter.
+            FixKind::RedundantBarline | FixKind::FieldSpacing => Gate::Structure,
         }
     }
 }
