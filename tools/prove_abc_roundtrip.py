@@ -50,7 +50,6 @@ CROMA = "target/debug/croma"
 _FORBIDDEN_ATTACHMENTS = (
     "tuplets",
     "grace_groups",
-    "slurs",
     "lyrics",
     "symbols",
     "chord_symbols",
@@ -142,9 +141,17 @@ def projection(xml: str):
                         else None
                     )
                     ties = tuple(sorted(t.get("type") for t in el.findall("tie")))
+                    # Slur start/stop on this note (number is not compared — it
+                    # can be renumbered — only the per-note start/stop pattern).
+                    slurs = tuple(
+                        sorted(
+                            s.get("type")
+                            for s in el.iter("slur")
+                        )
+                    )
                     is_chord = el.find("chord") is not None
                     if el.find("rest") is not None:
-                        proj.append(("R", dur))
+                        proj.append(("R", dur, slurs))
                     else:
                         pitch = el.find("pitch")
                         step = pitch.findtext("step") if pitch is not None else None
@@ -158,6 +165,7 @@ def projection(xml: str):
                                 octave,
                                 dur,
                                 ties,
+                                slurs,
                             )
                         )
                 elif el.tag == "barline":

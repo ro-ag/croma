@@ -68,25 +68,21 @@ fn write_body(score: &Score, unit: Rational) -> String {
     for event in &voice.events {
         match &event.kind {
             TimedEventKind::Note(note) => {
+                out.push_str(&event_prefix(&event.attachments));
                 out.push_str(accidental_str(note.written_accidental.as_ref()));
                 out.push_str(&pitch_str(&note.pitch));
                 out.push_str(&length_str(event.duration, unit));
-                if event
-                    .attachments
-                    .ties
-                    .iter()
-                    .any(|t| t.role == TieRole::Start)
-                {
-                    out.push('-');
-                }
+                out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
             }
             TimedEventKind::Rest(rest) => {
+                out.push_str(&event_prefix(&event.attachments));
                 out.push(match rest.visibility {
                     RestVisibility::Visible => 'z',
                     RestVisibility::Invisible => 'x',
                 });
                 out.push_str(&length_str(event.duration, unit));
+                out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
             }
             TimedEventKind::Barline(b) => {
@@ -97,10 +93,39 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push_str(&ending_str(r));
                 out.push(' ');
             }
-            _ => {} // Chord / Spacer are out of slice-1 scope
+            _ => {} // Chord / Spacer are out of scope
         }
     }
     format!("{}\n", out.trim_end())
+}
+
+/// Attachments emitted BEFORE a note/rest head, in canonical ABC order: one `(`
+/// per slur that starts on this event.
+fn event_prefix(attachments: &crate::EventAttachments) -> String {
+    use crate::model::SlurRole;
+    let mut out = String::new();
+    for slur in &attachments.slurs {
+        if slur.role == SlurRole::Start {
+            out.push('(');
+        }
+    }
+    out
+}
+
+/// Attachments emitted AFTER a note/rest (length suffix already written): the
+/// tie marker, then one `)` per slur that stops on this event.
+fn event_suffix(attachments: &crate::EventAttachments) -> String {
+    use crate::model::SlurRole;
+    let mut out = String::new();
+    if attachments.ties.iter().any(|t| t.role == TieRole::Start) {
+        out.push('-');
+    }
+    for slur in &attachments.slurs {
+        if slur.role == SlurRole::Stop {
+            out.push(')');
+        }
+    }
+    out
 }
 
 /// Canonical ABC first/second-ending marker, e.g. `[1`, `[2`, `[1,3`, `[1-2`.
@@ -295,6 +320,43 @@ mod tests {
         let tie_abc = write_abc(&tie, AbcWriteOptions::default());
         assert!(tie_abc.contains('-'), "tie not emitted: {tie_abc:?}");
         assert_eq!(pitch_seq(&tie), pitch_seq(&score_of(&tie_abc)));
+    }
+
+    fn slur_roles(score: &crate::Score) -> Vec<String> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for s in &e.attachments.slurs {
+                        v.push(format!("{:?}", s.role));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn slurs_roundtrip() {
+        for src in [
+            "X:1\nL:1/8\nK:C\n(CDE) F |\n",
+            "X:1\nL:1/8\nK:C\n(C (DE) F) G |\n",
+            "X:1\nL:1/4\nK:C\nC (D-D) E |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                slur_roles(&s1),
+                slur_roles(&s2),
+                "slurs for {src:?} -> {abc:?}"
+            );
+            assert_eq!(
+                pitch_seq(&s1),
+                pitch_seq(&s2),
+                "pitches for {src:?} -> {abc:?}"
+            );
+        }
     }
 
     #[test]
