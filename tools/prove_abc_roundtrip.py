@@ -48,8 +48,6 @@ CROMA = "target/debug/croma"
 # In the pretty Debug dump an empty Vec is `field: []` and a non-empty one is
 # `field: [\n    ...`, so a newline right after `[` flags a non-empty vector.
 _FORBIDDEN_ATTACHMENTS = (
-    "tuplets",
-    "grace_groups",
     "lyrics",
     "symbols",
 )
@@ -66,6 +64,9 @@ _FORBIDDEN_BARLINE_RE = re.compile(
 # cannot round-trip and are out of slice-1 scope. Detected from the source.
 _HEADER_KEY_LINE_RE = re.compile(r"^\s*K:", re.MULTILINE)
 _INLINE_KEY_RE = re.compile(r"\[K:")
+# A slur that wraps only a grace group with no main note (`({Bc})`): the grace
+# close is immediately followed by the slur close. Degenerate; out of scope.
+_BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
 # Voice overlays (`&` within a measure) are simultaneous voices stored in
 # `Measure.overlays`; the single-voice writer emits only the primary voice, so
 # overlay tunes are out of scope (belongs with multi-voice support).
@@ -80,6 +81,10 @@ _MEASURE_ENDING = {"Regular", "Double", "Final", "RepeatEnd", "RepeatBoth"}
 # at parse time; the writer emits the shifted pitch AND echoes the modifier, so a
 # re-parse shifts a second time. Out of slice-1 scope. Detected from the source.
 _TRANSPOSE_MODIFIER_RE = re.compile(r"(?:octave|transpose)=")
+# A tuplet led by a rest (`(3z...`) leaves the rest unattributed and gives the
+# group no Start event, so the writer cannot place the opening marker. Rare; out
+# of scope for now. (Rests *inside* a tuplet, e.g. `(3Bz A`, are handled.)
+_REST_LED_TUPLET_RE = re.compile(r"\(\d[:\d]*[zx]")
 
 
 def _init_worker(croma: str) -> None:
@@ -92,7 +97,7 @@ def run(args: list[str]) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
-def has_mid_tune_key_change(source: str) -> bool:
+def has_mid_tune_field_change(source: str) -> bool:
     """True iff the ABC body carries a key change after the header `K:`.
 
     Anchored on a header `K:` (which ABC requires to terminate the tune header).
@@ -130,7 +135,7 @@ def is_in_scope(score_dump: str, source: str) -> bool:
     """True iff the lowered Score uses only currently-supported constructs."""
     if score_dump.count("Part {") != 1 or score_dump.count("Voice {") != 1:
         return False
-    if "kind: Chord(" in score_dump or "kind: Spacer" in score_dump:
+    if "kind: Spacer" in score_dump:
         return False
     if _OVERLAY_RE.search(score_dump):
         return False
@@ -138,9 +143,13 @@ def is_in_scope(score_dump: str, source: str) -> bool:
         return False
     if _FORBIDDEN_BARLINE_RE.search(score_dump):
         return False
-    if has_mid_tune_key_change(source):
+    if has_mid_tune_field_change(source):
+        return False
+    if _BARE_GRACE_SLUR_RE.search(source):
         return False
     if _TRANSPOSE_MODIFIER_RE.search(source):
+        return False
+    if _REST_LED_TUPLET_RE.search(source):
         return False
     return not any(rx.search(score_dump) for rx in _FORBIDDEN_ATTACH_RE.values())
 
@@ -186,9 +195,21 @@ def projection(xml: str):
                         if notations is not None
                         else ()
                     )
+                    # Tuplet ratio (actual:normal) from <time-modification>.
+                    tmod = el.find("time-modification")
+                    ratio = (
+                        (tmod.findtext("actual-notes"), tmod.findtext("normal-notes"))
+                        if tmod is not None
+                        else None
+                    )
+                    grace = el.find("grace")
+                    # None / "grace" / "grace:yes" (acciaccatura slash).
+                    is_grace = (
+                        f"grace:{grace.get('slash')}" if grace is not None else None
+                    )
                     is_chord = el.find("chord") is not None
                     if el.find("rest") is not None:
-                        proj.append(("R", dur, slurs, decos))
+                        proj.append(("R", dur, slurs, decos, ratio))
                     else:
                         pitch = el.find("pitch")
                         step = pitch.findtext("step") if pitch is not None else None
@@ -204,6 +225,8 @@ def projection(xml: str):
                                 ties,
                                 slurs,
                                 decos,
+                                ratio,
+                                is_grace,
                             )
                         )
                 elif el.tag == "harmony":

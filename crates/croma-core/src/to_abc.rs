@@ -65,13 +65,37 @@ fn write_body(score: &Score, unit: Rational) -> String {
     let Some(voice) = score.parts.first().and_then(|p| p.voices.first()) else {
         return out;
     };
-    for event in &voice.events {
+    let (markers, scales) = tuplet_layout(&voice.events);
+    let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
+    // Per-measure accidental state, keyed by (step, octave), reset at each
+    // barline — mirrors the parser so the writer only adds an explicit
+    // accidental when the note's alter would not otherwise be reproduced.
+    let mut measure_alters: std::collections::HashMap<(char, i8), i8> =
+        std::collections::HashMap::new();
+    for (idx, event) in voice.events.iter().enumerate() {
+        // A tuplet marker `(p:q:r` opens before the first note/rest/chord of the
+        // group.
+        if let Some(marker) = &markers[idx] {
+            out.push_str(marker);
+        }
+        let tuplet = scales[idx];
         match &event.kind {
             TimedEventKind::Note(note) => {
+                let has_tie_stop = event
+                    .attachments
+                    .ties
+                    .iter()
+                    .any(|t| t.role == crate::model::TieRole::Stop);
                 out.push_str(&event_prefix(&event.attachments));
-                out.push_str(accidental_str(note.written_accidental.as_ref()));
+                out.push_str(note_accidental(
+                    &note.pitch,
+                    note.written_accidental.as_ref(),
+                    has_tie_stop,
+                    key_fifths,
+                    &mut measure_alters,
+                ));
                 out.push_str(&pitch_str(&note.pitch));
-                out.push_str(&length_str(event.duration, unit));
+                out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
                 out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
             }
@@ -81,11 +105,74 @@ fn write_body(score: &Score, unit: Rational) -> String {
                     RestVisibility::Visible => 'z',
                     RestVisibility::Invisible => 'x',
                 });
-                out.push_str(&length_str(event.duration, unit));
+                out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
                 out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
             }
+            TimedEventKind::Chord(chord) => {
+                // Slurs and ties can be recorded on the chord event, on
+                // individual members, or (redundantly) on both. Merge them,
+                // deduping by (pair_id, role), so the surrounding `(`, `)` and
+                // `-` are emitted exactly once per distinct slur/tie.
+                let mut merged = event.attachments.clone();
+                for member in &chord.members {
+                    for slur in &member.attachments.slurs {
+                        if !merged
+                            .slurs
+                            .iter()
+                            .any(|x| x.pair_id == slur.pair_id && x.role == slur.role)
+                        {
+                            merged.slurs.push(*slur);
+                        }
+                    }
+                    for tie in &member.attachments.ties {
+                        if !merged
+                            .ties
+                            .iter()
+                            .any(|x| x.pair_id == tie.pair_id && x.role == tie.role)
+                        {
+                            merged.ties.push(*tie);
+                        }
+                    }
+                }
+                out.push_str(&event_prefix(&merged));
+                // Per-member lengths; factor out a shared length to the outer
+                // `[...]L` form when every member matches (e.g. `[CEG]2`), else
+                // emit each member's own length (e.g. `[d3f]`).
+                let lengths: Vec<String> = chord
+                    .members
+                    .iter()
+                    .map(|m| length_str(notated_duration(m.duration, tuplet), unit))
+                    .collect();
+                let uniform = lengths.windows(2).all(|w| w[0] == w[1]);
+                out.push('[');
+                for (member, len) in chord.members.iter().zip(&lengths) {
+                    let member_tie_stop = member
+                        .attachments
+                        .ties
+                        .iter()
+                        .any(|t| t.role == crate::model::TieRole::Stop);
+                    out.push_str(note_accidental(
+                        &member.pitch,
+                        member.written_accidental.as_ref(),
+                        member_tie_stop,
+                        key_fifths,
+                        &mut measure_alters,
+                    ));
+                    out.push_str(&pitch_str(&member.pitch));
+                    if !uniform {
+                        out.push_str(len);
+                    }
+                }
+                out.push(']');
+                if let Some(len) = lengths.first().filter(|_| uniform) {
+                    out.push_str(len);
+                }
+                out.push_str(&event_suffix(&merged));
+                out.push(' ');
+            }
             TimedEventKind::Barline(b) => {
+                measure_alters.clear();
                 out.push_str(barline_str(b.kind));
                 out.push(' ');
             }
@@ -93,15 +180,73 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push_str(&ending_str(r));
                 out.push(' ');
             }
-            _ => {} // Chord / Spacer are out of scope
+            _ => {} // Spacer is out of scope
         }
     }
     format!("{}\n", out.trim_end())
 }
 
-/// Attachments emitted BEFORE a note/rest head, in canonical ABC order: one `(`
-/// per slur that starts on this event, then decorations (`!name!`, or `.` for
-/// staccato — matching the canonical `(!deco!note` ordering `croma fmt` emits).
+/// Per-event tuplet open markers (`Some("(p:q:r")` at each group's first event).
+type TupletMarkers = Vec<Option<String>>;
+/// Per-event tuplet (actual, normal) ratio used to scale a notated length.
+type TupletScales = Vec<Option<(u32, u32)>>;
+
+/// Tuplet layout: for each event index, the open marker (`Some("(p:q:r")` at the
+/// group's first event) and the ratio that scales that event's notated length.
+///
+/// Groups are keyed by `pair_id`; the span `r` is `Stop_index - Start_index + 1`,
+/// which naturally folds in any rests *inside* the tuplet (they carry no
+/// attachment). A tuplet LED by a rest has no `Start` event, so its true first
+/// index is unknown — those are excluded by the harness, not emitted here.
+fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) {
+    use crate::model::TupletRole;
+    use std::collections::BTreeMap;
+    // pair_id -> (actual, normal, start_index, stop_index, has_start)
+    let mut groups: BTreeMap<u32, (u32, u32, usize, usize, bool)> = BTreeMap::new();
+    for (i, event) in events.iter().enumerate() {
+        for tuplet in &event.attachments.tuplets {
+            let entry = groups.entry(tuplet.pair_id).or_insert((
+                tuplet.actual_notes,
+                tuplet.normal_notes,
+                i,
+                i,
+                false,
+            ));
+            entry.0 = tuplet.actual_notes;
+            entry.1 = tuplet.normal_notes;
+            entry.2 = entry.2.min(i);
+            entry.3 = entry.3.max(i);
+            if tuplet.role == TupletRole::Start {
+                entry.4 = true;
+            }
+        }
+    }
+    let mut markers = vec![None; events.len()];
+    let mut scales = vec![None; events.len()];
+    for (_pid, (actual, normal, start, stop, has_start)) in groups {
+        // The span `r` is the event count from Start to Stop inclusive, which
+        // also folds in any rests *inside* the tuplet (they carry no attachment).
+        // A tuplet LED by a rest has no Start event, so its true first index is
+        // unknown — such tunes are excluded by the harness, not emitted here.
+        if !has_start {
+            continue;
+        }
+        let span = stop - start + 1;
+        markers[start] = Some(format!("({actual}:{normal}:{span}"));
+        for slot in scales.iter_mut().take(stop + 1).skip(start) {
+            *slot = Some((actual, normal));
+        }
+    }
+    (markers, scales)
+}
+
+/// Attachments emitted BEFORE a note/rest head.
+///
+/// Order matters for binding: a grace group, slur `(`, or decoration that
+/// precedes a grace group binds to the *grace* note, not the main note (ABC 2.1
+/// §4.11/§4.20). So grace comes first, then the event's own slur-opens and
+/// decorations, which therefore bind to the main note head:
+/// `"Gm"{gf}(!trill!note`.
 fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
@@ -114,6 +259,16 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
     }
     for annotation in &attachments.annotations {
         out.push_str(&format!("\"{}\"", annotation.text));
+    }
+    for grace in &attachments.grace_groups {
+        // A slur recorded on the grace group binds to its first grace note, so
+        // its `(` opens before the group (`({gf}` ...).
+        for slur in &grace.slurs {
+            if slur.role == SlurRole::Start {
+                out.push('(');
+            }
+        }
+        out.push_str(&grace_str(grace));
     }
     for slur in &attachments.slurs {
         if slur.role == SlurRole::Start {
@@ -190,16 +345,87 @@ fn barline_str(kind: BarlineKind) -> &'static str {
     }
 }
 
-/// ABC accidental prefix for the originally written accidental, if any.
-fn accidental_str(mark: Option<&AccidentalMark>) -> &'static str {
-    match mark.map(|m| m.kind) {
-        Some(Accidental::DoubleFlat) => "__",
-        Some(Accidental::Flat) => "_",
-        Some(Accidental::Natural) => "=",
-        Some(Accidental::Sharp) => "^",
-        Some(Accidental::DoubleSharp) => "^^",
-        None => "",
+/// ABC glyph for a concrete alter value.
+fn alter_glyph(alter: i8) -> &'static str {
+    match alter {
+        -2 => "__",
+        -1 => "_",
+        0 => "=",
+        1 => "^",
+        2 => "^^",
+        _ => "",
     }
+}
+
+/// ABC glyph for an explicitly written accidental.
+fn accidental_glyph(kind: Accidental) -> &'static str {
+    match kind {
+        Accidental::DoubleFlat => "__",
+        Accidental::Flat => "_",
+        Accidental::Natural => "=",
+        Accidental::Sharp => "^",
+        Accidental::DoubleSharp => "^^",
+    }
+}
+
+/// The alter the key signature assigns to `step`, derived from the fifths count
+/// (sharps F C G D A E B; flats B E A D G C F).
+fn key_alter(step: char, fifths: i8) -> i8 {
+    const SHARPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+    const FLATS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+    let step = step.to_ascii_uppercase();
+    if fifths > 0
+        && SHARPS
+            .iter()
+            .take((fifths as usize).min(7))
+            .any(|&c| c == step)
+    {
+        1
+    } else if fifths < 0
+        && FLATS
+            .iter()
+            .take(((-fifths) as usize).min(7))
+            .any(|&c| c == step)
+    {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Accidental prefix for a note, updating the per-measure accidental state.
+///
+/// Emits the originally written accidental when present. Otherwise emits an
+/// explicit accidental ONLY when the note's `alter` would not otherwise be
+/// reproduced — i.e. it differs from what the key + measure-carry would yield —
+/// which is a safety net for alters that come from sources the writer can't
+/// re-express (e.g. an accidental carried by a parser-dropped cross-bar tie). A
+/// tie carries the accidental for us, so no explicit glyph is emitted there.
+/// State is keyed by (step, octave), matching the parser's per-octave carry.
+fn note_accidental(
+    pitch: &Pitch,
+    written: Option<&AccidentalMark>,
+    has_tie_stop: bool,
+    key_fifths: i8,
+    state: &mut std::collections::HashMap<(char, i8), i8>,
+) -> &'static str {
+    let key = (pitch.step.to_ascii_uppercase(), pitch.octave);
+    let expected = state
+        .get(&key)
+        .copied()
+        .unwrap_or_else(|| key_alter(pitch.step, key_fifths));
+    if let Some(mark) = written {
+        state.insert(key, pitch.alter);
+        return accidental_glyph(mark.kind);
+    }
+    if pitch.alter != expected {
+        state.insert(key, pitch.alter);
+        if has_tie_stop {
+            return "";
+        }
+        return alter_glyph(pitch.alter);
+    }
+    ""
 }
 
 /// Pitch letter plus octave marks (middle C = octave 4: `C`=4, `c`=5).
@@ -222,6 +448,25 @@ fn length_str(duration: Rational, unit: Rational) -> String {
         duration.numerator.saturating_mul(unit.denominator),
         duration.denominator.saturating_mul(unit.numerator),
     );
+    length_ratio_str(mult)
+}
+
+/// The NOTATED duration to render for an event: inside a tuplet, the stored
+/// duration is the compressed (played) value, but ABC writes the pre-compression
+/// notated length and the parser re-applies the ratio — so scale back up by
+/// `actual/normal`. Outside a tuplet this is the duration unchanged.
+fn notated_duration(duration: Rational, tuplet: Option<(u32, u32)>) -> Rational {
+    match tuplet {
+        Some((actual, normal)) => Rational::new(
+            duration.numerator.saturating_mul(actual),
+            duration.denominator.saturating_mul(normal),
+        ),
+        None => duration,
+    }
+}
+
+/// ABC length suffix for an already-reduced multiplier of the unit length.
+fn length_ratio_str(mult: Rational) -> String {
     match (mult.numerator, mult.denominator) {
         (1, 1) => String::new(),
         (n, 1) => n.to_string(),
@@ -229,6 +474,47 @@ fn length_str(duration: Rational, unit: Rational) -> String {
         (1, d) => format!("/{d}"),
         (n, d) => format!("{n}/{d}"),
     }
+}
+
+/// ABC grace group: `{...}` (or `{/...}` for an acciaccatura/slashed group).
+/// Grace-note lengths are relative to the grace base unit via `length_multiplier`.
+fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
+    use crate::model::GraceEventKind;
+    let mut out = String::from("{");
+    if group.slash.is_some() {
+        out.push('/');
+    }
+    for grace in &group.events {
+        match &grace.kind {
+            GraceEventKind::Note(note) => {
+                out.push_str(
+                    note.written_accidental
+                        .as_ref()
+                        .map(|m| accidental_glyph(m.kind))
+                        .unwrap_or(""),
+                );
+                out.push_str(&pitch_str(&note.pitch));
+                out.push_str(&length_ratio_str(note.length_multiplier));
+            }
+            GraceEventKind::Rest(_) => out.push('z'),
+            GraceEventKind::Chord(members) => {
+                out.push('[');
+                for note in members {
+                    out.push_str(
+                        note.written_accidental
+                            .as_ref()
+                            .map(|m| accidental_glyph(m.kind))
+                            .unwrap_or(""),
+                    );
+                    out.push_str(&pitch_str(&note.pitch));
+                    out.push_str(&length_ratio_str(note.length_multiplier));
+                }
+                out.push(']');
+            }
+        }
+    }
+    out.push('}');
+    out
 }
 
 #[cfg(test)]
@@ -446,6 +732,111 @@ mod tests {
                 text_attachments(&s1),
                 text_attachments(&s2),
                 "text attachments for {src:?} -> {abc:?}"
+            );
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    fn chord_pitches(score: &crate::Score) -> Vec<Vec<(char, i8, i8)>> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    if let crate::TimedEventKind::Chord(c) = &e.kind {
+                        v.push(
+                            c.members
+                                .iter()
+                                .map(|m| (m.pitch.step, m.pitch.alter, m.pitch.octave))
+                                .collect(),
+                        );
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn chords_roundtrip() {
+        for src in [
+            "X:1\nL:1/8\nK:C\n[CEG]2 [DFA] z |\n",
+            "X:1\nL:1/8\nK:C\n[^C_EG]/ [ceg]4 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                chord_pitches(&s1),
+                chord_pitches(&s2),
+                "chords for {src:?} -> {abc:?}"
+            );
+        }
+    }
+
+    fn tuplet_ratios(score: &crate::Score) -> Vec<(u32, u32)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for t in &e.attachments.tuplets {
+                        v.push((t.actual_notes, t.normal_notes));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn tuplets_roundtrip() {
+        for src in [
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3CDE F2 (3GAB |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(5CDEFG (3:2:3 cde |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                tuplet_ratios(&s1),
+                tuplet_ratios(&s2),
+                "tuplets for {src:?} -> {abc:?}"
+            );
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    fn grace_pitches(score: &crate::Score) -> Vec<(char, i8, i8, bool)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for g in &e.attachments.grace_groups {
+                        let slash = g.slash.is_some();
+                        for ge in &g.events {
+                            if let crate::model::GraceEventKind::Note(n) = &ge.kind {
+                                v.push((n.pitch.step, n.pitch.alter, n.pitch.octave, slash));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn grace_notes_roundtrip() {
+        for src in [
+            "X:1\nL:1/8\nK:C\n{ge}C {/d}E F2 |\n",
+            "X:1\nL:1/8\nK:C\n{gege}A {^c}B |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                grace_pitches(&s1),
+                grace_pitches(&s2),
+                "grace for {src:?} -> {abc:?}"
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
