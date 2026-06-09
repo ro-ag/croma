@@ -87,7 +87,13 @@ def run(args: list[str]) -> tuple[int, str]:
 
 
 def has_mid_tune_key_change(source: str) -> bool:
-    """True iff the ABC body carries a key change after the header `K:`."""
+    """True iff the ABC body carries a key change after the header `K:`.
+
+    Anchored on a header `K:` (which ABC requires to terminate the tune header).
+    A pathological tune with only an inline `[K:...]` and no header key is not
+    flagged here, but such input fails to lower and is dropped at `check_one`
+    (the parser, not this regex, is the backstop for that case).
+    """
     first = _HEADER_KEY_LINE_RE.search(source)
     if first is None:
         return False
