@@ -49,6 +49,9 @@ pub enum FixKind {
     ChordSymbolInBrackets,
     /// A tempo whose beat spec is doubled, e.g. `Q:1/4=1/4=160` → `Q:1/4=160`.
     DoubledTempo,
+    /// A redundant bar-line run collapsed to its canonical boundary, e.g. the
+    /// spaced `| |` → `|` or the run `]||:` → `|:`.
+    RedundantBarline,
 }
 
 impl FixKind {
@@ -58,8 +61,32 @@ impl FixKind {
             FixKind::DetachedLength => "detached-length",
             FixKind::ChordSymbolInBrackets => "chord-symbol-in-brackets",
             FixKind::DoubledTempo => "doubled-tempo",
+            FixKind::RedundantBarline => "redundant-barline",
         }
     }
+
+    /// The safety gate a curation of this kind must clear.
+    pub(crate) fn gate(self) -> Gate {
+        match self {
+            // These intentionally restore a dropped duration/structure/tempo, so
+            // the rendered MusicXML legitimately changes; only the ordered pitch
+            // sequence must be preserved.
+            FixKind::DetachedLength | FixKind::ChordSymbolInBrackets | FixKind::DoubledTempo => {
+                Gate::Pitch
+            }
+            // A bar-line collapse must not change ANY rendered aspect.
+            FixKind::RedundantBarline => Gate::Structure,
+        }
+    }
+}
+
+/// How strongly a curation must be proven score-preserving before it is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// The ordered pitch sequence (step+alter+octave) must be unchanged.
+    Pitch,
+    /// The full MusicXML rendering must be unchanged.
+    Structure,
 }
 
 /// The result of [`auto_fix`]: the formatted output plus the curations that were

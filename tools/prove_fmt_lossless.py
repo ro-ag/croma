@@ -59,6 +59,7 @@ def check_one(abc_path_str: str) -> dict:
         "file": name,
         "notes_changed": False,
         "not_idempotent": False,
+        "canonical_xml_changed": False,
         "auto_fixed": False,
         "fmt_error": False,
     }
@@ -69,24 +70,37 @@ def check_one(abc_path_str: str) -> dict:
         rec["fmt_error"] = True
         return rec
     rec["auto_fixed"] = fixed != original
+    _, canonical = run([CROMA, "fmt", str(abc_path)])
 
+    fixed_path = write_temp(fixed)
+    canonical_path = write_temp(canonical)
+    try:
+        # Idempotency: re-formatting the fixed source must be stable.
+        _, reformatted = run([CROMA, "fmt", fixed_path])
+        rec["not_idempotent"] = reformatted != fixed
+
+        xml_original = run([CROMA, "xml", str(abc_path)])[1]
+        xml_fixed = run([CROMA, "xml", fixed_path])[1]
+        xml_canonical = run([CROMA, "xml", canonical_path])[1]
+
+        # auto-fix: ordered pitch sequence must be unchanged (the agreed bar).
+        rec["notes_changed"] = pitch_seq(xml_original) != pitch_seq(xml_fixed)
+        # canonical fmt only touches whitespace -> the FULL rendering must be
+        # byte-identical (a strictly stronger, structure-level losslessness check).
+        rec["canonical_xml_changed"] = xml_canonical != xml_original
+    finally:
+        Path(fixed_path).unlink(missing_ok=True)
+        Path(canonical_path).unlink(missing_ok=True)
+
+    return rec
+
+
+def write_temp(text: str) -> str:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".abc", delete=False, errors="replace"
     ) as tmp:
-        tmp.write(fixed)
-        tmp_path = tmp.name
-    try:
-        # Idempotency: re-formatting the fixed source must be stable.
-        _, reformatted = run([CROMA, "fmt", tmp_path])
-        rec["not_idempotent"] = reformatted != fixed
-
-        _, xml_original = run([CROMA, "xml", str(abc_path)])
-        _, xml_fixed = run([CROMA, "xml", tmp_path])
-        rec["notes_changed"] = pitch_seq(xml_original) != pitch_seq(xml_fixed)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
-
-    return rec
+        tmp.write(text)
+        return tmp.name
 
 
 def main() -> int:
@@ -121,6 +135,7 @@ def main() -> int:
 
     notes_changed = [r["file"] for r in records if r["notes_changed"]]
     not_idempotent = [r["file"] for r in records if r["not_idempotent"]]
+    canonical_xml_changed = [r["file"] for r in records if r["canonical_xml_changed"]]
     auto_fixed = sum(r["auto_fixed"] for r in records)
     fmt_errors = sum(r["fmt_error"] for r in records)
 
@@ -128,10 +143,12 @@ def main() -> int:
         "total": len(records),
         "notes_changed": len(notes_changed),
         "not_idempotent": len(not_idempotent),
+        "canonical_xml_changed": len(canonical_xml_changed),
         "auto_fixed": auto_fixed,
         "fmt_errors": fmt_errors,
         "notes_changed_files": notes_changed[:50],
         "not_idempotent_files": not_idempotent[:50],
+        "canonical_xml_changed_files": canonical_xml_changed[:50],
     }
 
     out_path = Path(args.out)
@@ -141,8 +158,9 @@ def main() -> int:
     print(json.dumps(summary, indent=2))
     print(f"\nreport: {out_path}", file=sys.stderr)
 
-    # The whole point: auto-fix must change 0 notes and stay idempotent.
-    ok = not notes_changed and not not_idempotent
+    # The whole point: auto-fix must change 0 notes, stay idempotent, and
+    # canonical formatting must not change the rendering at all.
+    ok = not notes_changed and not not_idempotent and not canonical_xml_changed
     print("\nRESULT:", "PASS" if ok else "FAIL", file=sys.stderr)
     return 0 if ok else 1
 

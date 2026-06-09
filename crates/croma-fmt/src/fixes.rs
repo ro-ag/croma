@@ -7,10 +7,10 @@
 //! skipped. Detached *accidentals* (`^ g`) are deliberately not attempted —
 //! joining them adds a sharp, which changes a pitch and the gate would revert.
 
-use croma_core::{MusicItem, ParseOptions, Span, parse_document};
+use croma_core::{MusicItem, MusicTokenKind, ParseOptions, Span, parse_document};
 
-use crate::verify::{PitchSeq, pitch_seq_of};
-use crate::{Change, FixKind, FixResult, FormatOptions};
+use crate::verify::{PitchSeq, musicxml_of, pitch_seq_of};
+use crate::{Change, FixKind, FixResult, FormatOptions, Gate};
 
 /// Diagnostic code the parser emits for a length detached from its note/rest.
 const DETACHED_LENGTH_CODE: &str = "abc.music.malformed_length";
@@ -31,7 +31,14 @@ pub(crate) fn auto_fix(source: &str, options: FormatOptions) -> FixResult {
 
     for candidate in candidates {
         let trial = apply(&working, &candidate);
-        if pitch_preserved(&baseline, &trial, options.parse) {
+        let preserved = match candidate.kind.gate() {
+            Gate::Pitch => pitch_preserved(&baseline, &trial, options.parse),
+            // Structure fixes must not change the rendering relative to the
+            // current state (which prior pitch fixes may legitimately have
+            // altered), so compare `working` to `trial`, not to the original.
+            Gate::Structure => structure_preserved(&working, &trial, options.parse),
+        };
+        if preserved {
             working = trial;
             changes.push(candidate);
         } else {
@@ -59,7 +66,89 @@ fn collect_candidates(source: &str, options: ParseOptions) -> Vec<Change> {
     detached_length(source, &report.diagnostics, &mut candidates);
     chord_symbol_in_brackets(source, document, &mut candidates);
     doubled_tempo(source, document, &mut candidates);
+    redundant_barlines(source, document, &mut candidates);
     candidates
+}
+
+/// `| |` → `|`, `]||:` → `|:`: collapse a run of bar-line tokens (contiguous or
+/// whitespace-separated) to its canonical single boundary. The candidate is a
+/// best-effort canonical form; the structure gate (MusicXML equality) proves the
+/// collapse rendering-neutral and reverts it otherwise, so legitimate complex
+/// bar lines (a real `||` double bar, a final `|]`) are left untouched.
+fn redundant_barlines(source: &str, document: &croma_core::AbcDocument, out: &mut Vec<Change>) {
+    for tune in &document.music.tunes {
+        for line in &tune.lines {
+            collect_barline_runs(source, line, out);
+        }
+    }
+}
+
+/// Scan one music line's tokens for maximal `{Barline, Whitespace}` runs and
+/// propose a canonical collapse for each that is shorter than the original.
+fn collect_barline_runs(source: &str, line: &croma_core::MusicLine, out: &mut Vec<Change>) {
+    let tokens = &line.tokens;
+    let mut index = 0;
+    while index < tokens.len() {
+        if tokens[index].kind != MusicTokenKind::Barline {
+            index += 1;
+            continue;
+        }
+        // Extend over a maximal run of bar-line and interleaved whitespace
+        // tokens, remembering the span of the first and last *bar-line* token.
+        let run_start = tokens[index].span.start;
+        let mut run_end = tokens[index].span.end;
+        let mut has_internal_whitespace = false;
+        let mut cursor = index + 1;
+        let mut pending_whitespace = false;
+        while cursor < tokens.len() {
+            match tokens[cursor].kind {
+                MusicTokenKind::Whitespace => pending_whitespace = true,
+                MusicTokenKind::Barline => {
+                    has_internal_whitespace |= pending_whitespace;
+                    pending_whitespace = false;
+                    run_end = tokens[cursor].span.end;
+                }
+                _ => break,
+            }
+            cursor += 1;
+        }
+
+        let original = source.get(run_start..run_end).unwrap_or("");
+        let core: String = original.chars().filter(|c| !c.is_whitespace()).collect();
+        // Only bother when there is redundancy to remove: internal spacing, or a
+        // run longer than a plain two-character bar line (`||`, `|]`, `[|`),
+        // which we leave to the structure gate to keep verbatim.
+        if has_internal_whitespace || core.chars().count() > 2 {
+            let candidate = canonical_barline(&core);
+            if candidate.len() < original.len() {
+                out.push(Change {
+                    kind: FixKind::RedundantBarline,
+                    span: Span {
+                        start: run_start,
+                        end: run_end,
+                    },
+                    before: original.to_string(),
+                    after: candidate.to_string(),
+                });
+            }
+        }
+
+        index = cursor;
+    }
+}
+
+/// The canonical single bar line for a whitespace-stripped run, derived from its
+/// repeat markers: a trailing `:` opens a repeat (`|:`), a leading `:` closes one
+/// (`:|`).
+fn canonical_barline(core: &str) -> &'static str {
+    let opens_repeat = core.ends_with(':');
+    let closes_repeat = core.starts_with(':');
+    match (closes_repeat, opens_repeat) {
+        (true, true) => ":|:",
+        (false, true) => "|:",
+        (true, false) => ":|",
+        (false, false) => "|",
+    }
 }
 
 /// `g 2` → `g2`: remove the whitespace between a note/rest/chord and a length
@@ -215,6 +304,15 @@ fn pitch_preserved(baseline: &Option<PitchSeq>, trial: &str, options: ParseOptio
     }
 }
 
+/// True if `before` and `trial` render to byte-identical MusicXML — i.e. the
+/// edit changed no rendered aspect of the score at all.
+fn structure_preserved(before: &str, trial: &str, options: ParseOptions) -> bool {
+    match musicxml_of(before, options) {
+        Some(rendering) => musicxml_of(trial, options).as_ref() == Some(&rendering),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +399,80 @@ mod tests {
         let once = auto_fix("X:1\nK:C\ng 2\n", opts()).output;
         let twice = crate::format(&once, opts());
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn collapses_spaced_double_barline() {
+        let result = auto_fix("X:1\nL:1/4\nK:C\nCDE| |FGA\n", opts());
+        assert!(
+            result.output.contains("CDE|FGA"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(
+            result
+                .changes
+                .iter()
+                .any(|c| c.kind == FixKind::RedundantBarline),
+            "changes: {:?}",
+            result.changes
+        );
+        // Structure gate: rendering identical.
+        assert_eq!(
+            musicxml_of("X:1\nL:1/4\nK:C\nCDE| |FGA\n", ParseOptions::default()),
+            musicxml_of(&result.output, ParseOptions::default()),
+        );
+    }
+
+    #[test]
+    fn collapses_thick_thin_repeat_run() {
+        let result = auto_fix("X:1\nL:1/4\nK:C\nab ]||: cd\n", opts());
+        assert!(
+            result.output.contains("ab |: cd"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(
+            result
+                .changes
+                .iter()
+                .any(|c| c.kind == FixKind::RedundantBarline)
+        );
+    }
+
+    #[test]
+    fn keeps_real_double_bar_and_final_bar() {
+        // `||` is a meaningful light-light double bar; `|]` a final bar. Neither
+        // is redundant — the structure gate must leave them untouched.
+        let double = auto_fix("X:1\nL:1/4\nK:C\nCDE||FGA\n", opts());
+        assert!(
+            double.output.contains("CDE||FGA"),
+            "got: {:?}",
+            double.output
+        );
+        assert!(
+            !double
+                .changes
+                .iter()
+                .any(|c| c.kind == FixKind::RedundantBarline)
+        );
+
+        let final_bar = auto_fix("X:1\nL:1/4\nK:C\nCDE|FGA|]\n", opts());
+        assert!(
+            final_bar.output.contains("|]"),
+            "got: {:?}",
+            final_bar.output
+        );
+    }
+
+    #[test]
+    fn does_not_drop_a_real_boundary() {
+        // `| |]` is a single bar then a final bar (two boundaries); collapsing to
+        // `|]` would delete a boundary and change the rendering — gate reverts.
+        let result = auto_fix("X:1\nL:1/4\nK:C\nCDE| |]\n", opts());
+        assert_eq!(
+            musicxml_of("X:1\nL:1/4\nK:C\nCDE| |]\n", ParseOptions::default()),
+            musicxml_of(&result.output, ParseOptions::default()),
+        );
     }
 }
