@@ -263,7 +263,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                     .iter()
                     .any(|t| t.role == crate::model::TieRole::Stop);
                 let written = shifted(&note.pitch, shift);
-                out.push_str(&event_prefix(&event.attachments, shift));
+                out.push_str(&event_prefix(&event.attachments));
                 out.push_str(note_accidental(
                     &written,
                     note.written_accidental.as_ref().map(|m| m.kind),
@@ -277,7 +277,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 out.push(' ');
             }
             TimedEventKind::Rest(rest) => {
-                out.push_str(&event_prefix(&event.attachments, shift));
+                out.push_str(&event_prefix(&event.attachments));
                 out.push(match rest.visibility {
                     RestVisibility::Visible => 'z',
                     RestVisibility::Invisible => 'x',
@@ -307,7 +307,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                         }
                     }
                 }
-                out.push_str(&event_prefix(&merged, shift));
+                out.push_str(&event_prefix(&merged));
                 // Per-member lengths; factor out a shared length to the outer
                 // `[...]L` form when every member matches (e.g. `[CEG]2`), else
                 // emit each member's own length (e.g. `[d3f]`).
@@ -458,7 +458,7 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 /// §4.11/§4.20). So grace comes first, then the event's own slur-opens and
 /// decorations, which therefore bind to the main note head:
 /// `"Gm"{gf}(!trill!note`.
-fn event_prefix(attachments: &crate::EventAttachments, shift: i8) -> String {
+fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
     // Grace groups FIRST: a quoted string written before a grace group is
@@ -863,7 +863,7 @@ fn overlay_str(
                 if chord {
                     lead.ties.clear();
                 }
-                out.push_str(&event_prefix(&lead, shift));
+                out.push_str(&event_prefix(&lead));
                 let lengths: Vec<String> = group
                     .iter()
                     .map(|e| length_str(notated_duration(e.duration, tuplet), unit))
@@ -920,7 +920,7 @@ fn overlay_str(
                 continue;
             }
             TimelineEventKind::Rest { visibility } => {
-                out.push_str(&event_prefix(&event.attachments, shift));
+                out.push_str(&event_prefix(&event.attachments));
                 out.push(match visibility {
                     RestVisibility::Visible => 'z',
                     RestVisibility::Invisible => 'x',
