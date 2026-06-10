@@ -56,10 +56,11 @@ _INLINE_KEY_RE = re.compile(r"\[K:")
 # close is immediately followed by the slur close. Degenerate; out of scope.
 _BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
 # A tuplet opened inside another tuplet (`(7:8:8(3A/A/ ...`, abcm2ps nested
-# tuplets): the writer keeps only the innermost tuplet and bakes the outer
-# ratio into the note durations, so the outer <tuplet> notation is lost on the
-# round trip. Out of scope until the writer models nested tuplets. Detected as
-# two consecutive tuplet opens.
+# tuplets): the writer keeps only the innermost tuplet — doubly-nested notes
+# get the outer ratio baked into their written durations, while outer-only
+# notes are written plain, so both the outer <tuplet> notation and the
+# outer-only durations are lost on the round trip. Out of scope until the
+# writer models nested tuplets. Detected as two consecutive tuplet opens.
 _NESTED_TUPLET_RE = re.compile(r"\(\d+(?::\d*){0,2}\s*\(\d")
 
 
