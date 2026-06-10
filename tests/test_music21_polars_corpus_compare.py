@@ -9,6 +9,145 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "music21_polars_corpus_compare.py"
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+
+
+def test_fast_encode_matches_reference_encoder() -> None:
+    from music21_compare import encode_fact_value
+    from music21_polars_corpus_compare import fast_encode_fact_value
+
+    # Scalars (and >64-bit ints, which fall back to the stdlib encoder)
+    # must stay byte-identical to the reference encoder.
+    exact_values = [
+        None,
+        "",
+        "plain",
+        'quote "inside"',
+        "back\\slash",
+        "tab\tand\nnewline",
+        "control \x01 char",
+        "unicode é 日本 ♭",
+        0,
+        -17,
+        10**20,
+        True,
+        False,
+        2.5,
+    ]
+    for value in exact_values:
+        assert fast_encode_fact_value(value) == encode_fact_value(value), repr(value)
+
+    # Containers are compact under orjson; they must stay semantically equal
+    # to the reference encoding and keep sorted keys.
+    container_values = [
+        ["list", 1, None],
+        {"nested": {"b": 1, "a": [2, "x"]}},
+        [],
+        {},
+    ]
+    for value in container_values:
+        encoded = fast_encode_fact_value(value)
+        assert json.loads(encoded) == json.loads(encode_fact_value(value)), repr(value)
+        assert ", " not in encoded and ": " not in encoded, repr(value)
+    assert fast_encode_fact_value({"b": 1, "a": 2}) == '{"a":2,"b":1}'
+
+
+def test_columnar_comparison_key_matches_python_json() -> None:
+    from music21_compare import import_polars
+    from music21_polars_corpus_compare import (
+        COMPARISON_KEY_FIELDS,
+        FACT_COLUMNS,
+        facts_frame,
+    )
+
+    pl = import_polars()
+    key_values_per_row = [
+        {
+            "component": "pitch",
+            "field_name": "step",
+            "part_index": 0,
+            "measure_index": 12,
+            "voice": '1"quoted\\v',
+            "staff": "st\taff",
+            "event_index": 3,
+            "alignment_index": 1,
+        },
+        {
+            "component": "lyric",
+            "field_name": "text é日本",
+            "part_index": None,
+            "measure_index": None,
+            "voice": None,
+            "staff": None,
+            "event_index": None,
+            "alignment_index": None,
+        },
+    ]
+    rows = []
+    for key_values in key_values_per_row:
+        row = {column: None for column in FACT_COLUMNS}
+        row.update(
+            {
+                "relative_path": "tune.abc",
+                "filename": "tune.abc",
+                "source_side": "croma",
+                "value_kind": "str",
+                "value_str": "x",
+            }
+        )
+        row.update(key_values)
+        rows.append(tuple(row[column] for column in FACT_COLUMNS))
+
+    frame = facts_frame(pl, rows)
+    for computed, key_values in zip(frame["comparison_key"].to_list(), key_values_per_row):
+        expected = json.dumps(
+            {field: key_values[field] for field in COMPARISON_KEY_FIELDS},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        assert computed == expected
+
+
+def test_v3_typed_value_columns_and_explicit_raw_values(tmp_path: Path) -> None:
+    from music21_polars_corpus_compare import typed_value
+
+    assert typed_value(None) == (None, None, None, None, None)
+    assert typed_value(True) == ("bool", None, 1, None, None)
+    assert typed_value(3) == ("int", None, 3, None, None)
+    assert typed_value(2.5) == ("float", None, None, 2.5, None)
+    assert typed_value("C") == ("str", "C", None, None, None)
+    assert typed_value([]) == ("json", None, None, None, "[]")
+
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="C", lyric="la")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="C", lyric="la")])
+
+    report = run_compare(paths, jobs=1, output_name="typed")
+
+    assert report["schema"] == "croma-music21-polars-corpus-compare-v3"
+    assert report["mismatch_category_counts"] == {}
+    facts = {
+        (row["component"], row["field_name"]): row
+        for row in read_jsonl(paths.output / "typed-facts.jsonl")
+        if row["source_side"] == "croma"
+    }
+    dots = facts[("duration", "dots")]
+    assert dots["value_kind"] == "int"
+    assert dots["value_int"] == 0
+    assert dots["value_str"] is None and dots["value_json"] is None
+    step = facts[("pitch", "step")]
+    assert step["value_kind"] == "str"
+    assert step["value_str"] == "C"
+    tuplets = facts[("tuplet", "tuplets")]
+    assert tuplets["value_kind"] == "json"
+    assert tuplets["value_json"] == "[]"
+    alter = facts[("pitch", "alter")]
+    assert alter["value_kind"] is None  # no accidental: null value, null kind
+    # raw_value is populated only when a distinct raw value was captured.
+    assert dots["raw_value"] is None
+    assert facts[("note", "kind")]["raw_value"] is not None
 
 
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
@@ -133,11 +272,9 @@ def test_empty_lyric_extenders_preserve_alignment_slots(tmp_path: Path) -> None:
         for row in read_jsonl(paths.output / "melisma-facts.jsonl")
         if row["component"] == "lyric"
     ]
-    assert [row["value_text"] for row in lyric_rows if row["source_side"] == "croma"] == [
-        "\"time\"",
-        "\"\"",
-        "\"day\"",
-    ]
+    croma_lyrics = [row for row in lyric_rows if row["source_side"] == "croma"]
+    assert [row["value_str"] for row in croma_lyrics] == ["time", "", "day"]
+    assert {row["value_kind"] for row in croma_lyrics} == {"str"}
 
 
 def test_baseline_delta_classification(tmp_path: Path) -> None:
@@ -169,6 +306,170 @@ def test_baseline_delta_classification(tmp_path: Path) -> None:
     assert improved["delta.abc"] == "improved"
     assert improved["resolved.abc"] == "resolved"
     assert regressed["new.abc"] == "new_regression"
+
+
+def test_cache_warm_report_only_run_replays_pair_results(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["pitch_mismatch", "match"])
+    write_musicxml(paths.croma_xml("pitch_mismatch"), [note(step="C")])
+    write_musicxml(paths.reference_xml("pitch_mismatch"), [note(step="D")])
+    write_musicxml(paths.croma_xml("match"), [note(step="E")])
+    write_musicxml(paths.reference_xml("match"), [note(step="E")])
+
+    cold = run_compare(paths, jobs=2, output_name="cold", tables=False)
+    warm = run_compare(paths, jobs=2, output_name="warm", tables=False)
+    uncached = run_compare(paths, jobs=2, output_name="uncached", tables=False, no_cache=True)
+
+    assert cold["cache"]["enabled"] is True
+    assert cold["cache"]["result_hits"] == 0
+    assert cold["cache"]["result_misses"] == 2
+    assert warm["cache"]["result_hits"] == 2
+    assert warm["cache"]["result_misses"] == 0
+    assert uncached["cache"]["enabled"] is False
+
+    for left, right in [(cold, warm), (cold, uncached)]:
+        assert comparable_report(left) == comparable_report(right)
+    assert (paths.output / "cold-per-file.jsonl").read_text() == (
+        paths.output / "warm-per-file.jsonl"
+    ).read_text()
+
+
+def test_cache_facts_layer_serves_table_writing_runs(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["pitch_mismatch"])
+    write_musicxml(paths.croma_xml("pitch_mismatch"), [note(step="C")])
+    write_musicxml(paths.reference_xml("pitch_mismatch"), [note(step="D")])
+
+    cold = run_compare(paths, jobs=1, output_name="cold")
+    warm = run_compare(paths, jobs=1, output_name="warm")
+
+    assert cold["cache"]["facts_hits"] == 0
+    assert cold["cache"]["facts_misses"] == 2
+    assert warm["cache"]["facts_hits"] == 2
+    assert warm["cache"]["facts_misses"] == 0
+    # Table-writing runs bypass the pair-result layer but reuse cached facts.
+    assert warm["cache"]["result_hits"] == 0
+    assert comparable_report(cold) == comparable_report(warm)
+    for name in ["facts.jsonl", "comparison.jsonl", "mismatches.jsonl"]:
+        assert (paths.output / f"cold-{name}").read_text() == (
+            paths.output / f"warm-{name}"
+        ).read_text()
+
+
+def test_cache_invalidates_when_xml_content_changes(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="D")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D")])
+
+    before = run_compare(paths, jobs=1, output_name="before", tables=False)
+    assert before["mismatch_category_counts"] == {}
+
+    write_musicxml(paths.croma_xml("tune"), [note(step="C")])
+    after = run_compare(paths, jobs=1, output_name="after", tables=False)
+
+    assert after["mismatch_category_counts"] == {"pitch": 1}
+    assert after["cache"]["result_hits"] == 0
+    # The unchanged reference side still hits the facts layer.
+    assert after["cache"]["facts_hits"] == 1
+    assert after["cache"]["facts_misses"] == 1
+
+
+def test_cache_replay_patches_run_specific_paths(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="C")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D")])
+
+    run_compare(paths, jobs=1, output_name="cold", tables=False)
+
+    moved_root = paths.root / "croma-xml-moved"
+    moved_root.mkdir()
+    moved = moved_root / "tune.croma.musicxml"
+    moved.write_bytes(paths.croma_xml("tune").read_bytes())
+    warm = run_compare(
+        paths,
+        jobs=1,
+        output_name="warm",
+        tables=False,
+        croma_xml_root=moved_root,
+    )
+
+    assert warm["cache"]["result_hits"] == 1
+    [per_file_row] = read_jsonl(paths.output / "warm-per-file.jsonl")
+    assert per_file_row["croma_xml_path"] == str(moved)
+
+
+def test_corrupt_cache_db_is_recreated(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="C")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D")])
+    cache_db = paths.output / "cache.sqlite"
+    cache_db.parent.mkdir(parents=True, exist_ok=True)
+    cache_db.write_bytes(b"this is not a sqlite database")
+
+    report = run_compare(paths, jobs=1, tables=False)
+
+    assert report["mismatch_category_counts"] == {"pitch": 1}
+    assert report["cache"]["enabled"] is True
+    assert report["cache"]["result_misses"] == 1
+
+
+def comparable_report(report: dict[str, Any]) -> dict[str, Any]:
+    volatile = {"started_at", "finished_at", "elapsed_seconds", "cache", "tables", "jobs"}
+    return {key: value for key, value in report.items() if key not in volatile}
+
+
+def test_jsonl_logging_is_default_with_start_progress_and_summary(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["pitch_mismatch"])
+    write_musicxml(paths.croma_xml("pitch_mismatch"), [note(step="C")])
+    write_musicxml(paths.reference_xml("pitch_mismatch"), [note(step="D")])
+
+    report, stdout, stderr = run_compare_capture(
+        paths,
+        jobs=1,
+        tables=False,
+        extra=["--progress-every", "1"],
+    )
+
+    events = [
+        json.loads(line)
+        for line in stderr.splitlines()
+        if line.startswith("{")
+    ]
+    starts = [event for event in events if event["event"] == "start"]
+    progress = [event for event in events if event["event"] == "progress"]
+    assert starts and starts[0]["files_selected"] == 1
+    assert starts[0]["cache_enabled"] is True
+    assert progress and progress[-1] == {"completed": 1, "event": "progress", "total": 1}
+
+    summary = json.loads(stdout.splitlines()[-1])
+    assert summary["event"] == "summary"
+    assert summary["report"] == str(paths.output / "report.json")
+    assert summary["mismatch_category_counts"] == {"pitch": 1}
+    assert summary["structural_mismatches"] == 1
+    assert summary["cache"]["enabled"] is True
+    assert summary["elapsed_seconds"] == report["elapsed_seconds"]
+
+
+def test_text_log_format_keeps_legacy_lines(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["match"])
+    write_musicxml(paths.croma_xml("match"), [note(step="E")])
+    write_musicxml(paths.reference_xml("match"), [note(step="E")])
+
+    _, stdout, stderr = run_compare_capture(
+        paths,
+        jobs=1,
+        tables=False,
+        extra=["--log-format", "text", "--progress-every", "1"],
+    )
+
+    assert "processed 1/1" in stderr
+    assert stdout.splitlines()[0].startswith("report: ")
+    assert "structural matches: 1" in stdout
 
 
 def test_only_files_and_candidate_file_list(tmp_path: Path) -> None:
@@ -233,7 +534,32 @@ def run_compare(
     jobs: int,
     output_name: str | None = None,
     extra: list[str] | None = None,
+    tables: bool = True,
+    no_cache: bool = False,
+    croma_xml_root: Path | None = None,
 ) -> dict[str, Any]:
+    report, _, _ = run_compare_capture(
+        paths,
+        jobs=jobs,
+        output_name=output_name,
+        extra=extra,
+        tables=tables,
+        no_cache=no_cache,
+        croma_xml_root=croma_xml_root,
+    )
+    return report
+
+
+def run_compare_capture(
+    paths: FixturePaths,
+    *,
+    jobs: int,
+    output_name: str | None = None,
+    extra: list[str] | None = None,
+    tables: bool = True,
+    no_cache: bool = False,
+    croma_xml_root: Path | None = None,
+) -> tuple[dict[str, Any], str, str]:
     prefix = f"{output_name}-" if output_name else ""
     report = paths.output / f"{prefix}report.json"
     command = [
@@ -242,17 +568,11 @@ def run_compare(
         "--results-jsonl",
         str(paths.results_jsonl),
         "--croma-xml-root",
-        str(paths.croma_root),
+        str(croma_xml_root if croma_xml_root is not None else paths.croma_root),
         "--reference-root",
         str(paths.reference_root),
         "--report",
         str(report),
-        "--facts-jsonl",
-        str(paths.output / f"{prefix}facts.jsonl"),
-        "--comparison-jsonl",
-        str(paths.output / f"{prefix}comparison.jsonl"),
-        "--mismatches-jsonl",
-        str(paths.output / f"{prefix}mismatches.jsonl"),
         "--per-file-summary-jsonl",
         str(paths.output / f"{prefix}per-file.jsonl"),
         "--per-component-summary-jsonl",
@@ -264,6 +584,21 @@ def run_compare(
         "--progress-every",
         "0",
     ]
+    if tables:
+        command.extend(
+            [
+                "--facts-jsonl",
+                str(paths.output / f"{prefix}facts.jsonl"),
+                "--comparison-jsonl",
+                str(paths.output / f"{prefix}comparison.jsonl"),
+                "--mismatches-jsonl",
+                str(paths.output / f"{prefix}mismatches.jsonl"),
+            ]
+        )
+    if no_cache:
+        command.append("--no-cache")
+    else:
+        command.extend(["--cache-db", str(paths.output / "cache.sqlite")])
     if extra:
         command.extend(extra)
     completed = subprocess.run(
@@ -274,7 +609,11 @@ def run_compare(
         check=False,
     )
     assert completed.returncode == 0, completed.stderr + completed.stdout
-    return json.loads(report.read_text(encoding="utf-8"))
+    return (
+        json.loads(report.read_text(encoding="utf-8")),
+        completed.stdout,
+        completed.stderr,
+    )
 
 
 def write_result_set(paths: FixturePaths, stems: list[str]) -> None:

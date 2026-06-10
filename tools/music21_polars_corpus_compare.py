@@ -16,6 +16,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import orjson
+
+from compare_cache import (
+    CACHE_DB_ENV_VAR,
+    DEFAULT_CACHE_DB,
+    CompareCache,
+    facts_cache_version,
+    file_sha256,
+    pair_result_key,
+    result_cache_version,
+)
 from music21_compare import (
     Music21ParseFailure,
     Music21Unavailable,
@@ -26,7 +37,20 @@ from music21_compare import (
 )
 
 
-REPORT_SCHEMA = "croma-music21-polars-corpus-compare-v2"
+REPORT_SCHEMA = "croma-music21-polars-corpus-compare-v3"
+
+# v3: fact values live in native typed columns instead of one JSON-encoded
+# string. Exactly one of the value columns is populated per row, selected by
+# `value_kind` (null kind = null value); `value_json` carries only genuinely
+# nested values. `raw_value` is populated only when a raw value distinct from
+# the compared value was captured (diagnostics payload).
+FACT_VALUE_COLUMNS = [
+    "value_kind",
+    "value_str",
+    "value_int",
+    "value_float",
+    "value_json",
+]
 
 FACT_COLUMNS = [
     "relative_path",
@@ -47,7 +71,7 @@ FACT_COLUMNS = [
     "pitch_step",
     "pitch_alter",
     "pitch_octave",
-    "value_text",
+    *FACT_VALUE_COLUMNS,
     "raw_value",
     "source_path",
     "xml_path",
@@ -80,8 +104,8 @@ COMPARISON_COLUMNS = [
     "reference_xml_path",
     "croma_present",
     "reference_present",
-    "croma_value",
-    "reference_value",
+    *[f"croma_{column}" for column in FACT_VALUE_COLUMNS],
+    *[f"reference_{column}" for column in FACT_VALUE_COLUMNS],
     "croma_raw_value",
     "reference_raw_value",
     "extraction_status",
@@ -118,6 +142,19 @@ JOIN_KEY_COLUMNS = [
     "relative_path",
     "filename",
     "comparison_key",
+]
+
+# Sorted field order so the columnar struct encode below reproduces the
+# python `json.dumps(..., sort_keys=True)` key format byte for byte.
+COMPARISON_KEY_FIELDS = [
+    "alignment_index",
+    "component",
+    "event_index",
+    "field_name",
+    "measure_index",
+    "part_index",
+    "staff",
+    "voice",
 ]
 
 SORT_COLUMNS = [
@@ -180,6 +217,16 @@ def main() -> int:
     )
     component_filter = resolve_component_filter(args.component)
 
+    cache_db_path = resolve_cache_db_path(args)
+    facts_version = facts_cache_version() if cache_db_path is not None else None
+    result_version = (
+        result_cache_version(facts_version) if cache_db_path is not None else None
+    )
+    parent_cache: CompareCache | None = None
+    if cache_db_path is not None:
+        # Open (and recover, if corrupt) before workers race on the same file.
+        parent_cache = CompareCache.open(cache_db_path)
+
     facts_jsonl = args.facts_jsonl or sibling_jsonl(args.facts_parquet)
     comparison_jsonl = args.comparison_jsonl or sibling_jsonl(args.comparison_parquet)
     mismatches_jsonl = args.mismatches_jsonl or sibling_jsonl(args.mismatches_parquet)
@@ -202,6 +249,8 @@ def main() -> int:
 
     all_results = load_results(args.results_jsonl)
     selected_results = select_results(all_results, args)
+
+    print_start(args, len(selected_results), jobs, parent_cache)
 
     started_at = now_utc()
     started = time.monotonic()
@@ -281,6 +330,9 @@ def main() -> int:
                     "write_per_file_summary_jsonl": per_file_summary_jsonl is not None,
                     "sample_per_category": args.sample_per_category,
                     "strict": args.strict,
+                    "cache_db": str(cache_db_path) if cache_db_path is not None else None,
+                    "facts_cache_version": facts_version,
+                    "result_cache_version": result_version,
                 }
             )
 
@@ -358,6 +410,11 @@ def main() -> int:
     candidate_files = candidate_file_list(file_mismatch_counts)
     write_candidate_outputs(args, candidate_files, source_paths)
 
+    pruned_rows = 0
+    if parent_cache is not None:
+        pruned_rows = parent_cache.prune_stale()
+        parent_cache.close()
+
     elapsed = time.monotonic() - started
     report = {
         "schema": REPORT_SCHEMA,
@@ -384,6 +441,18 @@ def main() -> int:
         "reference_musicxml_import_failures": counters["reference_musicxml_import_failures"],
         "worker_failures": counters["worker_failures"],
         "comparison_harness_issues": counters["comparison_harness_issues"],
+        "cache": {
+            "enabled": cache_db_path is not None,
+            "path": str(cache_db_path) if cache_db_path is not None else None,
+            "facts_version": facts_version,
+            "result_version": result_version,
+            "facts_hits": counters["facts_cache_hits"],
+            "facts_misses": counters["facts_cache_misses"],
+            "result_hits": counters["result_cache_hits"],
+            "result_misses": counters["result_cache_misses"],
+            "errors": counters["cache_errors"],
+            "pruned_rows": pruned_rows,
+        },
         "structural_matches": counters["structural_matches"],
         "structural_mismatches": counters["structural_mismatches"],
         "status_counts": dict(sorted(status_counts.items())),
@@ -457,7 +526,7 @@ def main() -> int:
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print_summary(args.report, report)
+    print_summary(args, args.report, report)
     if args.strict and strict_failures(report):
         return 2
     return 0
@@ -520,8 +589,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=1,
-        help="Number of music21 worker processes. Use 0 for host CPU count minus 1.",
+        default=0,
+        help="Number of music21 worker processes. 0 (default) uses host CPU count minus 1.",
+    )
+    parser.add_argument(
+        "--cache-db",
+        type=Path,
+        help=(
+            "SQLite comparison cache path. Defaults to $"
+            + CACHE_DB_ENV_VAR
+            + f" or {DEFAULT_CACHE_DB}."
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable the content-addressed comparison cache.",
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=["jsonl", "text"],
+        default="jsonl",
+        help=(
+            "Log/progress format. `jsonl` (default) emits one machine-readable"
+            " JSON object per event for agent consumption; `text` keeps the"
+            " legacy human-oriented lines."
+        ),
     )
     parser.add_argument(
         "--worker-chunk-size",
@@ -741,6 +834,92 @@ def configure_worker_environment(polars_threads_per_worker: int | None) -> None:
         os.environ["POLARS_MAX_THREADS"] = str(polars_threads_per_worker)
 
 
+def resolve_cache_db_path(args: argparse.Namespace) -> Path | None:
+    if args.no_cache:
+        return None
+    if args.cache_db is not None:
+        return args.cache_db
+    env_value = os.environ.get(CACHE_DB_ENV_VAR)
+    if env_value:
+        return Path(env_value)
+    return DEFAULT_CACHE_DB
+
+
+_WORKER_CACHE: CompareCache | None = None
+_WORKER_CACHE_PATH: str | None = None
+_WORKER_CACHE_FAILED_PATH: str | None = None
+
+
+def task_cache(task: dict[str, Any], counters: Counter[str]) -> CompareCache | None:
+    """Open (once per process) the cache configured for this task."""
+    global _WORKER_CACHE, _WORKER_CACHE_PATH, _WORKER_CACHE_FAILED_PATH
+    path = task.get("cache_db")
+    if path is None:
+        return None
+    if _WORKER_CACHE is not None and _WORKER_CACHE_PATH == path:
+        return _WORKER_CACHE
+    if _WORKER_CACHE_FAILED_PATH == path:
+        return None
+    try:
+        cache = CompareCache.open(Path(path))
+    except Exception:  # noqa: BLE001 - a broken cache must never fail the run.
+        counters["cache_errors"] += 1
+        _WORKER_CACHE_FAILED_PATH = path
+        return None
+    if _WORKER_CACHE is not None:
+        _WORKER_CACHE.close()
+    _WORKER_CACHE = cache
+    _WORKER_CACHE_PATH = path
+    return cache
+
+
+CACHE_COUNTER_KEYS = {
+    "facts_cache_hits",
+    "facts_cache_misses",
+    "result_cache_hits",
+    "result_cache_misses",
+    "cache_errors",
+}
+
+
+def cacheable_result_payload(result: dict[str, Any], counters: Counter[str]) -> dict[str, Any]:
+    payload = dict(result)
+    payload["counters"] = {
+        key: int(value) for key, value in counters.items() if key not in CACHE_COUNTER_KEYS
+    }
+    payload["facts_jsonl"] = None
+    payload["comparison_jsonl"] = None
+    payload["mismatches_jsonl"] = None
+    return payload
+
+
+def replay_cached_result(
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    counters: Counter[str],
+) -> dict[str, Any]:
+    result = dict(payload)
+    merged: Counter[str] = Counter()
+    merge_counter(merged, result.get("counters", {}))
+    merge_counter(merged, dict(counters))
+    result["counters"] = dict(merged)
+    result["filename"] = task["filename"]
+    result["per_file_summary_jsonl"] = patch_per_file_summary_paths(
+        result.get("per_file_summary_jsonl"), task
+    )
+    return result
+
+
+def patch_per_file_summary_paths(text: str | None, task: dict[str, Any]) -> str | None:
+    if not text:
+        return text
+    row = json.loads(text)
+    row["source_path"] = task.get("source_path")
+    row["croma_xml_path"] = task.get("croma_xml")
+    row["reference_xml_path"] = task.get("reference_xml")
+    return json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n"
+
+
 def run_comparison_task(task: dict[str, Any]) -> dict[str, Any]:
     try:
         return run_comparison_task_inner(task)
@@ -761,6 +940,47 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
         Path(task["reference_xml"]) if task.get("reference_xml") is not None else None
     )
 
+    cache = task_cache(task, counters)
+    side_hashes = {
+        "croma": file_sha256(croma_xml) if cache is not None and croma_xml is not None else None,
+        "reference": (
+            file_sha256(reference_xml)
+            if cache is not None and reference_xml is not None
+            else None
+        ),
+    }
+    writes_row_tables = bool(
+        task.get("write_facts_jsonl")
+        or task.get("write_comparison_jsonl")
+        or task.get("write_mismatches_jsonl")
+    )
+    pair_key = None
+    if (
+        cache is not None
+        and not writes_row_tables
+        and side_hashes["croma"] is not None
+        and side_hashes["reference"] is not None
+    ):
+        pair_key = pair_result_key(
+            side_hashes["croma"],
+            side_hashes["reference"],
+            task["result_cache_version"],
+            task["relative_path"],
+            {
+                "component_filter": task.get("component_filter"),
+                "sample_per_category": int(task["sample_per_category"]),
+            },
+        )
+        try:
+            cached_payload = cache.get_result(pair_key)
+        except Exception:  # noqa: BLE001 - cache failures fall back to recompute.
+            counters["cache_errors"] += 1
+            cached_payload = None
+        if cached_payload is not None:
+            counters["result_cache_hits"] += 1
+            return replay_cached_result(task, cached_payload, counters)
+        counters["result_cache_misses"] += 1
+
     side_results: dict[str, dict[str, Any]] = {}
     for side, xml_path in [("croma", croma_xml), ("reference", reference_xml)]:
         side_results[side] = extract_side(
@@ -771,6 +991,8 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
             counters=counters,
             status_counts=status_counts,
             import_failures=import_failures,
+            cache=cache,
+            content_hash=side_hashes[side],
         )
 
     fact_rows = side_results["croma"]["fact_rows"] + side_results["reference"]["fact_rows"]
@@ -834,7 +1056,6 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
     else:
         counters["structural_matches"] += 1
 
-    result["counters"] = dict(counters)
     result["per_file_summary_jsonl"] = per_file_summary_jsonl_text(
         task,
         side_results,
@@ -844,6 +1065,16 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
         result["mismatch_category_counts"],
     )
     result["per_file_summary_rows"] = 1
+    if pair_key is not None and cache is not None:
+        try:
+            cache.put_result(
+                pair_key,
+                task["relative_path"],
+                cacheable_result_payload(result, counters),
+            )
+        except Exception:  # noqa: BLE001 - cache failures must never fail the run.
+            counters["cache_errors"] += 1
+    result["counters"] = dict(counters)
     return result
 
 
@@ -856,6 +1087,8 @@ def extract_side(
     counters: Counter[str],
     status_counts: Counter[str],
     import_failures: list[dict[str, Any]],
+    cache: CompareCache | None = None,
+    content_hash: str | None = None,
 ) -> dict[str, Any]:
     if xml_path is None:
         status_counts[f"{side}_xml_missing"] += 1
@@ -876,6 +1109,31 @@ def extract_side(
         }
 
     counters[f"{side}_musicxml_import_attempts"] += 1
+    facts_version = task.get("facts_cache_version")
+    cached_facts = None
+    if cache is not None and content_hash is not None and facts_version:
+        try:
+            cached_facts = cache.get_facts(content_hash, facts_version)
+        except Exception:  # noqa: BLE001 - cache failures fall back to extraction.
+            counters["cache_errors"] += 1
+            cached_facts = None
+        if cached_facts is not None:
+            counters["facts_cache_hits"] += 1
+        else:
+            counters["facts_cache_misses"] += 1
+    if cached_facts is not None:
+        counters[f"{side}_musicxml_import_successes"] += 1
+        return {
+            "status": "success",
+            "fact_rows": normalized_fact_rows(
+                task=task,
+                side=side,
+                xml_path=xml_path,
+                facts=cached_facts,
+                component_filter=component_filter,
+            ),
+            "diagnostic": None,
+        }
     try:
         facts = extract_facts(xml_path, side)
     except Music21Unavailable as error:
@@ -929,6 +1187,12 @@ def extract_side(
             "fact_rows": [diagnostic_fact_row(task, side, xml_path, diagnostic)],
             "diagnostic": diagnostic,
         }
+
+    if cache is not None and content_hash is not None and facts_version:
+        try:
+            cache.put_facts(content_hash, facts_version, task.get("relative_path"), side, facts)
+        except Exception:  # noqa: BLE001 - cache failures must never fail the run.
+            counters["cache_errors"] += 1
 
     counters[f"{side}_musicxml_import_successes"] += 1
     return {
@@ -1114,7 +1378,9 @@ class FactBuilder:
         self.side = side
         self.xml_path = xml_path
         self.component_filter = component_filter
-        self.rows: list[dict[str, Any]] = []
+        # Row tuples in FACT_COLUMNS order; polars builds the frame from
+        # these positionally (orient="row"), which is faster than dicts.
+        self.rows: list[tuple[Any, ...]] = []
 
     def add_global(
         self,
@@ -1148,37 +1414,56 @@ class FactBuilder:
     ) -> None:
         if self.component_filter is not None and component not in self.component_filter:
             return
-        raw = value if raw_value is None else raw_value
-        raw_text = encode_fact_value(raw)
-        value_text = encode_fact_value(value)
-        row = {
-            "relative_path": self.task["relative_path"],
-            "filename": self.task["filename"],
-            "source_side": self.side,
-            "component": component,
-            "field_name": field_name,
-            "part_id": part_id,
-            "part_index": part_index,
-            "measure_number": measure_number,
-            "measure_index": measure_index,
-            "voice": voice,
-            "staff": staff,
-            "event_index": event_index,
-            "alignment_index": alignment_index,
-            "onset": onset,
-            "duration": duration,
-            "pitch_step": pitch_step,
-            "pitch_alter": pitch_alter,
-            "pitch_octave": pitch_octave,
-            "value_text": value_text,
-            "raw_value": raw_text,
-            "source_path": self.task.get("source_path"),
-            "xml_path": str(self.xml_path),
-            "extraction_status": "success",
-            "diagnostic": None,
-        }
-        row["comparison_key"] = comparison_key(row)
-        self.rows.append(row)
+        value_kind, value_str, value_int, value_float, value_json = typed_value(value)
+        raw_text = None if raw_value is None else fast_encode_fact_value(raw_value)
+        self.rows.append(
+            (
+                self.task["relative_path"],
+                self.task["filename"],
+                self.side,
+                component,
+                field_name,
+                part_id,
+                part_index,
+                measure_number,
+                measure_index,
+                voice,
+                staff,
+                event_index,
+                alignment_index,
+                onset,
+                duration,
+                pitch_step,
+                pitch_alter,
+                pitch_octave,
+                value_kind,
+                value_str,
+                value_int,
+                value_float,
+                value_json,
+                raw_text,
+                self.task.get("source_path"),
+                str(self.xml_path),
+                "success",
+                None,  # diagnostic
+                None,  # comparison_key, computed columnar in facts_frame
+            )
+        )
+
+
+def typed_value(value: Any) -> tuple[str | None, str | None, int | None, float | None, str | None]:
+    """Map a fact value onto (value_kind, value_str, value_int, value_float, value_json)."""
+    if value is None:
+        return (None, None, None, None, None)
+    if isinstance(value, bool):
+        return ("bool", None, int(value), None, None)
+    if isinstance(value, int):
+        return ("int", None, value, None, None)
+    if isinstance(value, float):
+        return ("float", None, None, value, None)
+    if isinstance(value, str):
+        return ("str", value, None, None, None)
+    return ("json", None, None, None, fast_encode_fact_value(value))
 
 
 def diagnostic_fact_row(
@@ -1186,49 +1471,52 @@ def diagnostic_fact_row(
     side: str,
     xml_path: Path | None,
     diagnostic: dict[str, Any],
-) -> dict[str, Any]:
-    row = {
-        "relative_path": task["relative_path"],
-        "filename": task["filename"],
-        "source_side": side,
-        "component": "metadata",
-        "field_name": "extraction_status",
-        "part_id": None,
-        "part_index": None,
-        "measure_number": None,
-        "measure_index": None,
-        "voice": None,
-        "staff": None,
-        "event_index": None,
-        "alignment_index": None,
-        "onset": None,
-        "duration": None,
-        "pitch_step": None,
-        "pitch_alter": None,
-        "pitch_octave": None,
-        "value_text": diagnostic["mismatch_category"],
-        "raw_value": encode_fact_value(diagnostic),
-        "source_path": task.get("source_path"),
-        "xml_path": str(xml_path) if xml_path is not None else None,
-        "extraction_status": diagnostic["mismatch_category"],
-        "diagnostic": encode_fact_value(diagnostic),
-    }
-    row["comparison_key"] = comparison_key(row)
-    return row
+) -> tuple[Any, ...]:
+    encoded = encode_fact_value(diagnostic)
+    row = {column: None for column in FACT_COLUMNS}
+    row.update(
+        {
+            "relative_path": task["relative_path"],
+            "filename": task["filename"],
+            "source_side": side,
+            "component": "metadata",
+            "field_name": "extraction_status",
+            "value_kind": "str",
+            "value_str": diagnostic["mismatch_category"],
+            "raw_value": encoded,
+            "source_path": task.get("source_path"),
+            "xml_path": str(xml_path) if xml_path is not None else None,
+            "extraction_status": diagnostic["mismatch_category"],
+            "diagnostic": encoded,
+        }
+    )
+    return tuple(row[column] for column in FACT_COLUMNS)
 
 
-def comparison_key(row: dict[str, Any]) -> str:
-    key = {
-        "component": row.get("component"),
-        "field_name": row.get("field_name"),
-        "part_index": row.get("part_index"),
-        "measure_index": row.get("measure_index"),
-        "voice": row.get("voice"),
-        "staff": row.get("staff"),
-        "event_index": row.get("event_index"),
-        "alignment_index": row.get("alignment_index"),
-    }
-    return json.dumps(key, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def comparison_key_expr(pl: Any) -> Any:
+    """Columnar equivalent of the former per-row json.dumps comparison key."""
+    return (
+        pl.struct([pl.col(field) for field in COMPARISON_KEY_FIELDS])
+        .struct.json_encode()
+        .alias("comparison_key")
+    )
+
+
+def fast_encode_fact_value(value: Any) -> str | None:
+    """orjson-backed encoder for the ~25M fact values per corpus run.
+
+    Scalar output is byte-identical to music21_compare.encode_fact_value;
+    containers are compact (`{"a":1}` rather than `{"a": 1}`). Both sides of
+    a comparison run through this same encoder, so match verdicts are
+    unaffected by the format difference. Values orjson rejects (ints beyond
+    64 bits, exotic types) fall back to the stdlib encoder.
+    """
+    if value is None:
+        return None
+    try:
+        return orjson.dumps(value, option=orjson.OPT_SORT_KEYS, default=str).decode("utf-8")
+    except TypeError:
+        return encode_fact_value(value)
 
 
 def accidental_to_alter(accidental: Any) -> float | None:
@@ -1256,48 +1544,40 @@ def failure_comparison_row(
 ) -> dict[str, Any]:
     diagnostic = side_result["diagnostic"]
     category = diagnostic["mismatch_category"]
-    source_side = side
-    row = {
-        "relative_path": task["relative_path"],
-        "filename": task["filename"],
-        "source_side": source_side,
-        "component": "metadata",
-        "field_name": "extraction_status",
-        "part_id": None,
-        "part_index": None,
-        "measure_number": None,
-        "measure_index": None,
-        "voice": None,
-        "staff": None,
-        "event_index": None,
-        "alignment_index": None,
-        "onset": None,
-        "duration": None,
-        "pitch_step": None,
-        "pitch_alter": None,
-        "pitch_octave": None,
-        "source_path": task.get("source_path"),
-        "croma_xml_path": task.get("croma_xml"),
-        "reference_xml_path": task.get("reference_xml"),
-        "croma_present": side == "croma",
-        "reference_present": side == "reference",
-        "croma_value": encode_fact_value(diagnostic) if side == "croma" else None,
-        "reference_value": encode_fact_value(diagnostic) if side == "reference" else None,
-        "croma_raw_value": encode_fact_value(diagnostic) if side == "croma" else None,
-        "reference_raw_value": encode_fact_value(diagnostic) if side == "reference" else None,
-        "extraction_status": category,
-        "diagnostic": encode_fact_value(diagnostic),
-        "matches": False,
-        "mismatch_category": category,
-    }
-    row["comparison_key"] = comparison_key(row)
+    encoded = encode_fact_value(diagnostic)
+    row = {column: None for column in COMPARISON_COLUMNS}
+    row.update(
+        {
+            "relative_path": task["relative_path"],
+            "filename": task["filename"],
+            "source_side": side,
+            "component": "metadata",
+            "field_name": "extraction_status",
+            "source_path": task.get("source_path"),
+            "croma_xml_path": task.get("croma_xml"),
+            "reference_xml_path": task.get("reference_xml"),
+            "croma_present": side == "croma",
+            "reference_present": side == "reference",
+            f"{side}_value_kind": "json",
+            f"{side}_value_json": encoded,
+            f"{side}_raw_value": encoded,
+            "extraction_status": category,
+            "diagnostic": encoded,
+            "matches": False,
+            "mismatch_category": category,
+        }
+    )
     return row
 
 
-def facts_frame(pl: Any, fact_rows: list[dict[str, Any]]) -> Any:
+def facts_frame(pl: Any, fact_rows: list[tuple[Any, ...]]) -> Any:
     if not fact_rows:
         return pl.DataFrame(schema=fact_schema(pl))
-    return pl.DataFrame(fact_rows, schema=fact_schema(pl)).select(FACT_COLUMNS)
+    return (
+        pl.DataFrame(fact_rows, schema=fact_schema(pl), orient="row")
+        .with_columns(comparison_key_expr(pl))
+        .select(FACT_COLUMNS)
+    )
 
 
 def comparison_frame(
@@ -1305,51 +1585,49 @@ def comparison_frame(
     facts: Any,
     *,
     sort_rows: bool,
-    task: dict[str, Any] | None = None,
+    task: dict[str, Any],
 ) -> Any:
+    # relative_path and filename are constant within a task, so the join key
+    # is comparison_key alone; the constants are re-attached as literals.
+    value_columns = [column for column in FACT_COLUMNS if column not in JOIN_KEY_COLUMNS]
     croma = (
         facts.filter(pl.col("source_side") == "croma")
         .select(
-            *JOIN_KEY_COLUMNS,
-            *[pl.col(column).alias(f"croma_{column}") for column in FACT_COLUMNS if column not in JOIN_KEY_COLUMNS],
+            "comparison_key",
+            *[pl.col(column).alias(f"croma_{column}") for column in value_columns],
             pl.lit(True).alias("croma_present"),
         )
     )
     reference = (
         facts.filter(pl.col("source_side") == "reference")
         .select(
-            *JOIN_KEY_COLUMNS,
-            *[
-                pl.col(column).alias(f"reference_{column}")
-                for column in FACT_COLUMNS
-                if column not in JOIN_KEY_COLUMNS
-            ],
+            "comparison_key",
+            *[pl.col(column).alias(f"reference_{column}") for column in value_columns],
             pl.lit(True).alias("reference_present"),
         )
     )
+    def null_safe_eq(column: str) -> Any:
+        croma_column = pl.col(f"croma_{column}")
+        reference_column = pl.col(f"reference_{column}")
+        return (croma_column == reference_column) | (
+            croma_column.is_null() & reference_column.is_null()
+        )
+
+    matches = pl.col("croma_present") & pl.col("reference_present")
+    for value_column in FACT_VALUE_COLUMNS:
+        matches = matches & null_safe_eq(value_column)
+
     joined = (
-        croma.join(reference, on=JOIN_KEY_COLUMNS, how="full", coalesce=True)
+        croma.join(reference, on="comparison_key", how="full", coalesce=True)
         .with_columns(
             pl.col("croma_present").fill_null(False),
             pl.col("reference_present").fill_null(False),
         )
-        .with_columns(
-            (
-                pl.col("croma_present")
-                & pl.col("reference_present")
-                & (
-                    (pl.col("croma_value_text") == pl.col("reference_value_text"))
-                    | (
-                        pl.col("croma_value_text").is_null()
-                        & pl.col("reference_value_text").is_null()
-                    )
-                )
-            )
-            .fill_null(False)
-            .alias("matches")
-        )
+        .with_columns(matches.fill_null(False).alias("matches"))
     )
     comparison = joined.with_columns(
+        pl.lit(task["relative_path"], dtype=pl.String).alias("relative_path"),
+        pl.lit(task["filename"], dtype=pl.String).alias("filename"),
         coalesce_string(pl, "component"),
         coalesce_string(pl, "field_name"),
         coalesce_string(pl, "part_id"),
@@ -1396,22 +1674,21 @@ def comparison_frame(
         "reference_xml_path",
         "croma_present",
         "reference_present",
-        pl.col("croma_value_text").alias("croma_value"),
-        pl.col("reference_value_text").alias("reference_value"),
-        pl.col("croma_raw_value").alias("croma_raw_value"),
-        pl.col("reference_raw_value").alias("reference_raw_value"),
+        *[f"croma_{column}" for column in FACT_VALUE_COLUMNS],
+        *[f"reference_{column}" for column in FACT_VALUE_COLUMNS],
+        "croma_raw_value",
+        "reference_raw_value",
         "extraction_status",
         "diagnostic",
         "matches",
         "mismatch_category",
         "comparison_key",
     )
-    if task is not None:
-        comparison = comparison.with_columns(
-            pl.col("source_path").fill_null(pl.lit(task.get("source_path"))),
-            pl.col("croma_xml_path").fill_null(pl.lit(task.get("croma_xml"))),
-            pl.col("reference_xml_path").fill_null(pl.lit(task.get("reference_xml"))),
-        )
+    comparison = comparison.with_columns(
+        pl.col("source_path").fill_null(pl.lit(task.get("source_path"))),
+        pl.col("croma_xml_path").fill_null(pl.lit(task.get("croma_xml"))),
+        pl.col("reference_xml_path").fill_null(pl.lit(task.get("reference_xml"))),
+    )
     if sort_rows:
         return comparison.sort(SORT_COLUMNS)
     return comparison
@@ -1518,7 +1795,11 @@ def serialize_task_rows(
 def comparison_rows_frame(pl: Any, rows: list[dict[str, Any]]) -> Any:
     if not rows:
         return pl.DataFrame(schema=comparison_schema(pl))
-    return pl.DataFrame(rows, schema=comparison_schema(pl)).select(COMPARISON_COLUMNS)
+    return (
+        pl.DataFrame(rows, schema=comparison_schema(pl))
+        .with_columns(comparison_key_expr(pl))
+        .select(COMPARISON_COLUMNS)
+    )
 
 
 def serialize_task_frames(
@@ -1700,10 +1981,26 @@ def example_from_comparison_row(row: dict[str, Any]) -> dict[str, Any]:
         "mismatch_category": row["mismatch_category"],
         "croma_present": row["croma_present"],
         "reference_present": row["reference_present"],
-        "croma": decode_fact_value(row["croma_value"]),
-        "reference": decode_fact_value(row["reference_value"]),
+        "croma": comparison_row_value(row, "croma"),
+        "reference": comparison_row_value(row, "reference"),
         "diagnostic": decode_fact_value(row["diagnostic"]),
     }
+
+
+def comparison_row_value(row: dict[str, Any], side: str) -> Any:
+    """Reassemble the python value from the typed value columns of one side."""
+    kind = row[f"{side}_value_kind"]
+    if kind is None:
+        return None
+    if kind == "str":
+        return row[f"{side}_value_str"]
+    if kind == "int":
+        return row[f"{side}_value_int"]
+    if kind == "bool":
+        return bool(row[f"{side}_value_int"])
+    if kind == "float":
+        return row[f"{side}_value_float"]
+    return decode_fact_value(row[f"{side}_value_json"])
 
 
 def per_file_summary_jsonl_text(
@@ -1977,7 +2274,11 @@ def fact_schema(pl: Any) -> dict[str, Any]:
         "pitch_step": pl.String,
         "pitch_alter": pl.Float64,
         "pitch_octave": pl.Int64,
-        "value_text": pl.String,
+        "value_kind": pl.String,
+        "value_str": pl.String,
+        "value_int": pl.Int64,
+        "value_float": pl.Float64,
+        "value_json": pl.String,
         "raw_value": pl.String,
         "source_path": pl.String,
         "xml_path": pl.String,
@@ -2012,8 +2313,16 @@ def comparison_schema(pl: Any) -> dict[str, Any]:
         "reference_xml_path": pl.String,
         "croma_present": pl.Boolean,
         "reference_present": pl.Boolean,
-        "croma_value": pl.String,
-        "reference_value": pl.String,
+        "croma_value_kind": pl.String,
+        "croma_value_str": pl.String,
+        "croma_value_int": pl.Int64,
+        "croma_value_float": pl.Float64,
+        "croma_value_json": pl.String,
+        "reference_value_kind": pl.String,
+        "reference_value_str": pl.String,
+        "reference_value_int": pl.Int64,
+        "reference_value_float": pl.Float64,
+        "reference_value_json": pl.String,
         "croma_raw_value": pl.String,
         "reference_raw_value": pl.String,
         "extraction_status": pl.String,
@@ -2123,9 +2432,40 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def emit_event(
+    args: argparse.Namespace,
+    stream: Any,
+    event: str,
+    **fields: Any,
+) -> bool:
+    """Emit one JSONL log event; returns False when text logging is active."""
+    if args.log_format != "jsonl":
+        return False
+    print(
+        json.dumps({"event": event, **fields}, sort_keys=True, ensure_ascii=False),
+        file=stream,
+        flush=True,
+    )
+    return True
+
+
+def print_start(args: argparse.Namespace, files_selected: int, jobs: int, cache: Any) -> None:
+    emit_event(
+        args,
+        sys.stderr,
+        "start",
+        tool="music21_polars_corpus_compare",
+        files_selected=files_selected,
+        jobs=jobs,
+        cache_enabled=cache is not None,
+        report=str(args.report),
+    )
+
+
 def print_progress(args: argparse.Namespace, completed: int, total: int) -> None:
     if args.progress_every and completed % args.progress_every == 0:
-        print(f"processed {completed}/{total}", file=sys.stderr)
+        if not emit_event(args, sys.stderr, "progress", completed=completed, total=total):
+            print(f"processed {completed}/{total}", file=sys.stderr)
 
 
 def strict_failures(report: dict[str, Any]) -> bool:
@@ -2138,7 +2478,27 @@ def strict_failures(report: dict[str, Any]) -> bool:
     )
 
 
-def print_summary(report_path: Path, report: dict[str, Any]) -> None:
+def print_summary(args: argparse.Namespace, report_path: Path, report: dict[str, Any]) -> None:
+    summary_fields = {
+        "report": str(report_path),
+        "files_attempted": report["files_attempted"],
+        "croma_export_successes": report["croma_export_successes"],
+        "croma_export_failures": report["croma_export_failures"],
+        "croma_musicxml_import_failures": report["croma_musicxml_import_failures"],
+        "reference_musicxml_import_failures": report["reference_musicxml_import_failures"],
+        "worker_failures": report["worker_failures"],
+        "comparison_harness_issues": report["comparison_harness_issues"],
+        "structural_matches": report["structural_matches"],
+        "structural_mismatches": report["structural_mismatches"],
+        "fact_rows": report["fact_rows"],
+        "comparison_rows": report["comparison_rows"],
+        "mismatch_rows": report["mismatch_rows"],
+        "mismatch_category_counts": report["mismatch_category_counts"],
+        "cache": report["cache"],
+        "elapsed_seconds": report["elapsed_seconds"],
+    }
+    if emit_event(args, sys.stdout, "summary", **summary_fields):
+        return
     print(f"report: {report_path}")
     print(f"files attempted: {report['files_attempted']}")
     print(f"croma export successes: {report['croma_export_successes']}")
