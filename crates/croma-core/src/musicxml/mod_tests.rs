@@ -1198,6 +1198,20 @@ fn grace_before_plain_note_still_attaches() {
 }
 
 #[test]
+fn chord_symbol_before_grace_group_emits_harmony() {
+    // `"F"{AB}c4`: the chord symbol written before the grace group binds to
+    // the main note `c` and exports as a <harmony>; before the fix the first
+    // grace note inside the braces stole the pending quoted text and lowering
+    // silently dropped it.
+    let source = "X:1\nT:Harmony Before Grace\nM:4/4\nL:1/8\nK:C\n\"F\"{AB}c4 d|\n";
+    let export = export_musicxml(source).expect("harmony-before-grace score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony"), 1);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+}
+
+#[test]
 fn grace_orphaned_before_barline_is_voided_without_panic() {
     // A grace group with no following note before a hard boundary (bar end / end
     // of tune) is void per the dangling-grace policy: no panic, no grace emitted,
@@ -1332,6 +1346,37 @@ fn key_field_octave_property_shifts_single_voice() {
         "octave=1 on K: should shift C from octave 4 to 5"
     );
     assert!(!shifted.musicxml.contains("<octave>4</octave>"));
+}
+
+#[test]
+fn oversized_octave_and_clef_shifts_clamp_instead_of_panicking() {
+    // `V:1 clef=treble+15 octave=125` used to overflow the per-note i8
+    // base+shift addition (debug panic). The shift now clamps: the +15
+    // suffix gives +2, `octave=125` clamps to +9 (abc2xml's effective
+    // single-digit domain), total +11, so C (octave 4) lands at octave 15.
+    let export = export_musicxml("X:1\nL:1/4\nK:C\nV:1 clef=treble+15 octave=125\nC2 C2|\n")
+        .expect("oversized voice shifts should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export.musicxml.contains("<octave>15</octave>"),
+        "clef +15 (+2) and octave=125 (clamped +9) should shift C to octave 15"
+    );
+
+    // `octave=99999` (outside i8, previously silently ignored) clamps to +9,
+    // also via the `K:` clef-property merge path: C octave 4 -> 13.
+    let export = export_musicxml("X:1\nL:1/4\nK:C octave=99999\nC2 C2|\n")
+        .expect("oversized K: octave should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export.musicxml.contains("<octave>13</octave>"),
+        "octave=99999 on K: should clamp to +9 and shift C to octave 13"
+    );
+
+    // A long octave-mark run no longer overflows the i8 mark sum.
+    let marks = ",".repeat(200);
+    let source = format!("X:1\nL:1/4\nK:C\nC{marks}DEF|\n");
+    let export = export_musicxml(&source).expect("long octave-mark run should export");
+    assert_balanced_xml(&export.musicxml);
 }
 
 #[test]
@@ -1977,6 +2022,24 @@ fn incomplete_overlay_diagnoses_and_later_measures_stay_stable() {
     assert!(export.musicxml.contains("<measure number=\"2\">"));
     assert!(export.musicxml.contains("<step>F</step>"));
     assert!(export.musicxml.contains("<step>G</step>"));
+}
+
+#[test]
+fn rest_led_tuplet_emits_tuplet_start_on_the_rest() {
+    // `(3zBA`: the leading rest carries the tuplet Start, so its <note> emits
+    // <tuplet type="start"> — matching the abc2xml oracle.
+    let source = "X:1\nL:1/8\nK:C\n(3zBA F|\n";
+    let export = export_musicxml(source).expect("rest-led tuplet should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let rest_note = export
+        .musicxml
+        .split("<note>")
+        .skip(1)
+        .find(|note| note.contains("<rest/>"))
+        .expect("expected a rest note");
+    assert!(rest_note.contains("<tuplet type=\"start\""));
+    assert!(export.musicxml.contains("<tuplet type=\"stop\""));
 }
 
 #[test]

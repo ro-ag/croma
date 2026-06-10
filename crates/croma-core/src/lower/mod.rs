@@ -236,9 +236,12 @@ impl MultiVoiceLowering {
         }
         self.meter_duration = meter_duration(&meter.value.kind);
         self.meter = Some(meter.value.clone());
+        // A meter change is NOT a bar line: per ABC 2.1 §11.3
+        // (`%%propagate-accidentals` default `pitch`) an explicit accidental
+        // applies to same-pitch notes until the end of the bar, so the
+        // measure accidental ledger must survive a mid-tune `M:` field.
         for voice in &mut self.voices {
             voice.finish_open_tuplets_at_boundary();
-            voice.reset_measure_accidentals();
         }
     }
 
@@ -323,6 +326,20 @@ impl MultiVoiceLowering {
                 } else if !key_is_invalid_for_lowering(&key) {
                     self.apply_inline_key_clef_properties(&key);
                 }
+            }
+            'I' => {
+                // `[I:...]` instructions are typeset/display directives (e.g.
+                // abcm2ps `[I:setbarnb ...]`, `[I:tuplets ...]`) that do not
+                // change how music lowers; abc2xml skips them too. Dropped,
+                // but with a diagnostic — mirroring the header-line `I:` path.
+                let directive = inline
+                    .value
+                    .value
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default();
+                self.diagnostics
+                    .push(inline_instruction_ignored_warning(directive, inline.span));
             }
             _ => {}
         }
@@ -420,12 +437,13 @@ impl MultiVoiceLowering {
                 MusicItem::InlineField(inline) => self.apply_inline_field(inline),
                 MusicItem::GraceGroup(grace) => {
                     // A grace group becomes a standalone item only when the parser
-                    // flushed it ahead of its note (e.g. an intervening slur-open
-                    // `{g}(c)`, decoration, or other flush trigger). Per ABC 2.1
-                    // §4.20 the grace still attaches to the note it precedes, so
-                    // buffer it and merge it into the next timed event. If a hard
-                    // boundary (barline / voice switch / end of tune) arrives
-                    // first, the buffer is dropped and the grace is voided.
+                    // flushed it ahead of its note (e.g. an intervening barline
+                    // `{g}|` or inline field `{g}[M:3/4]c`; ties and overlays also
+                    // flush). Per ABC 2.1 §4.20 the grace still attaches to the
+                    // note it precedes, so buffer it and merge it into the next
+                    // timed event. If a hard boundary (barline / voice switch /
+                    // end of tune) arrives first, the buffer is dropped and the
+                    // grace is voided.
                     self.current_state()
                         .pending_grace_groups
                         .push(grace.clone());

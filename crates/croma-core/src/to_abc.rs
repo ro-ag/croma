@@ -68,7 +68,6 @@ fn tempo_field(score: &Score) -> Option<String> {
 }
 
 fn write_body(score: &Score, unit: Rational) -> String {
-    let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
     // Single default voice: no `V:` header line (the dominant corpus shape).
     let single = score.parts.len() == 1
         && score.parts[0].voices.len() == 1
@@ -80,7 +79,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
             if !single {
                 body.push_str(&voice_header_line(voice));
             }
-            body.push_str(&write_voice(voice, unit, key_fifths));
+            body.push_str(&write_voice(voice, unit));
         }
     }
     body
@@ -131,8 +130,12 @@ fn voice_header_line(voice: &crate::model::Voice) -> String {
 /// `clef=` (`±8`/`±15`), `octave=` and `middle=` modifiers. Stored pitches
 /// already carry the shift, so the writer SUBTRACTS it to recover the written
 /// octave (the re-parse re-applies the echoed modifiers).
+///
+/// MUST stay value-for-value identical to `lower::voice::voice_octave_shift`
+/// (same clamps: `octave=` to ±9, total to ±12) or every `octave=`/`clef±`
+/// voice breaks round-trip.
 fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
-    let mut shift = 0i8;
+    let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
         let clef = clef.text.as_str();
         if clef.contains("-15") {
@@ -146,25 +149,29 @@ fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
         }
     }
     if let Some(octave) = properties.octave.as_ref()
-        && let Ok(value) = octave.text.trim().parse::<i8>()
+        && let Ok(value) = octave.text.trim().parse::<i64>()
     {
-        shift += value;
+        shift += value.clamp(-9, 9) as i32;
     }
     if let Some(middle) = properties.middle.as_ref() {
-        shift += crate::lower::voice::middle_octave_shift(middle.text.as_str());
+        shift += i32::from(crate::lower::voice::middle_octave_shift(
+            middle.text.as_str(),
+        ));
     }
-    shift
+    shift.clamp(-12, 12) as i8
 }
 
-/// A pitch moved back to its written octave for emission.
+/// A pitch moved back to its written octave for emission. Saturating, like
+/// the lowering-side addition, so a boundary-saturated stored octave cannot
+/// overflow back out of i8.
 fn shifted(pitch: &Pitch, shift: i8) -> Pitch {
     Pitch {
-        octave: pitch.octave - shift,
+        octave: pitch.octave.saturating_sub(shift),
         ..*pitch
     }
 }
 
-fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> String {
+fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
     let mut out = String::new();
     let shift = voice_octave_shift(&voice.properties);
     // Overlay segments (`&`) grouped by the measure they belong to; spliced
@@ -213,11 +220,6 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
             _ => {}
         }
     }
-    // Per-measure accidental state, keyed by (step, written octave), reset at
-    // each barline — mirrors the parser so the writer only adds an explicit
-    // accidental when the note's alter would not otherwise be reproduced.
-    let mut measure_alters: std::collections::HashMap<(char, i8), i8> =
-        std::collections::HashMap::new();
     let mut current_measure: Option<u32> = None;
     let mut measure_event_seen = false;
     for (idx, event) in voice.events.iter().enumerate() {
@@ -232,7 +234,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 && let Some(segments) = overlays.remove(&prev)
             {
                 for segment in segments {
-                    out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+                    out.push_str(&overlay_str(segment, unit, shift));
                 }
             }
             current_measure = Some(m);
@@ -245,7 +247,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
             && let Some(segments) = overlays.remove(&m)
         {
             for segment in segments {
-                out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+                out.push_str(&overlay_str(segment, unit, shift));
             }
         }
         measure_event_seen = true;
@@ -257,19 +259,10 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
         let tuplet = scales[idx];
         match &event.kind {
             TimedEventKind::Note(note) => {
-                let has_tie_stop = event
-                    .attachments
-                    .ties
-                    .iter()
-                    .any(|t| t.role == crate::model::TieRole::Stop);
                 let written = shifted(&note.pitch, shift);
                 out.push_str(&event_prefix(&event.attachments));
                 out.push_str(note_accidental(
-                    &written,
                     note.written_accidental.as_ref().map(|m| m.kind),
-                    has_tie_stop,
-                    key_fifths,
-                    &mut measure_alters,
                 ));
                 out.push_str(&pitch_str(&written));
                 out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
@@ -319,18 +312,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 let uniform = lengths.windows(2).all(|w| w[0] == w[1]);
                 out.push('[');
                 for (member, len) in chord.members.iter().zip(&lengths) {
-                    let member_tie_stop = member
-                        .attachments
-                        .ties
-                        .iter()
-                        .any(|t| t.role == TieRole::Stop);
                     let written = shifted(&member.pitch, shift);
                     out.push_str(note_accidental(
-                        &written,
                         member.written_accidental.as_ref().map(|m| m.kind),
-                        member_tie_stop,
-                        key_fifths,
-                        &mut measure_alters,
                     ));
                     out.push_str(&pitch_str(&written));
                     if !uniform {
@@ -353,7 +337,6 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 out.push(' ');
             }
             TimedEventKind::Barline(b) => {
-                measure_alters.clear();
                 out.push_str(joined[idx].unwrap_or_else(|| barline_str(b.kind)));
                 out.push(' ');
             }
@@ -369,7 +352,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
     // Flush overlays of the final measure (and any not reached via barlines).
     for (_index, segments) in std::mem::take(&mut overlays) {
         for segment in segments {
-            out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+            out.push_str(&overlay_str(segment, unit, shift));
         }
     }
     let mut body = format!("{}\n", out.trim_end());
@@ -395,15 +378,15 @@ type TupletScales = Vec<Option<(u32, u32)>>;
 /// Tuplet layout: for each event index, the open marker (`Some("(p:q:r")` at the
 /// group's first event) and the ratio that scales that event's notated length.
 ///
-/// Groups are keyed by `pair_id`; the span `r` is `Stop_index - Start_index + 1`,
-/// which naturally folds in any rests *inside* the tuplet (they carry no
-/// attachment). A tuplet LED by a rest has no `Start` event, so its true first
-/// index is unknown — those are excluded by the harness, not emitted here.
+/// Groups are keyed by `pair_id`; the span `r` runs from the first to the last
+/// attached event inclusive. Rests carry tuplet attachments like notes do, so a
+/// rest-led tuplet's first index is its `Start` rest. A pair seen here always
+/// includes its `Start`: tuplets opened inside an overlay are discarded at the
+/// barline (`finish_open_tuplets_at_boundary`) and never reach voice events.
 fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) {
-    use crate::model::TupletRole;
     use std::collections::BTreeMap;
-    // pair_id -> (actual, normal, start_index, stop_index, has_start)
-    let mut groups: BTreeMap<u32, (u32, u32, usize, usize, bool)> = BTreeMap::new();
+    // pair_id -> (actual, normal, start_index, stop_index)
+    let mut groups: BTreeMap<u32, (u32, u32, usize, usize)> = BTreeMap::new();
     for (i, event) in events.iter().enumerate() {
         for tuplet in &event.attachments.tuplets {
             let entry = groups.entry(tuplet.pair_id).or_insert((
@@ -411,27 +394,16 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
                 tuplet.normal_notes,
                 i,
                 i,
-                false,
             ));
             entry.0 = tuplet.actual_notes;
             entry.1 = tuplet.normal_notes;
             entry.2 = entry.2.min(i);
             entry.3 = entry.3.max(i);
-            if tuplet.role == TupletRole::Start {
-                entry.4 = true;
-            }
         }
     }
     let mut markers = vec![None; events.len()];
     let mut scales = vec![None; events.len()];
-    for (_pid, (actual, normal, start, stop, has_start)) in groups {
-        // The span `r` is the event count from Start to Stop inclusive, which
-        // also folds in any rests *inside* the tuplet (they carry no attachment).
-        // A tuplet LED by a rest has no Start event, so its true first index is
-        // unknown — such tunes are excluded by the harness, not emitted here.
-        if !has_start {
-            continue;
-        }
+    for (_pid, (actual, normal, start, stop)) in groups {
         // `r` counts the notes/rests/chords the group covers; an interior
         // spacer consumes no tuplet slot on re-parse and must not inflate it.
         let span = events[start..=stop]
@@ -455,15 +427,15 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 ///
 /// Order matters for binding: a grace group, slur `(`, or decoration that
 /// precedes a grace group binds to the *grace* note, not the main note (ABC 2.1
-/// §4.11/§4.20). So grace comes first, then the event's own slur-opens and
-/// decorations, which therefore bind to the main note head:
-/// `"Gm"{gf}(!trill!note`.
+/// §4.11/§4.20). So grace comes first, then the event's own slur-opens, quoted
+/// text, and decorations, which therefore bind to the main note head:
+/// `{gf}("Gm"!trill!note`.
 fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
-    // Grace groups FIRST: a quoted string written before a grace group is
-    // silently dropped by the parser (`"F"{AB}c` loses the chord symbol;
-    // `{AB}"F"c` keeps it), so the canonical order is `({gf}"F"(!deco!note`.
+    // Grace groups FIRST: the canonical order is `({gf}("F"!deco!note`. The
+    // parser now also accepts quoted text before a grace group (`"F"{AB}c`
+    // binds "F" to `c`), but this emission order stays canonical.
     for grace in &attachments.grace_groups {
         // A slur recorded on the grace group binds to its first grace note, so
         // its `(` opens before the group (`({gf}` ...).
@@ -478,9 +450,9 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
         // round-trip in `clef=±8`/`octave=`/`middle=` voices.
         out.push_str(&grace_str(grace));
     }
-    // Event slur-opens next: a quoted string written before a `(` is also
-    // dropped by the parser (`"G7"(DE)` loses the chord symbol; `("G7"DE)`
-    // keeps it).
+    // Event slur-opens next, then quoted strings — both `"G7"(DE)` and
+    // `("G7"DE)` now parse with the chord symbol bound to `D`; the slur-first
+    // order stays canonical.
     for slur in &attachments.slurs {
         if slur.role == SlurRole::Start {
             out.push('(');
@@ -735,18 +707,6 @@ fn barline_str(kind: BarlineKind) -> &'static str {
     }
 }
 
-/// ABC glyph for a concrete alter value.
-fn alter_glyph(alter: i8) -> &'static str {
-    match alter {
-        -2 => "__",
-        -1 => "_",
-        0 => "=",
-        1 => "^",
-        2 => "^^",
-        _ => "",
-    }
-}
-
 /// ABC glyph for an explicitly written accidental.
 fn accidental_glyph(kind: Accidental) -> &'static str {
     match kind {
@@ -758,90 +718,19 @@ fn accidental_glyph(kind: Accidental) -> &'static str {
     }
 }
 
-/// The alter the key signature assigns to `step`, derived from the fifths count
-/// (sharps F C G D A E B; flats B E A D G C F).
-fn key_alter(step: char, fifths: i8) -> i8 {
-    const SHARPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
-    const FLATS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
-    let step = step.to_ascii_uppercase();
-    if fifths > 0
-        && SHARPS
-            .iter()
-            .take((fifths as usize).min(7))
-            .any(|&c| c == step)
-    {
-        1
-    } else if fifths < 0
-        && FLATS
-            .iter()
-            .take(((-fifths) as usize).min(7))
-            .any(|&c| c == step)
-    {
-        -1
-    } else {
-        0
-    }
-}
-
-/// Accidental prefix for a note, updating the per-measure accidental state.
-///
-/// Emits the originally written accidental when present. Otherwise emits an
-/// explicit accidental ONLY when the note's `alter` would not otherwise be
-/// reproduced — i.e. it differs from what the key + measure-carry would yield —
-/// which is a safety net for alters that come from sources the writer can't
-/// re-express (e.g. an accidental carried by a parser-dropped cross-bar tie). A
-/// tie carries the accidental for us, so no explicit glyph is emitted there.
-/// State is keyed by (step, octave), matching the parser's per-octave carry.
-fn note_accidental(
-    pitch: &Pitch,
-    written: Option<Accidental>,
-    has_tie_stop: bool,
-    key_fifths: i8,
-    state: &mut std::collections::HashMap<(char, i8), i8>,
-) -> &'static str {
-    let key = (pitch.step.to_ascii_uppercase(), pitch.octave);
-    let expected = state
-        .get(&key)
-        .copied()
-        .unwrap_or_else(|| key_alter(pitch.step, key_fifths));
-    if let Some(kind) = written {
-        state.insert(key, pitch.alter);
-        return accidental_glyph(kind);
-    }
-    if pitch.alter != expected {
-        state.insert(key, pitch.alter);
-        if has_tie_stop {
-            return "";
-        }
-        return alter_glyph(pitch.alter);
-    }
-    ""
-}
-
-/// Alter value an explicit accidental denotes.
-fn accidental_alter(kind: Accidental) -> i8 {
-    match kind {
-        Accidental::DoubleFlat => -2,
-        Accidental::Flat => -1,
-        Accidental::Natural => 0,
-        Accidental::Sharp => 1,
-        Accidental::DoubleSharp => 2,
-    }
+/// Accidental prefix for a note: the originally written accidental's glyph,
+/// or nothing. Every other alter (key signature, measure carry, tie carry
+/// across barlines) is reproduced by the parser's own accidental propagation
+/// on re-parse, so no synthesized glyph is ever needed.
+fn note_accidental(written: Option<Accidental>) -> &'static str {
+    written.map(accidental_glyph).unwrap_or("")
 }
 
 /// Render one `&` overlay segment: `& ` plus its events, grouping consecutive
 /// same-source chord members into `[...]` (mirroring the semantic lowering).
-/// The parser resets the measure accidental state at `&`, so the safety-net
-/// state starts fresh per segment.
-fn overlay_str(
-    segment: &crate::model::OverlaySegment,
-    unit: Rational,
-    key_fifths: i8,
-    shift: i8,
-) -> String {
+fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8) -> String {
     use crate::model::TimelineEventKind;
     let mut out = String::from("& ");
-    let mut state: std::collections::HashMap<(char, i8), i8> = std::collections::HashMap::new();
     let events = &segment.events;
     let (ov_markers, ov_scales) = overlay_tuplet_layout(events);
     let mut i = 0;
@@ -877,30 +766,13 @@ fn overlay_str(
                         step,
                         octave,
                         accidental,
-                        effective_accidental,
                         ..
                     } = &e.kind
                     else {
                         continue;
                     };
-                    let alter = effective_accidental
-                        .map(accidental_alter)
-                        .unwrap_or_else(|| key_alter(*step, key_fifths));
-                    let has_tie_stop = e.attachments.ties.iter().any(|t| t.role == TieRole::Stop);
-                    let written = Pitch {
-                        step: *step,
-                        alter,
-                        octave: *octave - shift,
-                        spelling_source: e.span,
-                    };
-                    out.push_str(note_accidental(
-                        &written,
-                        *accidental,
-                        has_tie_stop,
-                        key_fifths,
-                        &mut state,
-                    ));
-                    out.push_str(&pitch_str(&written));
+                    out.push_str(note_accidental(*accidental));
+                    out.push_str(&pitch_letter_str(*step, *octave - shift));
                     if !chord || !uniform {
                         out.push_str(len);
                     }
@@ -942,7 +814,8 @@ fn overlay_str(
 }
 
 /// Tuplet layout over an overlay segment's events — the same pair-id
-/// reconstruction as `tuplet_layout`, over `VoiceTimedEvent`s.
+/// reconstruction as `tuplet_layout`, over `VoiceTimedEvent`s, plus a
+/// Start-presence guard for pairs that straddle in from the main voice.
 fn overlay_tuplet_layout(
     events: &[crate::model::VoiceTimedEvent],
 ) -> (TupletMarkers, TupletScales) {
@@ -970,6 +843,12 @@ fn overlay_tuplet_layout(
     let mut markers = vec![None; events.len()];
     let mut scales = vec![None; events.len()];
     for (_pid, (actual, normal, start, stop, has_start)) in groups {
+        // Unlike `tuplet_layout`, a pair here can lack its Start: a tuplet
+        // straddling an `&` (`C (3DE & FGA z |`) keeps Start/Continue in the
+        // main voice events and leaves a Stop-only pair in the overlay
+        // segment. Emitting a marker at that Stop would open a bogus tuplet,
+        // so such pairs are skipped (the events still carry their already
+        // tuplet-scaled durations, which round-trip exactly).
         if !has_start {
             continue;
         }
@@ -1004,14 +883,25 @@ fn overlay_same_chord(
 
 /// Pitch letter plus octave marks (middle C = octave 4: `C`=4, `c`=5).
 fn pitch_str(pitch: &Pitch) -> String {
-    let letter = pitch.step.to_ascii_uppercase();
-    if pitch.octave >= 5 {
+    pitch_letter_str(pitch.step, pitch.octave)
+}
+
+/// Pitch letter plus octave marks for a bare step/octave pair (middle C =
+/// octave 4: `C`=4, `c`=5).
+fn pitch_letter_str(step: char, octave: i8) -> String {
+    let letter = step.to_ascii_uppercase();
+    // Widen before the repeat-count subtraction: stored octaves reach the i8
+    // bounds (lowering clamps long octave-mark runs to ±128), so `4 - octave`
+    // overflows i8 for octaves below -123 (debug panic / release capacity
+    // overflow in `croma dump abc`).
+    let octave = i32::from(octave);
+    if octave >= 5 {
         let mut s = letter.to_ascii_lowercase().to_string();
-        s.push_str(&"'".repeat((pitch.octave - 5) as usize));
+        s.push_str(&"'".repeat((octave - 5) as usize));
         s
     } else {
         let mut s = letter.to_string();
-        s.push_str(&",".repeat((4 - pitch.octave) as usize));
+        s.push_str(&",".repeat((4 - octave) as usize));
         s
     }
 }
@@ -1061,12 +951,9 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
     for grace in &group.events {
         match &grace.kind {
             GraceEventKind::Note(note) => {
-                out.push_str(
-                    note.written_accidental
-                        .as_ref()
-                        .map(|m| accidental_glyph(m.kind))
-                        .unwrap_or(""),
-                );
+                out.push_str(note_accidental(
+                    note.written_accidental.as_ref().map(|m| m.kind),
+                ));
                 out.push_str(&pitch_str(&note.pitch));
                 out.push_str(&length_ratio_str(note.length_multiplier));
             }
@@ -1074,12 +961,9 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
             GraceEventKind::Chord(members) => {
                 out.push('[');
                 for note in members {
-                    out.push_str(
-                        note.written_accidental
-                            .as_ref()
-                            .map(|m| accidental_glyph(m.kind))
-                            .unwrap_or(""),
-                    );
+                    out.push_str(note_accidental(
+                        note.written_accidental.as_ref().map(|m| m.kind),
+                    ));
                     out.push_str(&pitch_str(&note.pitch));
                     out.push_str(&length_ratio_str(note.length_multiplier));
                 }
@@ -1146,6 +1030,19 @@ mod tests {
             let (a, b) = roundtrip_pitches(src);
             assert_eq!(a, b, "pitch round-trip failed for {src:?}");
         }
+    }
+
+    #[test]
+    fn extreme_octave_marks_roundtrip_without_panicking() {
+        // Lowering clamps the octave-mark sum into i8 range, so a 130-comma
+        // run stores octave -126 and 200 up-marks store octave 127. The
+        // writer's down-mark repeat count `4 - octave` used to overflow i8
+        // (debug panic / release capacity overflow); it must widen instead.
+        let commas = ",".repeat(130);
+        let quotes = "'".repeat(200);
+        let src = format!("X:1\nL:1/4\nK:C\nC{commas} c{quotes} D E |\n");
+        let (a, b) = roundtrip_pitches(&src);
+        assert_eq!(a, b, "pitch round-trip failed for extreme octave marks");
     }
 
     fn barline_kinds(score: &crate::Score) -> Vec<crate::BarlineKind> {
@@ -1361,6 +1258,23 @@ mod tests {
         v
     }
 
+    /// `(is_rest, role)` per tuplet attachment, in event order — ratios alone
+    /// can match even when a role landed on the wrong event (or nowhere).
+    fn tuplet_roles(score: &crate::Score) -> Vec<(bool, crate::model::TupletRole)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    let is_rest = matches!(e.kind, crate::TimedEventKind::Rest(_));
+                    for t in &e.attachments.tuplets {
+                        v.push((is_rest, t.role));
+                    }
+                }
+            }
+        }
+        v
+    }
+
     #[test]
     fn tuplets_roundtrip() {
         for src in [
@@ -1375,8 +1289,63 @@ mod tests {
                 tuplet_ratios(&s2),
                 "tuplets for {src:?} -> {abc:?}"
             );
+            assert_eq!(tuplet_roles(&s1), tuplet_roles(&s2), "roles for {src:?}");
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
+    }
+
+    #[test]
+    fn rest_tuplets_roundtrip() {
+        // Rests carry tuplet roles like notes do, so a rest-led (or rest-closed,
+        // or all-rest) tuplet keeps its marker and span across a round-trip.
+        for src in [
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3zBA F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3BAz F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3zzz F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3:2:3z B A F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3z>BA F2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                tuplet_ratios(&s1),
+                tuplet_ratios(&s2),
+                "tuplets for {src:?} -> {abc:?}"
+            );
+            assert_eq!(
+                tuplet_roles(&s1),
+                tuplet_roles(&s2),
+                "roles for {src:?} -> {abc:?}"
+            );
+            assert_eq!(
+                pitch_seq(&s1),
+                pitch_seq(&s2),
+                "pitches for {src:?} -> {abc:?}"
+            );
+            let durations = |s: &crate::Score| {
+                s.parts[0].voices[0]
+                    .events
+                    .iter()
+                    .filter_map(|e| match e.kind {
+                        crate::TimedEventKind::Note(_) | crate::TimedEventKind::Rest(_) => {
+                            Some(e.duration)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                durations(&s1),
+                durations(&s2),
+                "durations for {src:?} -> {abc:?}"
+            );
+        }
+        // `(3BAz` previously dropped the Stop (it sat on the rest) and emitted a
+        // wrong span of 2; the rest must count, giving `(3:2:3`.
+        let s1 = score_of("X:1\nM:4/4\nL:1/8\nK:C\n(3BAz F2 |\n");
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        assert!(abc.contains("(3:2:3"), "expected (3:2:3 marker in {abc:?}");
     }
 
     fn grace_pitches(score: &crate::Score) -> Vec<(char, i8, i8, bool)> {
@@ -1418,8 +1387,8 @@ mod tests {
 
     #[test]
     fn chord_symbol_after_slur_open_survives() {
-        // `"G7"(DE)` is silently dropped by the parser; the writer must emit
-        // the slur-open first (`("G7"DE)`).
+        // The writer emits the slur-open first (`("G7"DE)`), the canonical
+        // order; the parser keeps the chord symbol in either order.
         let src = "X:1\nL:1/8\nK:C\n(\"G7\"DE) F |\n";
         let s1 = score_of(src);
         let abc = write_abc(&s1, AbcWriteOptions::default());
@@ -1434,8 +1403,8 @@ mod tests {
 
     #[test]
     fn chord_symbol_after_grace_survives() {
-        // `"F"{AB}c` is silently dropped by the parser; the writer must emit
-        // the grace group first (`{AB}"F"c`) so the chord symbol survives.
+        // The writer emits the grace group first (`{AB}"F"c`), the canonical
+        // order; the parser keeps the chord symbol in either order.
         let src = "X:1\nL:1/8\nK:C\n{AB}\"F\"c2 d2 |\n";
         let s1 = score_of(src);
         let abc = write_abc(&s1, AbcWriteOptions::default());
@@ -1715,6 +1684,10 @@ mod tests {
             "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nV:2\nE,F,G,A,|\n",
             "X:1\nL:1/4\nK:C\nV:T name=\"Tenor\" clef=treble-8\nCDEF|\nV:B clef=bass\nC,D,E,F,|\n",
             "X:1\nL:1/4\nK:C\nV:1 octave=-1\nCDEF|\nV:2 octave=1\nGABc|\n",
+            // Oversized modifiers clamp (octave=99999 -> +9, treble+15
+            // octave=125 -> +11) and must clamp IDENTICALLY in lowering and
+            // in the writer's mirrored shift, or pitches drift per pass.
+            "X:1\nL:1/4\nK:C\nV:1 octave=99999\nCDEF|\nV:2 clef=treble+15 octave=125\nGABc|\n",
         ] {
             let s1 = score_of(src);
             let abc = write_abc(&s1, AbcWriteOptions::default());

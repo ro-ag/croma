@@ -192,7 +192,13 @@ impl<'line> MusicLineParser<'line> {
     }
 
     pub(super) fn parse_slur(&mut self, direction: SlurDirection, dotted: bool) {
-        self.flush_pending_attachments();
+        // A slur-open precedes a note, so pending attachments ride across it
+        // and bind to that note (`"G7"(DE)` binds "G7" to `D`). A slur-close
+        // follows its note, so anything still pending cannot belong to it —
+        // flush as standalone items.
+        if direction == SlurDirection::End {
+            self.flush_pending_attachments();
+        }
         let start = self.index;
         if dotted {
             self.bump_char();

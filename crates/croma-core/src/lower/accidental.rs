@@ -16,6 +16,13 @@ pub(crate) struct MeasureAccidental {
     pub(crate) octave: i8,
     pub(crate) accidental: Accidental,
     pub(crate) span: Span,
+    /// `true` when this entry was re-inserted by
+    /// `reset_measure_accidentals_at_barline` solely on behalf of a pending
+    /// tie. If that tie is later dropped without finding a stop note, the
+    /// entry is removed again (see `drop_pending_tie_carry`); a matched tie
+    /// clears the flag so the carried accidental persists for the rest of the
+    /// stop note's measure.
+    pub(crate) from_pending_tie: bool,
 }
 
 pub(crate) fn key_accidental_policy(key: Option<&KeySignature>) -> Vec<KeyAccidentalPolicy> {
@@ -124,18 +131,18 @@ impl LoweringState {
         {
             entry.accidental = accidental;
             entry.span = span;
+            // A fresh written accidental re-legitimizes the entry: it must
+            // survive even if a pending tie on the same pitch is later dropped.
+            entry.from_pending_tie = false;
         } else {
             self.accidental_state.push(MeasureAccidental {
                 step,
                 octave,
                 accidental,
                 span,
+                from_pending_tie: false,
             });
         }
-    }
-
-    pub(crate) fn reset_measure_accidentals(&mut self) {
-        self.accidental_state.clear();
     }
 
     /// Reset measure accidentals at a bar line, but preserve the accidental of a
@@ -145,6 +152,12 @@ impl LoweringState {
     /// line; the bar must not cancel it. Without this, the stop note would be
     /// re-resolved against the key signature, changing the tied pitch. Normal
     /// (non-tied) accidentals are still cleared as usual.
+    ///
+    /// The carry must be preserved eagerly here and undone later if the tie is
+    /// dropped (rather than added only once a tie matches) because the stop
+    /// note's accidental is resolved via `effective_accidental` when the note
+    /// is lowered, BEFORE `finish_pending_tie_if_possible` runs — so the carry
+    /// must already exist at the barline and a drop can only be retroactive.
     pub(crate) fn reset_measure_accidentals_at_barline(&mut self) {
         let preserved: Vec<MeasureAccidental> = self
             .pending_ties
@@ -166,6 +179,7 @@ impl LoweringState {
                             span: accidental_source.unwrap_or_else(|| {
                                 Span::new(self.source_span.end, self.source_span.end)
                             }),
+                            from_pending_tie: true,
                         })
                     } else {
                         None
@@ -175,5 +189,33 @@ impl LoweringState {
             .collect();
         self.accidental_state.clear();
         self.accidental_state.extend(preserved);
+    }
+
+    /// Undo the accidental carry that `reset_measure_accidentals_at_barline`
+    /// preserved on behalf of a pending tie that was dropped without finding a
+    /// stop note. Entries that come from a written accidental in the current
+    /// measure (`from_pending_tie == false`) are left untouched.
+    pub(crate) fn drop_pending_tie_carry(&mut self, signature: (char, i8)) {
+        // Comparing `entry.step == signature.0` raw (here and in
+        // `confirm_pending_tie_carry`) is sound: note signatures are always
+        // uppercase (`LoweredEventAtomKind::Note` constructors uppercase the
+        // step), as are `MeasureAccidental` entries.
+        self.accidental_state.retain(|entry| {
+            !(entry.from_pending_tie && entry.step == signature.0 && entry.octave == signature.1)
+        });
+    }
+
+    /// Mark a tie-preserved accidental carry as consumed by a matched tie so
+    /// it survives a later same-signature sibling drop (e.g. two chord-member
+    /// ties with a single stop note) and persists for the rest of the stop
+    /// note's measure.
+    pub(crate) fn confirm_pending_tie_carry(&mut self, signature: (char, i8)) {
+        for entry in self
+            .accidental_state
+            .iter_mut()
+            .filter(|entry| entry.step == signature.0 && entry.octave == signature.1)
+        {
+            entry.from_pending_tie = false;
+        }
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::{
-    Accidental, AlignedSymbolKind, LyricControl, RestVisibility, TieRole, TimedEvent,
-    TimedEventKind,
+    Accidental, AlignedSymbolKind, LyricControl, RestVisibility, SlurRole, TieRole, TimedEvent,
+    TimedEventKind, TupletRole,
 };
 use crate::options::ParseOptions;
 use crate::parse::{parse_document, parse_tune_report_from_document};
@@ -480,6 +480,38 @@ fn classifies_quoted_chord_symbols_and_annotations() {
             QuotedTextKind::Annotation(AnnotationPlacement::Free),
         ]
     );
+}
+
+#[test]
+fn quoted_text_before_grace_group_stays_in_main_note_bundle() {
+    // `"F"{AB}c`: the syntax tree binds the quoted text to the MAIN note's
+    // attachment bundle, alongside the grace group — the first grace note
+    // inside the braces must not steal it.
+    let document_report = parse_document("X:1\nL:1/8\nK:C\n\"F\"{AB}c\n", ParseOptions::default());
+    assert!(document_report.diagnostics.is_empty());
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note = tune_music.lines[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MusicItem::Note(note) => Some(note),
+            _ => None,
+        })
+        .expect("expected note");
+
+    assert_eq!(note.pitch.step, 'c');
+    assert_eq!(note.attachments.chord_symbols[0].text, "F");
+    assert_eq!(note.attachments.grace_groups.len(), 1);
+    let grace = &note.attachments.grace_groups[0];
+    assert!(grace.elements.iter().all(|element| match element {
+        crate::syntax::GraceElementSyntax::Note(grace_note) =>
+            grace_note.attachments.chord_symbols.is_empty(),
+        _ => true,
+    }));
 }
 
 #[test]
@@ -1514,6 +1546,16 @@ fn semantic_note_events(tune: &crate::model::Tune) -> Vec<&TimedEvent> {
         .collect()
 }
 
+fn semantic_note_alters(tune: &crate::model::Tune) -> Vec<i8> {
+    semantic_note_events(tune)
+        .into_iter()
+        .map(|event| match &event.kind {
+            TimedEventKind::Note(note) => note.pitch.alter,
+            _ => unreachable!(),
+        })
+        .collect()
+}
+
 #[test]
 fn semantic_score_marks_pickup_and_keeps_fixed_measure_numbers() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC|D E F G|A B c d|\n";
@@ -1581,15 +1623,53 @@ fn semantic_accidentals_propagate_within_measure_and_reset_at_barline() {
     let (tune, diagnostics) = tune_for(source);
 
     assert!(diagnostics.is_empty());
-    let alters = semantic_note_events(&tune)
-        .into_iter()
-        .map(|event| match &event.kind {
-            TimedEventKind::Note(note) => note.pitch.alter,
-            _ => unreachable!(),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(alters, vec![1, 1, 0]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0]);
     assert!(tune.score.accidental_policy.reset_at_barlines);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_standalone_meter_change() {
+    // ABC 2.1 §11.3 (`%%propagate-accidentals` default `pitch`): an explicit
+    // accidental applies to same-pitch notes up to the END of the bar. A
+    // mid-tune `M:` field line is not a bar line, so it must not clear the
+    // measure accidental ledger (abc2xml carries the flat through too).
+    let source = "X:1\nL:1/4\nK:C\n_e\nM:3/2\ne\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1]);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_inline_meter_change() {
+    let source = "X:1\nL:1/4\nK:C\n_e [M:3/2] e\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1]);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_same_key_change() {
+    // A mid-tune `K:` field is not a bar line either; even a same-key K:C
+    // restatement must keep the carried flat (ABC 2.1 §11.3, abc2xml parity).
+    let source = "X:1\nL:1/4\nK:C\n_e\nK:C\ne\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1]);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_real_key_change() {
+    // K:G alters F (sharp) but says nothing about E, so the explicitly
+    // flattened E keeps its in-bar carry across the key change while the F
+    // after it picks up the new signature.
+    let source = "X:1\nL:1/4\nK:C\n_e\nK:G\ne f\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1, 1]);
 }
 
 #[test]
@@ -1654,6 +1734,285 @@ fn semantic_lyrics_symbols_and_prefix_attachments_stay_on_intended_event() {
     assert_eq!(first.attachments.decorations[0].name, "trill");
     assert_eq!(first.attachments.lyrics[0].text, "one");
     assert_eq!(first.attachments.symbols[0].text, "C");
+}
+
+#[test]
+fn chord_symbol_before_grace_group_binds_to_main_note() {
+    // ABC 2.1 §4.20: in `"F"{AB}c` the grace group attaches to the main note
+    // `c`, and the chord symbol written before the grace binds to `c` too —
+    // not to a note inside the braces.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB}c d|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "F");
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+    assert_eq!(first.attachments.grace_groups[0].note_count, 2);
+    assert!(notes[1].attachments.chord_symbols.is_empty());
+}
+
+#[test]
+fn chord_symbol_before_slur_open_binds_to_first_slurred_note() {
+    // `"G7"(DE)`: the chord symbol rides across the slur-open and binds to
+    // `D`, which also carries the slur start; `E` carries the slur stop.
+    let source = "X:1\nL:1/8\nK:C\n\"G7\"(DE) F|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "G7");
+    assert!(
+        first
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Start)
+    );
+    assert!(
+        notes[1]
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Stop)
+    );
+    assert!(notes[2].attachments.chord_symbols.is_empty());
+}
+
+#[test]
+fn chord_symbol_before_grace_and_slur_binds_to_main_note() {
+    // `"F"{AB}(cd)`: chord symbol, grace group, and slur start all land on the
+    // main note `c`.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB}(cd)|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "F");
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+    assert!(
+        first
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Start)
+    );
+    assert!(
+        notes[1]
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Stop)
+    );
+}
+
+#[test]
+fn chord_symbol_before_tuplet_marker_binds_to_first_tuplet_note() {
+    // `"F"(3CDE F`: the chord symbol rides across the tuplet marker and binds
+    // to `C`; the tuplet roles stay intact.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"(3CDE F|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "F");
+    assert!(
+        first
+            .attachments
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.role == TupletRole::Start)
+    );
+    assert!(
+        notes[2]
+            .attachments
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.role == TupletRole::Stop)
+    );
+    assert!(notes[3].attachments.chord_symbols.is_empty());
+    assert!(notes[3].attachments.tuplets.is_empty());
+}
+
+/// `(kind, tuplet roles)` for every note/rest/chord in the first voice.
+/// `semantic_note_events` filters to notes only, which would hide the rests
+/// these tests are about.
+fn timed_tuplet_roles(tune: &crate::model::Tune) -> Vec<(&'static str, Vec<TupletRole>)> {
+    tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| {
+            let kind = match &event.kind {
+                TimedEventKind::Note(_) => "note",
+                TimedEventKind::Rest(_) => "rest",
+                TimedEventKind::Chord(_) => "chord",
+                _ => return None,
+            };
+            let roles = event
+                .attachments
+                .tuplets
+                .iter()
+                .map(|tuplet| tuplet.role)
+                .collect();
+            Some((kind, roles))
+        })
+        .collect()
+}
+
+#[test]
+fn rest_led_tuplet_carries_start_role_on_the_rest() {
+    // `(3zBA`: the leading rest is the tuplet's first group, so it carries the
+    // Start role just as a note would.
+    let source = "X:1\nL:1/8\nK:C\n(3zBA|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("rest", vec![TupletRole::Start]),
+            ("note", vec![TupletRole::Continue]),
+            ("note", vec![TupletRole::Stop]),
+        ]
+    );
+}
+
+#[test]
+fn rest_closed_tuplet_carries_stop_role_on_the_rest() {
+    // `(3BAz`: the trailing rest closes the tuplet, so it carries Stop.
+    let source = "X:1\nL:1/8\nK:C\n(3BAz|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("note", vec![TupletRole::Start]),
+            ("note", vec![TupletRole::Continue]),
+            ("rest", vec![TupletRole::Stop]),
+        ]
+    );
+}
+
+#[test]
+fn all_rest_tuplet_carries_roles_on_every_rest() {
+    let source = "X:1\nL:1/8\nK:C\n(3zzz|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("rest", vec![TupletRole::Start]),
+            ("rest", vec![TupletRole::Continue]),
+            ("rest", vec![TupletRole::Stop]),
+        ]
+    );
+}
+
+#[test]
+fn rest_led_tuplet_keeps_prefix_attachments_on_the_rest() {
+    // `(3"C"zBA`: the chord symbol rides across the tuplet marker and binds to
+    // the leading rest, which still carries the Start role.
+    let source = "X:1\nL:1/8\nK:C\n(3\"C\"zBA|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let rest = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .find(|event| matches!(event.kind, TimedEventKind::Rest(_)))
+        .expect("expected a rest event");
+    assert_eq!(rest.attachments.chord_symbols[0].text, "C");
+    assert!(
+        rest.attachments
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.role == TupletRole::Start)
+    );
+}
+
+#[test]
+fn quoted_texts_before_and_after_grace_group_keep_order() {
+    // `"F"{AB}"G"c`: both chord symbols bind to `c`, in source order.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB}\"G\"c d|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(
+        first
+            .attachments
+            .chord_symbols
+            .iter()
+            .map(|symbol| symbol.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["F", "G"]
+    );
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+}
+
+#[test]
+fn decoration_before_grace_group_binds_to_main_note() {
+    // `!trill!{AB}c`: the decoration rides the same pending bundle as quoted
+    // text, so it must survive the grace group and bind to `c`.
+    let source = "X:1\nL:1/8\nK:C\n!trill!{AB}c d|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.decorations[0].name, "trill");
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+    assert!(notes[1].attachments.decorations.is_empty());
+}
+
+#[test]
+fn quoted_text_after_grace_or_inside_slur_stays_bound() {
+    // Controls that already worked before the prefix-attachment fix: quoted
+    // text AFTER the grace group, and INSIDE the slur parens.
+    let (tune, diagnostics) = tune_for("X:1\nL:1/8\nK:C\n{AB}\"F\"c d|\n");
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes[0].attachments.chord_symbols[0].text, "F");
+    assert_eq!(notes[0].attachments.grace_groups.len(), 1);
+
+    let (tune, diagnostics) = tune_for("X:1\nL:1/8\nK:C\n(\"G7\"DE) F|\n");
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes[0].attachments.chord_symbols[0].text, "G7");
+    assert!(
+        notes[0]
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Start)
+    );
+}
+
+#[test]
+fn unclosed_grace_group_after_quoted_text_still_diagnoses() {
+    // `"F"{AB c`: the unclosed grace group swallows the rest of the line and
+    // must keep emitting its diagnostic; the pending chord symbol must not
+    // suppress it or panic, and it must not leak onto the next line's notes.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB c\nd e|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        count_diagnostics(&diagnostics, "abc.music.unclosed_grace"),
+        1
+    );
+    let notes = semantic_note_events(&tune);
+    assert!(
+        notes
+            .iter()
+            .all(|note| note.attachments.chord_symbols.is_empty())
+    );
 }
 
 #[test]
@@ -1899,6 +2258,189 @@ fn ties_resolve_across_barlines_without_changing_measure_timing() {
 }
 
 #[test]
+fn dropped_tie_does_not_leak_accidental_across_barline() {
+    // The tie on `^a-` finds no matching stop note (`b` mismatches) and is
+    // dropped; the accidental carry preserved across the barline on the tie's
+    // behalf must be undone with it, so the measure-2 `a`s stay natural.
+    let source = "X:1\nL:1/8\nK:C\n^a- | b a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 0, 0]);
+    let notes = semantic_note_events(&tune);
+    assert!(notes.iter().all(|event| event.attachments.ties.is_empty()));
+}
+
+#[test]
+fn dropped_tie_at_rest_does_not_leak_accidental_across_barline() {
+    // The pending tie is dropped when the rest arrives; the barline-preserved
+    // accidental carry must be dropped with it.
+    let source = "X:1\nL:1/8\nK:C\n^a- | z a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0]);
+}
+
+#[test]
+fn chord_tie_partial_drop_keeps_matched_tie_and_drops_leaked_accidental() {
+    // The C tie matches the next `c`; the A tie is dropped in the same drain.
+    // The dropped A tie must not leak its sharp onto the trailing `a`, while
+    // the matched C tie stays intact.
+    let source = "X:1\nL:1/8\nK:C\n[^ac]- | c a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    let chord = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some(chord),
+            _ => None,
+        })
+        .expect("expected chord");
+    assert_eq!(
+        chord
+            .members
+            .iter()
+            .map(|member| (member.pitch.step, member.pitch.alter))
+            .collect::<Vec<_>>(),
+        vec![('A', 1), ('C', 0)]
+    );
+    // The A tie is dropped (no matching stop note); the C tie survives.
+    assert!(chord.members[0].attachments.ties.is_empty());
+    assert_eq!(chord.members[1].attachments.ties.len(), 1);
+    assert_eq!(chord.members[1].attachments.ties[0].role, TieRole::Start);
+
+    // Measure 2: the tie-stop `c` and the trailing `a`, which must NOT
+    // inherit the dropped A tie's sharp.
+    assert_eq!(semantic_note_alters(&tune), vec![0, 0]);
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0].attachments.ties.len(), 1);
+    assert_eq!(notes[0].attachments.ties[0].role, TieRole::Stop);
+    assert_eq!(
+        notes[0].attachments.ties[0].pair_id,
+        chord.members[1].attachments.ties[0].pair_id
+    );
+    assert!(notes[1].attachments.ties.is_empty());
+}
+
+#[test]
+fn rewritten_accidental_after_dropped_tie_carries_within_measure() {
+    // After the dropped tie's leaked carry is undone, a freshly written `^a`
+    // in measure 2 must still propagate to the rest of that measure.
+    let source = "X:1\nL:1/8\nK:C\n^a- | b ^a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 1, 1]);
+}
+
+#[test]
+fn tie_across_barline_preserves_accidental_carry() {
+    // Legit cross-bar tie: the stop note keeps the start note's sharp.
+    let source = "X:1\nL:1/8\nK:C\n^a- | a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1]);
+    let notes = semantic_note_events(&tune);
+    assert_eq!(
+        notes
+            .iter()
+            .map(|event| event.attachments.ties.first().map(|tie| tie.role))
+            .collect::<Vec<_>>(),
+        vec![Some(TieRole::Start), Some(TieRole::Stop)]
+    );
+    assert_eq!(
+        notes[0].attachments.ties[0].pair_id,
+        notes[1].attachments.ties[0].pair_id
+    );
+}
+
+#[test]
+fn same_measure_dropped_tie_keeps_written_accidental_carry() {
+    // A tie dropped within the measure must not cancel the carry that comes
+    // from the WRITTEN accidental itself: `^a-b a` stays A#, B, A#.
+    let source = "X:1\nL:1/8\nK:C\n^a-b a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 1]);
+}
+
+#[test]
+fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
+    // A matched cross-bar tie carries the sharp onto the stop note, and the
+    // carried accidental persists for the rest of the stop note's measure.
+    let source = "X:1\nL:1/8\nK:C\n^a- | a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn tie_across_barline_with_rewritten_accidental_keeps_carry() {
+    // The stop note re-writes the same sharp; the tie still matches and the
+    // carry persists for the rest of the measure.
+    let source = "X:1\nL:1/8\nK:C\n^a- | ^a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn tie_across_double_barline_preserves_accidental_carry() {
+    let source = "X:1\nL:1/8\nK:C\n^a- || a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1]);
+    let notes = semantic_note_events(&tune);
+    assert_eq!(
+        notes
+            .iter()
+            .map(|event| event.attachments.ties.first().map(|tie| tie.role))
+            .collect::<Vec<_>>(),
+        vec![Some(TieRole::Start), Some(TieRole::Stop)]
+    );
+}
+
+#[test]
 fn crossing_slurs_diagnose_but_preserve_notes() {
     let source = "X:1\nL:1/8\nK:C\n.(C (D .) E)\n";
     let (tune, diagnostics) = tune_for(source);
@@ -2059,6 +2601,38 @@ fn malformed_repeat_ending_keeps_barline_timing_intact() {
             Fraction::new(1, 8)
         ]
     );
+}
+
+#[test]
+fn inline_instruction_field_warns_and_changes_nothing() {
+    // `[I:tuplets 1 0 0]` is an abcm2ps DISPLAY directive: it cannot change
+    // how `(3CDE` parses (abc2xml skips it too). Lowering drops it but must
+    // say so — previously the `_ => {}` arm swallowed it silently — and the
+    // music on either side must lower identically.
+    let source = "X:1\nL:1/8\nK:C\n(3CDE [I:tuplets 1 0 0](3CDE|\n";
+    let document = parse_document(source, ParseOptions::default());
+    let report = parse_tune_report_from_document(&document.value);
+    let tune = report.value.expect("expected tune");
+
+    assert_eq!(
+        diagnostic_span(source, &report.diagnostics, "abc.field.inline_ignored"),
+        "[I:tuplets 1 0 0]"
+    );
+    let notes = tune
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Note {
+                step,
+                octave,
+                duration,
+                ..
+            } => Some((*step, *octave, *duration)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 6);
+    assert_eq!(notes[..3], notes[3..], "music differs across the inline I:");
 }
 
 #[test]
