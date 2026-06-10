@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Prove the `Score -> ABC` writer round-trips the corpus with no structural diff.
 
-For every in-scope ABC file under --abc-root this runs, via the built `croma`
-binary:
+For every ABC file under --abc-root this runs, via the built `croma` binary:
 
-  1. `croma dump score FILE`     -> decide slice-1 in-scope (see below)
+  1. `croma dump score FILE`     -> must lower; a failure is recorded as
+                                    `lower_fail` with a normalized reason
   2. `croma xml FILE`            -> original MusicXML
   3. `croma dump abc FILE`       -> regenerated ABC (the writer under test)
   4. `croma xml <regenerated>`   -> round-tripped MusicXML
@@ -18,12 +18,13 @@ ordered pitches (step, alter, octave) + per-event durations (normalized by
 Bar: **0 structural diffs over the in-scope subset.** Coverage (in_scope/total)
 is reported so later slices can track growth.
 
-Slice-1 in-scope filter (a tune qualifies only if its lowered `Score` satisfies
-all): exactly one part and one voice; no Chord and no Spacer events; every
-event's attachments have empty tuplets / grace_groups / slurs / lyrics / symbols
-/ chord_symbols / annotations / decorations; every barline kind is one of
-Regular, Double, Final, RepeatStart, RepeatEnd, RepeatBoth. Detected from the
-`croma dump score` Debug text.
+In-scope filter (`is_in_scope`, applied to the ABC source): a tune is out of
+scope if its body carries a mid-tune key change (a second `K:` line or an
+inline `[K:...]` — the writer emits only the header `K:`), a bare-grace slur
+(`({Bc})`, a slur wrapping only a grace group with no main note), or a nested
+tuplet (`(7:8:8(3...` — the writer flattens the outer tuplet). Tunes that
+fail to lower are not a writer concern; they are excluded from scope and
+tallied separately in the summary as `lower_fail` with a reason→count bucket.
 
 LOCAL ONLY — never wire this into CI. The corpus is external; provision it per
 AGENTS.md. Report is written under docs/untracked/abc/.
@@ -38,35 +39,29 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 
 CROMA = "target/debug/croma"
 
-# Attachment vectors the writer drops; a non-empty one makes a tune out of scope.
-# In the pretty Debug dump an empty Vec is `field: []` and a non-empty one is
-# `field: [\n    ...`, so a newline right after `[` flags a non-empty vector.
 # Mid-tune key field, inline (`[K:...]`) or as a standalone body line. The writer
 # emits only the header `K:`, and a mid-tune key change is not even preserved in
 # the lowered `Score` (its effect is baked into note alters), so such tunes
-# cannot round-trip and are out of slice-1 scope. Detected from the source.
+# cannot round-trip and are out of scope. Detected from the source.
 _HEADER_KEY_LINE_RE = re.compile(r"^\s*K:", re.MULTILINE)
 _INLINE_KEY_RE = re.compile(r"\[K:")
 # A slur that wraps only a grace group with no main note (`({Bc})`): the grace
 # close is immediately followed by the slur close. Degenerate; out of scope.
 _BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
-# A tuplet led by a rest has no Start event, so the writer cannot place the
-# opening marker. Out of scope. The rest may hide behind slur-opens, spaces,
-# grace groups, decorations or quoted strings (`(3(z`, `(3 z`, `(3{a}z`,
-# `(3"C"z`, `(3!trill!z`).
-_REST_LED_TUPLET_RE = re.compile(
-    r"\(\d[:\d]*(?:\s|\(|\{[^}]*\}|\"[^\"]*\"|![^!\n]*!)*[zx]"
-)
-# Inline `[I:tuplets ...]` directives change how later tuplets parse; out of
-# scope. (Other `[I:` fields, e.g. the display-only `[I:setbarnb`, are fine —
-# they alter nothing the projection sees.)
-_INLINE_INFO_RE = re.compile(r"\[I:tuplets")
+# A tuplet opened inside another tuplet (`(7:8:8(3A/A/ ...`, abcm2ps nested
+# tuplets): the writer keeps only the innermost tuplet — doubly-nested notes
+# get the outer ratio baked into their written durations, while outer-only
+# notes are written plain, so both the outer <tuplet> notation and the
+# outer-only durations are lost on the round trip. Out of scope until the
+# writer models nested tuplets. Detected as two consecutive tuplet opens.
+_NESTED_TUPLET_RE = re.compile(r"\(\d+(?::\d*){0,2}\s*\(\d")
 
 
 def _init_worker(croma: str) -> None:
@@ -74,9 +69,31 @@ def _init_worker(croma: str) -> None:
     CROMA = croma
 
 
-def run(args: list[str]) -> tuple[int, str]:
+def run(args: list[str]) -> tuple[int, str, str]:
     proc = subprocess.run(args, capture_output=True, text=True)
-    return proc.returncode, proc.stdout
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def lower_failure_reason(stderr: str) -> str:
+    """Normalized bucket key for a `croma dump score` failure.
+
+    Takes the first `error[...]` or `panicked` line of stderr and strips file
+    paths / byte spans so identical failures on different tunes bucket
+    together (e.g. `error[abc.file.no_music]: ABC source does not contain
+    body music`).
+    """
+    lines = stderr.splitlines()
+    for index, line in enumerate(lines):
+        if "error[" in line:
+            # `<path>:<span>: error[code]: message` -> `error[code]: message`.
+            return line[line.index("error["):].strip()
+        if "panicked" in line:
+            # `thread '...' panicked at <path>:<line>:<col>:` with the message
+            # on the following line: drop the location, keep the message.
+            head = re.sub(r"\s+at\s+\S+:\d+:\d+:?", "", line).strip()
+            message = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            return f"{head}: {message}" if message else head
+    return "no error/panic line on stderr"
 
 
 def has_mid_tune_field_change(source: str) -> bool:
@@ -94,15 +111,13 @@ def has_mid_tune_field_change(source: str) -> bool:
     return bool(_HEADER_KEY_LINE_RE.search(body) or _INLINE_KEY_RE.search(body))
 
 
-def is_in_scope(score_dump: str, source: str) -> bool:
-    """True iff the lowered Score uses only currently-supported constructs."""
+def is_in_scope(source: str) -> bool:
+    """True iff the ABC source uses only currently-supported constructs."""
     if has_mid_tune_field_change(source):
         return False
     if _BARE_GRACE_SLUR_RE.search(source):
         return False
-    if _INLINE_INFO_RE.search(source):
-        return False
-    return not _REST_LED_TUPLET_RE.search(source)
+    return not _NESTED_TUPLET_RE.search(source)
 
 
 def projection(xml: str):
@@ -243,23 +258,27 @@ def check_one(abc_path_str: str) -> dict:
     name = Path(abc_path_str).name
     rec = {"file": name, "in_scope": False, "diff": False, "error": False}
 
-    code, score_dump = run([CROMA, "dump", "score", abc_path_str])
+    code, score_dump, score_err = run([CROMA, "dump", "score", abc_path_str])
     if code != 0 or not score_dump:
-        return rec  # parse/lower failure -> not in scope, not a writer concern
+        # Parse/lower failure -> not in scope, not a writer concern; labeled
+        # so the summary can bucket why tunes never reach the writer.
+        rec["status"] = "lower_fail"
+        rec["reason"] = lower_failure_reason(score_err)
+        return rec
     source = Path(abc_path_str).read_text(errors="replace")
-    if not is_in_scope(score_dump, source):
+    if not is_in_scope(source):
         return rec
     rec["in_scope"] = True
 
-    _, xml_original = run([CROMA, "xml", abc_path_str])
-    code_abc, regenerated = run([CROMA, "dump", "abc", abc_path_str])
+    _, xml_original, _ = run([CROMA, "xml", abc_path_str])
+    code_abc, regenerated, _ = run([CROMA, "dump", "abc", abc_path_str])
     if code_abc != 0 or not regenerated:
         rec["error"] = True
         return rec
 
     regen_path = write_temp(regenerated)
     try:
-        _, xml_roundtrip = run([CROMA, "xml", regen_path])
+        _, xml_roundtrip, _ = run([CROMA, "xml", regen_path])
     finally:
         Path(regen_path).unlink(missing_ok=True)
 
@@ -304,6 +323,8 @@ def main() -> int:
     in_scope = [r for r in records if r["in_scope"]]
     diffs = [r["file"] for r in in_scope if r["diff"]]
     errors = [r["file"] for r in in_scope if r["error"]]
+    lower_fails = [r for r in records if r.get("status") == "lower_fail"]
+    lower_fail_reasons = Counter(r["reason"] for r in lower_fails)
     total = len(records)
     coverage = (len(in_scope) / total * 100.0) if total else 0.0
 
@@ -313,6 +334,8 @@ def main() -> int:
         "coverage_pct": round(coverage, 2),
         "structural_diffs": len(diffs),
         "errors": len(errors),
+        "lower_fail": len(lower_fails),
+        "lower_fail_reasons": dict(lower_fail_reasons.most_common()),
         "structural_diff_files": diffs[:50],
         "error_files": errors[:50],
     }

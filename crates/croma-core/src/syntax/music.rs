@@ -168,6 +168,18 @@ impl AttachmentBundle {
             QuotedTextKind::Annotation(_) => self.annotations.push(text),
         }
     }
+
+    /// Appends `other`'s attachments after this bundle's, per category. Used
+    /// when a nested construct (grace group) restores the caller's pending
+    /// bundle: the caller's items came first in the source, so they keep
+    /// their position; `span_start()` stays correct because it is computed
+    /// as the minimum over all member spans.
+    pub(crate) fn extend(&mut self, other: AttachmentBundle) {
+        self.grace_groups.extend(other.grace_groups);
+        self.chord_symbols.extend(other.chord_symbols);
+        self.annotations.extend(other.annotations);
+        self.decorations.extend(other.decorations);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
