@@ -16,6 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from compare_cache import (
+    CACHE_DB_ENV_VAR,
+    DEFAULT_CACHE_DB,
+    CompareCache,
+    facts_cache_version,
+    file_sha256,
+    pair_result_key,
+    result_cache_version,
+)
 from music21_compare import (
     Music21ParseFailure,
     Music21Unavailable,
@@ -180,6 +189,16 @@ def main() -> int:
     )
     component_filter = resolve_component_filter(args.component)
 
+    cache_db_path = resolve_cache_db_path(args)
+    facts_version = facts_cache_version() if cache_db_path is not None else None
+    result_version = (
+        result_cache_version(facts_version) if cache_db_path is not None else None
+    )
+    parent_cache: CompareCache | None = None
+    if cache_db_path is not None:
+        # Open (and recover, if corrupt) before workers race on the same file.
+        parent_cache = CompareCache.open(cache_db_path)
+
     facts_jsonl = args.facts_jsonl or sibling_jsonl(args.facts_parquet)
     comparison_jsonl = args.comparison_jsonl or sibling_jsonl(args.comparison_parquet)
     mismatches_jsonl = args.mismatches_jsonl or sibling_jsonl(args.mismatches_parquet)
@@ -281,6 +300,9 @@ def main() -> int:
                     "write_per_file_summary_jsonl": per_file_summary_jsonl is not None,
                     "sample_per_category": args.sample_per_category,
                     "strict": args.strict,
+                    "cache_db": str(cache_db_path) if cache_db_path is not None else None,
+                    "facts_cache_version": facts_version,
+                    "result_cache_version": result_version,
                 }
             )
 
@@ -358,6 +380,11 @@ def main() -> int:
     candidate_files = candidate_file_list(file_mismatch_counts)
     write_candidate_outputs(args, candidate_files, source_paths)
 
+    pruned_rows = 0
+    if parent_cache is not None:
+        pruned_rows = parent_cache.prune_stale()
+        parent_cache.close()
+
     elapsed = time.monotonic() - started
     report = {
         "schema": REPORT_SCHEMA,
@@ -384,6 +411,18 @@ def main() -> int:
         "reference_musicxml_import_failures": counters["reference_musicxml_import_failures"],
         "worker_failures": counters["worker_failures"],
         "comparison_harness_issues": counters["comparison_harness_issues"],
+        "cache": {
+            "enabled": cache_db_path is not None,
+            "path": str(cache_db_path) if cache_db_path is not None else None,
+            "facts_version": facts_version,
+            "result_version": result_version,
+            "facts_hits": counters["facts_cache_hits"],
+            "facts_misses": counters["facts_cache_misses"],
+            "result_hits": counters["result_cache_hits"],
+            "result_misses": counters["result_cache_misses"],
+            "errors": counters["cache_errors"],
+            "pruned_rows": pruned_rows,
+        },
         "structural_matches": counters["structural_matches"],
         "structural_mismatches": counters["structural_mismatches"],
         "status_counts": dict(sorted(status_counts.items())),
@@ -520,8 +559,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--jobs",
         type=int,
-        default=1,
-        help="Number of music21 worker processes. Use 0 for host CPU count minus 1.",
+        default=0,
+        help="Number of music21 worker processes. 0 (default) uses host CPU count minus 1.",
+    )
+    parser.add_argument(
+        "--cache-db",
+        type=Path,
+        help=(
+            "SQLite comparison cache path. Defaults to $"
+            + CACHE_DB_ENV_VAR
+            + f" or {DEFAULT_CACHE_DB}."
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable the content-addressed comparison cache.",
     )
     parser.add_argument(
         "--worker-chunk-size",
@@ -741,6 +794,92 @@ def configure_worker_environment(polars_threads_per_worker: int | None) -> None:
         os.environ["POLARS_MAX_THREADS"] = str(polars_threads_per_worker)
 
 
+def resolve_cache_db_path(args: argparse.Namespace) -> Path | None:
+    if args.no_cache:
+        return None
+    if args.cache_db is not None:
+        return args.cache_db
+    env_value = os.environ.get(CACHE_DB_ENV_VAR)
+    if env_value:
+        return Path(env_value)
+    return DEFAULT_CACHE_DB
+
+
+_WORKER_CACHE: CompareCache | None = None
+_WORKER_CACHE_PATH: str | None = None
+_WORKER_CACHE_FAILED_PATH: str | None = None
+
+
+def task_cache(task: dict[str, Any], counters: Counter[str]) -> CompareCache | None:
+    """Open (once per process) the cache configured for this task."""
+    global _WORKER_CACHE, _WORKER_CACHE_PATH, _WORKER_CACHE_FAILED_PATH
+    path = task.get("cache_db")
+    if path is None:
+        return None
+    if _WORKER_CACHE is not None and _WORKER_CACHE_PATH == path:
+        return _WORKER_CACHE
+    if _WORKER_CACHE_FAILED_PATH == path:
+        return None
+    try:
+        cache = CompareCache.open(Path(path))
+    except Exception:  # noqa: BLE001 - a broken cache must never fail the run.
+        counters["cache_errors"] += 1
+        _WORKER_CACHE_FAILED_PATH = path
+        return None
+    if _WORKER_CACHE is not None:
+        _WORKER_CACHE.close()
+    _WORKER_CACHE = cache
+    _WORKER_CACHE_PATH = path
+    return cache
+
+
+CACHE_COUNTER_KEYS = {
+    "facts_cache_hits",
+    "facts_cache_misses",
+    "result_cache_hits",
+    "result_cache_misses",
+    "cache_errors",
+}
+
+
+def cacheable_result_payload(result: dict[str, Any], counters: Counter[str]) -> dict[str, Any]:
+    payload = dict(result)
+    payload["counters"] = {
+        key: int(value) for key, value in counters.items() if key not in CACHE_COUNTER_KEYS
+    }
+    payload["facts_jsonl"] = None
+    payload["comparison_jsonl"] = None
+    payload["mismatches_jsonl"] = None
+    return payload
+
+
+def replay_cached_result(
+    task: dict[str, Any],
+    payload: dict[str, Any],
+    counters: Counter[str],
+) -> dict[str, Any]:
+    result = dict(payload)
+    merged: Counter[str] = Counter()
+    merge_counter(merged, result.get("counters", {}))
+    merge_counter(merged, dict(counters))
+    result["counters"] = dict(merged)
+    result["filename"] = task["filename"]
+    result["per_file_summary_jsonl"] = patch_per_file_summary_paths(
+        result.get("per_file_summary_jsonl"), task
+    )
+    return result
+
+
+def patch_per_file_summary_paths(text: str | None, task: dict[str, Any]) -> str | None:
+    if not text:
+        return text
+    row = json.loads(text)
+    row["source_path"] = task.get("source_path")
+    row["croma_xml_path"] = task.get("croma_xml")
+    row["reference_xml_path"] = task.get("reference_xml")
+    return json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n"
+
+
 def run_comparison_task(task: dict[str, Any]) -> dict[str, Any]:
     try:
         return run_comparison_task_inner(task)
@@ -761,6 +900,47 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
         Path(task["reference_xml"]) if task.get("reference_xml") is not None else None
     )
 
+    cache = task_cache(task, counters)
+    side_hashes = {
+        "croma": file_sha256(croma_xml) if cache is not None and croma_xml is not None else None,
+        "reference": (
+            file_sha256(reference_xml)
+            if cache is not None and reference_xml is not None
+            else None
+        ),
+    }
+    writes_row_tables = bool(
+        task.get("write_facts_jsonl")
+        or task.get("write_comparison_jsonl")
+        or task.get("write_mismatches_jsonl")
+    )
+    pair_key = None
+    if (
+        cache is not None
+        and not writes_row_tables
+        and side_hashes["croma"] is not None
+        and side_hashes["reference"] is not None
+    ):
+        pair_key = pair_result_key(
+            side_hashes["croma"],
+            side_hashes["reference"],
+            task["result_cache_version"],
+            task["relative_path"],
+            {
+                "component_filter": task.get("component_filter"),
+                "sample_per_category": int(task["sample_per_category"]),
+            },
+        )
+        try:
+            cached_payload = cache.get_result(pair_key)
+        except Exception:  # noqa: BLE001 - cache failures fall back to recompute.
+            counters["cache_errors"] += 1
+            cached_payload = None
+        if cached_payload is not None:
+            counters["result_cache_hits"] += 1
+            return replay_cached_result(task, cached_payload, counters)
+        counters["result_cache_misses"] += 1
+
     side_results: dict[str, dict[str, Any]] = {}
     for side, xml_path in [("croma", croma_xml), ("reference", reference_xml)]:
         side_results[side] = extract_side(
@@ -771,6 +951,8 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
             counters=counters,
             status_counts=status_counts,
             import_failures=import_failures,
+            cache=cache,
+            content_hash=side_hashes[side],
         )
 
     fact_rows = side_results["croma"]["fact_rows"] + side_results["reference"]["fact_rows"]
@@ -834,7 +1016,6 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
     else:
         counters["structural_matches"] += 1
 
-    result["counters"] = dict(counters)
     result["per_file_summary_jsonl"] = per_file_summary_jsonl_text(
         task,
         side_results,
@@ -844,6 +1025,16 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
         result["mismatch_category_counts"],
     )
     result["per_file_summary_rows"] = 1
+    if pair_key is not None and cache is not None:
+        try:
+            cache.put_result(
+                pair_key,
+                task["relative_path"],
+                cacheable_result_payload(result, counters),
+            )
+        except Exception:  # noqa: BLE001 - cache failures must never fail the run.
+            counters["cache_errors"] += 1
+    result["counters"] = dict(counters)
     return result
 
 
@@ -856,6 +1047,8 @@ def extract_side(
     counters: Counter[str],
     status_counts: Counter[str],
     import_failures: list[dict[str, Any]],
+    cache: CompareCache | None = None,
+    content_hash: str | None = None,
 ) -> dict[str, Any]:
     if xml_path is None:
         status_counts[f"{side}_xml_missing"] += 1
@@ -876,6 +1069,31 @@ def extract_side(
         }
 
     counters[f"{side}_musicxml_import_attempts"] += 1
+    facts_version = task.get("facts_cache_version")
+    cached_facts = None
+    if cache is not None and content_hash is not None and facts_version:
+        try:
+            cached_facts = cache.get_facts(content_hash, facts_version)
+        except Exception:  # noqa: BLE001 - cache failures fall back to extraction.
+            counters["cache_errors"] += 1
+            cached_facts = None
+        if cached_facts is not None:
+            counters["facts_cache_hits"] += 1
+        else:
+            counters["facts_cache_misses"] += 1
+    if cached_facts is not None:
+        counters[f"{side}_musicxml_import_successes"] += 1
+        return {
+            "status": "success",
+            "fact_rows": normalized_fact_rows(
+                task=task,
+                side=side,
+                xml_path=xml_path,
+                facts=cached_facts,
+                component_filter=component_filter,
+            ),
+            "diagnostic": None,
+        }
     try:
         facts = extract_facts(xml_path, side)
     except Music21Unavailable as error:
@@ -929,6 +1147,12 @@ def extract_side(
             "fact_rows": [diagnostic_fact_row(task, side, xml_path, diagnostic)],
             "diagnostic": diagnostic,
         }
+
+    if cache is not None and content_hash is not None and facts_version:
+        try:
+            cache.put_facts(content_hash, facts_version, task.get("relative_path"), side, facts)
+        except Exception:  # noqa: BLE001 - cache failures must never fail the run.
+            counters["cache_errors"] += 1
 
     counters[f"{side}_musicxml_import_successes"] += 1
     return {

@@ -171,6 +171,119 @@ def test_baseline_delta_classification(tmp_path: Path) -> None:
     assert regressed["new.abc"] == "new_regression"
 
 
+def test_cache_warm_report_only_run_replays_pair_results(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["pitch_mismatch", "match"])
+    write_musicxml(paths.croma_xml("pitch_mismatch"), [note(step="C")])
+    write_musicxml(paths.reference_xml("pitch_mismatch"), [note(step="D")])
+    write_musicxml(paths.croma_xml("match"), [note(step="E")])
+    write_musicxml(paths.reference_xml("match"), [note(step="E")])
+
+    cold = run_compare(paths, jobs=2, output_name="cold", tables=False)
+    warm = run_compare(paths, jobs=2, output_name="warm", tables=False)
+    uncached = run_compare(paths, jobs=2, output_name="uncached", tables=False, no_cache=True)
+
+    assert cold["cache"]["enabled"] is True
+    assert cold["cache"]["result_hits"] == 0
+    assert cold["cache"]["result_misses"] == 2
+    assert warm["cache"]["result_hits"] == 2
+    assert warm["cache"]["result_misses"] == 0
+    assert uncached["cache"]["enabled"] is False
+
+    for left, right in [(cold, warm), (cold, uncached)]:
+        assert comparable_report(left) == comparable_report(right)
+    assert (paths.output / "cold-per-file.jsonl").read_text() == (
+        paths.output / "warm-per-file.jsonl"
+    ).read_text()
+
+
+def test_cache_facts_layer_serves_table_writing_runs(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["pitch_mismatch"])
+    write_musicxml(paths.croma_xml("pitch_mismatch"), [note(step="C")])
+    write_musicxml(paths.reference_xml("pitch_mismatch"), [note(step="D")])
+
+    cold = run_compare(paths, jobs=1, output_name="cold")
+    warm = run_compare(paths, jobs=1, output_name="warm")
+
+    assert cold["cache"]["facts_hits"] == 0
+    assert cold["cache"]["facts_misses"] == 2
+    assert warm["cache"]["facts_hits"] == 2
+    assert warm["cache"]["facts_misses"] == 0
+    # Table-writing runs bypass the pair-result layer but reuse cached facts.
+    assert warm["cache"]["result_hits"] == 0
+    assert comparable_report(cold) == comparable_report(warm)
+    for name in ["facts.jsonl", "comparison.jsonl", "mismatches.jsonl"]:
+        assert (paths.output / f"cold-{name}").read_text() == (
+            paths.output / f"warm-{name}"
+        ).read_text()
+
+
+def test_cache_invalidates_when_xml_content_changes(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="D")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D")])
+
+    before = run_compare(paths, jobs=1, output_name="before", tables=False)
+    assert before["mismatch_category_counts"] == {}
+
+    write_musicxml(paths.croma_xml("tune"), [note(step="C")])
+    after = run_compare(paths, jobs=1, output_name="after", tables=False)
+
+    assert after["mismatch_category_counts"] == {"pitch": 1}
+    assert after["cache"]["result_hits"] == 0
+    # The unchanged reference side still hits the facts layer.
+    assert after["cache"]["facts_hits"] == 1
+    assert after["cache"]["facts_misses"] == 1
+
+
+def test_cache_replay_patches_run_specific_paths(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="C")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D")])
+
+    run_compare(paths, jobs=1, output_name="cold", tables=False)
+
+    moved_root = paths.root / "croma-xml-moved"
+    moved_root.mkdir()
+    moved = moved_root / "tune.croma.musicxml"
+    moved.write_bytes(paths.croma_xml("tune").read_bytes())
+    warm = run_compare(
+        paths,
+        jobs=1,
+        output_name="warm",
+        tables=False,
+        croma_xml_root=moved_root,
+    )
+
+    assert warm["cache"]["result_hits"] == 1
+    [per_file_row] = read_jsonl(paths.output / "warm-per-file.jsonl")
+    assert per_file_row["croma_xml_path"] == str(moved)
+
+
+def test_corrupt_cache_db_is_recreated(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="C")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D")])
+    cache_db = paths.output / "cache.sqlite"
+    cache_db.parent.mkdir(parents=True, exist_ok=True)
+    cache_db.write_bytes(b"this is not a sqlite database")
+
+    report = run_compare(paths, jobs=1, tables=False)
+
+    assert report["mismatch_category_counts"] == {"pitch": 1}
+    assert report["cache"]["enabled"] is True
+    assert report["cache"]["result_misses"] == 1
+
+
+def comparable_report(report: dict[str, Any]) -> dict[str, Any]:
+    volatile = {"started_at", "finished_at", "elapsed_seconds", "cache", "tables", "jobs"}
+    return {key: value for key, value in report.items() if key not in volatile}
+
+
 def test_only_files_and_candidate_file_list(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["keep", "skip"])
@@ -233,6 +346,9 @@ def run_compare(
     jobs: int,
     output_name: str | None = None,
     extra: list[str] | None = None,
+    tables: bool = True,
+    no_cache: bool = False,
+    croma_xml_root: Path | None = None,
 ) -> dict[str, Any]:
     prefix = f"{output_name}-" if output_name else ""
     report = paths.output / f"{prefix}report.json"
@@ -242,17 +358,11 @@ def run_compare(
         "--results-jsonl",
         str(paths.results_jsonl),
         "--croma-xml-root",
-        str(paths.croma_root),
+        str(croma_xml_root if croma_xml_root is not None else paths.croma_root),
         "--reference-root",
         str(paths.reference_root),
         "--report",
         str(report),
-        "--facts-jsonl",
-        str(paths.output / f"{prefix}facts.jsonl"),
-        "--comparison-jsonl",
-        str(paths.output / f"{prefix}comparison.jsonl"),
-        "--mismatches-jsonl",
-        str(paths.output / f"{prefix}mismatches.jsonl"),
         "--per-file-summary-jsonl",
         str(paths.output / f"{prefix}per-file.jsonl"),
         "--per-component-summary-jsonl",
@@ -264,6 +374,21 @@ def run_compare(
         "--progress-every",
         "0",
     ]
+    if tables:
+        command.extend(
+            [
+                "--facts-jsonl",
+                str(paths.output / f"{prefix}facts.jsonl"),
+                "--comparison-jsonl",
+                str(paths.output / f"{prefix}comparison.jsonl"),
+                "--mismatches-jsonl",
+                str(paths.output / f"{prefix}mismatches.jsonl"),
+            ]
+        )
+    if no_cache:
+        command.append("--no-cache")
+    else:
+        command.extend(["--cache-db", str(paths.output / "cache.sqlite")])
     if extra:
         command.extend(extra)
     completed = subprocess.run(

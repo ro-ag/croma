@@ -222,6 +222,43 @@ Phase 10-i reference counts were 3086 structural matches, 6849 structural
 mismatches, 3578140 mismatch rows, zero Croma MusicXML import failures, zero
 reference MusicXML import failures, and zero comparison harness issues.
 
+## Comparison Cache
+
+`music21_polars_corpus_compare.py` keeps a content-addressed SQLite cache so
+repeat comparisons skip work whose inputs did not change. It has two layers:
+
+- **facts**: per MusicXML file, keyed by the SHA-256 of the file bytes plus an
+  extractor version. Unchanged files (the whole reference side, plus every
+  Croma export a parser change did not affect) are never re-parsed by music21.
+- **results**: per (croma, reference) pair, keyed by both content hashes, the
+  tool version, the relative path, and the comparison options. Report-only
+  runs replay unchanged pairs without rebuilding fact rows or joining.
+
+The cache defaults to `docs/untracked/cache/compare-cache.sqlite` (override
+with `--cache-db` or `$CROMA_COMPARE_CACHE_DB`, disable with `--no-cache`).
+Versions are derived from the tool sources and the installed music21/polars
+versions, so editing the extractor or comparison code invalidates entries
+automatically; rows unused for 14 days are pruned at the end of each run.
+Cached and uncached runs produce identical reports and tables — the report's
+`cache` block records hits, misses, and the active version keys. Runs that
+write the large facts/comparison/mismatch tables use only the facts layer.
+
+Measured on the full 10k corpus (Apple Silicon, `--jobs 0`): cold ~30 s,
+fully-unchanged rerun ~0.6 s, rerun after a parser fix that changed 448 files
+~2.5 s, component-filtered selector with mismatch tables ~3 s.
+
+The cache file is disposable; delete it (or run with `--no-cache`) if you
+suspect staleness. Inspect or maintain it with:
+
+```sh
+uv run python tools/compare_cache.py stats
+uv run python tools/compare_cache.py invalidate <relative-path.abc>
+uv run python tools/compare_cache.py prune --max-age-days 14
+```
+
+`--jobs` now defaults to `0` (host CPU count minus one); pass `--jobs 1` to
+force the previous serial behavior.
+
 ## Create A Targeted Corpus From Evidence
 
 Use a component-filtered comparison to create a file list and copy the original
