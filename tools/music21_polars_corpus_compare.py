@@ -37,7 +37,20 @@ from music21_compare import (
 )
 
 
-REPORT_SCHEMA = "croma-music21-polars-corpus-compare-v2"
+REPORT_SCHEMA = "croma-music21-polars-corpus-compare-v3"
+
+# v3: fact values live in native typed columns instead of one JSON-encoded
+# string. Exactly one of the value columns is populated per row, selected by
+# `value_kind` (null kind = null value); `value_json` carries only genuinely
+# nested values. `raw_value` is populated only when a raw value distinct from
+# the compared value was captured (diagnostics payload).
+FACT_VALUE_COLUMNS = [
+    "value_kind",
+    "value_str",
+    "value_int",
+    "value_float",
+    "value_json",
+]
 
 FACT_COLUMNS = [
     "relative_path",
@@ -58,7 +71,7 @@ FACT_COLUMNS = [
     "pitch_step",
     "pitch_alter",
     "pitch_octave",
-    "value_text",
+    *FACT_VALUE_COLUMNS,
     "raw_value",
     "source_path",
     "xml_path",
@@ -91,8 +104,8 @@ COMPARISON_COLUMNS = [
     "reference_xml_path",
     "croma_present",
     "reference_present",
-    "croma_value",
-    "reference_value",
+    *[f"croma_{column}" for column in FACT_VALUE_COLUMNS],
+    *[f"reference_{column}" for column in FACT_VALUE_COLUMNS],
     "croma_raw_value",
     "reference_raw_value",
     "extraction_status",
@@ -1365,7 +1378,9 @@ class FactBuilder:
         self.side = side
         self.xml_path = xml_path
         self.component_filter = component_filter
-        self.rows: list[dict[str, Any]] = []
+        # Row tuples in FACT_COLUMNS order; polars builds the frame from
+        # these positionally (orient="row"), which is faster than dicts.
+        self.rows: list[tuple[Any, ...]] = []
 
     def add_global(
         self,
@@ -1399,35 +1414,56 @@ class FactBuilder:
     ) -> None:
         if self.component_filter is not None and component not in self.component_filter:
             return
-        value_text = fast_encode_fact_value(value)
-        raw_text = value_text if raw_value is None else fast_encode_fact_value(raw_value)
-        row = {
-            "relative_path": self.task["relative_path"],
-            "filename": self.task["filename"],
-            "source_side": self.side,
-            "component": component,
-            "field_name": field_name,
-            "part_id": part_id,
-            "part_index": part_index,
-            "measure_number": measure_number,
-            "measure_index": measure_index,
-            "voice": voice,
-            "staff": staff,
-            "event_index": event_index,
-            "alignment_index": alignment_index,
-            "onset": onset,
-            "duration": duration,
-            "pitch_step": pitch_step,
-            "pitch_alter": pitch_alter,
-            "pitch_octave": pitch_octave,
-            "value_text": value_text,
-            "raw_value": raw_text,
-            "source_path": self.task.get("source_path"),
-            "xml_path": str(self.xml_path),
-            "extraction_status": "success",
-            "diagnostic": None,
-        }
-        self.rows.append(row)
+        value_kind, value_str, value_int, value_float, value_json = typed_value(value)
+        raw_text = None if raw_value is None else fast_encode_fact_value(raw_value)
+        self.rows.append(
+            (
+                self.task["relative_path"],
+                self.task["filename"],
+                self.side,
+                component,
+                field_name,
+                part_id,
+                part_index,
+                measure_number,
+                measure_index,
+                voice,
+                staff,
+                event_index,
+                alignment_index,
+                onset,
+                duration,
+                pitch_step,
+                pitch_alter,
+                pitch_octave,
+                value_kind,
+                value_str,
+                value_int,
+                value_float,
+                value_json,
+                raw_text,
+                self.task.get("source_path"),
+                str(self.xml_path),
+                "success",
+                None,  # diagnostic
+                None,  # comparison_key, computed columnar in facts_frame
+            )
+        )
+
+
+def typed_value(value: Any) -> tuple[str | None, str | None, int | None, float | None, str | None]:
+    """Map a fact value onto (value_kind, value_str, value_int, value_float, value_json)."""
+    if value is None:
+        return (None, None, None, None, None)
+    if isinstance(value, bool):
+        return ("bool", None, int(value), None, None)
+    if isinstance(value, int):
+        return ("int", None, value, None, None)
+    if isinstance(value, float):
+        return ("float", None, None, value, None)
+    if isinstance(value, str):
+        return ("str", value, None, None, None)
+    return ("json", None, None, None, fast_encode_fact_value(value))
 
 
 def diagnostic_fact_row(
@@ -1435,34 +1471,26 @@ def diagnostic_fact_row(
     side: str,
     xml_path: Path | None,
     diagnostic: dict[str, Any],
-) -> dict[str, Any]:
-    row = {
-        "relative_path": task["relative_path"],
-        "filename": task["filename"],
-        "source_side": side,
-        "component": "metadata",
-        "field_name": "extraction_status",
-        "part_id": None,
-        "part_index": None,
-        "measure_number": None,
-        "measure_index": None,
-        "voice": None,
-        "staff": None,
-        "event_index": None,
-        "alignment_index": None,
-        "onset": None,
-        "duration": None,
-        "pitch_step": None,
-        "pitch_alter": None,
-        "pitch_octave": None,
-        "value_text": diagnostic["mismatch_category"],
-        "raw_value": encode_fact_value(diagnostic),
-        "source_path": task.get("source_path"),
-        "xml_path": str(xml_path) if xml_path is not None else None,
-        "extraction_status": diagnostic["mismatch_category"],
-        "diagnostic": encode_fact_value(diagnostic),
-    }
-    return row
+) -> tuple[Any, ...]:
+    encoded = encode_fact_value(diagnostic)
+    row = {column: None for column in FACT_COLUMNS}
+    row.update(
+        {
+            "relative_path": task["relative_path"],
+            "filename": task["filename"],
+            "source_side": side,
+            "component": "metadata",
+            "field_name": "extraction_status",
+            "value_kind": "str",
+            "value_str": diagnostic["mismatch_category"],
+            "raw_value": encoded,
+            "source_path": task.get("source_path"),
+            "xml_path": str(xml_path) if xml_path is not None else None,
+            "extraction_status": diagnostic["mismatch_category"],
+            "diagnostic": encoded,
+        }
+    )
+    return tuple(row[column] for column in FACT_COLUMNS)
 
 
 def comparison_key_expr(pl: Any) -> Any:
@@ -1516,48 +1544,37 @@ def failure_comparison_row(
 ) -> dict[str, Any]:
     diagnostic = side_result["diagnostic"]
     category = diagnostic["mismatch_category"]
-    source_side = side
-    row = {
-        "relative_path": task["relative_path"],
-        "filename": task["filename"],
-        "source_side": source_side,
-        "component": "metadata",
-        "field_name": "extraction_status",
-        "part_id": None,
-        "part_index": None,
-        "measure_number": None,
-        "measure_index": None,
-        "voice": None,
-        "staff": None,
-        "event_index": None,
-        "alignment_index": None,
-        "onset": None,
-        "duration": None,
-        "pitch_step": None,
-        "pitch_alter": None,
-        "pitch_octave": None,
-        "source_path": task.get("source_path"),
-        "croma_xml_path": task.get("croma_xml"),
-        "reference_xml_path": task.get("reference_xml"),
-        "croma_present": side == "croma",
-        "reference_present": side == "reference",
-        "croma_value": encode_fact_value(diagnostic) if side == "croma" else None,
-        "reference_value": encode_fact_value(diagnostic) if side == "reference" else None,
-        "croma_raw_value": encode_fact_value(diagnostic) if side == "croma" else None,
-        "reference_raw_value": encode_fact_value(diagnostic) if side == "reference" else None,
-        "extraction_status": category,
-        "diagnostic": encode_fact_value(diagnostic),
-        "matches": False,
-        "mismatch_category": category,
-    }
+    encoded = encode_fact_value(diagnostic)
+    row = {column: None for column in COMPARISON_COLUMNS}
+    row.update(
+        {
+            "relative_path": task["relative_path"],
+            "filename": task["filename"],
+            "source_side": side,
+            "component": "metadata",
+            "field_name": "extraction_status",
+            "source_path": task.get("source_path"),
+            "croma_xml_path": task.get("croma_xml"),
+            "reference_xml_path": task.get("reference_xml"),
+            "croma_present": side == "croma",
+            "reference_present": side == "reference",
+            f"{side}_value_kind": "json",
+            f"{side}_value_json": encoded,
+            f"{side}_raw_value": encoded,
+            "extraction_status": category,
+            "diagnostic": encoded,
+            "matches": False,
+            "mismatch_category": category,
+        }
+    )
     return row
 
 
-def facts_frame(pl: Any, fact_rows: list[dict[str, Any]]) -> Any:
+def facts_frame(pl: Any, fact_rows: list[tuple[Any, ...]]) -> Any:
     if not fact_rows:
         return pl.DataFrame(schema=fact_schema(pl))
     return (
-        pl.DataFrame(fact_rows, schema=fact_schema(pl))
+        pl.DataFrame(fact_rows, schema=fact_schema(pl), orient="row")
         .with_columns(comparison_key_expr(pl))
         .select(FACT_COLUMNS)
     )
@@ -1589,27 +1606,24 @@ def comparison_frame(
             pl.lit(True).alias("reference_present"),
         )
     )
+    def null_safe_eq(column: str) -> Any:
+        croma_column = pl.col(f"croma_{column}")
+        reference_column = pl.col(f"reference_{column}")
+        return (croma_column == reference_column) | (
+            croma_column.is_null() & reference_column.is_null()
+        )
+
+    matches = pl.col("croma_present") & pl.col("reference_present")
+    for value_column in FACT_VALUE_COLUMNS:
+        matches = matches & null_safe_eq(value_column)
+
     joined = (
         croma.join(reference, on="comparison_key", how="full", coalesce=True)
         .with_columns(
             pl.col("croma_present").fill_null(False),
             pl.col("reference_present").fill_null(False),
         )
-        .with_columns(
-            (
-                pl.col("croma_present")
-                & pl.col("reference_present")
-                & (
-                    (pl.col("croma_value_text") == pl.col("reference_value_text"))
-                    | (
-                        pl.col("croma_value_text").is_null()
-                        & pl.col("reference_value_text").is_null()
-                    )
-                )
-            )
-            .fill_null(False)
-            .alias("matches")
-        )
+        .with_columns(matches.fill_null(False).alias("matches"))
     )
     comparison = joined.with_columns(
         pl.lit(task["relative_path"], dtype=pl.String).alias("relative_path"),
@@ -1660,10 +1674,10 @@ def comparison_frame(
         "reference_xml_path",
         "croma_present",
         "reference_present",
-        pl.col("croma_value_text").alias("croma_value"),
-        pl.col("reference_value_text").alias("reference_value"),
-        pl.col("croma_raw_value").alias("croma_raw_value"),
-        pl.col("reference_raw_value").alias("reference_raw_value"),
+        *[f"croma_{column}" for column in FACT_VALUE_COLUMNS],
+        *[f"reference_{column}" for column in FACT_VALUE_COLUMNS],
+        "croma_raw_value",
+        "reference_raw_value",
         "extraction_status",
         "diagnostic",
         "matches",
@@ -1967,10 +1981,26 @@ def example_from_comparison_row(row: dict[str, Any]) -> dict[str, Any]:
         "mismatch_category": row["mismatch_category"],
         "croma_present": row["croma_present"],
         "reference_present": row["reference_present"],
-        "croma": decode_fact_value(row["croma_value"]),
-        "reference": decode_fact_value(row["reference_value"]),
+        "croma": comparison_row_value(row, "croma"),
+        "reference": comparison_row_value(row, "reference"),
         "diagnostic": decode_fact_value(row["diagnostic"]),
     }
+
+
+def comparison_row_value(row: dict[str, Any], side: str) -> Any:
+    """Reassemble the python value from the typed value columns of one side."""
+    kind = row[f"{side}_value_kind"]
+    if kind is None:
+        return None
+    if kind == "str":
+        return row[f"{side}_value_str"]
+    if kind == "int":
+        return row[f"{side}_value_int"]
+    if kind == "bool":
+        return bool(row[f"{side}_value_int"])
+    if kind == "float":
+        return row[f"{side}_value_float"]
+    return decode_fact_value(row[f"{side}_value_json"])
 
 
 def per_file_summary_jsonl_text(
@@ -2244,7 +2274,11 @@ def fact_schema(pl: Any) -> dict[str, Any]:
         "pitch_step": pl.String,
         "pitch_alter": pl.Float64,
         "pitch_octave": pl.Int64,
-        "value_text": pl.String,
+        "value_kind": pl.String,
+        "value_str": pl.String,
+        "value_int": pl.Int64,
+        "value_float": pl.Float64,
+        "value_json": pl.String,
         "raw_value": pl.String,
         "source_path": pl.String,
         "xml_path": pl.String,
@@ -2279,8 +2313,16 @@ def comparison_schema(pl: Any) -> dict[str, Any]:
         "reference_xml_path": pl.String,
         "croma_present": pl.Boolean,
         "reference_present": pl.Boolean,
-        "croma_value": pl.String,
-        "reference_value": pl.String,
+        "croma_value_kind": pl.String,
+        "croma_value_str": pl.String,
+        "croma_value_int": pl.Int64,
+        "croma_value_float": pl.Float64,
+        "croma_value_json": pl.String,
+        "reference_value_kind": pl.String,
+        "reference_value_str": pl.String,
+        "reference_value_int": pl.Int64,
+        "reference_value_float": pl.Float64,
+        "reference_value_json": pl.String,
         "croma_raw_value": pl.String,
         "reference_raw_value": pl.String,
         "extraction_status": pl.String,

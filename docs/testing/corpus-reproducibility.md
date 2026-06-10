@@ -276,23 +276,45 @@ Pass `--log-format text` for the legacy human-oriented lines.
 
 ## Columnar Comparison Notes
 
-The per-file comparison is Polars-columnar end to end: fact values are
-encoded once per row with `orjson` (scalars stay byte-identical to the
-stdlib encoder; containers are compact, e.g. `{"a":1}` — both sides share
-the encoder, so match verdicts are unaffected), the `comparison_key` is
-computed vectorized via `struct.json_encode()` (byte-identical to the
-previous per-row `json.dumps`), and the full join runs on the single
-`comparison_key` column with per-file constants attached as literals.
-Cache payloads are also `orjson`-encoded (plain JSON either way, so blobs
-written by older versions remain readable). Worker processes pin
-`POLARS_MAX_THREADS=1` on purpose: with thousands of small per-file frames,
-process-level parallelism scales better than Polars' internal threads, which
-the parent still uses for the final `scan_ndjson` → `sink_parquet` step.
-Together these cut per-task cost by roughly a quarter (~38 → ~28 ms per
-file pair single-process: value encoding 1.85 → 0.30 ms, row building
-8.6 → 2.7 ms; ~74 → ~61 s elapsed for a full uncached 10k run in a
-same-machine A/B before the orjson step, ~24 s observed after on a quieter
-machine).
+The per-file comparison is Polars-columnar end to end. The `comparison_key`
+is computed vectorized via `struct.json_encode()` (byte-identical to the
+previous per-row `json.dumps`), the full join runs on the single
+`comparison_key` column with per-file constants attached as literals, and
+rows are built as positional tuples (`orient="row"`), not per-row dicts.
+Cache payloads and nested values are `orjson`-encoded (plain JSON either
+way, so blobs written by older versions remain readable). Worker processes
+pin `POLARS_MAX_THREADS=1` on purpose: with thousands of small per-file
+frames, process-level parallelism scales better than Polars' internal
+threads, which the parent still uses for the final `scan_ndjson` →
+`sink_parquet` step. Cumulative effect (single-process profile): row
+building 8.6 → 1.8 ms per file pair, value encoding 1.85 → ~0.1 ms;
+uncached full 10k runs observed at ~23-24 s (~29 s before on an idle
+machine, ~74 → ~61 s in a contended same-machine A/B).
+
+## Fact Table Schema v3 (Typed Values)
+
+Report schema `croma-music21-polars-corpus-compare-v3` stores fact values
+in native typed columns instead of one JSON-encoded string:
+
+- `value_kind`: `str` | `int` | `float` | `bool` | `json`, or null for a
+  null value. Exactly one value column is populated per row.
+- `value_str` / `value_int` / `value_float`: native scalars — no JSON
+  quoting, directly filterable (e.g. `pl.col("value_int") > 4`,
+  `value_str == "he"`).
+- `value_json`: orjson-encoded text for genuinely nested values only
+  (tuplet lists, barline dicts, event payloads). Booleans live in
+  `value_int` with `value_kind == "bool"`.
+- `raw_value`: populated only when a raw value distinct from the compared
+  value was captured (diagnostics payload); previously it mirrored
+  `value_text` on every row.
+
+The comparison/mismatch tables carry the same columns per side
+(`croma_value_kind`, …, `reference_value_json`) replacing the former
+`croma_value`/`reference_value` JSON strings. Match semantics are
+equivalent to v2 — verified by identical full-10k counts and per-category
+totals — and report examples still show decoded plain values. v2 baseline
+*mismatch* files remain usable for `--baseline-mismatches` deltas (counts
+aggregate by `filename`), but v2 and v3 row tables are not column-compatible.
 
 ## Create A Targeted Corpus From Evidence
 

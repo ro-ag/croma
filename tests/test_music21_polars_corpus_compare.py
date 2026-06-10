@@ -91,11 +91,12 @@ def test_columnar_comparison_key_matches_python_json() -> None:
                 "relative_path": "tune.abc",
                 "filename": "tune.abc",
                 "source_side": "croma",
-                "value_text": '"x"',
+                "value_kind": "str",
+                "value_str": "x",
             }
         )
         row.update(key_values)
-        rows.append(row)
+        rows.append(tuple(row[column] for column in FACT_COLUMNS))
 
     frame = facts_frame(pl, rows)
     for computed, key_values in zip(frame["comparison_key"].to_list(), key_values_per_row):
@@ -106,6 +107,47 @@ def test_columnar_comparison_key_matches_python_json() -> None:
             ensure_ascii=False,
         )
         assert computed == expected
+
+
+def test_v3_typed_value_columns_and_explicit_raw_values(tmp_path: Path) -> None:
+    from music21_polars_corpus_compare import typed_value
+
+    assert typed_value(None) == (None, None, None, None, None)
+    assert typed_value(True) == ("bool", None, 1, None, None)
+    assert typed_value(3) == ("int", None, 3, None, None)
+    assert typed_value(2.5) == ("float", None, None, 2.5, None)
+    assert typed_value("C") == ("str", "C", None, None, None)
+    assert typed_value([]) == ("json", None, None, None, "[]")
+
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="C", lyric="la")])
+    write_musicxml(paths.reference_xml("tune"), [note(step="C", lyric="la")])
+
+    report = run_compare(paths, jobs=1, output_name="typed")
+
+    assert report["schema"] == "croma-music21-polars-corpus-compare-v3"
+    assert report["mismatch_category_counts"] == {}
+    facts = {
+        (row["component"], row["field_name"]): row
+        for row in read_jsonl(paths.output / "typed-facts.jsonl")
+        if row["source_side"] == "croma"
+    }
+    dots = facts[("duration", "dots")]
+    assert dots["value_kind"] == "int"
+    assert dots["value_int"] == 0
+    assert dots["value_str"] is None and dots["value_json"] is None
+    step = facts[("pitch", "step")]
+    assert step["value_kind"] == "str"
+    assert step["value_str"] == "C"
+    tuplets = facts[("tuplet", "tuplets")]
+    assert tuplets["value_kind"] == "json"
+    assert tuplets["value_json"] == "[]"
+    alter = facts[("pitch", "alter")]
+    assert alter["value_kind"] is None  # no accidental: null value, null kind
+    # raw_value is populated only when a distinct raw value was captured.
+    assert dots["raw_value"] is None
+    assert facts[("note", "kind")]["raw_value"] is not None
 
 
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
@@ -230,11 +272,9 @@ def test_empty_lyric_extenders_preserve_alignment_slots(tmp_path: Path) -> None:
         for row in read_jsonl(paths.output / "melisma-facts.jsonl")
         if row["component"] == "lyric"
     ]
-    assert [row["value_text"] for row in lyric_rows if row["source_side"] == "croma"] == [
-        "\"time\"",
-        "\"\"",
-        "\"day\"",
-    ]
+    croma_lyrics = [row for row in lyric_rows if row["source_side"] == "croma"]
+    assert [row["value_str"] for row in croma_lyrics] == ["time", "", "day"]
+    assert {row["value_kind"] for row in croma_lyrics} == {"str"}
 
 
 def test_baseline_delta_classification(tmp_path: Path) -> None:
