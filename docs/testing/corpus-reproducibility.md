@@ -259,6 +259,35 @@ uv run python tools/compare_cache.py prune --max-age-days 14
 `--jobs` now defaults to `0` (host CPU count minus one); pass `--jobs 1` to
 force the previous serial behavior.
 
+## Structured Logs
+
+`music21_polars_corpus_compare.py` logs machine-readable JSONL by default so
+agents can parse progress and outcomes without scraping free text:
+
+- stderr: one object per event — `{"event":"start",...}` with the run
+  configuration, then `{"event":"progress","completed":N,"total":M}` lines.
+- stdout: a single final `{"event":"summary",...}` object carrying the report
+  path, the headline counters, `mismatch_category_counts`, and the `cache`
+  hit/miss block (field names match the report JSON keys one to one).
+
+The full structured result remains the `--report` JSON file; the summary event
+is a one-line pointer plus the numbers needed to decide whether to read it.
+Pass `--log-format text` for the legacy human-oriented lines.
+
+## Columnar Comparison Notes
+
+The per-file comparison is Polars-columnar end to end: fact values are
+encoded once per row with a fast scalar path, the `comparison_key` is computed
+vectorized via `struct.json_encode()` (byte-identical to the previous
+per-row `json.dumps`), and the full join runs on the single `comparison_key`
+column with per-file constants attached as literals. Worker processes pin
+`POLARS_MAX_THREADS=1` on purpose: with thousands of small per-file frames,
+process-level parallelism scales better than Polars' internal threads, which
+the parent still uses for the final `scan_ndjson` → `sink_parquet` step.
+Together these cut per-task cost by roughly a fifth (~38 → ~30 ms per file
+pair single-process; ~74 s → ~61 s elapsed for a full uncached 10k run in a
+same-machine A/B).
+
 ## Create A Targeted Corpus From Evidence
 
 Use a component-filtered comparison to create a file list and copy the original

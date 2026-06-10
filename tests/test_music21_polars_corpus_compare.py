@@ -9,6 +9,89 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "tools" / "music21_polars_corpus_compare.py"
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+
+
+def test_fast_encode_matches_reference_encoder() -> None:
+    from music21_compare import encode_fact_value
+    from music21_polars_corpus_compare import fast_encode_fact_value
+
+    values = [
+        None,
+        "",
+        "plain",
+        'quote "inside"',
+        "back\\slash",
+        "tab\tand\nnewline",
+        "control \x01 char",
+        "unicode é 日本 ♭",
+        0,
+        -17,
+        10**20,
+        True,
+        False,
+        2.5,
+        ["list", 1, None],
+        {"nested": {"b": 1, "a": [2, "x"]}},
+    ]
+    for value in values:
+        assert fast_encode_fact_value(value) == encode_fact_value(value), repr(value)
+
+
+def test_columnar_comparison_key_matches_python_json() -> None:
+    from music21_compare import import_polars
+    from music21_polars_corpus_compare import (
+        COMPARISON_KEY_FIELDS,
+        FACT_COLUMNS,
+        facts_frame,
+    )
+
+    pl = import_polars()
+    key_values_per_row = [
+        {
+            "component": "pitch",
+            "field_name": "step",
+            "part_index": 0,
+            "measure_index": 12,
+            "voice": '1"quoted\\v',
+            "staff": "st\taff",
+            "event_index": 3,
+            "alignment_index": 1,
+        },
+        {
+            "component": "lyric",
+            "field_name": "text é日本",
+            "part_index": None,
+            "measure_index": None,
+            "voice": None,
+            "staff": None,
+            "event_index": None,
+            "alignment_index": None,
+        },
+    ]
+    rows = []
+    for key_values in key_values_per_row:
+        row = {column: None for column in FACT_COLUMNS}
+        row.update(
+            {
+                "relative_path": "tune.abc",
+                "filename": "tune.abc",
+                "source_side": "croma",
+                "value_text": '"x"',
+            }
+        )
+        row.update(key_values)
+        rows.append(row)
+
+    frame = facts_frame(pl, rows)
+    for computed, key_values in zip(frame["comparison_key"].to_list(), key_values_per_row):
+        expected = json.dumps(
+            {field: key_values[field] for field in COMPARISON_KEY_FIELDS},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        assert computed == expected
 
 
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
@@ -284,6 +367,57 @@ def comparable_report(report: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in report.items() if key not in volatile}
 
 
+def test_jsonl_logging_is_default_with_start_progress_and_summary(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["pitch_mismatch"])
+    write_musicxml(paths.croma_xml("pitch_mismatch"), [note(step="C")])
+    write_musicxml(paths.reference_xml("pitch_mismatch"), [note(step="D")])
+
+    report, stdout, stderr = run_compare_capture(
+        paths,
+        jobs=1,
+        tables=False,
+        extra=["--progress-every", "1"],
+    )
+
+    events = [
+        json.loads(line)
+        for line in stderr.splitlines()
+        if line.startswith("{")
+    ]
+    starts = [event for event in events if event["event"] == "start"]
+    progress = [event for event in events if event["event"] == "progress"]
+    assert starts and starts[0]["files_selected"] == 1
+    assert starts[0]["cache_enabled"] is True
+    assert progress and progress[-1] == {"completed": 1, "event": "progress", "total": 1}
+
+    summary = json.loads(stdout.splitlines()[-1])
+    assert summary["event"] == "summary"
+    assert summary["report"] == str(paths.output / "report.json")
+    assert summary["mismatch_category_counts"] == {"pitch": 1}
+    assert summary["structural_mismatches"] == 1
+    assert summary["cache"]["enabled"] is True
+    assert summary["elapsed_seconds"] == report["elapsed_seconds"]
+
+
+def test_text_log_format_keeps_legacy_lines(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["match"])
+    write_musicxml(paths.croma_xml("match"), [note(step="E")])
+    write_musicxml(paths.reference_xml("match"), [note(step="E")])
+
+    _, stdout, stderr = run_compare_capture(
+        paths,
+        jobs=1,
+        tables=False,
+        extra=["--log-format", "text", "--progress-every", "1"],
+    )
+
+    assert "processed 1/1" in stderr
+    assert stdout.splitlines()[0].startswith("report: ")
+    assert "structural matches: 1" in stdout
+
+
 def test_only_files_and_candidate_file_list(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["keep", "skip"])
@@ -350,6 +484,28 @@ def run_compare(
     no_cache: bool = False,
     croma_xml_root: Path | None = None,
 ) -> dict[str, Any]:
+    report, _, _ = run_compare_capture(
+        paths,
+        jobs=jobs,
+        output_name=output_name,
+        extra=extra,
+        tables=tables,
+        no_cache=no_cache,
+        croma_xml_root=croma_xml_root,
+    )
+    return report
+
+
+def run_compare_capture(
+    paths: FixturePaths,
+    *,
+    jobs: int,
+    output_name: str | None = None,
+    extra: list[str] | None = None,
+    tables: bool = True,
+    no_cache: bool = False,
+    croma_xml_root: Path | None = None,
+) -> tuple[dict[str, Any], str, str]:
     prefix = f"{output_name}-" if output_name else ""
     report = paths.output / f"{prefix}report.json"
     command = [
@@ -399,7 +555,11 @@ def run_compare(
         check=False,
     )
     assert completed.returncode == 0, completed.stderr + completed.stdout
-    return json.loads(report.read_text(encoding="utf-8"))
+    return (
+        json.loads(report.read_text(encoding="utf-8")),
+        completed.stdout,
+        completed.stderr,
+    )
 
 
 def write_result_set(paths: FixturePaths, stems: list[str]) -> None:

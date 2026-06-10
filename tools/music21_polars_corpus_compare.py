@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -129,6 +130,19 @@ JOIN_KEY_COLUMNS = [
     "comparison_key",
 ]
 
+# Sorted field order so the columnar struct encode below reproduces the
+# python `json.dumps(..., sort_keys=True)` key format byte for byte.
+COMPARISON_KEY_FIELDS = [
+    "alignment_index",
+    "component",
+    "event_index",
+    "field_name",
+    "measure_index",
+    "part_index",
+    "staff",
+    "voice",
+]
+
 SORT_COLUMNS = [
     "relative_path",
     "filename",
@@ -221,6 +235,8 @@ def main() -> int:
 
     all_results = load_results(args.results_jsonl)
     selected_results = select_results(all_results, args)
+
+    print_start(args, len(selected_results), jobs, parent_cache)
 
     started_at = now_utc()
     started = time.monotonic()
@@ -496,7 +512,7 @@ def main() -> int:
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print_summary(args.report, report)
+    print_summary(args, args.report, report)
     if args.strict and strict_failures(report):
         return 2
     return 0
@@ -575,6 +591,16 @@ def parse_args() -> argparse.Namespace:
         "--no-cache",
         action="store_true",
         help="Disable the content-addressed comparison cache.",
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=["jsonl", "text"],
+        default="jsonl",
+        help=(
+            "Log/progress format. `jsonl` (default) emits one machine-readable"
+            " JSON object per event for agent consumption; `text` keeps the"
+            " legacy human-oriented lines."
+        ),
     )
     parser.add_argument(
         "--worker-chunk-size",
@@ -1372,9 +1398,8 @@ class FactBuilder:
     ) -> None:
         if self.component_filter is not None and component not in self.component_filter:
             return
-        raw = value if raw_value is None else raw_value
-        raw_text = encode_fact_value(raw)
-        value_text = encode_fact_value(value)
+        value_text = fast_encode_fact_value(value)
+        raw_text = value_text if raw_value is None else fast_encode_fact_value(raw_value)
         row = {
             "relative_path": self.task["relative_path"],
             "filename": self.task["filename"],
@@ -1401,7 +1426,6 @@ class FactBuilder:
             "extraction_status": "success",
             "diagnostic": None,
         }
-        row["comparison_key"] = comparison_key(row)
         self.rows.append(row)
 
 
@@ -1437,22 +1461,37 @@ def diagnostic_fact_row(
         "extraction_status": diagnostic["mismatch_category"],
         "diagnostic": encode_fact_value(diagnostic),
     }
-    row["comparison_key"] = comparison_key(row)
     return row
 
 
-def comparison_key(row: dict[str, Any]) -> str:
-    key = {
-        "component": row.get("component"),
-        "field_name": row.get("field_name"),
-        "part_index": row.get("part_index"),
-        "measure_index": row.get("measure_index"),
-        "voice": row.get("voice"),
-        "staff": row.get("staff"),
-        "event_index": row.get("event_index"),
-        "alignment_index": row.get("alignment_index"),
-    }
-    return json.dumps(key, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def comparison_key_expr(pl: Any) -> Any:
+    """Columnar equivalent of the former per-row json.dumps comparison key."""
+    return (
+        pl.struct([pl.col(field) for field in COMPARISON_KEY_FIELDS])
+        .struct.json_encode()
+        .alias("comparison_key")
+    )
+
+
+_PLAIN_JSON_STRING = re.compile(r'^[^"\\\x00-\x1f]*$')
+
+
+def fast_encode_fact_value(value: Any) -> str | None:
+    """Byte-identical fast path for music21_compare.encode_fact_value.
+
+    Scalars dominate the ~25M fact values per corpus run; quoting them
+    directly avoids a json.dumps call per value. Anything non-trivial falls
+    back to the original encoder.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and _PLAIN_JSON_STRING.match(value):
+        return f'"{value}"'
+    return encode_fact_value(value)
 
 
 def accidental_to_alter(accidental: Any) -> float | None:
@@ -1514,14 +1553,17 @@ def failure_comparison_row(
         "matches": False,
         "mismatch_category": category,
     }
-    row["comparison_key"] = comparison_key(row)
     return row
 
 
 def facts_frame(pl: Any, fact_rows: list[dict[str, Any]]) -> Any:
     if not fact_rows:
         return pl.DataFrame(schema=fact_schema(pl))
-    return pl.DataFrame(fact_rows, schema=fact_schema(pl)).select(FACT_COLUMNS)
+    return (
+        pl.DataFrame(fact_rows, schema=fact_schema(pl))
+        .with_columns(comparison_key_expr(pl))
+        .select(FACT_COLUMNS)
+    )
 
 
 def comparison_frame(
@@ -1529,30 +1571,29 @@ def comparison_frame(
     facts: Any,
     *,
     sort_rows: bool,
-    task: dict[str, Any] | None = None,
+    task: dict[str, Any],
 ) -> Any:
+    # relative_path and filename are constant within a task, so the join key
+    # is comparison_key alone; the constants are re-attached as literals.
+    value_columns = [column for column in FACT_COLUMNS if column not in JOIN_KEY_COLUMNS]
     croma = (
         facts.filter(pl.col("source_side") == "croma")
         .select(
-            *JOIN_KEY_COLUMNS,
-            *[pl.col(column).alias(f"croma_{column}") for column in FACT_COLUMNS if column not in JOIN_KEY_COLUMNS],
+            "comparison_key",
+            *[pl.col(column).alias(f"croma_{column}") for column in value_columns],
             pl.lit(True).alias("croma_present"),
         )
     )
     reference = (
         facts.filter(pl.col("source_side") == "reference")
         .select(
-            *JOIN_KEY_COLUMNS,
-            *[
-                pl.col(column).alias(f"reference_{column}")
-                for column in FACT_COLUMNS
-                if column not in JOIN_KEY_COLUMNS
-            ],
+            "comparison_key",
+            *[pl.col(column).alias(f"reference_{column}") for column in value_columns],
             pl.lit(True).alias("reference_present"),
         )
     )
     joined = (
-        croma.join(reference, on=JOIN_KEY_COLUMNS, how="full", coalesce=True)
+        croma.join(reference, on="comparison_key", how="full", coalesce=True)
         .with_columns(
             pl.col("croma_present").fill_null(False),
             pl.col("reference_present").fill_null(False),
@@ -1574,6 +1615,8 @@ def comparison_frame(
         )
     )
     comparison = joined.with_columns(
+        pl.lit(task["relative_path"], dtype=pl.String).alias("relative_path"),
+        pl.lit(task["filename"], dtype=pl.String).alias("filename"),
         coalesce_string(pl, "component"),
         coalesce_string(pl, "field_name"),
         coalesce_string(pl, "part_id"),
@@ -1630,12 +1673,11 @@ def comparison_frame(
         "mismatch_category",
         "comparison_key",
     )
-    if task is not None:
-        comparison = comparison.with_columns(
-            pl.col("source_path").fill_null(pl.lit(task.get("source_path"))),
-            pl.col("croma_xml_path").fill_null(pl.lit(task.get("croma_xml"))),
-            pl.col("reference_xml_path").fill_null(pl.lit(task.get("reference_xml"))),
-        )
+    comparison = comparison.with_columns(
+        pl.col("source_path").fill_null(pl.lit(task.get("source_path"))),
+        pl.col("croma_xml_path").fill_null(pl.lit(task.get("croma_xml"))),
+        pl.col("reference_xml_path").fill_null(pl.lit(task.get("reference_xml"))),
+    )
     if sort_rows:
         return comparison.sort(SORT_COLUMNS)
     return comparison
@@ -1742,7 +1784,11 @@ def serialize_task_rows(
 def comparison_rows_frame(pl: Any, rows: list[dict[str, Any]]) -> Any:
     if not rows:
         return pl.DataFrame(schema=comparison_schema(pl))
-    return pl.DataFrame(rows, schema=comparison_schema(pl)).select(COMPARISON_COLUMNS)
+    return (
+        pl.DataFrame(rows, schema=comparison_schema(pl))
+        .with_columns(comparison_key_expr(pl))
+        .select(COMPARISON_COLUMNS)
+    )
 
 
 def serialize_task_frames(
@@ -2347,9 +2393,40 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def emit_event(
+    args: argparse.Namespace,
+    stream: Any,
+    event: str,
+    **fields: Any,
+) -> bool:
+    """Emit one JSONL log event; returns False when text logging is active."""
+    if args.log_format != "jsonl":
+        return False
+    print(
+        json.dumps({"event": event, **fields}, sort_keys=True, ensure_ascii=False),
+        file=stream,
+        flush=True,
+    )
+    return True
+
+
+def print_start(args: argparse.Namespace, files_selected: int, jobs: int, cache: Any) -> None:
+    emit_event(
+        args,
+        sys.stderr,
+        "start",
+        tool="music21_polars_corpus_compare",
+        files_selected=files_selected,
+        jobs=jobs,
+        cache_enabled=cache is not None,
+        report=str(args.report),
+    )
+
+
 def print_progress(args: argparse.Namespace, completed: int, total: int) -> None:
     if args.progress_every and completed % args.progress_every == 0:
-        print(f"processed {completed}/{total}", file=sys.stderr)
+        if not emit_event(args, sys.stderr, "progress", completed=completed, total=total):
+            print(f"processed {completed}/{total}", file=sys.stderr)
 
 
 def strict_failures(report: dict[str, Any]) -> bool:
@@ -2362,7 +2439,27 @@ def strict_failures(report: dict[str, Any]) -> bool:
     )
 
 
-def print_summary(report_path: Path, report: dict[str, Any]) -> None:
+def print_summary(args: argparse.Namespace, report_path: Path, report: dict[str, Any]) -> None:
+    summary_fields = {
+        "report": str(report_path),
+        "files_attempted": report["files_attempted"],
+        "croma_export_successes": report["croma_export_successes"],
+        "croma_export_failures": report["croma_export_failures"],
+        "croma_musicxml_import_failures": report["croma_musicxml_import_failures"],
+        "reference_musicxml_import_failures": report["reference_musicxml_import_failures"],
+        "worker_failures": report["worker_failures"],
+        "comparison_harness_issues": report["comparison_harness_issues"],
+        "structural_matches": report["structural_matches"],
+        "structural_mismatches": report["structural_mismatches"],
+        "fact_rows": report["fact_rows"],
+        "comparison_rows": report["comparison_rows"],
+        "mismatch_rows": report["mismatch_rows"],
+        "mismatch_category_counts": report["mismatch_category_counts"],
+        "cache": report["cache"],
+        "elapsed_seconds": report["elapsed_seconds"],
+    }
+    if emit_event(args, sys.stdout, "summary", **summary_fields):
+        return
     print(f"report: {report_path}")
     print(f"files attempted: {report['files_attempted']}")
     print(f"croma export successes: {report['croma_export_successes']}")
