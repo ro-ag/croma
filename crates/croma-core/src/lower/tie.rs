@@ -47,11 +47,17 @@ impl LoweringState {
         });
     }
 
+    /// Drop a pending tie that found no stop note: undo the accidental carry
+    /// that `reset_measure_accidentals_at_barline` preserved on its behalf and
+    /// emit the unmatched-tie warning.
+    fn drop_unmatched_tie(&mut self, signature: (char, i8), span: Span) {
+        self.drop_pending_tie_carry(signature);
+        self.diagnostics.push(unmatched_tie_warning(span));
+    }
+
     pub(crate) fn finish_pending_tie_at_boundary(&mut self, _span: Span) {
         for tie in std::mem::take(&mut self.pending_ties) {
-            self.drop_pending_tie_carry(tie.signature);
-            self.diagnostics
-                .push(unmatched_tie_warning(tie.marker.span));
+            self.drop_unmatched_tie(tie.signature, tie.marker.span);
         }
     }
 
@@ -95,9 +101,7 @@ impl LoweringState {
             let start_signature = lowered_timed_note(self.lowered.get(tie.event_index))
                 .and_then(|timed| note_signature(timed.event.kind));
             let Some(start_signature) = start_signature else {
-                self.drop_pending_tie_carry(tie.signature);
-                self.diagnostics
-                    .push(unmatched_tie_warning(tie.marker.span));
+                self.drop_unmatched_tie(tie.signature, tie.marker.span);
                 continue;
             };
             debug_assert_eq!(start_signature, tie.signature);
@@ -122,11 +126,7 @@ impl LoweringState {
                     self.attach_tie(next_index, pair_id, TieRole::Stop, tie.marker);
                 }
                 None => {
-                    // Dropped without a stop note: the carry preserved across
-                    // the barline on this tie's behalf must not survive.
-                    self.drop_pending_tie_carry(start_signature);
-                    self.diagnostics
-                        .push(unmatched_tie_warning(tie.marker.span));
+                    self.drop_unmatched_tie(tie.signature, tie.marker.span);
                 }
             }
         }

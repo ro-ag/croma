@@ -1623,14 +1623,7 @@ fn semantic_accidentals_propagate_within_measure_and_reset_at_barline() {
     let (tune, diagnostics) = tune_for(source);
 
     assert!(diagnostics.is_empty());
-    let alters = semantic_note_events(&tune)
-        .into_iter()
-        .map(|event| match &event.kind {
-            TimedEventKind::Note(note) => note.pitch.alter,
-            _ => unreachable!(),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(alters, vec![1, 1, 0]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0]);
     assert!(tune.score.accidental_policy.reset_at_barlines);
 }
 
@@ -2270,6 +2263,8 @@ fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
 
 #[test]
 fn tie_across_barline_with_rewritten_accidental_keeps_carry() {
+    // The stop note re-writes the same sharp; the tie still matches and the
+    // carry persists for the rest of the measure.
     let source = "X:1\nL:1/8\nK:C\n^a- | ^a a\n";
     let (tune, diagnostics) = tune_for(source);
 
