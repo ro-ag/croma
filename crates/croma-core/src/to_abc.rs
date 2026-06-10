@@ -68,7 +68,6 @@ fn tempo_field(score: &Score) -> Option<String> {
 }
 
 fn write_body(score: &Score, unit: Rational) -> String {
-    let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
     // Single default voice: no `V:` header line (the dominant corpus shape).
     let single = score.parts.len() == 1
         && score.parts[0].voices.len() == 1
@@ -80,7 +79,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
             if !single {
                 body.push_str(&voice_header_line(voice));
             }
-            body.push_str(&write_voice(voice, unit, key_fifths));
+            body.push_str(&write_voice(voice, unit));
         }
     }
     body
@@ -164,7 +163,7 @@ fn shifted(pitch: &Pitch, shift: i8) -> Pitch {
     }
 }
 
-fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> String {
+fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
     let mut out = String::new();
     let shift = voice_octave_shift(&voice.properties);
     // Overlay segments (`&`) grouped by the measure they belong to; spliced
@@ -213,11 +212,6 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
             _ => {}
         }
     }
-    // Per-measure accidental state, keyed by (step, written octave), reset at
-    // each barline — mirrors the parser so the writer only adds an explicit
-    // accidental when the note's alter would not otherwise be reproduced.
-    let mut measure_alters: std::collections::HashMap<(char, i8), i8> =
-        std::collections::HashMap::new();
     let mut current_measure: Option<u32> = None;
     let mut measure_event_seen = false;
     for (idx, event) in voice.events.iter().enumerate() {
@@ -232,7 +226,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 && let Some(segments) = overlays.remove(&prev)
             {
                 for segment in segments {
-                    out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+                    out.push_str(&overlay_str(segment, unit, shift));
                 }
             }
             current_measure = Some(m);
@@ -245,7 +239,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
             && let Some(segments) = overlays.remove(&m)
         {
             for segment in segments {
-                out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+                out.push_str(&overlay_str(segment, unit, shift));
             }
         }
         measure_event_seen = true;
@@ -257,19 +251,10 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
         let tuplet = scales[idx];
         match &event.kind {
             TimedEventKind::Note(note) => {
-                let has_tie_stop = event
-                    .attachments
-                    .ties
-                    .iter()
-                    .any(|t| t.role == crate::model::TieRole::Stop);
                 let written = shifted(&note.pitch, shift);
                 out.push_str(&event_prefix(&event.attachments));
                 out.push_str(note_accidental(
-                    &written,
                     note.written_accidental.as_ref().map(|m| m.kind),
-                    has_tie_stop,
-                    key_fifths,
-                    &mut measure_alters,
                 ));
                 out.push_str(&pitch_str(&written));
                 out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
@@ -319,18 +304,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 let uniform = lengths.windows(2).all(|w| w[0] == w[1]);
                 out.push('[');
                 for (member, len) in chord.members.iter().zip(&lengths) {
-                    let member_tie_stop = member
-                        .attachments
-                        .ties
-                        .iter()
-                        .any(|t| t.role == TieRole::Stop);
                     let written = shifted(&member.pitch, shift);
                     out.push_str(note_accidental(
-                        &written,
                         member.written_accidental.as_ref().map(|m| m.kind),
-                        member_tie_stop,
-                        key_fifths,
-                        &mut measure_alters,
                     ));
                     out.push_str(&pitch_str(&written));
                     if !uniform {
@@ -353,7 +329,6 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
                 out.push(' ');
             }
             TimedEventKind::Barline(b) => {
-                measure_alters.clear();
                 out.push_str(joined[idx].unwrap_or_else(|| barline_str(b.kind)));
                 out.push(' ');
             }
@@ -369,7 +344,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> S
     // Flush overlays of the final measure (and any not reached via barlines).
     for (_index, segments) in std::mem::take(&mut overlays) {
         for segment in segments {
-            out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+            out.push_str(&overlay_str(segment, unit, shift));
         }
     }
     let mut body = format!("{}\n", out.trim_end());
@@ -735,18 +710,6 @@ fn barline_str(kind: BarlineKind) -> &'static str {
     }
 }
 
-/// ABC glyph for a concrete alter value.
-fn alter_glyph(alter: i8) -> &'static str {
-    match alter {
-        -2 => "__",
-        -1 => "_",
-        0 => "=",
-        1 => "^",
-        2 => "^^",
-        _ => "",
-    }
-}
-
 /// ABC glyph for an explicitly written accidental.
 fn accidental_glyph(kind: Accidental) -> &'static str {
     match kind {
@@ -758,90 +721,19 @@ fn accidental_glyph(kind: Accidental) -> &'static str {
     }
 }
 
-/// The alter the key signature assigns to `step`, derived from the fifths count
-/// (sharps F C G D A E B; flats B E A D G C F).
-fn key_alter(step: char, fifths: i8) -> i8 {
-    const SHARPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
-    const FLATS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
-    let step = step.to_ascii_uppercase();
-    if fifths > 0
-        && SHARPS
-            .iter()
-            .take((fifths as usize).min(7))
-            .any(|&c| c == step)
-    {
-        1
-    } else if fifths < 0
-        && FLATS
-            .iter()
-            .take(((-fifths) as usize).min(7))
-            .any(|&c| c == step)
-    {
-        -1
-    } else {
-        0
-    }
-}
-
-/// Accidental prefix for a note, updating the per-measure accidental state.
-///
-/// Emits the originally written accidental when present. Otherwise emits an
-/// explicit accidental ONLY when the note's `alter` would not otherwise be
-/// reproduced — i.e. it differs from what the key + measure-carry would yield —
-/// which is a safety net for alters that come from sources the writer can't
-/// re-express (e.g. an accidental carried by a parser-dropped cross-bar tie). A
-/// tie carries the accidental for us, so no explicit glyph is emitted there.
-/// State is keyed by (step, octave), matching the parser's per-octave carry.
-fn note_accidental(
-    pitch: &Pitch,
-    written: Option<Accidental>,
-    has_tie_stop: bool,
-    key_fifths: i8,
-    state: &mut std::collections::HashMap<(char, i8), i8>,
-) -> &'static str {
-    let key = (pitch.step.to_ascii_uppercase(), pitch.octave);
-    let expected = state
-        .get(&key)
-        .copied()
-        .unwrap_or_else(|| key_alter(pitch.step, key_fifths));
-    if let Some(kind) = written {
-        state.insert(key, pitch.alter);
-        return accidental_glyph(kind);
-    }
-    if pitch.alter != expected {
-        state.insert(key, pitch.alter);
-        if has_tie_stop {
-            return "";
-        }
-        return alter_glyph(pitch.alter);
-    }
-    ""
-}
-
-/// Alter value an explicit accidental denotes.
-fn accidental_alter(kind: Accidental) -> i8 {
-    match kind {
-        Accidental::DoubleFlat => -2,
-        Accidental::Flat => -1,
-        Accidental::Natural => 0,
-        Accidental::Sharp => 1,
-        Accidental::DoubleSharp => 2,
-    }
+/// Accidental prefix for a note: the originally written accidental's glyph,
+/// or nothing. Every other alter (key signature, measure carry, tie carry
+/// across barlines) is reproduced by the parser's own accidental propagation
+/// on re-parse, so no synthesized glyph is ever needed.
+fn note_accidental(written: Option<Accidental>) -> &'static str {
+    written.map(accidental_glyph).unwrap_or("")
 }
 
 /// Render one `&` overlay segment: `& ` plus its events, grouping consecutive
 /// same-source chord members into `[...]` (mirroring the semantic lowering).
-/// The parser resets the measure accidental state at `&`, so the safety-net
-/// state starts fresh per segment.
-fn overlay_str(
-    segment: &crate::model::OverlaySegment,
-    unit: Rational,
-    key_fifths: i8,
-    shift: i8,
-) -> String {
+fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8) -> String {
     use crate::model::TimelineEventKind;
     let mut out = String::from("& ");
-    let mut state: std::collections::HashMap<(char, i8), i8> = std::collections::HashMap::new();
     let events = &segment.events;
     let (ov_markers, ov_scales) = overlay_tuplet_layout(events);
     let mut i = 0;
@@ -877,29 +769,20 @@ fn overlay_str(
                         step,
                         octave,
                         accidental,
-                        effective_accidental,
                         ..
                     } = &e.kind
                     else {
                         continue;
                     };
-                    let alter = effective_accidental
-                        .map(accidental_alter)
-                        .unwrap_or_else(|| key_alter(*step, key_fifths));
-                    let has_tie_stop = e.attachments.ties.iter().any(|t| t.role == TieRole::Stop);
                     let written = Pitch {
                         step: *step,
-                        alter,
+                        // `pitch_str` only reads step and octave; the alter is
+                        // re-derived by the parser on re-parse.
+                        alter: 0,
                         octave: *octave - shift,
                         spelling_source: e.span,
                     };
-                    out.push_str(note_accidental(
-                        &written,
-                        *accidental,
-                        has_tie_stop,
-                        key_fifths,
-                        &mut state,
-                    ));
+                    out.push_str(note_accidental(*accidental));
                     out.push_str(&pitch_str(&written));
                     if !chord || !uniform {
                         out.push_str(len);
