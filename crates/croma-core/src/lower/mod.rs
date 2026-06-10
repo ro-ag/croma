@@ -236,9 +236,12 @@ impl MultiVoiceLowering {
         }
         self.meter_duration = meter_duration(&meter.value.kind);
         self.meter = Some(meter.value.clone());
+        // A meter change is NOT a bar line: per ABC 2.1 §11.3
+        // (`%%propagate-accidentals` default `pitch`) an explicit accidental
+        // applies to same-pitch notes until the end of the bar, so the
+        // measure accidental ledger must survive a mid-tune `M:` field.
         for voice in &mut self.voices {
             voice.finish_open_tuplets_at_boundary();
-            voice.reset_measure_accidentals();
         }
     }
 

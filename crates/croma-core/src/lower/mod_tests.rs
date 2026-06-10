@@ -1628,6 +1628,51 @@ fn semantic_accidentals_propagate_within_measure_and_reset_at_barline() {
 }
 
 #[test]
+fn semantic_accidental_carry_persists_across_standalone_meter_change() {
+    // ABC 2.1 §11.3 (`%%propagate-accidentals` default `pitch`): an explicit
+    // accidental applies to same-pitch notes up to the END of the bar. A
+    // mid-tune `M:` field line is not a bar line, so it must not clear the
+    // measure accidental ledger (abc2xml carries the flat through too).
+    let source = "X:1\nL:1/4\nK:C\n_e\nM:3/2\ne\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1]);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_inline_meter_change() {
+    let source = "X:1\nL:1/4\nK:C\n_e [M:3/2] e\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1]);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_same_key_change() {
+    // A mid-tune `K:` field is not a bar line either; even a same-key K:C
+    // restatement must keep the carried flat (ABC 2.1 §11.3, abc2xml parity).
+    let source = "X:1\nL:1/4\nK:C\n_e\nK:C\ne\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1]);
+}
+
+#[test]
+fn semantic_accidental_carry_persists_across_real_key_change() {
+    // K:G alters F (sharp) but says nothing about E, so the explicitly
+    // flattened E keeps its in-bar carry across the key change while the F
+    // after it picks up the new signature.
+    let source = "X:1\nL:1/4\nK:C\n_e\nK:G\ne f\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![-1, -1, 1]);
+}
+
+#[test]
 fn semantic_tuplets_and_broken_rhythm_keep_rational_durations() {
     let source = "X:1\nL:1/8\nK:C\n(3CDE F>G\n";
     let (tune, diagnostics) = tune_for(source);
