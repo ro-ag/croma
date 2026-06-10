@@ -102,6 +102,28 @@ cargo run -p croma-cli -- xml examples/basic.abc
 uv run pytest                 # Python tooling tests, if present
 ```
 
+## Corpus comparison quick facts
+
+Full recipe: [`docs/testing/corpus-reproducibility.md`](docs/testing/corpus-reproducibility.md).
+What agents should know up front about `tools/music21_polars_corpus_compare.py`:
+
+- **It is cheap to re-run.** A content-addressed SQLite cache
+  (`docs/untracked/cache/compare-cache.sqlite`, git-ignored, disposable)
+  makes a full 10k rerun ~0.7 s when nothing changed, ~2-3 s after a parser
+  change, ~23 s cold. Versioning is automatic (tool sources + music21/polars
+  versions), so code edits self-invalidate; pass `--no-cache` if you suspect
+  staleness. Do not skip a full comparison to save time — it costs seconds.
+- **Logs are JSONL by default.** Progress events stream on stderr; stdout
+  ends with one `{"event":"summary",...}` object whose fields mirror the
+  report JSON (report path, counters, `mismatch_category_counts`, cache
+  hits). Parse that line instead of scraping text; `--log-format text`
+  restores the legacy lines.
+- **Tables are schema v3 with typed values.** Filter mismatch/fact tables
+  natively on `value_kind` plus `value_str`/`value_int`/`value_float`
+  (`value_json` only for nested values) — values are not JSON-quoted
+  strings. `--jobs` defaults to auto (CPU count minus one).
+- Cache maintenance: `uv run python tools/compare_cache.py stats|invalidate <file>|prune`.
+
 ## Phase completion criteria
 
 A parser/export phase is done only when:
