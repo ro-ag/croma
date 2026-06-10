@@ -370,15 +370,15 @@ type TupletScales = Vec<Option<(u32, u32)>>;
 /// Tuplet layout: for each event index, the open marker (`Some("(p:q:r")` at the
 /// group's first event) and the ratio that scales that event's notated length.
 ///
-/// Groups are keyed by `pair_id`; the span `r` is `Stop_index - Start_index + 1`,
-/// which naturally folds in any rests *inside* the tuplet (they carry no
-/// attachment). A tuplet LED by a rest has no `Start` event, so its true first
-/// index is unknown — those are excluded by the harness, not emitted here.
+/// Groups are keyed by `pair_id`; the span `r` runs from the first to the last
+/// attached event inclusive. Rests carry tuplet attachments like notes do, so a
+/// rest-led tuplet's first index is its `Start` rest. A pair seen here always
+/// includes its `Start`: tuplets opened inside an overlay are discarded at the
+/// barline (`finish_open_tuplets_at_boundary`) and never reach voice events.
 fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) {
-    use crate::model::TupletRole;
     use std::collections::BTreeMap;
-    // pair_id -> (actual, normal, start_index, stop_index, has_start)
-    let mut groups: BTreeMap<u32, (u32, u32, usize, usize, bool)> = BTreeMap::new();
+    // pair_id -> (actual, normal, start_index, stop_index)
+    let mut groups: BTreeMap<u32, (u32, u32, usize, usize)> = BTreeMap::new();
     for (i, event) in events.iter().enumerate() {
         for tuplet in &event.attachments.tuplets {
             let entry = groups.entry(tuplet.pair_id).or_insert((
@@ -386,27 +386,16 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
                 tuplet.normal_notes,
                 i,
                 i,
-                false,
             ));
             entry.0 = tuplet.actual_notes;
             entry.1 = tuplet.normal_notes;
             entry.2 = entry.2.min(i);
             entry.3 = entry.3.max(i);
-            if tuplet.role == TupletRole::Start {
-                entry.4 = true;
-            }
         }
     }
     let mut markers = vec![None; events.len()];
     let mut scales = vec![None; events.len()];
-    for (_pid, (actual, normal, start, stop, has_start)) in groups {
-        // The span `r` is the event count from Start to Stop inclusive, which
-        // also folds in any rests *inside* the tuplet (they carry no attachment).
-        // A tuplet LED by a rest has no Start event, so its true first index is
-        // unknown — such tunes are excluded by the harness, not emitted here.
-        if !has_start {
-            continue;
-        }
+    for (_pid, (actual, normal, start, stop)) in groups {
         // `r` counts the notes/rests/chords the group covers; an interior
         // spacer consumes no tuplet slot on re-parse and must not inflate it.
         let span = events[start..=stop]
@@ -817,7 +806,8 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
 }
 
 /// Tuplet layout over an overlay segment's events — the same pair-id
-/// reconstruction as `tuplet_layout`, over `VoiceTimedEvent`s.
+/// reconstruction as `tuplet_layout`, over `VoiceTimedEvent`s, plus a
+/// Start-presence guard for pairs that straddle in from the main voice.
 fn overlay_tuplet_layout(
     events: &[crate::model::VoiceTimedEvent],
 ) -> (TupletMarkers, TupletScales) {
@@ -845,6 +835,12 @@ fn overlay_tuplet_layout(
     let mut markers = vec![None; events.len()];
     let mut scales = vec![None; events.len()];
     for (_pid, (actual, normal, start, stop, has_start)) in groups {
+        // Unlike `tuplet_layout`, a pair here can lack its Start: a tuplet
+        // straddling an `&` (`C (3DE & FGA z |`) keeps Start/Continue in the
+        // main voice events and leaves a Stop-only pair in the overlay
+        // segment. Emitting a marker at that Stop would open a bogus tuplet,
+        // so such pairs are skipped (the events still carry their already
+        // tuplet-scaled durations, which round-trip exactly).
         if !has_start {
             continue;
         }
@@ -1236,6 +1232,23 @@ mod tests {
         v
     }
 
+    /// `(is_rest, role)` per tuplet attachment, in event order — ratios alone
+    /// can match even when a role landed on the wrong event (or nowhere).
+    fn tuplet_roles(score: &crate::Score) -> Vec<(bool, crate::model::TupletRole)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    let is_rest = matches!(e.kind, crate::TimedEventKind::Rest(_));
+                    for t in &e.attachments.tuplets {
+                        v.push((is_rest, t.role));
+                    }
+                }
+            }
+        }
+        v
+    }
+
     #[test]
     fn tuplets_roundtrip() {
         for src in [
@@ -1250,8 +1263,63 @@ mod tests {
                 tuplet_ratios(&s2),
                 "tuplets for {src:?} -> {abc:?}"
             );
+            assert_eq!(tuplet_roles(&s1), tuplet_roles(&s2), "roles for {src:?}");
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
+    }
+
+    #[test]
+    fn rest_tuplets_roundtrip() {
+        // Rests carry tuplet roles like notes do, so a rest-led (or rest-closed,
+        // or all-rest) tuplet keeps its marker and span across a round-trip.
+        for src in [
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3zBA F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3BAz F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3zzz F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3:2:3z B A F2 |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3z>BA F2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                tuplet_ratios(&s1),
+                tuplet_ratios(&s2),
+                "tuplets for {src:?} -> {abc:?}"
+            );
+            assert_eq!(
+                tuplet_roles(&s1),
+                tuplet_roles(&s2),
+                "roles for {src:?} -> {abc:?}"
+            );
+            assert_eq!(
+                pitch_seq(&s1),
+                pitch_seq(&s2),
+                "pitches for {src:?} -> {abc:?}"
+            );
+            let durations = |s: &crate::Score| {
+                s.parts[0].voices[0]
+                    .events
+                    .iter()
+                    .filter_map(|e| match e.kind {
+                        crate::TimedEventKind::Note(_) | crate::TimedEventKind::Rest(_) => {
+                            Some(e.duration)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                durations(&s1),
+                durations(&s2),
+                "durations for {src:?} -> {abc:?}"
+            );
+        }
+        // `(3BAz` previously dropped the Stop (it sat on the rest) and emitted a
+        // wrong span of 2; the rest must count, giving `(3:2:3`.
+        let s1 = score_of("X:1\nM:4/4\nL:1/8\nK:C\n(3BAz F2 |\n");
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        assert!(abc.contains("(3:2:3"), "expected (3:2:3 marker in {abc:?}");
     }
 
     fn grace_pitches(score: &crate::Score) -> Vec<(char, i8, i8, bool)> {
