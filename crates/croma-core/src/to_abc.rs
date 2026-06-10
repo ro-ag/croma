@@ -3,9 +3,7 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::TieRole;
-use crate::{
-    Accidental, AccidentalMark, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind,
-};
+use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AbcWriteOptions {}
@@ -15,6 +13,11 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     let mut out = String::new();
     let meta = &score.metadata;
     out.push_str(&format!("X:{}\n", meta.reference.text.trim()));
+    // `%%score` staff-grouping directives; the last voice-bearing one wins on
+    // re-parse, so re-emitting all in order is exact.
+    for directive in &meta.directives {
+        out.push_str(&format!("%%score {}\n", directive.value.text.trim()));
+    }
     if let Some(title) = &meta.title {
         out.push_str(&format!("T:{}\n", title.text.trim()));
     }
@@ -36,6 +39,10 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
         .unwrap_or_else(|| "C".to_string());
     out.push_str(&format!("K:{key_display}\n"));
     out.push_str(&write_body(score, unit));
+    // Post-tune lyrics (`W:`) round-trip to identical <credit> entries.
+    for line in &meta.post_tune_lyrics {
+        out.push_str(&format!("W:{}\n", line.text));
+    }
     if !out.ends_with('\n') {
         out.push('\n');
     }
@@ -61,18 +68,187 @@ fn tempo_field(score: &Score) -> Option<String> {
 }
 
 fn write_body(score: &Score, unit: Rational) -> String {
-    let mut out = String::new();
-    let Some(voice) = score.parts.first().and_then(|p| p.voices.first()) else {
-        return out;
-    };
-    let (markers, scales) = tuplet_layout(&voice.events);
     let key_fifths = score.metadata.key.as_ref().map(|k| k.fifths).unwrap_or(0);
-    // Per-measure accidental state, keyed by (step, octave), reset at each
-    // barline — mirrors the parser so the writer only adds an explicit
+    // Single default voice: no `V:` header line (the dominant corpus shape).
+    let single = score.parts.len() == 1
+        && score.parts[0].voices.len() == 1
+        && score.parts[0].voices[0].id.value == "1"
+        && score.parts[0].voices[0].properties == crate::model::VoicePropertiesModel::default();
+    let mut body = String::new();
+    for part in &score.parts {
+        for voice in &part.voices {
+            if !single {
+                body.push_str(&voice_header_line(voice));
+            }
+            body.push_str(&write_voice(voice, unit, key_fifths));
+        }
+    }
+    body
+}
+
+/// The `V:` header line for a voice: id plus its retained properties in a
+/// fixed canonical order, each echoing the model field under its parser key.
+fn voice_header_line(voice: &crate::model::Voice) -> String {
+    use crate::model::StemDirectionModel;
+    let p = &voice.properties;
+    let mut s = format!("V:{}", voice.id.value);
+    for (key, value) in [
+        ("name", &p.name),
+        ("nm", &p.nm),
+        ("subname", &p.subname),
+        ("snm", &p.snm),
+    ] {
+        if let Some(text) = value {
+            s.push_str(&format!(
+                " {key}=\"{}\"",
+                text.text.replace('\\', "\\\\").replace('"', "\\\"")
+            ));
+        }
+    }
+    if let Some(clef) = &p.clef {
+        s.push_str(&format!(" clef={}", clef.text));
+    }
+    if let Some(stem) = &p.stem {
+        s.push_str(match stem {
+            StemDirectionModel::Up => " stem=up",
+            StemDirectionModel::Down => " stem=down",
+        });
+    }
+    if let Some(octave) = &p.octave {
+        s.push_str(&format!(" octave={}", octave.text));
+    }
+    if let Some(transpose) = &p.transpose {
+        s.push_str(&format!(" transpose={}", transpose.text));
+    }
+    if let Some(middle) = &p.middle {
+        s.push_str(&format!(" middle={}", middle.text));
+    }
+    s.push('\n');
+    s
+}
+
+/// Replicates the parser's written->stored octave shift for a voice's
+/// `clef=` (`±8`/`±15`), `octave=` and `middle=` modifiers. Stored pitches
+/// already carry the shift, so the writer SUBTRACTS it to recover the written
+/// octave (the re-parse re-applies the echoed modifiers).
+fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
+    let mut shift = 0i8;
+    if let Some(clef) = properties.clef.as_ref() {
+        let clef = clef.text.as_str();
+        if clef.contains("-15") {
+            shift -= 2;
+        } else if clef.contains("+15") {
+            shift += 2;
+        } else if clef.contains("-8") {
+            shift -= 1;
+        } else if clef.contains("+8") {
+            shift += 1;
+        }
+    }
+    if let Some(octave) = properties.octave.as_ref()
+        && let Ok(value) = octave.text.trim().parse::<i8>()
+    {
+        shift += value;
+    }
+    if let Some(middle) = properties.middle.as_ref() {
+        shift += crate::lower::voice::middle_octave_shift(middle.text.as_str());
+    }
+    shift
+}
+
+/// A pitch moved back to its written octave for emission.
+fn shifted(pitch: &Pitch, shift: i8) -> Pitch {
+    Pitch {
+        octave: pitch.octave - shift,
+        ..*pitch
+    }
+}
+
+fn write_voice(voice: &crate::model::Voice, unit: Rational, key_fifths: i8) -> String {
+    let mut out = String::new();
+    let shift = voice_octave_shift(&voice.properties);
+    // Overlay segments (`&`) grouped by the measure they belong to; spliced
+    // before that measure's closing barline, in segment order.
+    let mut overlays: std::collections::BTreeMap<u32, Vec<&crate::model::OverlaySegment>> =
+        std::collections::BTreeMap::new();
+    for measure in &voice.measures {
+        for segment in &measure.overlays {
+            overlays
+                .entry(segment.measure_index)
+                .or_default()
+                .push(segment);
+        }
+    }
+    let (markers, scales) = tuplet_layout(&voice.events);
+    // Adjacent barline pairs that lowering splits out of ONE source token must
+    // be re-joined on emission: `||:` -> [Double, RepeatStart] and `[|:` ->
+    // [Initial, RepeatStart]. Both halves of a split token share the SAME
+    // source span — that distinguishes them from a real two-token `|| |:` pair
+    // (different spans), which must stay split or its phantom empty measure
+    // would collapse. Emitting a split pair as two spaced tokens creates a
+    // phantom empty measure when the pair leads the tune.
+    let mut joined: Vec<Option<&'static str>> = vec![None; voice.events.len()];
+    let mut skip = vec![false; voice.events.len()];
+    for i in 0..voice.events.len().saturating_sub(1) {
+        if skip[i] {
+            continue;
+        }
+        let (TimedEventKind::Barline(a), TimedEventKind::Barline(b)) =
+            (&voice.events[i].kind, &voice.events[i + 1].kind)
+        else {
+            continue;
+        };
+        if a.span != b.span {
+            continue;
+        }
+        match (a.kind, b.kind) {
+            (BarlineKind::Double, BarlineKind::RepeatStart) => {
+                joined[i] = Some("||:");
+                skip[i + 1] = true;
+            }
+            (BarlineKind::Initial, BarlineKind::RepeatStart) => {
+                joined[i] = Some("[|:");
+                skip[i + 1] = true;
+            }
+            _ => {}
+        }
+    }
+    // Per-measure accidental state, keyed by (step, written octave), reset at
+    // each barline — mirrors the parser so the writer only adds an explicit
     // accidental when the note's alter would not otherwise be reproduced.
     let mut measure_alters: std::collections::HashMap<(char, i8), i8> =
         std::collections::HashMap::new();
+    let mut current_measure: Option<u32> = None;
+    let mut measure_event_seen = false;
     for (idx, event) in voice.events.iter().enumerate() {
+        if skip[idx] {
+            continue;
+        }
+        // Measure transition without a closing barline: flush that measure's
+        // overlays before anything from the new measure is emitted.
+        let m = event.measure.index;
+        if current_measure != Some(m) {
+            if let Some(prev) = current_measure
+                && let Some(segments) = overlays.remove(&prev)
+            {
+                for segment in segments {
+                    out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+                }
+            }
+            current_measure = Some(m);
+            measure_event_seen = false;
+        }
+        // A barline that is not the very first event of its measure closes it
+        // (even a barline-only measure: `| & ... |`); flush overlays before it.
+        if measure_event_seen
+            && matches!(event.kind, TimedEventKind::Barline(_))
+            && let Some(segments) = overlays.remove(&m)
+        {
+            for segment in segments {
+                out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+            }
+        }
+        measure_event_seen = true;
         // A tuplet marker `(p:q:r` opens before the first note/rest/chord of the
         // group.
         if let Some(marker) = &markers[idx] {
@@ -86,15 +262,16 @@ fn write_body(score: &Score, unit: Rational) -> String {
                     .ties
                     .iter()
                     .any(|t| t.role == crate::model::TieRole::Stop);
+                let written = shifted(&note.pitch, shift);
                 out.push_str(&event_prefix(&event.attachments));
                 out.push_str(note_accidental(
-                    &note.pitch,
-                    note.written_accidental.as_ref(),
+                    &written,
+                    note.written_accidental.as_ref().map(|m| m.kind),
                     has_tie_stop,
                     key_fifths,
                     &mut measure_alters,
                 ));
-                out.push_str(&pitch_str(&note.pitch));
+                out.push_str(&pitch_str(&written));
                 out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
                 out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
@@ -110,11 +287,15 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 out.push(' ');
             }
             TimedEventKind::Chord(chord) => {
-                // Slurs and ties can be recorded on the chord event, on
-                // individual members, or (redundantly) on both. Merge them,
-                // deduping by (pair_id, role), so the surrounding `(`, `)` and
-                // `-` are emitted exactly once per distinct slur/tie.
+                // Slurs can be recorded on the chord event, on individual
+                // members, or (redundantly) on both. Merge them, deduping by
+                // (pair_id, role), so `(`/`)` are emitted exactly once per
+                // distinct slur. Ties are NOT merged: a tie binds a specific
+                // member (`[dg-]` ties only g), so each is emitted inline after
+                // its member. A whole-chord tie (`[CE]2-`) also records ties on
+                // every member, so inline emission reproduces its sound exactly.
                 let mut merged = event.attachments.clone();
+                merged.ties.clear();
                 for member in &chord.members {
                     for slur in &member.attachments.slurs {
                         if !merged
@@ -123,15 +304,6 @@ fn write_body(score: &Score, unit: Rational) -> String {
                             .any(|x| x.pair_id == slur.pair_id && x.role == slur.role)
                         {
                             merged.slurs.push(*slur);
-                        }
-                    }
-                    for tie in &member.attachments.ties {
-                        if !merged
-                            .ties
-                            .iter()
-                            .any(|x| x.pair_id == tie.pair_id && x.role == tie.role)
-                        {
-                            merged.ties.push(*tie);
                         }
                     }
                 }
@@ -151,17 +323,26 @@ fn write_body(score: &Score, unit: Rational) -> String {
                         .attachments
                         .ties
                         .iter()
-                        .any(|t| t.role == crate::model::TieRole::Stop);
+                        .any(|t| t.role == TieRole::Stop);
+                    let written = shifted(&member.pitch, shift);
                     out.push_str(note_accidental(
-                        &member.pitch,
-                        member.written_accidental.as_ref(),
+                        &written,
+                        member.written_accidental.as_ref().map(|m| m.kind),
                         member_tie_stop,
                         key_fifths,
                         &mut measure_alters,
                     ));
-                    out.push_str(&pitch_str(&member.pitch));
+                    out.push_str(&pitch_str(&written));
                     if !uniform {
                         out.push_str(len);
+                    }
+                    if member
+                        .attachments
+                        .ties
+                        .iter()
+                        .any(|t| t.role == TieRole::Start)
+                    {
+                        out.push('-');
                     }
                 }
                 out.push(']');
@@ -173,17 +354,37 @@ fn write_body(score: &Score, unit: Rational) -> String {
             }
             TimedEventKind::Barline(b) => {
                 measure_alters.clear();
-                out.push_str(barline_str(b.kind));
+                out.push_str(joined[idx].unwrap_or_else(|| barline_str(b.kind)));
                 out.push(' ');
             }
             TimedEventKind::RepeatEnding(r) => {
                 out.push_str(&ending_str(r));
                 out.push(' ');
             }
-            _ => {} // Spacer is out of scope
+            TimedEventKind::Spacer => {
+                out.push_str("y ");
+            }
         }
     }
-    format!("{}\n", out.trim_end())
+    // Flush overlays of the final measure (and any not reached via barlines).
+    for (_index, segments) in std::mem::take(&mut overlays) {
+        for segment in segments {
+            out.push_str(&overlay_str(segment, unit, key_fifths, shift));
+        }
+    }
+    let mut body = format!("{}\n", out.trim_end());
+    // Verse lines first, then symbol lines: each group must be internally
+    // adjacent (adjacency drives verse/layer numbering on re-parse), and both
+    // align over the same single block of notes emitted above.
+    for line in lyric_lines(&voice.events) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    for line in symbol_lines(&voice.events) {
+        body.push_str(&line);
+        body.push('\n');
+    }
+    body
 }
 
 /// Per-event tuplet open markers (`Some("(p:q:r")` at each group's first event).
@@ -231,7 +432,17 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
         if !has_start {
             continue;
         }
-        let span = stop - start + 1;
+        // `r` counts the notes/rests/chords the group covers; an interior
+        // spacer consumes no tuplet slot on re-parse and must not inflate it.
+        let span = events[start..=stop]
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    TimedEventKind::Note(_) | TimedEventKind::Rest(_) | TimedEventKind::Chord(_)
+                )
+            })
+            .count();
         markers[start] = Some(format!("({actual}:{normal}:{span}"));
         for slot in scales.iter_mut().take(stop + 1).skip(start) {
             *slot = Some((actual, normal));
@@ -250,16 +461,9 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
-    // Quoted strings: chord symbols (`"Gm"`) and annotations (`"^text"`). The
-    // annotation `text` already carries its placement char, and chord-symbol
-    // text never starts with one, so the parser re-distinguishes them; both
-    // simply re-emit as `"<text>"`.
-    for chord_symbol in &attachments.chord_symbols {
-        out.push_str(&format!("\"{}\"", chord_symbol.text));
-    }
-    for annotation in &attachments.annotations {
-        out.push_str(&format!("\"{}\"", annotation.text));
-    }
+    // Grace groups FIRST: a quoted string written before a grace group is
+    // silently dropped by the parser (`"F"{AB}c` loses the chord symbol;
+    // `{AB}"F"c` keeps it), so the canonical order is `({gf}"F"(!deco!note`.
     for grace in &attachments.grace_groups {
         // A slur recorded on the grace group binds to its first grace note, so
         // its `(` opens before the group (`({gf}` ...).
@@ -268,17 +472,200 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
                 out.push('(');
             }
         }
+        // Grace pitches are stored UNSHIFTED by lowering (the voice octave
+        // shift applies only to main notes and chord members), so they emit
+        // as stored — shifting them here would drift one octave per
+        // round-trip in `clef=±8`/`octave=`/`middle=` voices.
         out.push_str(&grace_str(grace));
     }
+    // Event slur-opens next: a quoted string written before a `(` is also
+    // dropped by the parser (`"G7"(DE)` loses the chord symbol; `("G7"DE)`
+    // keeps it).
     for slur in &attachments.slurs {
         if slur.role == SlurRole::Start {
             out.push('(');
         }
     }
+    // Quoted strings: chord symbols (`"Gm"`) and annotations (`"^text"`). The
+    // annotation `text` already carries its placement char, and chord-symbol
+    // text never starts with one, so the parser re-distinguishes them; both
+    // simply re-emit as `"<text>"`.
+    for chord_symbol in &attachments.chord_symbols {
+        out.push_str(&quoted_str(&chord_symbol.text));
+    }
+    // `s:`-aligned chord symbols re-emit INLINE: the exporter routes both
+    // through the same <harmony> path (inline ones first, aligned ones after),
+    // so inlining them here — after the event's own inline chord symbols —
+    // reproduces the MusicXML byte-for-byte. The other aligned kinds
+    // (Decoration/Annotation/Raw) render differently inline and are re-emitted
+    // as `s:` lines instead (see `symbol_lines`).
+    for symbol in &attachments.symbols {
+        if symbol.kind == crate::model::AlignedSymbolKind::ChordSymbol {
+            out.push_str(&quoted_str(&symbol.text));
+        }
+    }
+    for annotation in &attachments.annotations {
+        out.push_str(&quoted_str(&annotation.text));
+    }
     for deco in &attachments.decorations {
         out.push_str(&decoration_str(&deco.name));
     }
     out
+}
+
+/// A quoted ABC string. The parser stores quoted text in source-escaped form
+/// (an interior quote is kept as `\"`), so the text re-emits verbatim —
+/// escaping again would corrupt it.
+fn quoted_str(text: &str) -> String {
+    format!("\"{text}\"")
+}
+
+/// Reconstructed `w:` lyric lines.
+///
+/// The writer emits the whole tune as ONE music line, so each verse is a single
+/// `w:` line over one alignment block covering every lyric-bearing event
+/// (single notes and chords; rests/spacers/barlines consume no position).
+/// Verse numbers come from line ADJACENCY on re-parse, so verse `k` is line `k`
+/// and gap verses are held with a placeholder all-skip line. Per event: a
+/// Syllable token (plus `-` for each Hyphen attachment, which the parser stores
+/// on the same note), `_` for an Extender, `*` for no lyric. Lines carrying
+/// syllables are padded with `*` to the full block length so re-parsing is
+/// warning-free (an under-filled syllable line warns).
+fn lyric_lines(events: &[crate::TimedEvent]) -> Vec<String> {
+    use crate::model::LyricControl;
+    let alignable: Vec<&crate::TimedEvent> = events
+        .iter()
+        .filter(|e| matches!(e.kind, TimedEventKind::Note(_) | TimedEventKind::Chord(_)))
+        .collect();
+    let total = alignable.len();
+    let mut verses: std::collections::BTreeMap<u32, Vec<Option<String>>> =
+        std::collections::BTreeMap::new();
+    let mut max_verse = 0u32;
+    for (pos, event) in alignable.iter().enumerate() {
+        // Chord lyrics are duplicated onto the first member; read the
+        // event-level copy only.
+        for lyric in &event.attachments.lyrics {
+            max_verse = max_verse.max(lyric.verse);
+            let slot = &mut verses
+                .entry(lyric.verse)
+                .or_insert_with(|| vec![None; total])[pos];
+            match lyric.control {
+                LyricControl::Syllable => slot
+                    .get_or_insert_with(String::new)
+                    .push_str(&lyric_escape(&lyric.text)),
+                LyricControl::Hyphen => slot.get_or_insert_with(String::new).push('-'),
+                LyricControl::Extender => *slot = Some("_".to_string()),
+                // Skip is never stored on a note (a `*` advances without
+                // attaching); defensive no-op.
+                LyricControl::Skip => {}
+            }
+        }
+    }
+    if verses.is_empty() {
+        return Vec::new();
+    }
+    (1..=max_verse)
+        .map(|v| match verses.get(&v) {
+            Some(tokens) => {
+                let body: Vec<String> = tokens
+                    .iter()
+                    .map(|t| match t {
+                        // An orphan-Hyphen slot (hyphens with no syllable) is
+                        // XML-invisible and unencodable; a bare `--` would even
+                        // re-parse as TWO skips and shift every later syllable.
+                        // One `*` keeps the position and drops the orphan.
+                        Some(tok) if tok.chars().all(|c| c == '-') => "*".to_string(),
+                        Some(tok) => tok.clone(),
+                        None => "*".to_string(),
+                    })
+                    .collect();
+                format!("w:{}", body.join(" "))
+            }
+            // A verse with no lyrics anywhere: hold its number with one skip.
+            None => "w:*".to_string(),
+        })
+        .collect()
+}
+
+/// Escape a stored lyric syllable back to `w:` token text: a stored space was
+/// written `~`, and the token metacharacters are backslash-escaped.
+fn lyric_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            // A `+:` continuation line stores its join as a newline inside the
+            // syllable; a raw newline would re-parse as music. Only ASCII
+            // whitespace/control folds into the `~` space form — the parser's
+            // token separators are space/tab only, so Unicode whitespace (e.g.
+            // U+00A0 in mojibake lyrics) is opaque text and passes through.
+            c if c.is_ascii_whitespace() || c.is_ascii_control() => out.push('~'),
+            '\\' | '-' | '*' | '_' | '|' | '~' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Reconstructed `s:` symbol lines for the aligned symbols that cannot be
+/// inlined (Decoration/Annotation/Raw — inline forms render different MusicXML,
+/// e.g. `<notations>` instead of `<direction><words>`; ChordSymbol is inlined
+/// in `event_prefix` instead).
+///
+/// The writer emits the whole tune as ONE music line, so there is a single
+/// alignment block: every single note and chord consumes one `s:` position
+/// (rests/spacers/barlines do not). One `s:` line is emitted per layer, all
+/// adjacent (adjacency is what makes the parser number layers 1, 2, ...), with
+/// `*` padding for empty positions and trailing `*` runs trimmed.
+fn symbol_lines(events: &[crate::TimedEvent]) -> Vec<String> {
+    use crate::model::AlignedSymbolKind;
+    // (layer -> tokens per alignable position)
+    let mut layers: std::collections::BTreeMap<u32, Vec<Option<String>>> =
+        std::collections::BTreeMap::new();
+    let mut position = 0usize;
+    let total: usize = events
+        .iter()
+        .filter(|e| matches!(e.kind, TimedEventKind::Note(_) | TimedEventKind::Chord(_)))
+        .count();
+    for event in events {
+        if !matches!(
+            event.kind,
+            TimedEventKind::Note(_) | TimedEventKind::Chord(_)
+        ) {
+            continue;
+        }
+        // Chord-aligned symbols are duplicated onto the first member; read the
+        // event-level copy only.
+        for symbol in &event.attachments.symbols {
+            let token = match symbol.kind {
+                AlignedSymbolKind::ChordSymbol => continue, // inlined
+                AlignedSymbolKind::Decoration => format!("!{}!", symbol.text),
+                AlignedSymbolKind::Annotation => quoted_str(&symbol.text),
+                AlignedSymbolKind::Raw => symbol.text.clone(),
+            };
+            layers
+                .entry(symbol.layer)
+                .or_insert_with(|| vec![None; total])[position] = Some(token);
+        }
+        position += 1;
+    }
+    layers
+        .into_values()
+        .map(|tokens| {
+            let last = tokens
+                .iter()
+                .rposition(Option::is_some)
+                .map_or(0, |i| i + 1);
+            let body: Vec<String> = tokens[..last]
+                .iter()
+                .map(|t| t.clone().unwrap_or_else(|| "*".to_string()))
+                .collect();
+            format!("s:{}", body.join(" "))
+        })
+        .filter(|line| line != "s:")
+        .collect()
 }
 
 /// Canonical ABC for a decoration. Shorthands and long forms both normalize to
@@ -332,16 +719,19 @@ fn barline_str(kind: BarlineKind) -> &'static str {
         BarlineKind::RepeatStart => "|:",
         BarlineKind::RepeatEnd => ":|",
         BarlineKind::RepeatBoth => "::",
-        // Out of slice-1 scope: emit a plain bar so output still parses, but
-        // note this CHANGES the barline kind (e.g. Dotted -> Regular). Tunes
-        // containing these kinds are excluded from the corpus proof by the
-        // `_FORBIDDEN_BARLINE_RE` filter in `tools/prove_abc_roundtrip.py`; a
-        // future slice that admits them must drop that exclusion and add real
-        // emission here, or the round-trip silently regresses.
-        BarlineKind::Initial
-        | BarlineKind::Dotted
-        | BarlineKind::Invisible
-        | BarlineKind::Liberal => "|",
+        BarlineKind::Dotted => ".|",
+        BarlineKind::Invisible => "[|]",
+        // Initial emits as a plain bar: it never renders a <barline> element
+        // and segments measures exactly like Regular, so `|` is structurally
+        // faithful. The Initial+RepeatStart split pair is re-joined as `[|:`
+        // above.
+        BarlineKind::Initial => "|",
+        // Liberal must re-parse as Liberal: an empty measure between `|` and a
+        // Liberal is preserved, while between two plain `|` it is coalesced
+        // away — so substituting `|` can drop a measure. The original liberal
+        // spelling is not stored; `|||` is the most innocuous spelling that
+        // classifies as Liberal.
+        BarlineKind::Liberal => "|||",
     }
 }
 
@@ -404,7 +794,7 @@ fn key_alter(step: char, fifths: i8) -> i8 {
 /// State is keyed by (step, octave), matching the parser's per-octave carry.
 fn note_accidental(
     pitch: &Pitch,
-    written: Option<&AccidentalMark>,
+    written: Option<Accidental>,
     has_tie_stop: bool,
     key_fifths: i8,
     state: &mut std::collections::HashMap<(char, i8), i8>,
@@ -414,9 +804,9 @@ fn note_accidental(
         .get(&key)
         .copied()
         .unwrap_or_else(|| key_alter(pitch.step, key_fifths));
-    if let Some(mark) = written {
+    if let Some(kind) = written {
         state.insert(key, pitch.alter);
-        return accidental_glyph(mark.kind);
+        return accidental_glyph(kind);
     }
     if pitch.alter != expected {
         state.insert(key, pitch.alter);
@@ -426,6 +816,190 @@ fn note_accidental(
         return alter_glyph(pitch.alter);
     }
     ""
+}
+
+/// Alter value an explicit accidental denotes.
+fn accidental_alter(kind: Accidental) -> i8 {
+    match kind {
+        Accidental::DoubleFlat => -2,
+        Accidental::Flat => -1,
+        Accidental::Natural => 0,
+        Accidental::Sharp => 1,
+        Accidental::DoubleSharp => 2,
+    }
+}
+
+/// Render one `&` overlay segment: `& ` plus its events, grouping consecutive
+/// same-source chord members into `[...]` (mirroring the semantic lowering).
+/// The parser resets the measure accidental state at `&`, so the safety-net
+/// state starts fresh per segment.
+fn overlay_str(
+    segment: &crate::model::OverlaySegment,
+    unit: Rational,
+    key_fifths: i8,
+    shift: i8,
+) -> String {
+    use crate::model::TimelineEventKind;
+    let mut out = String::from("& ");
+    let mut state: std::collections::HashMap<(char, i8), i8> = std::collections::HashMap::new();
+    let events = &segment.events;
+    let (ov_markers, ov_scales) = overlay_tuplet_layout(events);
+    let mut i = 0;
+    while i < events.len() {
+        let event = &events[i];
+        if let Some(marker) = &ov_markers[i] {
+            out.push_str(marker);
+        }
+        let tuplet = ov_scales[i];
+        match &event.kind {
+            TimelineEventKind::Note { .. } => {
+                let mut end = i + 1;
+                while end < events.len() && overlay_same_chord(event, &events[end]) {
+                    end += 1;
+                }
+                let group = &events[i..end];
+                let chord = group.len() > 1;
+                let mut lead = event.attachments.clone();
+                if chord {
+                    lead.ties.clear();
+                }
+                out.push_str(&event_prefix(&lead));
+                let lengths: Vec<String> = group
+                    .iter()
+                    .map(|e| length_str(notated_duration(e.duration, tuplet), unit))
+                    .collect();
+                let uniform = lengths.windows(2).all(|w| w[0] == w[1]);
+                if chord {
+                    out.push('[');
+                }
+                for (e, len) in group.iter().zip(&lengths) {
+                    let TimelineEventKind::Note {
+                        step,
+                        octave,
+                        accidental,
+                        effective_accidental,
+                        ..
+                    } = &e.kind
+                    else {
+                        continue;
+                    };
+                    let alter = effective_accidental
+                        .map(accidental_alter)
+                        .unwrap_or_else(|| key_alter(*step, key_fifths));
+                    let has_tie_stop = e.attachments.ties.iter().any(|t| t.role == TieRole::Stop);
+                    let written = Pitch {
+                        step: *step,
+                        alter,
+                        octave: *octave - shift,
+                        spelling_source: e.span,
+                    };
+                    out.push_str(note_accidental(
+                        &written,
+                        *accidental,
+                        has_tie_stop,
+                        key_fifths,
+                        &mut state,
+                    ));
+                    out.push_str(&pitch_str(&written));
+                    if !chord || !uniform {
+                        out.push_str(len);
+                    }
+                    if chord && e.attachments.ties.iter().any(|t| t.role == TieRole::Start) {
+                        out.push('-');
+                    }
+                }
+                if chord {
+                    out.push(']');
+                    if let Some(len) = lengths.first().filter(|_| uniform) {
+                        out.push_str(len);
+                    }
+                }
+                out.push_str(&event_suffix(&lead));
+                out.push(' ');
+                i = end;
+                continue;
+            }
+            TimelineEventKind::Rest { visibility } => {
+                out.push_str(&event_prefix(&event.attachments));
+                out.push(match visibility {
+                    RestVisibility::Visible => 'z',
+                    RestVisibility::Invisible => 'x',
+                });
+                out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
+                out.push_str(&event_suffix(&event.attachments));
+                out.push(' ');
+            }
+            TimelineEventKind::Spacer => out.push_str("y "),
+            TimelineEventKind::Barline { kind } => {
+                out.push_str(barline_str(*kind));
+                out.push(' ');
+            }
+            TimelineEventKind::VariantEnding { .. } => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Tuplet layout over an overlay segment's events — the same pair-id
+/// reconstruction as `tuplet_layout`, over `VoiceTimedEvent`s.
+fn overlay_tuplet_layout(
+    events: &[crate::model::VoiceTimedEvent],
+) -> (TupletMarkers, TupletScales) {
+    use crate::model::{TimelineEventKind, TupletRole};
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<u32, (u32, u32, usize, usize, bool)> = BTreeMap::new();
+    for (i, event) in events.iter().enumerate() {
+        for tuplet in &event.attachments.tuplets {
+            let entry = groups.entry(tuplet.pair_id).or_insert((
+                tuplet.actual_notes,
+                tuplet.normal_notes,
+                i,
+                i,
+                false,
+            ));
+            entry.0 = tuplet.actual_notes;
+            entry.1 = tuplet.normal_notes;
+            entry.2 = entry.2.min(i);
+            entry.3 = entry.3.max(i);
+            if tuplet.role == TupletRole::Start {
+                entry.4 = true;
+            }
+        }
+    }
+    let mut markers = vec![None; events.len()];
+    let mut scales = vec![None; events.len()];
+    for (_pid, (actual, normal, start, stop, has_start)) in groups {
+        if !has_start {
+            continue;
+        }
+        let span = events[start..=stop]
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
+                )
+            })
+            .count();
+        markers[start] = Some(format!("({actual}:{normal}:{span}"));
+        for slot in scales.iter_mut().take(stop + 1).skip(start) {
+            *slot = Some((actual, normal));
+        }
+    }
+    (markers, scales)
+}
+
+/// True when `next` continues the chord group opened at `first` (same source
+/// token, same onset, flagged as a chord member).
+fn overlay_same_chord(
+    first: &crate::model::VoiceTimedEvent,
+    next: &crate::model::VoiceTimedEvent,
+) -> bool {
+    use crate::model::TimelineEventKind;
+    first.source_order == next.source_order
+        && first.onset == next.onset
+        && matches!(next.kind, TimelineEventKind::Note { chord: true, .. })
 }
 
 /// Pitch letter plus octave marks (middle C = octave 4: `C`=4, `c`=5).
@@ -839,6 +1413,402 @@ mod tests {
                 "grace for {src:?} -> {abc:?}"
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    #[test]
+    fn chord_symbol_after_slur_open_survives() {
+        // `"G7"(DE)` is silently dropped by the parser; the writer must emit
+        // the slur-open first (`("G7"DE)`).
+        let src = "X:1\nL:1/8\nK:C\n(\"G7\"DE) F |\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(
+            text_attachments(&s1),
+            text_attachments(&s2),
+            "chord symbol lost: {abc:?}"
+        );
+        assert!(!text_attachments(&s1).is_empty());
+    }
+
+    #[test]
+    fn chord_symbol_after_grace_survives() {
+        // `"F"{AB}c` is silently dropped by the parser; the writer must emit
+        // the grace group first (`{AB}"F"c`) so the chord symbol survives.
+        let src = "X:1\nL:1/8\nK:C\n{AB}\"F\"c2 d2 |\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(
+            text_attachments(&s1),
+            text_attachments(&s2),
+            "chord symbol lost: {abc:?}"
+        );
+        assert!(!text_attachments(&s1).is_empty());
+    }
+
+    fn member_tie_starts(score: &crate::Score) -> Vec<Vec<bool>> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    if let crate::TimedEventKind::Chord(c) = &e.kind {
+                        v.push(
+                            c.members
+                                .iter()
+                                .map(|m| {
+                                    m.attachments.ties.iter().any(|t| t.role == TieRole::Start)
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn chord_member_ties_stay_per_member() {
+        // `[dg-]` ties only g; the writer must not promote it to a whole-chord
+        // tie (`[dg]-`), which would also tie d.
+        for src in [
+            "X:1\nL:1/8\nK:C\n[dg-]2 [dg]2 |\n",
+            "X:1\nL:1/8\nK:C\n[C-E]2 [CE]2 |\n",
+            "X:1\nL:1/8\nK:C\n[CE]2- [CE]2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                member_tie_starts(&s1),
+                member_tie_starts(&s2),
+                "member ties for {src:?} -> {abc:?}"
+            );
+        }
+    }
+
+    fn harmony_texts(score: &crate::Score) -> Vec<String> {
+        use crate::model::AlignedSymbolKind;
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for c in &e.attachments.chord_symbols {
+                        v.push(c.text.clone());
+                    }
+                    for s in &e.attachments.symbols {
+                        if s.kind == AlignedSymbolKind::ChordSymbol {
+                            v.push(s.text.clone());
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn aligned_chord_symbols_inline_roundtrip() {
+        // `s:`-aligned chord symbols re-emit inline; the <harmony> sequence
+        // (inline + aligned, in exporter order) must survive the round-trip.
+        let src = "X:1\nL:1/4\nK:C\nC \"D7\"D [EG] F |\ns:\"Gm\" * \"C\"\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(
+            harmony_texts(&s1),
+            harmony_texts(&s2),
+            "harmony for {abc:?}"
+        );
+        assert_eq!(harmony_texts(&s1).len(), 3);
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+    }
+
+    fn symbol_tokens(score: &crate::Score) -> Vec<(String, String)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for s in &e.attachments.symbols {
+                        if s.kind != crate::model::AlignedSymbolKind::ChordSymbol {
+                            v.push((format!("{:?}", s.kind), s.text.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn aligned_symbols_reemit_as_symbol_lines() {
+        // Decoration/Annotation/Raw aligned symbols re-emit as s: lines (their
+        // inline forms render different MusicXML), preserving kind + text +
+        // note alignment; layered (adjacent) s: lines round-trip too.
+        for src in [
+            "X:1\nL:1/4\nK:C\nCDEF|\ns:!trill! * \"^slow\" foo\n",
+            "X:1\nL:1/4\nK:C\nCD z EF|\ns:!trill! * !fermata!\ns:* +mordent+\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                symbol_tokens(&s1),
+                symbol_tokens(&s2),
+                "aligned symbols for {src:?} -> {abc:?}"
+            );
+            assert!(!symbol_tokens(&s1).is_empty());
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    fn measure_count(score: &crate::Score) -> u32 {
+        score.parts[0].voices[0]
+            .events
+            .iter()
+            .map(|e| e.measure.index)
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+
+    #[test]
+    fn exotic_barlines_roundtrip() {
+        // Dotted and Invisible keep their kind; Initial and Liberal normalize
+        // to Regular (structurally identical — neither renders a <barline>).
+        for (src, same_kinds) in [
+            ("X:1\nL:1/4\nK:C\nCD .| EF |\n", true),
+            ("X:1\nL:1/4\nK:C\nCD [|] EF |\n", true),
+            ("X:1\nL:1/4\nK:C\n[| CD EF |\n", false),
+            ("X:1\nL:1/4\nK:C\nCD ||| EF |\n", false),
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{abc:?}");
+            assert_eq!(measure_count(&s1), measure_count(&s2), "{abc:?}");
+            if same_kinds {
+                assert_eq!(barline_kinds(&s1), barline_kinds(&s2), "{abc:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_token_barline_pairs_rejoin() {
+        // `||:` lowers to [Double, RepeatStart] sharing one span; emitting the
+        // pair as two spaced tokens would phantom an empty leading measure.
+        for src in [
+            "X:1\nL:1/4\nK:C\n||: CDEF :|\n",
+            "X:1\nL:1/4\nK:C\n[|: CDEF :|\n",
+            "X:1\nL:1/4\nK:C\nCDEF ||: GABc :|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(measure_count(&s1), measure_count(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(barline_kinds(&s1), barline_kinds(&s2), "{src:?} -> {abc:?}");
+        }
+        // A real two-token `|| |:` pair mid-tune has distinct spans and must
+        // NOT be rejoined (its phantom measure is real).
+        let src = "X:1\nL:1/4\nK:C\nCDEF || |: GABc :|\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+        assert_eq!(measure_count(&s1), measure_count(&s2), "{abc:?}");
+    }
+
+    #[test]
+    fn spacers_roundtrip() {
+        // `y` spacers are zero-duration layout events; dropping them collapses
+        // spacer-only measures, so they are emitted. Also inside a tuplet the
+        // explicit `(p:q:r` span counts events, keeping the group intact.
+        for src in [
+            "X:1\nL:1/4\nK:C\nCD y EF | GA y2 BC |\n",
+            "X:1\nM:4/4\nL:1/8\nK:C\n(3CDE y F2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(measure_count(&s1), measure_count(&s2), "{src:?} -> {abc:?}");
+            let spacers = |s: &crate::Score| {
+                s.parts[0].voices[0]
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::TimedEventKind::Spacer))
+                    .count()
+            };
+            assert_eq!(spacers(&s1), spacers(&s2), "{src:?} -> {abc:?}");
+        }
+    }
+
+    fn lyric_tokens(score: &crate::Score) -> Vec<(u32, String, String)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for e in &voice.events {
+                    for l in &e.attachments.lyrics {
+                        v.push((l.verse, format!("{:?}", l.control), l.text.clone()));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn lyrics_roundtrip() {
+        for src in [
+            // syllables, hyphen, extender, skip, '~' space, across barlines
+            "X:1\nL:1/4\nK:C\nCDEF|GAB c|\nw:doe-ray me_ fa * la~la ti\n",
+            // multi-verse adjacency
+            "X:1\nL:1/4\nK:C\nCD EF|\nw:one two three four\nw:uno dos tres cuatro\n",
+            // verse gap (1 and 3) + chord consumes one position + rest skipped
+            "X:1\nL:1/4\nK:C\nC z [EG] F|\nw:a b c\nw:*\nw:x y z\n",
+            // escaped metacharacters in syllables
+            "X:1\nL:1/4\nK:C\nCD|\nw:a\\-b c\\*d\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(
+                lyric_tokens(&s1),
+                lyric_tokens(&s2),
+                "lyrics for {src:?} -> {abc:?}"
+            );
+            assert!(
+                !lyric_tokens(&s1).is_empty(),
+                "fixture has no lyrics: {src:?}"
+            );
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+        }
+    }
+
+    fn voice_shape(score: &crate::Score) -> Vec<(String, Vec<Option<String>>, usize)> {
+        score
+            .parts
+            .iter()
+            .flat_map(|p| {
+                p.voices.iter().map(|v| {
+                    let p = &v.properties;
+                    let texts = vec![
+                        p.name.as_ref().map(|t| t.text.clone()),
+                        p.nm.as_ref().map(|t| t.text.clone()),
+                        p.subname.as_ref().map(|t| t.text.clone()),
+                        p.snm.as_ref().map(|t| t.text.clone()),
+                        p.clef.as_ref().map(|t| t.text.clone()),
+                        p.stem.map(|s| format!("{s:?}")),
+                        p.octave.as_ref().map(|t| t.text.clone()),
+                        p.transpose.as_ref().map(|t| t.text.clone()),
+                        p.middle.as_ref().map(|t| t.text.clone()),
+                    ];
+                    (v.id.value.clone(), texts, v.events.len())
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn multi_voice_roundtrip() {
+        for src in [
+            "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nV:2\nE,F,G,A,|\n",
+            "X:1\nL:1/4\nK:C\nV:T name=\"Tenor\" clef=treble-8\nCDEF|\nV:B clef=bass\nC,D,E,F,|\n",
+            "X:1\nL:1/4\nK:C\nV:1 octave=-1\nCDEF|\nV:2 octave=1\nGABc|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(voice_shape(&s1), voice_shape(&s2), "{src:?} -> {abc:?}");
+        }
+    }
+
+    fn overlay_pitches(score: &crate::Score) -> Vec<(u32, char, i8)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for m in &voice.measures {
+                    for seg in &m.overlays {
+                        for e in &seg.events {
+                            if let crate::model::TimelineEventKind::Note { step, octave, .. } =
+                                e.kind
+                            {
+                                v.push((seg.measure_index, step, octave));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn overlays_roundtrip() {
+        for src in [
+            "X:1\nL:1/4\nK:C\nC2 E2 & G,2 B,2 |\n",
+            "X:1\nL:1/4\nK:C\nCDEF | G2 A2 & B,2 C2 | E4 |\n",
+            "X:1\nL:1/4\nK:C\nC2 E2 & G,2 B,2 & E,2 F,2 |\n",
+        ] {
+            let s1 = score_of(src);
+            let abc = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc);
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc:?}");
+            assert_eq!(
+                overlay_pitches(&s1),
+                overlay_pitches(&s2),
+                "{src:?} -> {abc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_regressions_roundtrip() {
+        // Repros from the adversarial review: each must round-trip with an
+        // identical structural shape AND be write-idempotent.
+        for src in [
+            // C1: grace pitches are stored unshifted in octave-shifted voices
+            "X:1\nL:1/4\nK:C\nV:1 clef=treble-8\n{fg}A B C D|\n",
+            "X:1\nL:1/4\nK:C\nV:1 middle=d\n{fg}A B C D|\n",
+            // I1: `+:` continuation joins with a newline inside the syllable
+            "X:1\nL:1/4\nK:C\nCDEF|\nw:a b\n+:c d\n",
+            // I2a: spacer inside a tuplet consumes no tuplet slot
+            "X:1\nM:4/4\nL:1/8\nK:C\nC (3D y E F|\n",
+            // I2b: tuplet inside an overlay segment
+            "X:1\nL:1/4\nK:C\nC2 E2 & (3G,B,D G,2|\n",
+            // I3: overlay in a measure with no primary-voice content
+            "X:1\nL:1/4\nK:C\n| & CDEF|\n",
+            // I4: backslash in a quoted voice property
+            "X:1\nL:1/4\nK:C\nV:1 name=\"a\\\\b\"\nCDEF|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc1 = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc1);
+            let abc2 = write_abc(&s2, AbcWriteOptions::default());
+            assert_eq!(abc1, abc2, "not idempotent for {src:?}");
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc1:?}");
+            assert_eq!(
+                measure_count(&s1),
+                measure_count(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+            assert_eq!(
+                grace_pitches(&s1),
+                grace_pitches(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+            assert_eq!(
+                tuplet_ratios(&s1),
+                tuplet_ratios(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+            assert_eq!(
+                overlay_pitches(&s1),
+                overlay_pitches(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+            assert_eq!(voice_shape(&s1), voice_shape(&s2), "{src:?} -> {abc1:?}");
         }
     }
 
