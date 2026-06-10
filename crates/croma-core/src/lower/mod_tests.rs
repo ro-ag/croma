@@ -1546,6 +1546,16 @@ fn semantic_note_events(tune: &crate::model::Tune) -> Vec<&TimedEvent> {
         .collect()
 }
 
+fn semantic_note_alters(tune: &crate::model::Tune) -> Vec<i8> {
+    semantic_note_events(tune)
+        .into_iter()
+        .map(|event| match &event.kind {
+            TimedEventKind::Note(note) => note.pitch.alter,
+            _ => unreachable!(),
+        })
+        .collect()
+}
+
 #[test]
 fn semantic_score_marks_pickup_and_keeps_fixed_measure_numbers() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC|D E F G|A B c d|\n";
@@ -2109,6 +2119,187 @@ fn ties_resolve_across_barlines_without_changing_measure_timing() {
     );
     assert!(measures[0].pickup);
     assert!(measures[1].complete);
+}
+
+#[test]
+fn dropped_tie_does_not_leak_accidental_across_barline() {
+    // The tie on `^a-` finds no matching stop note (`b` mismatches) and is
+    // dropped; the accidental carry preserved across the barline on the tie's
+    // behalf must be undone with it, so the measure-2 `a`s stay natural.
+    let source = "X:1\nL:1/8\nK:C\n^a- | b a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 0, 0]);
+    let notes = semantic_note_events(&tune);
+    assert!(notes.iter().all(|event| event.attachments.ties.is_empty()));
+}
+
+#[test]
+fn dropped_tie_at_rest_does_not_leak_accidental_across_barline() {
+    // The pending tie is dropped when the rest arrives; the barline-preserved
+    // accidental carry must be dropped with it.
+    let source = "X:1\nL:1/8\nK:C\n^a- | z a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0]);
+}
+
+#[test]
+fn chord_tie_partial_drop_keeps_matched_tie_and_drops_leaked_accidental() {
+    // The C tie matches the next `c`; the A tie is dropped in the same drain.
+    // The dropped A tie must not leak its sharp onto the trailing `a`, while
+    // the matched C tie stays intact.
+    let source = "X:1\nL:1/8\nK:C\n[^ac]- | c a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    let chord = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some(chord),
+            _ => None,
+        })
+        .expect("expected chord");
+    assert_eq!(
+        chord
+            .members
+            .iter()
+            .map(|member| (member.pitch.step, member.pitch.alter))
+            .collect::<Vec<_>>(),
+        vec![('A', 1), ('C', 0)]
+    );
+    // The A tie is dropped (no matching stop note); the C tie survives.
+    assert!(chord.members[0].attachments.ties.is_empty());
+    assert_eq!(chord.members[1].attachments.ties.len(), 1);
+    assert_eq!(chord.members[1].attachments.ties[0].role, TieRole::Start);
+
+    // Measure 2: the tie-stop `c` and the trailing `a`, which must NOT
+    // inherit the dropped A tie's sharp.
+    assert_eq!(semantic_note_alters(&tune), vec![0, 0]);
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0].attachments.ties.len(), 1);
+    assert_eq!(notes[0].attachments.ties[0].role, TieRole::Stop);
+    assert_eq!(
+        notes[0].attachments.ties[0].pair_id,
+        chord.members[1].attachments.ties[0].pair_id
+    );
+    assert!(notes[1].attachments.ties.is_empty());
+}
+
+#[test]
+fn rewritten_accidental_after_dropped_tie_carries_within_measure() {
+    // After the dropped tie's leaked carry is undone, a freshly written `^a`
+    // in measure 2 must still propagate to the rest of that measure.
+    let source = "X:1\nL:1/8\nK:C\n^a- | b ^a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 1, 1]);
+}
+
+#[test]
+fn tie_across_barline_preserves_accidental_carry() {
+    // Legit cross-bar tie: the stop note keeps the start note's sharp.
+    let source = "X:1\nL:1/8\nK:C\n^a- | a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1]);
+    let notes = semantic_note_events(&tune);
+    assert_eq!(
+        notes
+            .iter()
+            .map(|event| event.attachments.ties.first().map(|tie| tie.role))
+            .collect::<Vec<_>>(),
+        vec![Some(TieRole::Start), Some(TieRole::Stop)]
+    );
+    assert_eq!(
+        notes[0].attachments.ties[0].pair_id,
+        notes[1].attachments.ties[0].pair_id
+    );
+}
+
+#[test]
+fn same_measure_dropped_tie_keeps_written_accidental_carry() {
+    // A tie dropped within the measure must not cancel the carry that comes
+    // from the WRITTEN accidental itself: `^a-b a` stays A#, B, A#.
+    let source = "X:1\nL:1/8\nK:C\n^a-b a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 1]);
+}
+
+#[test]
+fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
+    // A matched cross-bar tie carries the sharp onto the stop note, and the
+    // carried accidental persists for the rest of the stop note's measure.
+    let source = "X:1\nL:1/8\nK:C\n^a- | a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn tie_across_barline_with_rewritten_accidental_keeps_carry() {
+    let source = "X:1\nL:1/8\nK:C\n^a- | ^a a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn tie_across_double_barline_preserves_accidental_carry() {
+    let source = "X:1\nL:1/8\nK:C\n^a- || a\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1]);
+    let notes = semantic_note_events(&tune);
+    assert_eq!(
+        notes
+            .iter()
+            .map(|event| event.attachments.ties.first().map(|tie| tie.role))
+            .collect::<Vec<_>>(),
+        vec![Some(TieRole::Start), Some(TieRole::Stop)]
+    );
 }
 
 #[test]
