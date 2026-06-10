@@ -327,6 +327,20 @@ impl MultiVoiceLowering {
                     self.apply_inline_key_clef_properties(&key);
                 }
             }
+            'I' => {
+                // `[I:...]` instructions are typeset/display directives (e.g.
+                // abcm2ps `[I:setbarnb ...]`, `[I:tuplets ...]`) that do not
+                // change how music lowers; abc2xml skips them too. Dropped,
+                // but with a diagnostic — mirroring the header-line `I:` path.
+                let directive = inline
+                    .value
+                    .value
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default();
+                self.diagnostics
+                    .push(inline_instruction_ignored_warning(directive, inline.span));
+            }
             _ => {}
         }
     }

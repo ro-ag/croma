@@ -1349,6 +1349,37 @@ fn key_field_octave_property_shifts_single_voice() {
 }
 
 #[test]
+fn oversized_octave_and_clef_shifts_clamp_instead_of_panicking() {
+    // `V:1 clef=treble+15 octave=125` used to overflow the per-note i8
+    // base+shift addition (debug panic). The shift now clamps: the +15
+    // suffix gives +2, `octave=125` clamps to +9 (abc2xml's effective
+    // single-digit domain), total +11, so C (octave 4) lands at octave 15.
+    let export = export_musicxml("X:1\nL:1/4\nK:C\nV:1 clef=treble+15 octave=125\nC2 C2|\n")
+        .expect("oversized voice shifts should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export.musicxml.contains("<octave>15</octave>"),
+        "clef +15 (+2) and octave=125 (clamped +9) should shift C to octave 15"
+    );
+
+    // `octave=99999` (outside i8, previously silently ignored) clamps to +9,
+    // also via the `K:` clef-property merge path: C octave 4 -> 13.
+    let export = export_musicxml("X:1\nL:1/4\nK:C octave=99999\nC2 C2|\n")
+        .expect("oversized K: octave should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export.musicxml.contains("<octave>13</octave>"),
+        "octave=99999 on K: should clamp to +9 and shift C to octave 13"
+    );
+
+    // A long octave-mark run no longer overflows the i8 mark sum.
+    let marks = ",".repeat(200);
+    let source = format!("X:1\nL:1/4\nK:C\nC{marks}DEF|\n");
+    let export = export_musicxml(&source).expect("long octave-mark run should export");
+    assert_balanced_xml(&export.musicxml);
+}
+
+#[test]
 fn key_field_clef_shorthand_scopes_to_current_voice_only() {
     // `K:C treble+8` / `K:C treble-8` appearing after a `V:n` switch scope to the
     // voice currently in scope only (abc2xml semantics), and must NOT leak into

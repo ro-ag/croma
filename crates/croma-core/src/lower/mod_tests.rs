@@ -2604,6 +2604,38 @@ fn malformed_repeat_ending_keeps_barline_timing_intact() {
 }
 
 #[test]
+fn inline_instruction_field_warns_and_changes_nothing() {
+    // `[I:tuplets 1 0 0]` is an abcm2ps DISPLAY directive: it cannot change
+    // how `(3CDE` parses (abc2xml skips it too). Lowering drops it but must
+    // say so — previously the `_ => {}` arm swallowed it silently — and the
+    // music on either side must lower identically.
+    let source = "X:1\nL:1/8\nK:C\n(3CDE [I:tuplets 1 0 0](3CDE|\n";
+    let document = parse_document(source, ParseOptions::default());
+    let report = parse_tune_report_from_document(&document.value);
+    let tune = report.value.expect("expected tune");
+
+    assert_eq!(
+        diagnostic_span(source, &report.diagnostics, "abc.field.inline_ignored"),
+        "[I:tuplets 1 0 0]"
+    );
+    let notes = tune
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Note {
+                step,
+                octave,
+                duration,
+                ..
+            } => Some((*step, *octave, *duration)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 6);
+    assert_eq!(notes[..3], notes[3..], "music differs across the inline I:");
+}
+
+#[test]
 fn unsupported_directive_is_metadata_not_music() {
     let source = "X:1\nK:C\n%%foo bar\nC D|\n";
     let (tune, diagnostics) = tune_for(source);

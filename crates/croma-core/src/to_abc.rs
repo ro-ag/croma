@@ -130,8 +130,12 @@ fn voice_header_line(voice: &crate::model::Voice) -> String {
 /// `clef=` (`±8`/`±15`), `octave=` and `middle=` modifiers. Stored pitches
 /// already carry the shift, so the writer SUBTRACTS it to recover the written
 /// octave (the re-parse re-applies the echoed modifiers).
+///
+/// MUST stay value-for-value identical to `lower::voice::voice_octave_shift`
+/// (same clamps: `octave=` to ±9, total to ±12) or every `octave=`/`clef±`
+/// voice breaks round-trip.
 fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
-    let mut shift = 0i8;
+    let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
         let clef = clef.text.as_str();
         if clef.contains("-15") {
@@ -145,20 +149,24 @@ fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
         }
     }
     if let Some(octave) = properties.octave.as_ref()
-        && let Ok(value) = octave.text.trim().parse::<i8>()
+        && let Ok(value) = octave.text.trim().parse::<i64>()
     {
-        shift += value;
+        shift += value.clamp(-9, 9) as i32;
     }
     if let Some(middle) = properties.middle.as_ref() {
-        shift += crate::lower::voice::middle_octave_shift(middle.text.as_str());
+        shift += i32::from(crate::lower::voice::middle_octave_shift(
+            middle.text.as_str(),
+        ));
     }
-    shift
+    shift.clamp(-12, 12) as i8
 }
 
-/// A pitch moved back to its written octave for emission.
+/// A pitch moved back to its written octave for emission. Saturating, like
+/// the lowering-side addition, so a boundary-saturated stored octave cannot
+/// overflow back out of i8.
 fn shifted(pitch: &Pitch, shift: i8) -> Pitch {
     Pitch {
-        octave: pitch.octave - shift,
+        octave: pitch.octave.saturating_sub(shift),
         ..*pitch
     }
 }
@@ -1658,6 +1666,10 @@ mod tests {
             "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nV:2\nE,F,G,A,|\n",
             "X:1\nL:1/4\nK:C\nV:T name=\"Tenor\" clef=treble-8\nCDEF|\nV:B clef=bass\nC,D,E,F,|\n",
             "X:1\nL:1/4\nK:C\nV:1 octave=-1\nCDEF|\nV:2 octave=1\nGABc|\n",
+            // Oversized modifiers clamp (octave=99999 -> +9, treble+15
+            // octave=125 -> +11) and must clamp IDENTICALLY in lowering and
+            // in the writer's mirrored shift, or pitches drift per pass.
+            "X:1\nL:1/4\nK:C\nV:1 octave=99999\nCDEF|\nV:2 clef=treble+15 octave=125\nGABc|\n",
         ] {
             let s1 = score_of(src);
             let abc = write_abc(&s1, AbcWriteOptions::default());

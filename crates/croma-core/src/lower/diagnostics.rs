@@ -135,6 +135,19 @@ pub(crate) fn unsupported_complex_meter_warning(span: Span) -> Diagnostic {
     ))
 }
 
+pub(crate) fn inline_instruction_ignored_warning(directive: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.field.inline_ignored",
+        format!("Inline I: instruction `{directive}` was ignored"),
+        span,
+    )
+    .with_spec_reference(abc_field_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The instruction field was preserved but did not change lowering state.",
+    ))
+}
+
 pub(crate) fn invalid_key_change_warning(span: Span) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,

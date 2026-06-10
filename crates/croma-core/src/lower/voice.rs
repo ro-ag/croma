@@ -167,7 +167,7 @@ impl LoweringState {
         line_index: usize,
         source_order: u32,
     ) {
-        let octave = lowered_octave(note) + voice_octave_shift(&self.properties);
+        let octave = lowered_octave(note).saturating_add(voice_octave_shift(&self.properties));
         let written_accidental = note.accidental.map(|accidental| accidental.sign);
         let (effective_accidental, accidental_source) = self.effective_accidental(
             note.pitch.step,
@@ -264,7 +264,8 @@ impl LoweringState {
             .iter()
             .enumerate()
             .map(|(index, member)| {
-                let octave = lowered_octave(&member.note) + voice_octave_shift(&self.properties);
+                let octave = lowered_octave(&member.note)
+                    .saturating_add(voice_octave_shift(&self.properties));
                 let written_accidental = member.note.accidental.map(|accidental| accidental.sign);
                 let (effective_accidental, accidental_source) = self.effective_accidental(
                     member.note.pitch.step,
@@ -737,11 +738,13 @@ fn grace_note_event_model(note: &NoteSyntax) -> GraceNoteEvent {
 }
 
 fn lowered_octave(note: &NoteSyntax) -> i8 {
-    let base_octave = if note.pitch.step.is_ascii_lowercase() {
+    let base_octave: i32 = if note.pitch.step.is_ascii_lowercase() {
         5
     } else {
         4
     };
+    // Sum in i32 and clamp: an absurd run of `,`/`'` marks must not overflow
+    // the i8 octave (debug panic) — the result saturates at the type bounds.
     let adjustment = note
         .octave_marks
         .iter()
@@ -749,8 +752,8 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
             OctaveMark::Lower => -1,
             OctaveMark::Raise => 1,
         })
-        .sum::<i8>();
-    base_octave + adjustment
+        .sum::<i32>();
+    (base_octave + adjustment).clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8
 }
 
 /// Octave displacement declared by a voice's clef octave suffix
@@ -759,8 +762,17 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
 /// staff line and so shifts the written→sounding octave). abc2xml writes the
 /// note octaves shifted by the total amount (and marks the clef with a matching
 /// `clef-octave-change` for the clef suffix part).
+///
+/// Oversized inputs clamp instead of overflowing: `octave=` clamps to ±9
+/// (abc2xml's effective single-digit domain; malformed values stay ignored)
+/// and the combined total clamps to ±12, keeping the later per-note
+/// base+shift addition inside i8.
+///
+/// MUST stay value-for-value identical to the writer's mirrored copy in
+/// `to_abc.rs` (which SUBTRACTS this shift to recover written octaves) or
+/// every `octave=`/`clef±` voice breaks round-trip.
 fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
-    let mut shift = 0;
+    let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
         let clef = clef.text.as_str();
         if clef.contains("-15") {
@@ -774,14 +786,14 @@ fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
         }
     }
     if let Some(octave) = properties.octave.as_ref()
-        && let Ok(value) = octave.text.trim().parse::<i8>()
+        && let Ok(value) = octave.text.trim().parse::<i64>()
     {
-        shift += value;
+        shift += value.clamp(-9, 9) as i32;
     }
     if let Some(middle) = properties.middle.as_ref() {
-        shift += middle_octave_shift(middle.text.as_str());
+        shift += i32::from(middle_octave_shift(middle.text.as_str()));
     }
-    shift
+    shift.clamp(-12, 12) as i8
 }
 
 /// Octave shift declared by a `middle=<pitch>` clef modifier, replicating
