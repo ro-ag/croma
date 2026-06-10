@@ -56,9 +56,13 @@ _INLINE_KEY_RE = re.compile(r"\[K:")
 # A slur that wraps only a grace group with no main note (`({Bc})`): the grace
 # close is immediately followed by the slur close. Degenerate; out of scope.
 _BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
-# A tuplet led by a rest (optionally behind a slur-open, `(3(z..`) has no Start
-# event, so the writer cannot place the opening marker. Out of scope.
-_REST_LED_TUPLET_RE = re.compile(r"\(\d[:\d]*\(*[zx]")
+# A tuplet led by a rest has no Start event, so the writer cannot place the
+# opening marker. Out of scope. The rest may hide behind slur-opens, spaces,
+# grace groups, decorations or quoted strings (`(3(z`, `(3 z`, `(3{a}z`,
+# `(3"C"z`, `(3!trill!z`).
+_REST_LED_TUPLET_RE = re.compile(
+    r"\(\d[:\d]*(?:\s|\(|\{[^}]*\}|\"[^\"]*\"|![^!\n]*!)*[zx]"
+)
 # Inline `[I:tuplets ...]` directives change how later tuplets parse; out of
 # scope. (Other `[I:` fields, e.g. the display-only `[I:setbarnb`, are fine —
 # they alter nothing the projection sees.)

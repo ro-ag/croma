@@ -76,6 +76,17 @@ in-scope with 0 structural diffs, and must not regress the proven set
     dropped from MusicXML. If fixed, the writer's hyphen emission is already
     faithful and the projection's lyric tuple should grow a syllabic field.
 
+11. **Octave-shift arithmetic overflow panic** (pre-existing): `V:1
+    clef=treble+15 octave=125` panics `attempt to add with overflow` at
+    `lower/voice.rs:170` (debug build) in both `croma xml` and
+    `croma dump abc`. Clamp/saturate the combined shift.
+
+12. **`+:` continuation lines join with a raw newline** inside the stored
+    lyric syllable (`w:a b` + `+:c d` → syllable `"b\nc"`). Questionable
+    tokenization; the writer folds the newline into `~` (a space) when
+    re-emitting, so the MusicXML `<text>` differs (newline vs space) for such
+    tunes. Consider joining with a space at parse time.
+
 ## Notes
 
 - The octave=/clef±8/middle= written→stored pitch shift is *not* a bug — the
