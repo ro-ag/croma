@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::{
-    Accidental, AlignedSymbolKind, LyricControl, RestVisibility, TieRole, TimedEvent,
-    TimedEventKind,
+    Accidental, AlignedSymbolKind, LyricControl, RestVisibility, SlurRole, TieRole, TimedEvent,
+    TimedEventKind, TupletRole,
 };
 use crate::options::ParseOptions;
 use crate::parse::{parse_document, parse_tune_report_from_document};
@@ -480,6 +480,38 @@ fn classifies_quoted_chord_symbols_and_annotations() {
             QuotedTextKind::Annotation(AnnotationPlacement::Free),
         ]
     );
+}
+
+#[test]
+fn quoted_text_before_grace_group_stays_in_main_note_bundle() {
+    // `"F"{AB}c`: the syntax tree binds the quoted text to the MAIN note's
+    // attachment bundle, alongside the grace group — the first grace note
+    // inside the braces must not steal it.
+    let document_report = parse_document("X:1\nL:1/8\nK:C\n\"F\"{AB}c\n", ParseOptions::default());
+    assert!(document_report.diagnostics.is_empty());
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note = tune_music.lines[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MusicItem::Note(note) => Some(note),
+            _ => None,
+        })
+        .expect("expected note");
+
+    assert_eq!(note.pitch.step, 'c');
+    assert_eq!(note.attachments.chord_symbols[0].text, "F");
+    assert_eq!(note.attachments.grace_groups.len(), 1);
+    let grace = &note.attachments.grace_groups[0];
+    assert!(grace.elements.iter().all(|element| match element {
+        crate::syntax::GraceElementSyntax::Note(grace_note) =>
+            grace_note.attachments.chord_symbols.is_empty(),
+        _ => true,
+    }));
 }
 
 #[test]
@@ -1654,6 +1686,187 @@ fn semantic_lyrics_symbols_and_prefix_attachments_stay_on_intended_event() {
     assert_eq!(first.attachments.decorations[0].name, "trill");
     assert_eq!(first.attachments.lyrics[0].text, "one");
     assert_eq!(first.attachments.symbols[0].text, "C");
+}
+
+#[test]
+fn chord_symbol_before_grace_group_binds_to_main_note() {
+    // ABC 2.1 §4.20: in `"F"{AB}c` the grace group attaches to the main note
+    // `c`, and the chord symbol written before the grace binds to `c` too —
+    // not to a note inside the braces.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB}c d|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "F");
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+    assert_eq!(first.attachments.grace_groups[0].note_count, 2);
+    assert!(notes[1].attachments.chord_symbols.is_empty());
+}
+
+#[test]
+fn chord_symbol_before_slur_open_binds_to_first_slurred_note() {
+    // `"G7"(DE)`: the chord symbol rides across the slur-open and binds to
+    // `D`, which also carries the slur start; `E` carries the slur stop.
+    let source = "X:1\nL:1/8\nK:C\n\"G7\"(DE) F|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "G7");
+    assert!(
+        first
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Start)
+    );
+    assert!(
+        notes[1]
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Stop)
+    );
+    assert!(notes[2].attachments.chord_symbols.is_empty());
+}
+
+#[test]
+fn chord_symbol_before_grace_and_slur_binds_to_main_note() {
+    // `"F"{AB}(cd)`: chord symbol, grace group, and slur start all land on the
+    // main note `c`.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB}(cd)|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "F");
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+    assert!(
+        first
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Start)
+    );
+    assert!(
+        notes[1]
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Stop)
+    );
+}
+
+#[test]
+fn chord_symbol_before_tuplet_marker_binds_to_first_tuplet_note() {
+    // `"F"(3CDE F`: the chord symbol rides across the tuplet marker and binds
+    // to `C`; the tuplet roles stay intact.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"(3CDE F|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.chord_symbols[0].text, "F");
+    assert!(
+        first
+            .attachments
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.role == TupletRole::Start)
+    );
+    assert!(
+        notes[2]
+            .attachments
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.role == TupletRole::Stop)
+    );
+    assert!(notes[3].attachments.chord_symbols.is_empty());
+    assert!(notes[3].attachments.tuplets.is_empty());
+}
+
+#[test]
+fn quoted_texts_before_and_after_grace_group_keep_order() {
+    // `"F"{AB}"G"c`: both chord symbols bind to `c`, in source order.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB}\"G\"c d|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(
+        first
+            .attachments
+            .chord_symbols
+            .iter()
+            .map(|symbol| symbol.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["F", "G"]
+    );
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+}
+
+#[test]
+fn decoration_before_grace_group_binds_to_main_note() {
+    // `!trill!{AB}c`: the decoration rides the same pending bundle as quoted
+    // text, so it must survive the grace group and bind to `c`.
+    let source = "X:1\nL:1/8\nK:C\n!trill!{AB}c d|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let first = notes[0];
+    assert_eq!(first.attachments.decorations[0].name, "trill");
+    assert_eq!(first.attachments.grace_groups.len(), 1);
+    assert!(notes[1].attachments.decorations.is_empty());
+}
+
+#[test]
+fn quoted_text_after_grace_or_inside_slur_stays_bound() {
+    // Controls that already worked before the prefix-attachment fix: quoted
+    // text AFTER the grace group, and INSIDE the slur parens.
+    let (tune, diagnostics) = tune_for("X:1\nL:1/8\nK:C\n{AB}\"F\"c d|\n");
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes[0].attachments.chord_symbols[0].text, "F");
+    assert_eq!(notes[0].attachments.grace_groups.len(), 1);
+
+    let (tune, diagnostics) = tune_for("X:1\nL:1/8\nK:C\n(\"G7\"DE) F|\n");
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes[0].attachments.chord_symbols[0].text, "G7");
+    assert!(
+        notes[0]
+            .attachments
+            .slurs
+            .iter()
+            .any(|slur| slur.role == SlurRole::Start)
+    );
+}
+
+#[test]
+fn unclosed_grace_group_after_quoted_text_still_diagnoses() {
+    // `"F"{AB c`: the unclosed grace group swallows the rest of the line and
+    // must keep emitting its diagnostic; the pending chord symbol must not
+    // suppress it or panic, and it must not leak onto the next line's notes.
+    let source = "X:1\nL:1/8\nK:C\n\"F\"{AB c\nd e|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        count_diagnostics(&diagnostics, "abc.music.unclosed_grace"),
+        1
+    );
+    let notes = semantic_note_events(&tune);
+    assert!(
+        notes
+            .iter()
+            .all(|note| note.attachments.chord_symbols.is_empty())
+    );
 }
 
 #[test]
