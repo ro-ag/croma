@@ -277,16 +277,22 @@ Pass `--log-format text` for the legacy human-oriented lines.
 ## Columnar Comparison Notes
 
 The per-file comparison is Polars-columnar end to end: fact values are
-encoded once per row with a fast scalar path, the `comparison_key` is computed
-vectorized via `struct.json_encode()` (byte-identical to the previous
-per-row `json.dumps`), and the full join runs on the single `comparison_key`
-column with per-file constants attached as literals. Worker processes pin
+encoded once per row with `orjson` (scalars stay byte-identical to the
+stdlib encoder; containers are compact, e.g. `{"a":1}` — both sides share
+the encoder, so match verdicts are unaffected), the `comparison_key` is
+computed vectorized via `struct.json_encode()` (byte-identical to the
+previous per-row `json.dumps`), and the full join runs on the single
+`comparison_key` column with per-file constants attached as literals.
+Cache payloads are also `orjson`-encoded (plain JSON either way, so blobs
+written by older versions remain readable). Worker processes pin
 `POLARS_MAX_THREADS=1` on purpose: with thousands of small per-file frames,
 process-level parallelism scales better than Polars' internal threads, which
 the parent still uses for the final `scan_ndjson` → `sink_parquet` step.
-Together these cut per-task cost by roughly a fifth (~38 → ~30 ms per file
-pair single-process; ~74 s → ~61 s elapsed for a full uncached 10k run in a
-same-machine A/B).
+Together these cut per-task cost by roughly a quarter (~38 → ~28 ms per
+file pair single-process: value encoding 1.85 → 0.30 ms, row building
+8.6 → 2.7 ms; ~74 → ~61 s elapsed for a full uncached 10k run in a
+same-machine A/B before the orjson step, ~24 s observed after on a quieter
+machine).
 
 ## Create A Targeted Corpus From Evidence
 

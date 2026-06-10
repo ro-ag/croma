@@ -16,7 +16,9 @@ def test_fast_encode_matches_reference_encoder() -> None:
     from music21_compare import encode_fact_value
     from music21_polars_corpus_compare import fast_encode_fact_value
 
-    values = [
+    # Scalars (and >64-bit ints, which fall back to the stdlib encoder)
+    # must stay byte-identical to the reference encoder.
+    exact_values = [
         None,
         "",
         "plain",
@@ -31,11 +33,23 @@ def test_fast_encode_matches_reference_encoder() -> None:
         True,
         False,
         2.5,
+    ]
+    for value in exact_values:
+        assert fast_encode_fact_value(value) == encode_fact_value(value), repr(value)
+
+    # Containers are compact under orjson; they must stay semantically equal
+    # to the reference encoding and keep sorted keys.
+    container_values = [
         ["list", 1, None],
         {"nested": {"b": 1, "a": [2, "x"]}},
+        [],
+        {},
     ]
-    for value in values:
-        assert fast_encode_fact_value(value) == encode_fact_value(value), repr(value)
+    for value in container_values:
+        encoded = fast_encode_fact_value(value)
+        assert json.loads(encoded) == json.loads(encode_fact_value(value)), repr(value)
+        assert ", " not in encoded and ": " not in encoded, repr(value)
+    assert fast_encode_fact_value({"b": 1, "a": 2}) == '{"a":2,"b":1}'
 
 
 def test_columnar_comparison_key_matches_python_json() -> None:

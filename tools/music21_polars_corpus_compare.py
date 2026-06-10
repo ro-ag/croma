@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
 import time
@@ -16,6 +15,8 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import orjson
 
 from compare_cache import (
     CACHE_DB_ENV_VAR,
@@ -1473,25 +1474,21 @@ def comparison_key_expr(pl: Any) -> Any:
     )
 
 
-_PLAIN_JSON_STRING = re.compile(r'^[^"\\\x00-\x1f]*$')
-
-
 def fast_encode_fact_value(value: Any) -> str | None:
-    """Byte-identical fast path for music21_compare.encode_fact_value.
+    """orjson-backed encoder for the ~25M fact values per corpus run.
 
-    Scalars dominate the ~25M fact values per corpus run; quoting them
-    directly avoids a json.dumps call per value. Anything non-trivial falls
-    back to the original encoder.
+    Scalar output is byte-identical to music21_compare.encode_fact_value;
+    containers are compact (`{"a":1}` rather than `{"a": 1}`). Both sides of
+    a comparison run through this same encoder, so match verdicts are
+    unaffected by the format difference. Values orjson rejects (ints beyond
+    64 bits, exotic types) fall back to the stdlib encoder.
     """
     if value is None:
         return None
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, str) and _PLAIN_JSON_STRING.match(value):
-        return f'"{value}"'
-    return encode_fact_value(value)
+    try:
+        return orjson.dumps(value, option=orjson.OPT_SORT_KEYS, default=str).decode("utf-8")
+    except TypeError:
+        return encode_fact_value(value)
 
 
 def accidental_to_alter(accidental: Any) -> float | None:

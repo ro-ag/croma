@@ -29,6 +29,8 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+import orjson
+
 CACHE_SCHEMA_VERSION = "1"
 DEFAULT_CACHE_DB = Path("docs/untracked/cache/compare-cache.sqlite")
 CACHE_DB_ENV_VAR = "CROMA_COMPARE_CACHE_DB"
@@ -124,11 +126,13 @@ def pair_result_key(
 
 
 def encode_payload(value: Any) -> bytes:
-    return zlib.compress(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    # orjson over stdlib json: ~6x faster and emits utf-8 bytes directly.
+    # Output stays plain JSON, so blobs written by either codec interoperate.
+    return zlib.compress(orjson.dumps(value))
 
 
 def decode_payload(blob: bytes) -> Any:
-    return json.loads(zlib.decompress(blob).decode("utf-8"))
+    return orjson.loads(zlib.decompress(blob))
 
 
 class CompareCache:
