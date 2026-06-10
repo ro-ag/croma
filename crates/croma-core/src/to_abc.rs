@@ -774,16 +774,8 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
                     else {
                         continue;
                     };
-                    let written = Pitch {
-                        step: *step,
-                        // `pitch_str` only reads step and octave; the alter is
-                        // re-derived by the parser on re-parse.
-                        alter: 0,
-                        octave: *octave - shift,
-                        spelling_source: e.span,
-                    };
                     out.push_str(note_accidental(*accidental));
-                    out.push_str(&pitch_str(&written));
+                    out.push_str(&pitch_letter_str(*step, *octave - shift));
                     if !chord || !uniform {
                         out.push_str(len);
                     }
@@ -887,14 +879,20 @@ fn overlay_same_chord(
 
 /// Pitch letter plus octave marks (middle C = octave 4: `C`=4, `c`=5).
 fn pitch_str(pitch: &Pitch) -> String {
-    let letter = pitch.step.to_ascii_uppercase();
-    if pitch.octave >= 5 {
+    pitch_letter_str(pitch.step, pitch.octave)
+}
+
+/// Pitch letter plus octave marks for a bare step/octave pair (middle C =
+/// octave 4: `C`=4, `c`=5).
+fn pitch_letter_str(step: char, octave: i8) -> String {
+    let letter = step.to_ascii_uppercase();
+    if octave >= 5 {
         let mut s = letter.to_ascii_lowercase().to_string();
-        s.push_str(&"'".repeat((pitch.octave - 5) as usize));
+        s.push_str(&"'".repeat((octave - 5) as usize));
         s
     } else {
         let mut s = letter.to_string();
-        s.push_str(&",".repeat((4 - pitch.octave) as usize));
+        s.push_str(&",".repeat((4 - octave) as usize));
         s
     }
 }
@@ -944,12 +942,9 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
     for grace in &group.events {
         match &grace.kind {
             GraceEventKind::Note(note) => {
-                out.push_str(
-                    note.written_accidental
-                        .as_ref()
-                        .map(|m| accidental_glyph(m.kind))
-                        .unwrap_or(""),
-                );
+                out.push_str(note_accidental(
+                    note.written_accidental.as_ref().map(|m| m.kind),
+                ));
                 out.push_str(&pitch_str(&note.pitch));
                 out.push_str(&length_ratio_str(note.length_multiplier));
             }
@@ -957,12 +952,9 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
             GraceEventKind::Chord(members) => {
                 out.push('[');
                 for note in members {
-                    out.push_str(
-                        note.written_accidental
-                            .as_ref()
-                            .map(|m| accidental_glyph(m.kind))
-                            .unwrap_or(""),
-                    );
+                    out.push_str(note_accidental(
+                        note.written_accidental.as_ref().map(|m| m.kind),
+                    ));
                     out.push_str(&pitch_str(&note.pitch));
                     out.push_str(&length_ratio_str(note.length_multiplier));
                 }

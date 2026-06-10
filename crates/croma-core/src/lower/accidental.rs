@@ -156,6 +156,12 @@ impl LoweringState {
     /// line; the bar must not cancel it. Without this, the stop note would be
     /// re-resolved against the key signature, changing the tied pitch. Normal
     /// (non-tied) accidentals are still cleared as usual.
+    ///
+    /// The carry must be preserved eagerly here and undone later if the tie is
+    /// dropped (rather than added only once a tie matches) because the stop
+    /// note's accidental is resolved via `effective_accidental` when the note
+    /// is lowered, BEFORE `finish_pending_tie_if_possible` runs — so the carry
+    /// must already exist at the barline and a drop can only be retroactive.
     pub(crate) fn reset_measure_accidentals_at_barline(&mut self) {
         let preserved: Vec<MeasureAccidental> = self
             .pending_ties
@@ -194,6 +200,10 @@ impl LoweringState {
     /// stop note. Entries that come from a written accidental in the current
     /// measure (`from_pending_tie == false`) are left untouched.
     pub(crate) fn drop_pending_tie_carry(&mut self, signature: (char, i8)) {
+        // Comparing `entry.step == signature.0` raw (here and in
+        // `confirm_pending_tie_carry`) is sound: note signatures are always
+        // uppercase (`LoweredEventAtomKind::Note` constructors uppercase the
+        // step), as are `MeasureAccidental` entries.
         self.accidental_state.retain(|entry| {
             !(entry.from_pending_tie && entry.step == signature.0 && entry.octave == signature.1)
         });
