@@ -78,13 +78,13 @@ pub(crate) struct LoweringState {
     pub(crate) next_slur_id: u32,
     pub(crate) next_tuplet_id: u32,
     /// Grace groups flushed out of the parser's pending attachments by an
-    /// intervening slur-open, decoration, or other flush trigger before their
-    /// note was parsed (ABC 2.1 §4.20: `{grace}(note)`). The parser emits these
-    /// as standalone `MusicItem::GraceGroup` items; we buffer them here and merge
-    /// them into the next timed event's grace groups so the grace still attaches
-    /// to the note it precedes. Dropped at hard boundaries (barline, voice
-    /// switch, end of tune) when no timed note follows — a grace with no
-    /// following note is void.
+    /// intervening barline (`{g}|`), inline field (`{g}[M:3/4]c`), tie, overlay,
+    /// or other flush trigger before their note was parsed (ABC 2.1 §4.20). The
+    /// parser emits these as standalone `MusicItem::GraceGroup` items; we buffer
+    /// them here and merge them into the next timed event's grace groups so the
+    /// grace still attaches to the note it precedes. Dropped at hard boundaries
+    /// (barline, voice switch, end of tune) when no timed note follows — a grace
+    /// with no following note is void.
     pub(crate) pending_grace_groups: Vec<GraceGroupSyntax>,
 }
 

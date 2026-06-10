@@ -455,15 +455,15 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 ///
 /// Order matters for binding: a grace group, slur `(`, or decoration that
 /// precedes a grace group binds to the *grace* note, not the main note (ABC 2.1
-/// §4.11/§4.20). So grace comes first, then the event's own slur-opens and
-/// decorations, which therefore bind to the main note head:
-/// `"Gm"{gf}(!trill!note`.
+/// §4.11/§4.20). So grace comes first, then the event's own slur-opens, quoted
+/// text, and decorations, which therefore bind to the main note head:
+/// `{gf}("Gm"!trill!note`.
 fn event_prefix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
-    // Grace groups FIRST: a quoted string written before a grace group is
-    // silently dropped by the parser (`"F"{AB}c` loses the chord symbol;
-    // `{AB}"F"c` keeps it), so the canonical order is `({gf}"F"(!deco!note`.
+    // Grace groups FIRST: the canonical order is `({gf}("F"!deco!note`. The
+    // parser now also accepts quoted text before a grace group (`"F"{AB}c`
+    // binds "F" to `c`), but this emission order stays canonical.
     for grace in &attachments.grace_groups {
         // A slur recorded on the grace group binds to its first grace note, so
         // its `(` opens before the group (`({gf}` ...).
@@ -478,9 +478,9 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
         // round-trip in `clef=±8`/`octave=`/`middle=` voices.
         out.push_str(&grace_str(grace));
     }
-    // Event slur-opens next: a quoted string written before a `(` is also
-    // dropped by the parser (`"G7"(DE)` loses the chord symbol; `("G7"DE)`
-    // keeps it).
+    // Event slur-opens next, then quoted strings — both `"G7"(DE)` and
+    // `("G7"DE)` now parse with the chord symbol bound to `D`; the slur-first
+    // order stays canonical.
     for slur in &attachments.slurs {
         if slur.role == SlurRole::Start {
             out.push('(');
@@ -1418,8 +1418,8 @@ mod tests {
 
     #[test]
     fn chord_symbol_after_slur_open_survives() {
-        // `"G7"(DE)` is silently dropped by the parser; the writer must emit
-        // the slur-open first (`("G7"DE)`).
+        // The writer emits the slur-open first (`("G7"DE)`), the canonical
+        // order; the parser keeps the chord symbol in either order.
         let src = "X:1\nL:1/8\nK:C\n(\"G7\"DE) F |\n";
         let s1 = score_of(src);
         let abc = write_abc(&s1, AbcWriteOptions::default());
@@ -1434,8 +1434,8 @@ mod tests {
 
     #[test]
     fn chord_symbol_after_grace_survives() {
-        // `"F"{AB}c` is silently dropped by the parser; the writer must emit
-        // the grace group first (`{AB}"F"c`) so the chord symbol survives.
+        // The writer emits the grace group first (`{AB}"F"c`), the canonical
+        // order; the parser keeps the chord symbol in either order.
         let src = "X:1\nL:1/8\nK:C\n{AB}\"F\"c2 d2 |\n";
         let s1 = score_of(src);
         let abc = write_abc(&s1, AbcWriteOptions::default());

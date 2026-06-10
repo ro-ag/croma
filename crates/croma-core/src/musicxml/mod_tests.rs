@@ -1198,6 +1198,20 @@ fn grace_before_plain_note_still_attaches() {
 }
 
 #[test]
+fn chord_symbol_before_grace_group_emits_harmony() {
+    // `"F"{AB}c4`: the chord symbol written before the grace group binds to
+    // the main note `c` and exports as a <harmony>; before the fix the first
+    // grace note inside the braces stole the pending quoted text and lowering
+    // silently dropped it.
+    let source = "X:1\nT:Harmony Before Grace\nM:4/4\nL:1/8\nK:C\n\"F\"{AB}c4 d|\n";
+    let export = export_musicxml(source).expect("harmony-before-grace score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony"), 1);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+}
+
+#[test]
 fn grace_orphaned_before_barline_is_voided_without_panic() {
     // A grace group with no following note before a hard boundary (bar end / end
     // of tune) is void per the dangling-grace policy: no panic, no grace emitted,

@@ -420,12 +420,13 @@ impl MultiVoiceLowering {
                 MusicItem::InlineField(inline) => self.apply_inline_field(inline),
                 MusicItem::GraceGroup(grace) => {
                     // A grace group becomes a standalone item only when the parser
-                    // flushed it ahead of its note (e.g. an intervening slur-open
-                    // `{g}(c)`, decoration, or other flush trigger). Per ABC 2.1
-                    // §4.20 the grace still attaches to the note it precedes, so
-                    // buffer it and merge it into the next timed event. If a hard
-                    // boundary (barline / voice switch / end of tune) arrives
-                    // first, the buffer is dropped and the grace is voided.
+                    // flushed it ahead of its note (e.g. an intervening barline
+                    // `{g}|` or inline field `{g}[M:3/4]c`; ties and overlays also
+                    // flush). Per ABC 2.1 §4.20 the grace still attaches to the
+                    // note it precedes, so buffer it and merge it into the next
+                    // timed event. If a hard boundary (barline / voice switch /
+                    // end of tune) arrives first, the buffer is dropped and the
+                    // grace is voided.
                     self.current_state()
                         .pending_grace_groups
                         .push(grace.clone());

@@ -287,6 +287,11 @@ impl<'line> MusicLineParser<'line> {
     }
 
     pub(super) fn parse_grace_group(&mut self) {
+        // Attachments pending at `{` (quoted text, decorations) belong to the
+        // MAIN note that follows the grace group (`"F"{AB}c` binds "F" to
+        // `c`), so stash them while the inner elements parse — otherwise the
+        // first grace note inside the braces would steal them.
+        let stashed = std::mem::take(&mut self.pending_attachments);
         let start = self.index;
         self.bump_char();
         let slash_span = if self.peek_char() == Some('/') {
@@ -372,6 +377,13 @@ impl<'line> MusicLineParser<'line> {
                 }
             }
         }
+
+        // Restore the caller's pending bundle, then re-append any leftover
+        // inner pendings (e.g. trailing quoted text right before `}`) so they
+        // bind to the next main note in source order.
+        let inner_leftovers = std::mem::take(&mut self.pending_attachments);
+        self.pending_attachments = stashed;
+        self.pending_attachments.extend(inner_leftovers);
 
         let span = self.span(start, self.index);
         if closed {
@@ -571,7 +583,8 @@ impl<'line> MusicLineParser<'line> {
     }
 
     pub(super) fn parse_tuplet(&mut self) {
-        self.flush_pending_attachments();
+        // A tuplet marker precedes its first note, so pending attachments
+        // ride across it and bind to that note (`"F"(3CDE` binds "F" to `C`).
         let start = self.index;
         self.bump_char();
         let Some(p) = self.parse_number_token() else {
