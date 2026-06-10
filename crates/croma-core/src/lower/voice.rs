@@ -452,9 +452,12 @@ impl LoweringState {
         }
     }
 
+    /// Install a (possibly mid-tune) key signature. A `K:` field is NOT a bar
+    /// line: per ABC 2.1 §11.3 (`%%propagate-accidentals` default `pitch`) an
+    /// explicit accidental applies to same-pitch notes until the end of the
+    /// bar, so the measure accidental ledger is deliberately left intact.
     pub(crate) fn set_key(&mut self, key: Option<&KeySignature>) {
         self.key_accidentals = key_accidental_policy(key);
-        self.reset_measure_accidentals();
     }
 
     pub(crate) fn finish_pending_broken_at_boundary(&mut self) {

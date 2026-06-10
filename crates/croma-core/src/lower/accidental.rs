@@ -145,10 +145,6 @@ impl LoweringState {
         }
     }
 
-    pub(crate) fn reset_measure_accidentals(&mut self) {
-        self.accidental_state.clear();
-    }
-
     /// Reset measure accidentals at a bar line, but preserve the accidental of a
     /// note whose tie is still open.
     ///
