@@ -1,7 +1,7 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::{
     ActiveTuplet, CompletedTuplet, LoweredEvent, LoweringState, abc_tuplet_reference,
-    invalid_tuplet_warning, lowered_timed_note,
+    invalid_tuplet_warning,
 };
 use crate::model::{Fraction, TupletAttachment, TupletRole};
 use crate::syntax::TupletSyntax;
@@ -71,10 +71,14 @@ impl LoweringState {
             } else {
                 TupletRole::Continue
             };
+            // The role goes on the group's first timed event — the single note
+            // or rest, or a chord's first member (never both, so no
+            // double-attach). Rests count: `(3zBA` starts on the rest, `(3BAz`
+            // stops on it, exactly as the abc2xml oracle notates them.
             if let Some(event_index) = group
                 .iter()
                 .copied()
-                .find(|index| lowered_timed_note(self.lowered.get(*index)).is_some())
+                .find(|index| matches!(self.lowered.get(*index), Some(LoweredEvent::Timed(_))))
             {
                 self.attach_tuplet(event_index, &tuplet, role);
             }

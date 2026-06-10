@@ -1994,6 +1994,24 @@ fn incomplete_overlay_diagnoses_and_later_measures_stay_stable() {
 }
 
 #[test]
+fn rest_led_tuplet_emits_tuplet_start_on_the_rest() {
+    // `(3zBA`: the leading rest carries the tuplet Start, so its <note> emits
+    // <tuplet type="start"> — matching the abc2xml oracle.
+    let source = "X:1\nL:1/8\nK:C\n(3zBA F|\n";
+    let export = export_musicxml(source).expect("rest-led tuplet should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let rest_note = export
+        .musicxml
+        .split("<note>")
+        .skip(1)
+        .find(|note| note.contains("<rest/>"))
+        .expect("expected a rest note");
+    assert!(rest_note.contains("<tuplet type=\"start\""));
+    assert!(export.musicxml.contains("<tuplet type=\"stop\""));
+}
+
+#[test]
 fn bad_tuplet_count_diagnoses_without_bogus_tuplet_notation_pairs() {
     let source = "X:1\nL:1/8\nK:C\n(3C|D E|\n";
     let export = export_musicxml(source).expect("short tuplet should recover");

@@ -1838,6 +1838,104 @@ fn chord_symbol_before_tuplet_marker_binds_to_first_tuplet_note() {
     assert!(notes[3].attachments.tuplets.is_empty());
 }
 
+/// `(kind, tuplet roles)` for every note/rest/chord in the first voice.
+/// `semantic_note_events` filters to notes only, which would hide the rests
+/// these tests are about.
+fn timed_tuplet_roles(tune: &crate::model::Tune) -> Vec<(&'static str, Vec<TupletRole>)> {
+    tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| {
+            let kind = match &event.kind {
+                TimedEventKind::Note(_) => "note",
+                TimedEventKind::Rest(_) => "rest",
+                TimedEventKind::Chord(_) => "chord",
+                _ => return None,
+            };
+            let roles = event
+                .attachments
+                .tuplets
+                .iter()
+                .map(|tuplet| tuplet.role)
+                .collect();
+            Some((kind, roles))
+        })
+        .collect()
+}
+
+#[test]
+fn rest_led_tuplet_carries_start_role_on_the_rest() {
+    // `(3zBA`: the leading rest is the tuplet's first group, so it carries the
+    // Start role just as a note would.
+    let source = "X:1\nL:1/8\nK:C\n(3zBA|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("rest", vec![TupletRole::Start]),
+            ("note", vec![TupletRole::Continue]),
+            ("note", vec![TupletRole::Stop]),
+        ]
+    );
+}
+
+#[test]
+fn rest_closed_tuplet_carries_stop_role_on_the_rest() {
+    // `(3BAz`: the trailing rest closes the tuplet, so it carries Stop.
+    let source = "X:1\nL:1/8\nK:C\n(3BAz|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("note", vec![TupletRole::Start]),
+            ("note", vec![TupletRole::Continue]),
+            ("rest", vec![TupletRole::Stop]),
+        ]
+    );
+}
+
+#[test]
+fn all_rest_tuplet_carries_roles_on_every_rest() {
+    let source = "X:1\nL:1/8\nK:C\n(3zzz|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("rest", vec![TupletRole::Start]),
+            ("rest", vec![TupletRole::Continue]),
+            ("rest", vec![TupletRole::Stop]),
+        ]
+    );
+}
+
+#[test]
+fn rest_led_tuplet_keeps_prefix_attachments_on_the_rest() {
+    // `(3"C"zBA`: the chord symbol rides across the tuplet marker and binds to
+    // the leading rest, which still carries the Start role.
+    let source = "X:1\nL:1/8\nK:C\n(3\"C\"zBA|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let rest = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .find(|event| matches!(event.kind, TimedEventKind::Rest(_)))
+        .expect("expected a rest event");
+    assert_eq!(rest.attachments.chord_symbols[0].text, "C");
+    assert!(
+        rest.attachments
+            .tuplets
+            .iter()
+            .any(|tuplet| tuplet.role == TupletRole::Start)
+    );
+}
+
 #[test]
 fn quoted_texts_before_and_after_grace_group_keep_order() {
     // `"F"{AB}"G"c`: both chord symbols bind to `c`, in source order.
