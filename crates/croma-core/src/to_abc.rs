@@ -890,6 +890,11 @@ fn pitch_str(pitch: &Pitch) -> String {
 /// octave 4: `C`=4, `c`=5).
 fn pitch_letter_str(step: char, octave: i8) -> String {
     let letter = step.to_ascii_uppercase();
+    // Widen before the repeat-count subtraction: stored octaves reach the i8
+    // bounds (lowering clamps long octave-mark runs to ±128), so `4 - octave`
+    // overflows i8 for octaves below -123 (debug panic / release capacity
+    // overflow in `croma dump abc`).
+    let octave = i32::from(octave);
     if octave >= 5 {
         let mut s = letter.to_ascii_lowercase().to_string();
         s.push_str(&"'".repeat((octave - 5) as usize));
@@ -1025,6 +1030,19 @@ mod tests {
             let (a, b) = roundtrip_pitches(src);
             assert_eq!(a, b, "pitch round-trip failed for {src:?}");
         }
+    }
+
+    #[test]
+    fn extreme_octave_marks_roundtrip_without_panicking() {
+        // Lowering clamps the octave-mark sum into i8 range, so a 130-comma
+        // run stores octave -126 and 200 up-marks store octave 127. The
+        // writer's down-mark repeat count `4 - octave` used to overflow i8
+        // (debug panic / release capacity overflow); it must widen instead.
+        let commas = ",".repeat(130);
+        let quotes = "'".repeat(200);
+        let src = format!("X:1\nL:1/4\nK:C\nC{commas} c{quotes} D E |\n");
+        let (a, b) = roundtrip_pitches(&src);
+        assert_eq!(a, b, "pitch round-trip failed for extreme octave marks");
     }
 
     fn barline_kinds(score: &crate::Score) -> Vec<crate::BarlineKind> {
