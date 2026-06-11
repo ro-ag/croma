@@ -86,7 +86,8 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::Overlay(_)
         | LoweredEvent::VariantEnding(_)
         | LoweredEvent::KeyChange(_)
-        | LoweredEvent::MeterChange(_) => divisions,
+        | LoweredEvent::MeterChange(_)
+        | LoweredEvent::TempoChange(_) => divisions,
     });
     let events = all_lowered
         .into_iter()
@@ -96,7 +97,8 @@ pub(crate) fn lower_tune_music(
             LoweredEvent::Overlay(_)
             | LoweredEvent::VariantEnding(_)
             | LoweredEvent::KeyChange(_)
-            | LoweredEvent::MeterChange(_) => None,
+            | LoweredEvent::MeterChange(_)
+            | LoweredEvent::TempoChange(_) => None,
         })
         .collect();
     let meter_duration = lowering.meter_duration;
@@ -230,6 +232,7 @@ impl MultiVoiceLowering {
             MusicFieldLineKind::Meter(meter) => self.apply_meter_change(meter),
             MusicFieldLineKind::UnitNoteLength(unit) => self.apply_unit_change(unit),
             MusicFieldLineKind::Key(key) => self.apply_key_change(key),
+            MusicFieldLineKind::Tempo(tempo) => self.apply_tempo_change(tempo),
             MusicFieldLineKind::Voice(voice) => self.switch_voice(voice.clone()),
             MusicFieldLineKind::Lyric(line) => self.lyric_lines.push(VoicedLyricLine {
                 voice_id: self.current_voice.clone(),
@@ -304,6 +307,18 @@ impl MultiVoiceLowering {
                 .push(unsupported_complex_meter_warning(meter.span));
         }
         true
+    }
+
+    /// A body `Q:` line or inline `[Q:..]` (ABC 2.1 §3.1.8 allows Q: in the
+    /// tune body): record a zero-duration tempo-change event at the current
+    /// voice position so exporters reproduce the change in place.
+    fn apply_tempo_change(&mut self, tempo: &Spanned<String>) {
+        let unit = self.unit;
+        if let Some(model) = parse_tempo_model(&tempo.value, tempo.span, unit) {
+            self.current_state()
+                .lowered
+                .push(LoweredEvent::TempoChange(model));
+        }
     }
 
     fn apply_unit_change(&mut self, unit: &Spanned<UnitNoteLength>) {
@@ -421,6 +436,12 @@ impl MultiVoiceLowering {
                 } else if !key_is_invalid_for_lowering(&key) {
                     self.apply_inline_key_clef_properties(&key);
                 }
+            }
+            'Q' => {
+                self.apply_tempo_change(&Spanned::new(
+                    inline.value.value.clone(),
+                    inline.value.span,
+                ));
             }
             'I' => {
                 // `[I:...]` instructions are typeset/display directives (e.g.

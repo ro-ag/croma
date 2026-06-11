@@ -38,6 +38,7 @@ pub enum MusicFieldLineKind {
     Symbol(SymbolLineSyntax),
     PostTuneText(Spanned<String>),
     Score(ScoreDirective),
+    Tempo(Spanned<String>),
     Unknown(Spanned<String>),
     Other,
 }

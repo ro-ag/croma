@@ -48,6 +48,28 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     out
 }
 
+/// Canonical display text for a mid-tune `Q:` tempo: optional quoted text,
+/// then `n/d=bpm` when a numeric beat is present. Re-parses to the same
+/// `TempoModel`, keeping the round-trip stable.
+fn tempo_display(tempo: &crate::model::TempoModel) -> String {
+    let mut out = String::new();
+    if let Some(text) = &tempo.text {
+        out.push('"');
+        out.push_str(text);
+        out.push('"');
+    }
+    if let Some(beat) = &tempo.beat {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!(
+            "{}/{}={}",
+            beat.beat_numerator, beat.beat_denominator, beat.bpm
+        ));
+    }
+    out
+}
+
 /// Unit note length: ABC 2.1 default — measure duration < 3/4 → 1/16, else 1/8.
 fn unit_length(score: &Score) -> Rational {
     let small = Rational::new(1, 16);
@@ -355,6 +377,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             }
             TimedEventKind::MeterChange(meter) => {
                 out.push_str(&format!("[M:{}] ", meter.display));
+            }
+            TimedEventKind::TempoChange(tempo) => {
+                out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
             }
         }
     }
@@ -826,7 +851,8 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
             }
             TimelineEventKind::VariantEnding { .. }
             | TimelineEventKind::KeyChange(_)
-            | TimelineEventKind::MeterChange(_) => {}
+            | TimelineEventKind::MeterChange(_)
+            | TimelineEventKind::TempoChange(_) => {}
         }
         i += 1;
     }

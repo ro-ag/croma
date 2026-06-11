@@ -181,6 +181,37 @@ fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
 }
 
 #[test]
+fn body_tempo_field_emits_metronome_direction() {
+    // ABC 2.1 §3.1.8 and the field table allow Q: in the tune body
+    // (tune_007548 family, ~120 files): a `Q:` line after K: must produce a
+    // <metronome> direction, not vanish silently.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nQ:1/4=132\nCDEF|GABc|]\n";
+    let export = export_musicxml(source).expect("body tempo should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<per-minute>132</per-minute>"));
+    assert!(export.musicxml.contains("<beat-unit>quarter</beat-unit>"));
+}
+
+#[test]
+fn mid_tune_tempo_change_lands_at_its_measure() {
+    // A tempo change between music lines positions at the point of change,
+    // not at the start of the tune.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nQ:1/4=100\nCDEF|\nQ:1/4=160\nGABc|]\n";
+    let export = export_musicxml(source).expect("mid-tune tempo should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<per-minute>100</per-minute>"));
+    assert!(export.musicxml.contains("<per-minute>160</per-minute>"));
+    let measure2 = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .nth(1)
+        .expect("measure 2 exists");
+    assert!(measure2.contains("<per-minute>160</per-minute>"));
+}
+
+#[test]
 fn liberal_barline_runs_keep_their_strongest_meaning() {
     // ABC 2.1 §4.8: "bar lines may have any shape, using a sequence of
     // |, [, ] and :". Croma recognized such runs as boundaries but erased

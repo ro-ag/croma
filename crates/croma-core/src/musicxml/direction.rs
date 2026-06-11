@@ -30,7 +30,7 @@ impl<'score> MusicXmlWriter<'score> {
     /// abc2xml reference), falling back to plain `<words>` when the field has no
     /// numeric tempo. A `<sound tempo=...>` is always emitted: quarter-notes per
     /// minute for a numeric tempo, or a default of 120 for text-only tempos.
-    fn write_tempo_direction(&mut self, tempo: &TempoModel) {
+    pub(crate) fn write_tempo_direction(&mut self, tempo: &TempoModel) {
         let beat_unit = tempo.beat.and_then(beat_unit_model);
         // A numeric tempo we cannot map to a beat unit falls back to words using
         // the raw field text, preserving prior behavior for exotic forms.

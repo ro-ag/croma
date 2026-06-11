@@ -191,6 +191,7 @@ fn non_note_event_from_timeline(event: &VoiceTimedEvent, measure_id: MeasureId) 
         }
         TimelineEventKind::KeyChange(key) => TimedEventKind::KeyChange(key.clone()),
         TimelineEventKind::MeterChange(meter) => TimedEventKind::MeterChange(meter.clone()),
+        TimelineEventKind::TempoChange(tempo) => TimedEventKind::TempoChange(tempo.clone()),
         TimelineEventKind::Note { .. } => TimedEventKind::Spacer,
     };
     TimedEvent {

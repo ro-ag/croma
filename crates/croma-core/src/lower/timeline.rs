@@ -123,6 +123,22 @@ impl VoiceTimelineBuilder {
                     attachments: EventAttachments::default(),
                 });
             }
+            LoweredEvent::TempoChange(tempo) => {
+                let onset = self.onset;
+                let span = tempo.source_span;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::TempoChange(tempo),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                    attachments: EventAttachments::default(),
+                });
+            }
             LoweredEvent::Untimed(Event::Spacer { span }) => {
                 let onset = self.onset;
                 self.current_measure_mut().events.push(VoiceTimedEvent {
@@ -374,7 +390,9 @@ fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
         && measure.events.iter().all(|event| {
             matches!(
                 event.kind,
-                TimelineEventKind::KeyChange(_) | TimelineEventKind::MeterChange(_)
+                TimelineEventKind::KeyChange(_)
+                    | TimelineEventKind::MeterChange(_)
+                    | TimelineEventKind::TempoChange(_)
             )
         })
 }

@@ -214,6 +214,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                         | TimedEventKind::Spacer
                         | TimedEventKind::KeyChange(_)
                         | TimedEventKind::MeterChange(_)
+                        | TimedEventKind::TempoChange(_)
                 )
             })
             .map(SequenceEvent::Timed)

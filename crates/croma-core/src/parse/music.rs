@@ -62,6 +62,7 @@ pub(crate) fn parse_music_document(
                     MusicFieldLineKind::Meter(_)
                     | MusicFieldLineKind::UnitNoteLength(_)
                     | MusicFieldLineKind::Key(_)
+                    | MusicFieldLineKind::Tempo(_)
                     | MusicFieldLineKind::Unknown(_)
                     | MusicFieldLineKind::Other => {}
                     MusicFieldLineKind::PostTuneText(_) => tune.body_fields.push(field_line),
@@ -112,6 +113,7 @@ pub(crate) fn parse_music_document(
                     MusicFieldLineKind::Meter(_)
                     | MusicFieldLineKind::UnitNoteLength(_)
                     | MusicFieldLineKind::Key(_)
+                    | MusicFieldLineKind::Tempo(_)
                     | MusicFieldLineKind::Unknown(_)
                     | MusicFieldLineKind::Voice(_)
                     | MusicFieldLineKind::PostTuneText(_)
@@ -432,6 +434,7 @@ fn music_field_for_line(
             MusicFieldLineKind::Unknown(Spanned::new(text, span))
         }
         ParsedFieldKind::Unknown(unknown) => MusicFieldLineKind::Unknown(unknown.value.clone()),
+        ParsedFieldKind::Tempo(value) => MusicFieldLineKind::Tempo(value.clone()),
         _ => MusicFieldLineKind::Other,
     };
 
