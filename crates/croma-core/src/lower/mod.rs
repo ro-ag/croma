@@ -307,10 +307,14 @@ impl MultiVoiceLowering {
     }
 
     fn apply_unit_change(&mut self, unit: &Spanned<UnitNoteLength>) {
-        self.unit = unit.value.fraction.to_model_fraction();
-        for voice in &mut self.voices {
-            voice.unit = self.unit;
-        }
+        // A body `L:` (or inline `[L:..]`) scopes to the CURRENT voice;
+        // sibling voices and voices declared later keep the header unit
+        // (`self.unit` stays the header value, which seeds new voices).
+        // ABC 2.1 §7 is VOLATILE/silent on body-field voice scoping; the
+        // abcm2ps/abc2midi/abc2xml convention — codified by ABC 2.2 — is
+        // per-voice, and the old global broadcast silently under/over-filled
+        // sibling voices' bars (tune_014637/005353).
+        self.current_state().unit = unit.value.fraction.to_model_fraction();
     }
 
     fn apply_key_change(&mut self, key: &Spanned<KeySignature>) {
