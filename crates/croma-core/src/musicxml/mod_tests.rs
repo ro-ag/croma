@@ -2560,3 +2560,62 @@ fn tie_across_barline_keeps_flat_against_neutral_key() {
         assert_eq!((step, alter), ('B', -1), "tied B must stay flat across bar");
     }
 }
+
+#[test]
+fn mid_tune_key_and_meter_changes_emit_attributes() {
+    let source = "X:1\nL:1/4\nK:C\nCDEF|[K:F]GAB_B|[M:3/4]ABc|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+    // measure 2 opens with a key change to one flat; measure 3 with 3/4 time
+    let measures: Vec<&str> = xml.split("<measure ").collect();
+    assert!(measures.len() >= 4, "three measures: {xml}");
+    assert!(
+        measures[2].contains("<fifths>-1</fifths>"),
+        "measure 2 carries the key change: {}",
+        measures[2]
+    );
+    assert!(
+        measures[3].contains("<beats>3</beats>")
+            && measures[3].contains("<beat-type>4</beat-type>"),
+        "measure 3 carries the meter change: {}",
+        measures[3]
+    );
+    // header attributes unchanged
+    assert!(measures[1].contains("<fifths>0</fifths>"));
+}
+
+#[test]
+fn mid_measure_key_change_emits_attributes_between_notes() {
+    let source = "X:1\nL:1/4\nK:C\nCD[K:D]EF|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+    // the second <attributes> (fifths 2) appears after the 2nd note and
+    // before the 3rd note within measure 1
+    let m1_start = xml.find("<measure ").expect("measure 1");
+    let m1 = &xml[m1_start..];
+    let change = m1
+        .find("<fifths>2</fifths>")
+        .expect("mid-measure key change");
+    let notes: Vec<usize> = m1.match_indices("<note>").map(|(i, _)| i).collect();
+    assert!(notes.len() >= 4);
+    assert!(
+        notes[1] < change && change < notes[2],
+        "key change sits between note 2 and note 3"
+    );
+}
+
+#[test]
+fn grace_implicit_alter_uses_position_active_key() {
+    // After [K:D] (two sharps), an unmarked grace f must export F#.
+    let source = "X:1\nL:1/4\nK:C\nCDEF|[K:D]{f}GABc|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+    let grace_at = xml.find("<grace/>").expect("grace note present");
+    let after = &xml[grace_at..];
+    assert!(
+        after.contains("<step>F</step>")
+            && after[..after.find("<octave>").expect("octave")].contains("<alter>1</alter>"),
+        "grace F carries the new key's sharp: {}",
+        &after[..300.min(after.len())]
+    );
+}
