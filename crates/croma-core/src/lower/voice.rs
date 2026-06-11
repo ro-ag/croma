@@ -24,6 +24,7 @@ pub(crate) enum LoweredEvent {
     VariantEnding(VariantEndingSyntax),
     KeyChange(crate::model::KeySignatureModel),
     MeterChange(crate::model::MeterModel),
+    TempoChange(crate::model::TempoModel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -103,6 +103,7 @@ impl<'score> MusicXmlWriter<'score> {
                     self.write_mid_tune_key(key);
                 }
                 TimedEventKind::MeterChange(meter) => self.write_mid_tune_meter(meter),
+                TimedEventKind::TempoChange(tempo) => self.write_tempo_direction(tempo),
             },
             SequenceEvent::Overlay(timed) => match &timed.kind {
                 TimelineEventKind::Note {
@@ -165,7 +166,9 @@ impl<'score> MusicXmlWriter<'score> {
                         tuplet_numbers,
                     );
                 }
-                TimelineEventKind::KeyChange(_) | TimelineEventKind::MeterChange(_) => {}
+                TimelineEventKind::KeyChange(_)
+                | TimelineEventKind::MeterChange(_)
+                | TimelineEventKind::TempoChange(_) => {}
                 TimelineEventKind::Spacer
                 | TimelineEventKind::Barline { .. }
                 | TimelineEventKind::VariantEnding { .. } => {}

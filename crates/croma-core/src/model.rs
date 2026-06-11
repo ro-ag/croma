@@ -217,6 +217,8 @@ pub enum TimedEventKind {
     KeyChange(KeySignatureModel),
     /// A mid-tune meter change (`[M:..]` or a body `M:` line). Zero duration.
     MeterChange(MeterModel),
+    /// A mid-tune tempo change (`[Q:..]` or a body `Q:` line). Zero duration.
+    TempoChange(TempoModel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,6 +528,7 @@ pub enum TimelineEventKind {
     },
     KeyChange(KeySignatureModel),
     MeterChange(MeterModel),
+    TempoChange(TempoModel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
