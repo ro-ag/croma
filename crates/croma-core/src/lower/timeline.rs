@@ -367,7 +367,16 @@ impl VoiceTimelineBuilder {
 /// A measure with no events and no overlays at all (the original phantom case:
 /// a fresh measure opened after a trailing bar line with nothing following).
 fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
-    measure.events.is_empty() && measure.overlays.is_empty()
+    // Zero-duration key/meter change events do not make a measure real: in
+    // `...| [K:C] |: ...` the change belongs to the measure the `|:` opens,
+    // and the pending one must keep accepting that leading barline.
+    measure.overlays.is_empty()
+        && measure.events.iter().all(|event| {
+            matches!(
+                event.kind,
+                TimelineEventKind::KeyChange(_) | TimelineEventKind::MeterChange(_)
+            )
+        })
 }
 
 /// A measure is *bar-line-only* when it carries no overlay and every event it
@@ -380,10 +389,17 @@ fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
 fn is_barline_only_measure(measure: &VoiceMeasureTimeline) -> bool {
     measure.overlays.is_empty()
         && !measure.events.is_empty()
-        && measure
-            .events
-            .iter()
-            .all(|event| matches!(event.kind, TimelineEventKind::Barline { .. }))
+        && measure.events.iter().all(|event| {
+            // Zero-duration key/meter change events do not make a measure
+            // real: `| [K:C] |:` must still merge into one boundary rather
+            // than opening a phantom empty measure the reference lacks.
+            matches!(
+                event.kind,
+                TimelineEventKind::Barline { .. }
+                    | TimelineEventKind::KeyChange(_)
+                    | TimelineEventKind::MeterChange(_)
+            )
+        })
 }
 
 fn starts_measure_barline(kind: BarlineKind) -> bool {
