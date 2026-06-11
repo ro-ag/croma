@@ -307,6 +307,13 @@ in native typed columns instead of one JSON-encoded string:
 - `raw_value`: populated only when a raw value distinct from the compared
   value was captured (diagnostics payload); previously it mirrored
   `value_text` on every row.
+- `pitch`/`alter` facts carry the **sounding** chromatic alteration
+  (music21 `pitch.alter`; 0.0 for an unaltered pitched note, never null), not
+  the display-accidental object. MusicXML defaults an absent `<alter>` to 0,
+  so serializations that differ only in a redundant `<alter>0</alter>`
+  (abc2xml's carried-natural form) compare equal; genuine alteration
+  differences still surface as `accidental` rows. See
+  `docs/comparison/abc2xml-divergences/05-accidental-alter.md`.
 
 The comparison/mismatch tables carry the same columns per side
 (`croma_value_kind`, …, `reference_value_json`) replacing the former

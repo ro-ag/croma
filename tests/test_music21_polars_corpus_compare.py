@@ -144,10 +144,51 @@ def test_v3_typed_value_columns_and_explicit_raw_values(tmp_path: Path) -> None:
     assert tuplets["value_kind"] == "json"
     assert tuplets["value_json"] == "[]"
     alter = facts[("pitch", "alter")]
-    assert alter["value_kind"] is None  # no accidental: null value, null kind
+    # The alter fact is the sounding alteration; an unaltered note is 0.0
+    # (MusicXML defaults an absent <alter> to 0), not a null fact.
+    assert alter["value_kind"] == "float"
+    assert alter["value_float"] == 0.0
     # raw_value is populated only when a distinct raw value was captured.
     assert dots["raw_value"] is None
     assert facts[("note", "kind")]["raw_value"] is not None
+
+
+def test_redundant_alter_zero_is_not_a_mismatch(tmp_path: Path) -> None:
+    # MusicXML defines an absent <alter> as 0; a redundant <alter>0</alter>
+    # (abc2xml's serialization for carried naturals) is the same sounding
+    # pitch. The alter fact compares the sounding alteration, so this pair
+    # must be a structural match, not an "accidental" row.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="D", octave=5)])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D", octave=5, alter=0)])
+
+    report = run_compare(paths, jobs=1, output_name="alter-eq")
+
+    assert report["mismatch_category_counts"] == {}
+    assert report["structural_matches"] == 1
+
+
+def test_sounding_alteration_difference_is_still_flagged(tmp_path: Path) -> None:
+    # D vs D-sharp is a real chromatic difference; normalizing redundant
+    # alter-0 serialization must not swallow genuine alteration mismatches.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tune"])
+    write_musicxml(paths.croma_xml("tune"), [note(step="D", octave=5)])
+    write_musicxml(paths.reference_xml("tune"), [note(step="D", octave=5, alter=1)])
+
+    report = run_compare(paths, jobs=1, output_name="alter-diff")
+
+    assert report["mismatch_category_counts"].get("accidental") == 1
+    mismatches = read_jsonl(paths.output / "alter-diff-mismatches.jsonl")
+    alter_rows = [
+        row
+        for row in mismatches
+        if row["component"] == "pitch" and row["field_name"] == "alter"
+    ]
+    assert len(alter_rows) == 1
+    assert alter_rows[0]["croma_value_float"] == 0.0
+    assert alter_rows[0]["reference_value_float"] == 1.0
 
 
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:

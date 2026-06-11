@@ -264,6 +264,10 @@ def pitch_facts(pitch: Any) -> dict[str, Any]:
         "step": pitch.step,
         "octave": pitch.octave,
         "accidental": accidental_name(pitch.accidental),
+        # Sounding chromatic alteration. MusicXML defaults an absent <alter>
+        # to 0, so this is comparable across serializations that differ only
+        # in whether a redundant <alter>0</alter> is written.
+        "alter": float(pitch.alter) if pitch.alter is not None else None,
     }
 
 

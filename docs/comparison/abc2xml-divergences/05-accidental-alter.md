@@ -42,3 +42,22 @@ byte parity and to satisfy consumers that derive the accidental from `<alter>`;
 this would erase ~575 files of false-positive rows but changes no rendering. It
 is a cosmetic option, not a correctness fix.) The grace-accidental-scope cases
 are a separate, spec-unspecified edge.
+
+## Resolution (phase-33): comparator normalization, not croma mimicry
+
+The ABC 2.1 spec drives croma's behavior; abc2xml is only a comparison
+baseline, so croma's emission was deliberately left unchanged. Instead the
+comparator was taught the MusicXML equivalence: the `pitch/alter` fact now
+compares the **sounding** chromatic alteration (music21 `pitch.alter`, where an
+absent `<alter>` is 0) instead of the fabricated display-accidental object
+(`pitch.accidental`), which abc2xml's redundant `<alter>0</alter>` used to
+materialize on one side only. Tests:
+`tests/test_music21_polars_corpus_compare.py::test_redundant_alter_zero_is_not_a_mismatch`
+(equivalence) and `::test_sounding_alteration_difference_is_still_flagged`
+(genuine D vs D# stays an accidental row).
+
+Measured effect on the 10k corpus: structural matches 7,536 → 8,118 (+582),
+mismatch rows 174,701 → 172,791 (−1,910), `accidental` rows 5,786 → 3,876 —
+every other category byte-identical. The remaining accidental rows are genuine
+sounding-alteration differences (positional cascades plus the
+grace-accidental-scope edge above).

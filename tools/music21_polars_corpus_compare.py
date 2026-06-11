@@ -1354,15 +1354,25 @@ def add_pitch_rows(
     pitch_index: int,
 ) -> None:
     accidental = pitch.get("accidental")
+    # The compared alteration is the SOUNDING one (music21 pitch.alter):
+    # MusicXML defaults an absent <alter> to 0, so a redundant <alter>0</alter>
+    # must not surface as an "accidental" mismatch. Facts extracted before the
+    # sounding value existed carry only the display-accidental name; derive
+    # the equivalent alter from it then.
+    alter = pitch.get("alter")
+    if alter is None:
+        alter = accidental_to_alter(accidental)
+        if alter is None and pitch.get("step") is not None:
+            alter = 0.0
     pitch_kwargs = {
         **event_base,
         "alignment_index": pitch_index,
         "pitch_step": optional_string(pitch.get("step")),
-        "pitch_alter": accidental_to_alter(accidental),
+        "pitch_alter": alter,
         "pitch_octave": optional_int(pitch.get("octave")),
     }
     builder.add("pitch", "step", pitch.get("step"), **pitch_kwargs)
-    builder.add("pitch", "alter", accidental_to_alter(accidental), raw_value=accidental, **pitch_kwargs)
+    builder.add("pitch", "alter", alter, raw_value=accidental, **pitch_kwargs)
     builder.add("pitch", "octave", pitch.get("octave"), **pitch_kwargs)
 
 
