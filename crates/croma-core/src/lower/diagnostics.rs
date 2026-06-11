@@ -210,3 +210,13 @@ pub(crate) fn abc_field_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 information fields")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
 }
+
+pub(crate) fn abc_annotation_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 sections 4.18 chord symbols / 4.19 annotations")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+pub(crate) fn abc_grace_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.12 grace notes")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}

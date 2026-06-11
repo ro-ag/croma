@@ -1999,7 +1999,9 @@ fn quoted_text_after_grace_or_inside_slur_stays_bound() {
 fn unclosed_grace_group_after_quoted_text_still_diagnoses() {
     // `"F"{AB c`: the unclosed grace group swallows the rest of the line and
     // must keep emitting its diagnostic; the pending chord symbol must not
-    // suppress it or panic, and it must not leak onto the next line's notes.
+    // suppress it or panic. The symbol itself is not voided by the malformed
+    // grace (ABC 2.1 §4.18 binds it to the note it precedes): it recovers
+    // onto the first surviving note instead of vanishing silently.
     let source = "X:1\nL:1/8\nK:C\n\"F\"{AB c\nd e|\n";
     let (tune, diagnostics) = tune_for(source);
 
@@ -2008,10 +2010,21 @@ fn unclosed_grace_group_after_quoted_text_still_diagnoses() {
         1
     );
     let notes = semantic_note_events(&tune);
-    assert!(
+    let symbols: Vec<_> = notes
+        .iter()
+        .flat_map(|note| note.attachments.chord_symbols.iter())
+        .map(|symbol| symbol.text.as_str())
+        .collect();
+    assert_eq!(
+        symbols,
+        ["F"],
+        "the recovered symbol binds once, to the first surviving note"
+    );
+    assert_eq!(
         notes
-            .iter()
-            .all(|note| note.attachments.chord_symbols.is_empty())
+            .first()
+            .map(|note| note.attachments.chord_symbols.len()),
+        Some(1)
     );
 }
 

@@ -17,22 +17,19 @@ impl<'score> MusicXmlWriter<'score> {
         }
         let location = location.as_str();
         self.xml.start("barline", &[("location", location)]);
+        // MusicXML's barline content model orders bar-style, then <ending>,
+        // then <repeat>.
         match kind {
             BarlineKind::Double => self.xml.text_element("bar-style", "light-light"),
             BarlineKind::Final => self.xml.text_element("bar-style", "light-heavy"),
             BarlineKind::Initial => self.xml.text_element("bar-style", "heavy-light"),
-            BarlineKind::RepeatStart => {
-                self.xml.empty("repeat", &[("direction", "forward")]);
-            }
-            BarlineKind::RepeatEnd => {
-                self.xml.empty("repeat", &[("direction", "backward")]);
-            }
-            BarlineKind::RepeatBoth => {
-                self.xml.empty("repeat", &[("direction", "backward")]);
-            }
             BarlineKind::Dotted => self.xml.text_element("bar-style", "dotted"),
             BarlineKind::Invisible => self.xml.text_element("bar-style", "none"),
-            BarlineKind::Regular | BarlineKind::Liberal => {}
+            BarlineKind::RepeatStart
+            | BarlineKind::RepeatEnd
+            | BarlineKind::RepeatBoth
+            | BarlineKind::Regular
+            | BarlineKind::Liberal => {}
         }
         for child in ending_children {
             self.xml.empty(
@@ -48,6 +45,15 @@ impl<'score> MusicXmlWriter<'score> {
                     ),
                 ],
             );
+        }
+        match kind {
+            BarlineKind::RepeatStart => {
+                self.xml.empty("repeat", &[("direction", "forward")]);
+            }
+            BarlineKind::RepeatEnd | BarlineKind::RepeatBoth => {
+                self.xml.empty("repeat", &[("direction", "backward")]);
+            }
+            _ => {}
         }
         self.xml.end("barline");
     }

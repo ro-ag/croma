@@ -177,6 +177,9 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
         "open" => NotationKind::Technical("open-string"),
         "thumb" => NotationKind::Technical("thumb-position"),
         "snap" => NotationKind::Technical("snap-pizzicato"),
+        // `!+!` is left-hand pizzicato (ABC 2.1 line 1101); MusicXML's
+        // <stopped/> renders the same + glyph on the note.
+        "+" | "plus" => NotationKind::Technical("stopped"),
         _ => return None,
     })
 }
