@@ -2619,3 +2619,39 @@ fn grace_implicit_alter_uses_position_active_key() {
         &after[..300.min(after.len())]
     );
 }
+
+#[test]
+fn tie_keeps_pitch_across_mid_measure_key_change() {
+    // The tie-stop F must stay F# (the tied pitch), not re-resolve to F
+    // natural under the new key — and the reverse direction likewise.
+    for (source, want_alter) in [
+        ("X:1\nM:4/4\nL:1/4\nK:D\nFGAF|F-[K:C]FGA|\n", "1"),
+        ("X:1\nM:4/4\nL:1/4\nK:C\nFGAF|F-[K:D]FGA|\n", "0"),
+    ] {
+        let export = export_musicxml(source).expect("score should export");
+        let xml = export.musicxml;
+        let stop = xml
+            .find("tied type=\"stop\"")
+            .or_else(|| xml.find("<tie type=\"stop\""))
+            .expect("tie stop present");
+        let before = &xml[..stop];
+        let note_start = before.rfind("<note>").expect("stop note");
+        let note = &xml[note_start..stop];
+        let alter = note
+            .find("<alter>")
+            .map(|i| &note[i + 7..i + 8])
+            .unwrap_or("0");
+        assert_eq!(alter, want_alter, "tie-stop alter for {source:?}: {note}");
+    }
+}
+
+#[test]
+fn free_meter_change_emits_no_empty_attributes() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\nCDEF|[M:none]GABcdefg|\n";
+    let export = export_musicxml(source).expect("score should export");
+    assert!(
+        !export.musicxml.contains("<attributes></attributes>")
+            && !export.musicxml.contains("<attributes/>"),
+        "no empty attributes wrapper"
+    );
+}

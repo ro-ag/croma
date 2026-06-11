@@ -63,7 +63,11 @@ impl<'score> MusicXmlWriter<'score> {
     }
 
     /// A mid-tune meter change: a minimal `<attributes>` at the current cursor.
+    /// Free meters (`M:none`) render no <time>, so no wrapper either.
     pub(crate) fn write_mid_tune_meter(&mut self, meter: &crate::model::MeterModel) {
+        if meter.free_meter || meter_parts(&meter.display).is_none() {
+            return;
+        }
         self.xml.start("attributes", &[]);
         self.write_time_element(meter);
         self.xml.end("attributes");
