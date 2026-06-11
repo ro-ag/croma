@@ -8,7 +8,7 @@ use crate::syntax::{
     AccidentalSyntax, BrokenRhythmDirection, BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax,
     GraceElementSyntax, GraceGroupSyntax, LengthSyntax, MalformedSyntax, MalformedSyntaxKind,
     MultiMeasureRestSyntax, MusicItem, MusicTokenKind, NoteSyntax, OctaveMark, OctaveMarkSyntax,
-    PitchSyntax, RestSyntax, SpannedNumber, TieSyntax, TupletSyntax,
+    PitchSyntax, RestSyntax, SlurDirection, SlurSyntax, SpannedNumber, TieSyntax, TupletSyntax,
 };
 
 impl<'line> MusicLineParser<'line> {
@@ -158,6 +158,12 @@ impl<'line> MusicLineParser<'line> {
         let open_span = self.span(open_start, self.index);
         let mut members = Vec::new();
         let mut closed = false;
+        // Per-member slurs (`[(C(E] [C)E)]`, ABC 2.1 §4.11: "Both ties and
+        // slurs may be used into, out of and between chords"). A `(` inside
+        // the bracket opens a slur that binds forward to this chord; a `)`
+        // closes one ending on this chord — its item is deferred until after
+        // the chord item so lowering's stop-binding sees the chord.
+        let mut deferred_slur_ends = Vec::new();
 
         while let Some(ch) = self.peek_char() {
             match ch {
@@ -229,6 +235,23 @@ impl<'line> MusicLineParser<'line> {
                     self.parse_shorthand_decoration()
                 }
                 ch if self.is_user_symbol(ch) => self.parse_shorthand_decoration(),
+                '(' if !self
+                    .peek_next_char()
+                    .is_some_and(|next| next.is_ascii_digit()) =>
+                {
+                    self.parse_slur(SlurDirection::Start, false);
+                }
+                ')' => {
+                    let slur_start = self.index;
+                    self.bump_char();
+                    let span = self.span(slur_start, self.index);
+                    self.push_token(MusicTokenKind::Slur, span);
+                    deferred_slur_ends.push(SlurSyntax {
+                        span,
+                        dotted: false,
+                        direction: SlurDirection::End,
+                    });
+                }
                 _ => {
                     self.parse_malformed_single(
                         MalformedSyntaxKind::UnknownToken,
@@ -267,6 +290,9 @@ impl<'line> MusicLineParser<'line> {
             members,
             length,
         }));
+        for slur in deferred_slur_ends {
+            self.items.push(MusicItem::Slur(slur));
+        }
     }
 
     /// Consume an optional tie marker (`-`) following a chord member note and

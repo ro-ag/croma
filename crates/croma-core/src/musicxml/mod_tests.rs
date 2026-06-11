@@ -181,6 +181,27 @@ fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
 }
 
 #[test]
+fn chord_member_slurs_attach_to_their_chords() {
+    // ABC 2.1 §4.11: "Both ties and slurs may be used into, out of and
+    // between chords". `[(C2(E2] [C2)E2)]` opens two slurs on the first
+    // chord and closes both on the second (tune_011938/011866/004626
+    // family) — croma dropped them with unknown-chord-token warnings.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n[(C2(E2] [C2)E2)]|\n";
+    let export = export_musicxml(source).expect("chord-member slurs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<slur"), 4);
+    assert_eq!(count(&export.musicxml, "type=\"start\""), 2);
+    assert_eq!(count(&export.musicxml, "type=\"stop\""), 2);
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.music.unknown_chord_token")
+    );
+}
+
+#[test]
 fn lowercase_root_quoted_text_is_words_not_harmony() {
     // ABC 2.1 §4.18: the chord root is A-G (uppercase); only the bass note
     // may be lowercase. "d" is annotation text, not a D chord (40 corpus
