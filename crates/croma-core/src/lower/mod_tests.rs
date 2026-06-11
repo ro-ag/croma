@@ -1518,6 +1518,47 @@ fn ampersand_in_lyric_and_symbol_lines_is_not_music_overlay_syntax() {
     assert!(tune.voices[0].measures[0].overlays.is_empty());
 }
 
+#[test]
+fn body_unit_length_scopes_to_current_voice_only() {
+    // Header L:1/4; an `L:1/8` under V:1 must not leak into V:2
+    // (tune_014637/005353 family): body fields apply to the current voice
+    // and sibling/new voices keep the header default — the abcm2ps/
+    // abc2midi/abc2xml convention, codified by ABC 2.2 (ABC 2.1 §7 is
+    // VOLATILE/silent). The global broadcast silently under/over-filled
+    // sibling voices' bars.
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "V:1\n",
+        "L:1/8\n",
+        "CDEF|\n",
+        "V:2\n",
+        "C,D,E,F,|\n",
+    );
+    let (tune, _diagnostics) = tune_for(source);
+    let durations: Vec<Vec<_>> = tune
+        .score
+        .parts
+        .iter()
+        .map(|part| {
+            part.voices[0]
+                .events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    TimedEventKind::Note(_) => Some(event.duration),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
+    // V:1 notes are eighths (1/8), V:2 notes stay quarters (header 1/4).
+    assert_eq!(durations.len(), 2);
+    assert!(durations[0].iter().all(|d| *d == Fraction::new(1, 8)));
+    assert!(durations[1].iter().all(|d| *d == Fraction::new(1, 4)));
+}
+
 fn tune_for(source: &str) -> (crate::model::Tune, Vec<Diagnostic>) {
     let document = parse_document(source, ParseOptions::default());
     let mut diagnostics = document.diagnostics;
