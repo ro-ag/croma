@@ -129,6 +129,7 @@ pub(crate) fn parse_music_document(
                         tune.lines.push(parsed_line.line);
                     }
                 } else {
+                    push_discarded_voice_text_warnings(source, fields, line, &mut diagnostics);
                     tune.body_fields.push(field_line);
                 }
             }
@@ -278,6 +279,57 @@ fn same_line_voice_music(
     ))
 }
 
+/// Whether a token is a `key=value` voice parameter (`clef=bass`, `m=B,`).
+/// A parameter key is a non-empty alphabetic word, so an `=` without one is a
+/// natural accidental starting same-line music (`V:2 =C2D2`), as is an `=`
+/// embedded after note text (`V:2 E2=F2`).
+fn is_voice_parameter_token(token: &str) -> bool {
+    token
+        .split_once('=')
+        .is_some_and(|(key, _)| !key.is_empty() && key.chars().all(|ch| ch.is_ascii_alphabetic()))
+}
+
+/// A body `V:` line can carry trailing text that is neither recovered as
+/// same-line music nor meaningful as a voice parameter. `key=value` parameters
+/// always carry an alphabetic key, so a keyless `=` token (e.g. `=C2D2` after
+/// an unrecognized word) cannot be parsed as anything — warn instead of
+/// discarding it silently.
+fn push_discarded_voice_text_warnings(
+    source: &SourceText,
+    fields: &ParsedAbcFields,
+    line: &crate::syntax::tune::ClassifiedLine,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(field) = fields
+        .fields
+        .iter()
+        .find(|field| field.line_index == line.index)
+    else {
+        return;
+    };
+    let ParsedFieldKind::Voice(voice) = &field.kind else {
+        return;
+    };
+    for property in &voice.value.parsed_properties.other {
+        if !property.key.value.is_empty() {
+            continue;
+        }
+        let raw = source.slice(property.span).unwrap_or_default();
+        diagnostics.push(
+            Diagnostic::new(
+                Severity::Warning,
+                "abc.field.voice_property_ignored",
+                format!("Unparseable `V:` field text `{raw}` was ignored"),
+                property.span,
+            )
+            .with_spec_reference(abc_field_reference())
+            .with_recovery_note(RecoveryNote::new(
+                "The text is not a `key=value` voice parameter and was not recovered as same-line music.",
+            )),
+        );
+    }
+}
+
 fn looks_like_same_line_music(value: &str) -> bool {
     let trimmed = value.trim_start();
     if trimmed.is_empty() {
@@ -289,7 +341,7 @@ fn looks_like_same_line_music(value: &str) -> bool {
         .unwrap_or_default()
         .trim();
     let first_token_lower = first_token.to_ascii_lowercase();
-    if first_token.contains('=')
+    if is_voice_parameter_token(first_token)
         || matches!(
             first_token_lower.as_str(),
             "name"

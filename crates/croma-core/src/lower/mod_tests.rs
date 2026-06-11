@@ -1472,6 +1472,77 @@ fn body_voice_property_words_are_not_treated_as_same_line_music() {
 }
 
 #[test]
+fn body_voice_field_same_line_music_with_leading_accidental() {
+    for accidental in ["=", "^", "_"] {
+        let source = format!("X:1\nL:1/8\nK:C\nV:1 C D|\nV:2 {accidental}E F|\n");
+        let document_report = parse_document(&source, ParseOptions::default());
+        assert_eq!(
+            count_diagnostics(
+                &document_report.diagnostics,
+                "abc.field.voice_property_ignored"
+            ),
+            0,
+            "accidental `{accidental}` is music, not a discarded property"
+        );
+        let report = parse_tune_report_from_document(&document_report.value);
+        assert!(!report.has_errors());
+        let tune = report.value.expect("expected same-line voice music");
+        let steps = tune
+            .voices
+            .iter()
+            .find(|voice| voice.id.value == "2")
+            .expect("expected voice 2")
+            .measures
+            .iter()
+            .flat_map(|measure| &measure.events)
+            .filter_map(|event| match &event.kind {
+                TimelineEventKind::Note { step, .. } => Some(*step),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(steps, vec!['E', 'F'], "accidental `{accidental}`");
+    }
+}
+
+#[test]
+fn body_voice_field_same_line_music_with_accidental_inside_first_token() {
+    let document = parse_document(
+        "X:1\nL:1/8\nK:C\nV:1 C D|\nV:2 E2=F2 G2A2|\n",
+        ParseOptions::default(),
+    )
+    .value;
+    let report = parse_tune_report_from_document(&document);
+    assert!(!report.has_errors());
+    let tune = report.value.expect("expected same-line voice music");
+    let steps = tune
+        .voices
+        .iter()
+        .find(|voice| voice.id.value == "2")
+        .expect("expected voice 2")
+        .measures
+        .iter()
+        .flat_map(|measure| &measure.events)
+        .filter_map(|event| match &event.kind {
+            TimelineEventKind::Note { step, .. } => Some(*step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(steps, vec!['E', 'F', 'G', 'A']);
+}
+
+#[test]
+fn body_voice_field_unparseable_property_token_warns() {
+    let report = parse_document(
+        "X:1\nK:C\nV:1 Program =C2D2\nC D|\n",
+        ParseOptions::default(),
+    );
+    assert_eq!(
+        count_diagnostics(&report.diagnostics, "abc.field.voice_property_ignored"),
+        1
+    );
+}
+
+#[test]
 fn overfull_overlay_measure_duration_emits_diagnostic() {
     let document = parse_document("X:1\nL:1/8\nK:C\nC & D E|\n", ParseOptions::default()).value;
     let report = parse_tune_report_from_document(&document);
