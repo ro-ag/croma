@@ -115,6 +115,8 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_dynamic(dynamic, sequence, part);
             } else if let Some(direction) = symbol_direction(decoration.name.as_str()) {
                 self.write_direction_type(direction, sequence, part);
+            } else if let Some(wedge) = wedge_decoration(decoration.name.as_str()) {
+                self.write_wedge(wedge, sequence, part);
             } else if is_suppressed_decoration(decoration.name.as_str()) {
                 // No clean MusicXML equivalent (e.g. the Irish roll `~`).
                 // abc2xml emits nothing; suppress without a words direction or
@@ -164,6 +166,24 @@ impl<'score> MusicXmlWriter<'score> {
             DirectionSymbol::Coda => self.xml.empty("coda", &[]),
             DirectionSymbol::Segno => self.xml.empty("segno", &[]),
         }
+        self.xml.end("direction-type");
+        self.xml.text_element("voice", &sequence.voice_number);
+        if part.staves.len() > 1 {
+            self.xml
+                .text_element("staff", &sequence.staff.value.to_string());
+        }
+        self.xml.end("direction");
+    }
+
+    fn write_wedge(
+        &mut self,
+        wedge: &'static str,
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+    ) {
+        self.xml.start("direction", &[("placement", "below")]);
+        self.xml.start("direction-type", &[]);
+        self.xml.empty("wedge", &[("type", wedge)]);
         self.xml.end("direction-type");
         self.xml.text_element("voice", &sequence.voice_number);
         if part.staves.len() > 1 {
@@ -258,6 +278,18 @@ fn placement_name(placement: AnnotationPlacementModel) -> &'static str {
         AnnotationPlacementModel::Left
         | AnnotationPlacementModel::Right
         | AnnotationPlacementModel::Free => "above",
+    }
+}
+
+/// Hairpin decorations (ABC 2.1 lines 1114-1121): `!crescendo(!`/`!<(!` open a
+/// crescendo wedge, `!diminuendo(!`/`!>(!` a diminuendo, and the `)` forms
+/// close the open wedge (MusicXML wedge type `stop`).
+fn wedge_decoration(name: &str) -> Option<&'static str> {
+    match name {
+        "crescendo(" | "<(" => Some("crescendo"),
+        "diminuendo(" | ">(" => Some("diminuendo"),
+        "crescendo)" | "<)" | "diminuendo)" | ">)" => Some("stop"),
+        _ => None,
     }
 }
 

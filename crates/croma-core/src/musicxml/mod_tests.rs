@@ -105,6 +105,264 @@ fn leading_whitespace_valid_chord_symbols_still_export_harmony() {
 }
 
 #[test]
+fn chord_symbol_before_barline_binds_to_next_note() {
+    // ABC 2.1 §4.18: a chord symbol applies to the note it precedes. A barline
+    // between the symbol and its note is a measure boundary, not a void:
+    // `"F"| c` must keep the F harmony (bound to the c across the bar).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC4 \"F\"| c4 |]\n";
+    let export = export_musicxml(source).expect("chord symbol at barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 1);
+    assert!(export.musicxml.contains("<root-step>F</root-step>"));
+}
+
+#[test]
+fn chord_symbol_at_line_end_binds_to_note_on_next_line() {
+    // A code line break is not a musical boundary (§6.1.1): `"Em7"` at the end
+    // of one music line binds to the first note of the next line.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D \"Em7\"\nE F|\n";
+    let export = export_musicxml(source).expect("line-end chord symbol should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 1);
+    assert!(export.musicxml.contains("<root-step>E</root-step>"));
+    assert!(
+        export
+            .musicxml
+            .contains("<kind text=\"Em7\">minor-seventh</kind>")
+    );
+}
+
+#[test]
+fn annotation_alone_on_line_binds_to_first_following_note() {
+    // An annotation on a line of its own (tune_000377's `"Single Reel"`)
+    // positions relative to the following note (§4.19) and must not be lost.
+    let source = "X:1\nM:C|\nK:G\n\"Single Reel\"\nB2 e2 g2 f2|\n";
+    let export = export_musicxml(source).expect("standalone annotation line should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<words>Single Reel</words>"));
+}
+
+#[test]
+fn chord_symbol_before_multimeasure_rest_is_kept() {
+    // `"Dm"Z2` — the symbol precedes a multi-measure rest; it binds to that
+    // rest event, not to nothing.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"Dm\"Z2 | C4 |]\n";
+    let export = export_musicxml(source).expect("chord before multirest should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 1);
+    assert!(export.musicxml.contains("<root-step>D</root-step>"));
+}
+
+#[test]
+fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
+    // Quoted text with no following timed event cannot bind to anything; it
+    // must surface as a diagnostic, never vanish silently.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC4 \"X7\" |]\n";
+    let export = export_musicxml(source).expect("dangling quoted text should still export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 0);
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.music.dangling_quoted_text"),
+        "expected dangling-quoted-text diagnostic, got: {:?}",
+        export
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn multi_measure_volta_emits_ending_stop_at_closing_barline() {
+    // ABC 2.1 §4.9: "The Nth ending starts with [N and ends with one of
+    // ||, :| |] or [|" — endings legally span multiple measures. The
+    // MusicXML bracket must close: an <ending type="start"> with no stop is
+    // a dangling bracket (tune_008287 family, 905 affected files).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF|[1 GABc|GGGG:|[2 cdef|]\n";
+    let export = export_musicxml(source).expect("multi-measure volta should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"1\" type=\"start\"/>")
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"1\" type=\"stop\"/>")
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"start\"/>")
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"stop\"/>")
+    );
+}
+
+#[test]
+fn volta_unclosed_in_source_stays_open_at_part_end() {
+    // ABC 2.1 §4.9 closes an ending at `||`, `:|`, `|]` or `[|`. When the
+    // source never writes one (the tune just ends on a plain bar), no stop
+    // is synthesized: fabricating a closing barline the source does not have
+    // regressed 25 previously-matching corpus files. A closing bar later in
+    // the source still stops the bracket (see
+    // multi_measure_volta_emits_ending_stop_at_closing_barline).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF|[1 GABc:|[2 cdef|\n";
+    let export = export_musicxml(source).expect("volta to part end should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"start\"/>")
+    );
+    assert!(
+        !export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"stop\"/>")
+    );
+}
+
+#[test]
+fn ending_precedes_repeat_inside_barline_element() {
+    // MusicXML's barline content model orders <ending> before <repeat>; the
+    // reverse is schema-invalid.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF|[1 GABc:|[2 cdef|]\n";
+    let export = export_musicxml(source).expect("volta should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let barline = export
+        .musicxml
+        .split("<barline location=\"right\">")
+        .find(|chunk| chunk.contains("<ending number=\"1\" type=\"stop\"/>"))
+        .expect("ending-1 stop barline exists");
+    let barline = &barline[..barline.find("</barline>").expect("closed")];
+    let ending_pos = barline.find("<ending").expect("ending present");
+    let repeat_pos = barline.find("<repeat").expect("repeat present");
+    assert!(
+        ending_pos < repeat_pos,
+        "ending must precede repeat, got: {barline}"
+    );
+}
+
+#[test]
+fn dynamic_decoration_before_barline_or_line_end_is_kept() {
+    // `!f!` at the end of a line with its note across the barline/line break
+    // (tune_004792 family): ABC 2.1 §4.14 binds a decoration to the following
+    // decorated symbol; the boundary does not void it.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F !f!|\nG A B c|\n";
+    let export = export_musicxml(source).expect("dynamic at barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<f/>"), 1);
+}
+
+#[test]
+fn grace_group_before_barline_attaches_to_note_across_the_bar() {
+    // `{e/}|d3`: ABC 2.1 §4.12 defines no void-at-barline rule for graces and
+    // §4.20 orders a grace before the note it decorates — here that note is
+    // across the bar. The transcriber's grace must not be silently lost
+    // (tune_014161 family).
+    let source = "X:1\nL:1/8\nM:6/8\nK:D\nGB2Af2{e/}|d3D2z|]\n";
+    let export = export_musicxml(source).expect("grace at barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<grace"), 1);
+    // The grace lands in measure 2, before the principal d.
+    let measure2 = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .nth(1)
+        .expect("measure 2 exists");
+    assert!(measure2.contains("<grace"));
+}
+
+#[test]
+fn dangling_grace_group_at_tune_end_warns_instead_of_silent_drop() {
+    // A grace group with no following note has nothing to decorate; it must
+    // surface as a diagnostic, never vanish silently.
+    let source = "X:1\nL:1/8\nK:C\nC4 {ab}|]\n";
+    let export = export_musicxml(source).expect("dangling grace should still export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<grace"), 0);
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.music.dangling_grace_group"),
+        "expected dangling-grace diagnostic, got: {:?}",
+        export
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn chord_symbol_survives_legacy_plus_decoration() {
+    // `"F"+>+a4`: the deprecated `+...+` decoration syntax (ABC 2.0 §10.2.2)
+    // between the chord symbol and its note must not destroy the symbol —
+    // same silent-data-loss family as the fixed grace/slur/tuplet flushes
+    // (tune_006965 family).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"F\"+>+a4|\n";
+    let export = export_musicxml(source).expect("chord before +decoration+ should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 1);
+    assert!(export.musicxml.contains("<root-step>F</root-step>"));
+}
+
+#[test]
+fn crescendo_and_diminuendo_decorations_emit_wedges_not_words() {
+    // ABC 2.1 (lines 1114-1121): !crescendo(!/!<(! open a hairpin,
+    // !crescendo)!/!<)! close it (same for diminuendo). These are wedge
+    // marks, not printable text — emitting the raw name as <words> mangles
+    // the notation.
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "!<(!C D !<)!E F|!diminuendo(!G A !diminuendo)!B c|\n",
+    );
+    let export = export_musicxml(source).expect("wedge decorations should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<wedge type=\"crescendo\"/>"), 1);
+    assert_eq!(count(&export.musicxml, "<wedge type=\"diminuendo\"/>"), 1);
+    assert_eq!(count(&export.musicxml, "<wedge type=\"stop\"/>"), 2);
+    assert!(!export.musicxml.contains("<words><(</words>"));
+    assert!(!export.musicxml.contains("<words>diminuendo(</words>"));
+}
+
+#[test]
+fn plus_decoration_emits_stopped_technical_not_words() {
+    // ABC 2.1 (line 1101): !+! is left-hand pizzicato — a note-attached
+    // technical mark (MusicXML <stopped/>, the + glyph), not visible text.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n!+!C D E F|\n";
+    let export = export_musicxml(source).expect("plus decoration should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<stopped/>"), 1);
+    assert!(!export.musicxml.contains("<words>+</words>"));
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).
@@ -1213,22 +1471,26 @@ fn chord_symbol_before_grace_group_emits_harmony() {
 
 #[test]
 fn grace_orphaned_before_barline_is_voided_without_panic() {
-    // A grace group with no following note before a hard boundary (bar end / end
-    // of tune) is void per the dangling-grace policy: no panic, no grace emitted,
-    // sensible output. `c {g}|` flushes the grace at the barline; `{g}` at end of
-    // tune flushes at end-of-line. Neither should crash or emit a `<grace/>`.
-    for source in [
-        "X:1\nT:Orphan Grace Bar\nM:4/4\nL:1/4\nK:C\nc {g}| d|\n",
-        "X:1\nT:Orphan Grace End\nM:4/4\nL:1/4\nK:C\nc {g}\n",
-    ] {
-        let export = export_musicxml(source).expect("orphan-grace score should export");
-        assert_balanced_xml(&export.musicxml);
-        assert_eq!(
-            count(&export.musicxml, "<grace/>"),
-            0,
-            "an orphaned grace with no following note must be voided: {source}"
-        );
-    }
+    // A grace flushed at a barline now carries across the bar to the next note
+    // (`c {g}| d` decorates the d — see
+    // grace_group_before_barline_attaches_to_note_across_the_bar). Only a
+    // grace with NO following note at all (end of tune) is void: no panic, no
+    // `<grace/>`, and a dangling-grace diagnostic instead of a silent drop.
+    let carried = export_musicxml("X:1\nT:Orphan Grace Bar\nM:4/4\nL:1/4\nK:C\nc {g}| d|\n")
+        .expect("carried-grace score should export");
+    assert_balanced_xml(&carried.musicxml);
+    assert_eq!(count(&carried.musicxml, "<grace/>"), 1);
+
+    let orphan = export_musicxml("X:1\nT:Orphan Grace End\nM:4/4\nL:1/4\nK:C\nc {g}\n")
+        .expect("orphan-grace score should export");
+    assert_balanced_xml(&orphan.musicxml);
+    assert_eq!(count(&orphan.musicxml, "<grace/>"), 0);
+    assert!(
+        orphan
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.music.dangling_grace_group")
+    );
 }
 
 #[test]

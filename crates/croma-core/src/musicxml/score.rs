@@ -56,7 +56,9 @@ impl<'score> MusicXmlWriter<'score> {
         self.active_key = self.score.metadata.key.clone();
         self.xml.start("part", &[("id", id.as_str())]);
         let mut pending_left_repeat = false;
-        for (measure_position, measure_id) in part_measure_ids(part).iter().enumerate() {
+        let measure_ids = part_measure_ids(part);
+        let ending_stops = ending_stop_schedule(part, &measure_ids);
+        for (measure_position, measure_id) in measure_ids.iter().enumerate() {
             let number = measure_id.number.to_string();
             self.xml.start("measure", &[("number", number.as_str())]);
             if measure_position == 0 {
@@ -88,16 +90,17 @@ impl<'score> MusicXmlWriter<'score> {
                 }
             }
 
+            // An ending bracket may span several measures (ABC 2.1 §4.9); the
+            // schedule says which measure's right barline closes the bracket
+            // opened at its `[N`.
+            let mut stop_endings = ending_stops[measure_position].as_deref();
             let right_barlines = unique_barlines(&measure_refs, false);
             for barline in &right_barlines {
-                let ending_type = (!endings.is_empty()
-                    && stops_repeat_ending_barline(barline.kind))
-                .then_some(EndingType::Stop);
-                if let Some(ending_type) = ending_type {
+                if let Some(stops) = stop_endings.take() {
                     self.write_ending_barline(
                         BarlineLocation::Right,
-                        &endings,
-                        ending_type,
+                        stops,
+                        EndingType::Stop,
                         Some(barline.kind),
                     );
                 } else {
@@ -106,6 +109,12 @@ impl<'score> MusicXmlWriter<'score> {
                 if barline.kind == BarlineKind::RepeatBoth {
                     pending_left_repeat = true;
                 }
+            }
+            // A bracket forced shut here (next measure opens another ending,
+            // or the part ends) with no written right barline still needs its
+            // <ending type="stop"> on an implicit regular barline.
+            if let Some(stops) = stop_endings.take() {
+                self.write_ending_barline(BarlineLocation::Right, stops, EndingType::Stop, None);
             }
 
             // A trailing `|:` (a forward repeat that follows content rather than
@@ -307,6 +316,41 @@ fn trailing_left_repeat_pending(measures: &[&Measure]) -> bool {
             barline.kind == BarlineKind::RepeatStart && !is_leading_barline(measure, barline)
         })
     })
+}
+
+/// For each measure position, the ending-number strings whose volta bracket
+/// closes at that measure's right barline. A bracket opened by `[N` (ABC 2.1
+/// §4.9: "The Nth ending starts with [N and ends with one of ||, :| |] or
+/// [|") closes at the first stopping right barline; a new `[M` while one is
+/// open force-closes it at the previous measure, and a bracket still open at
+/// the part end closes on the last measure — an `<ending type="start">` must
+/// never dangle.
+fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Vec<String>>> {
+    let mut stops: Vec<Option<Vec<String>>> = vec![None; measure_ids.len()];
+    let mut open: Option<Vec<String>> = None;
+    for (position, measure_id) in measure_ids.iter().enumerate() {
+        let measure_refs = part_measure_refs(part, *measure_id);
+        let starts = unique_endings(&measure_refs);
+        if !starts.is_empty() {
+            if let Some(open_endings) = open.take()
+                && position > 0
+            {
+                stops[position - 1] = Some(open_endings);
+            }
+            open = Some(starts);
+        }
+        if open.is_some()
+            && unique_barlines(&measure_refs, false)
+                .iter()
+                .any(|barline| stops_repeat_ending_barline(barline.kind))
+        {
+            stops[position] = open.take();
+        }
+    }
+    // A bracket still open at the part end stays open: the source never wrote
+    // a closing bar (`||`/`:|`/`|]`/`[|`), and synthesizing a stop here would
+    // fabricate a barline the source does not have.
+    stops
 }
 
 fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {

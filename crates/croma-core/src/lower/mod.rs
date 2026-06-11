@@ -21,9 +21,9 @@ use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    AccidentalPolicy, AccidentalScope, BarlineKind, Event, EventAttachments, Fraction,
-    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel,
-    Part, PartId, PreservedDirective, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
+    AccidentalPolicy, AccidentalScope, BarlineKind, Event, Fraction, KeyAccidentalModel,
+    KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel, Part, PartId,
+    PreservedDirective, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
     ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId, StemDirectionModel, TextLine,
     TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
 };
@@ -34,9 +34,9 @@ use crate::parse::field::{
 };
 use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
-    BarlineSyntax, InlineFieldSyntax, LyricLineSyntax, MusicFieldLine, MusicFieldLineKind,
-    MusicItem, MusicLine, ParsedTuneMusic, PreservedDirectiveSyntax, ScoreDirectiveSyntax,
-    SymbolLineSyntax,
+    AttachmentBundle, BarlineSyntax, InlineFieldSyntax, LyricLineSyntax, MusicFieldLine,
+    MusicFieldLineKind, MusicItem, MusicLine, ParsedTuneMusic, PreservedDirectiveSyntax,
+    ScoreDirectiveSyntax, SymbolLineSyntax,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,6 +461,11 @@ impl MultiVoiceLowering {
                         self.unit.checked_mul_u32(count)
                     };
                     let source_order = self.next_source_order();
+                    // Multi-measure rests carry no syntax-level bundle, but
+                    // flushed-ahead attachments (`"Dm"Z`) still bind here.
+                    let attachments = self
+                        .current_state()
+                        .take_timed_attachments(&AttachmentBundle::default());
                     self.current_state().push_time_group(
                         vec![(
                             LoweredEventAtom {
@@ -471,7 +476,7 @@ impl MultiVoiceLowering {
                                 duration,
                             },
                             false,
-                            EventAttachments::default(),
+                            attachments,
                         )],
                         line.line_index,
                         source_order,
@@ -509,9 +514,12 @@ impl MultiVoiceLowering {
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
                     self.current_state().reset_measure_accidentals_at_barline();
-                    // A grace flushed ahead of its note but with no note before the
-                    // bar is void (ABC 2.1 §4.20): drop the buffer at the boundary.
-                    self.current_state().pending_grace_groups.clear();
+                    // A grace flushed ahead of its note stays pending across the
+                    // bar: ABC 2.1 §4.12 defines no void-at-barline rule and
+                    // §4.20 binds the grace to the note it precedes — which may
+                    // be the first note of the next measure (`{e/}|d3`). A
+                    // leftover at the end of the voice surfaces as a
+                    // dangling-grace diagnostic instead of a silent drop.
                     for kind in barline_lowering_kinds(barline) {
                         self.current_state()
                             .lowered
@@ -540,11 +548,28 @@ impl MultiVoiceLowering {
                         .pending_grace_groups
                         .push(grace.clone());
                 }
-                MusicItem::ChordSymbol(_)
-                | MusicItem::Annotation(_)
-                | MusicItem::Decoration(_)
-                | MusicItem::Unsupported(_)
-                | MusicItem::Malformed(_) => {}
+                MusicItem::ChordSymbol(text) => {
+                    // Flushed ahead of its note by a barline / line end / other
+                    // boundary. ABC 2.1 §4.18 binds the symbol to the note it
+                    // precedes, so buffer it for the next timed event (the
+                    // boundary does not void it).
+                    self.current_state()
+                        .pending_chord_symbols
+                        .push(text.clone());
+                }
+                MusicItem::Annotation(text) => {
+                    // Same flushed-ahead situation; §4.19 positions an
+                    // annotation relative to the following note.
+                    self.current_state().pending_annotations.push(text.clone());
+                }
+                MusicItem::Decoration(decoration) => {
+                    // Flushed ahead of its symbol (§4.14); binds to the next
+                    // timed event like the quoted-text cases above.
+                    self.current_state()
+                        .pending_decorations
+                        .push(decoration.clone());
+                }
+                MusicItem::Unsupported(_) | MusicItem::Malformed(_) => {}
             }
         }
     }

@@ -10,9 +10,9 @@ use crate::model::{
 use crate::parse::field::KeySignature;
 use crate::syntax::{
     AnnotationPlacement, AttachmentBundle, BrokenRhythmDirection, BrokenRhythmSyntax, ChordSyntax,
-    DecorationKind, GraceElementSyntax, GraceGroupSyntax, LengthSyntax, NoteSyntax, OctaveMark,
-    OverlaySyntax, QuotedTextKind, RestSyntax, SlurDirection, SlurSyntax, TieSyntax,
-    VariantEndingSyntax,
+    DecorationKind, DecorationSyntax, GraceElementSyntax, GraceGroupSyntax, LengthSyntax,
+    NoteSyntax, OctaveMark, OverlaySyntax, QuotedTextKind, QuotedTextSyntax, RestSyntax,
+    SlurDirection, SlurSyntax, TieSyntax, VariantEndingSyntax,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +92,21 @@ pub(crate) struct LoweringState {
     /// (barline, voice switch, end of tune) when no timed note follows — a grace
     /// with no following note is void.
     pub(crate) pending_grace_groups: Vec<GraceGroupSyntax>,
+    /// Quoted chord symbols flushed out of the parser's pending attachments by
+    /// an intervening barline (`"F"| c`), line end, or other flush trigger
+    /// before their note was parsed. ABC 2.1 §4.18 binds a chord symbol to the
+    /// note it precedes and neither a barline nor a code line break voids it,
+    /// so the symbol is buffered and merged into the next timed event. A
+    /// leftover at the end of the voice surfaces as a
+    /// `abc.music.dangling_quoted_text` warning, never a silent drop.
+    pub(crate) pending_chord_symbols: Vec<QuotedTextSyntax>,
+    /// Annotations in the same flushed-ahead situation as
+    /// [`Self::pending_chord_symbols`] (ABC 2.1 §4.19: an annotation positions
+    /// relative to the following note).
+    pub(crate) pending_annotations: Vec<QuotedTextSyntax>,
+    /// Decorations (`!f!`, `!trill!`, ...) in the same flushed-ahead situation
+    /// (ABC 2.1 §4.14: a decoration precedes the symbol it decorates).
+    pub(crate) pending_decorations: Vec<DecorationSyntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,15 +162,20 @@ impl LoweringState {
             next_slur_id: 1,
             next_tuplet_id: 1,
             pending_grace_groups: Vec::new(),
+            pending_chord_symbols: Vec::new(),
+            pending_annotations: Vec::new(),
+            pending_decorations: Vec::new(),
         }
     }
 
     /// Build the lowered attachment bundle for a timed event, prepending any
-    /// grace groups that the parser flushed ahead of their note (see
-    /// `pending_grace_groups`). Prepending preserves source order: a flushed
-    /// grace was written before the note's own attachments, and multiple flushed
-    /// graces keep their relative order. The buffer is drained once consumed.
-    fn take_timed_attachments(&mut self, bundle: &AttachmentBundle) -> EventAttachments {
+    /// grace groups, chord symbols, and annotations that the parser flushed
+    /// ahead of their note (see `pending_grace_groups` /
+    /// `pending_chord_symbols` / `pending_annotations`). Prepending preserves
+    /// source order: a flushed attachment was written before the note's own
+    /// attachments, and multiple flushed items keep their relative order. The
+    /// buffers are drained once consumed.
+    pub(crate) fn take_timed_attachments(&mut self, bundle: &AttachmentBundle) -> EventAttachments {
         let mut attachments = attachment_bundle_model(bundle);
         if !self.pending_grace_groups.is_empty() {
             let mut graces: Vec<_> = self
@@ -165,6 +185,33 @@ impl LoweringState {
                 .collect();
             graces.append(&mut attachments.grace_groups);
             attachments.grace_groups = graces;
+        }
+        if !self.pending_chord_symbols.is_empty() {
+            let mut symbols: Vec<_> = self
+                .pending_chord_symbols
+                .drain(..)
+                .map(|text| chord_symbol_attachment_model(&text))
+                .collect();
+            symbols.append(&mut attachments.chord_symbols);
+            attachments.chord_symbols = symbols;
+        }
+        if !self.pending_annotations.is_empty() {
+            let mut annotations: Vec<_> = self
+                .pending_annotations
+                .drain(..)
+                .map(|text| annotation_attachment_model(&text))
+                .collect();
+            annotations.append(&mut attachments.annotations);
+            attachments.annotations = annotations;
+        }
+        if !self.pending_decorations.is_empty() {
+            let mut decorations: Vec<_> = self
+                .pending_decorations
+                .drain(..)
+                .map(|decoration| decoration_attachment_model(&decoration))
+                .collect();
+            decorations.append(&mut attachments.decorations);
+            attachments.decorations = decorations;
         }
         attachments
     }
@@ -258,13 +305,29 @@ impl LoweringState {
                 .push(variable_chord_duration_warning(chord.span));
         }
 
-        // Grace groups flushed ahead of this chord attach to the chord as a whole
-        // (its first member), mirroring chord-level attachments. Drain the buffer
-        // before the per-member closure, which borrows `self` immutably.
+        // Attachments flushed ahead of this chord (graces, chord symbols,
+        // annotations) attach to the chord as a whole (its first member),
+        // mirroring chord-level attachments. Drain the buffers before the
+        // per-member closure, which borrows `self` immutably.
         let mut pending_graces: Vec<GraceGroupAttachment> = self
             .pending_grace_groups
             .drain(..)
             .map(|grace| grace_group_attachment_model(&grace))
+            .collect();
+        let mut pending_symbols: Vec<TextAttachment> = self
+            .pending_chord_symbols
+            .drain(..)
+            .map(|text| chord_symbol_attachment_model(&text))
+            .collect();
+        let mut pending_annotations: Vec<TextAttachment> = self
+            .pending_annotations
+            .drain(..)
+            .map(|text| annotation_attachment_model(&text))
+            .collect();
+        let mut pending_decorations: Vec<DecorationAttachment> = self
+            .pending_decorations
+            .drain(..)
+            .map(|decoration| decoration_attachment_model(&decoration))
             .collect();
 
         let events = chord
@@ -290,6 +353,21 @@ impl LoweringState {
                         let mut graces = std::mem::take(&mut pending_graces);
                         graces.append(&mut attachments.grace_groups);
                         attachments.grace_groups = graces;
+                    }
+                    if !pending_symbols.is_empty() {
+                        let mut symbols = std::mem::take(&mut pending_symbols);
+                        symbols.append(&mut attachments.chord_symbols);
+                        attachments.chord_symbols = symbols;
+                    }
+                    if !pending_annotations.is_empty() {
+                        let mut annotations = std::mem::take(&mut pending_annotations);
+                        annotations.append(&mut attachments.annotations);
+                        attachments.annotations = annotations;
+                    }
+                    if !pending_decorations.is_empty() {
+                        let mut decorations = std::mem::take(&mut pending_decorations);
+                        decorations.append(&mut attachments.decorations);
+                        attachments.decorations = decorations;
                     }
                 }
                 (
@@ -585,6 +663,27 @@ impl LoweringState {
             self.diagnostics
                 .push(unclosed_slur_warning(slur.marker.span));
         }
+        // Quoted text still pending at the end of the voice has no note to
+        // bind to (ABC 2.1 §4.18/§4.19); surface the drop, never silent.
+        for text in std::mem::take(&mut self.pending_chord_symbols) {
+            self.diagnostics
+                .push(dangling_quoted_text_warning(text.span));
+        }
+        for text in std::mem::take(&mut self.pending_annotations) {
+            self.diagnostics
+                .push(dangling_quoted_text_warning(text.span));
+        }
+        // Same for a grace group with no following note to decorate (§4.12).
+        for grace in std::mem::take(&mut self.pending_grace_groups) {
+            self.diagnostics
+                .push(dangling_grace_group_warning(grace.span));
+        }
+        // And a decoration with no following symbol (§4.14): the dangling
+        // text warning covers it (same no-silent-loss policy).
+        for decoration in std::mem::take(&mut self.pending_decorations) {
+            self.diagnostics
+                .push(dangling_quoted_text_warning(decoration.span));
+        }
     }
 }
 
@@ -645,57 +744,69 @@ fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
         chord_symbols: bundle
             .chord_symbols
             .iter()
-            .map(|text| TextAttachment {
-                text: text.text.clone(),
-                span: text.span,
-                placement: None,
-            })
+            .map(chord_symbol_attachment_model)
             .collect(),
         annotations: bundle
             .annotations
             .iter()
-            .map(|text| TextAttachment {
-                text: text.text.clone(),
-                span: text.span,
-                placement: match text.kind {
-                    QuotedTextKind::Annotation(AnnotationPlacement::Above) => {
-                        Some(AnnotationPlacementModel::Above)
-                    }
-                    QuotedTextKind::Annotation(AnnotationPlacement::Below) => {
-                        Some(AnnotationPlacementModel::Below)
-                    }
-                    QuotedTextKind::Annotation(AnnotationPlacement::Left) => {
-                        Some(AnnotationPlacementModel::Left)
-                    }
-                    QuotedTextKind::Annotation(AnnotationPlacement::Right) => {
-                        Some(AnnotationPlacementModel::Right)
-                    }
-                    QuotedTextKind::Annotation(AnnotationPlacement::Free) => {
-                        Some(AnnotationPlacementModel::Free)
-                    }
-                    QuotedTextKind::ChordSymbol => None,
-                },
-            })
+            .map(annotation_attachment_model)
             .collect(),
         decorations: bundle
             .decorations
             .iter()
-            .map(|decoration| DecorationAttachment {
-                name: decoration.name.clone(),
-                span: decoration.span,
-                source_kind: match decoration.kind {
-                    DecorationKind::Named => DecorationSourceKind::Named,
-                    DecorationKind::LegacyNamed => DecorationSourceKind::LegacyNamed,
-                    DecorationKind::Shorthand => DecorationSourceKind::Shorthand,
-                    DecorationKind::UserDefined => DecorationSourceKind::UserDefined,
-                },
-            })
+            .map(decoration_attachment_model)
             .collect(),
         lyrics: Vec::new(),
         symbols: Vec::new(),
         ties: Vec::new(),
         slurs: Vec::new(),
         tuplets: Vec::new(),
+    }
+}
+
+pub(crate) fn chord_symbol_attachment_model(text: &QuotedTextSyntax) -> TextAttachment {
+    TextAttachment {
+        text: text.text.clone(),
+        span: text.span,
+        placement: None,
+    }
+}
+
+pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttachment {
+    TextAttachment {
+        text: text.text.clone(),
+        span: text.span,
+        placement: match text.kind {
+            QuotedTextKind::Annotation(AnnotationPlacement::Above) => {
+                Some(AnnotationPlacementModel::Above)
+            }
+            QuotedTextKind::Annotation(AnnotationPlacement::Below) => {
+                Some(AnnotationPlacementModel::Below)
+            }
+            QuotedTextKind::Annotation(AnnotationPlacement::Left) => {
+                Some(AnnotationPlacementModel::Left)
+            }
+            QuotedTextKind::Annotation(AnnotationPlacement::Right) => {
+                Some(AnnotationPlacementModel::Right)
+            }
+            QuotedTextKind::Annotation(AnnotationPlacement::Free) => {
+                Some(AnnotationPlacementModel::Free)
+            }
+            QuotedTextKind::ChordSymbol => None,
+        },
+    }
+}
+
+pub(crate) fn decoration_attachment_model(decoration: &DecorationSyntax) -> DecorationAttachment {
+    DecorationAttachment {
+        name: decoration.name.clone(),
+        span: decoration.span,
+        source_kind: match decoration.kind {
+            DecorationKind::Named => DecorationSourceKind::Named,
+            DecorationKind::LegacyNamed => DecorationSourceKind::LegacyNamed,
+            DecorationKind::Shorthand => DecorationSourceKind::Shorthand,
+            DecorationKind::UserDefined => DecorationSourceKind::UserDefined,
+        },
     }
 }
 
@@ -947,6 +1058,32 @@ fn unclosed_slur_warning(span: Span) -> Diagnostic {
     .with_spec_reference(abc_slur_reference())
     .with_recovery_note(RecoveryNote::new(
         "The open slur marker was preserved and skipped during lowering.",
+    ))
+}
+
+fn dangling_quoted_text_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.dangling_quoted_text",
+        "Quoted text has no following note to attach to",
+        span,
+    )
+    .with_spec_reference(crate::lower::diagnostics::abc_annotation_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The quoted text was dropped at the end of the voice.",
+    ))
+}
+
+fn dangling_grace_group_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.dangling_grace_group",
+        "Grace group has no following note to decorate",
+        span,
+    )
+    .with_spec_reference(crate::lower::diagnostics::abc_grace_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The grace group was dropped at the end of the voice.",
     ))
 }
 
