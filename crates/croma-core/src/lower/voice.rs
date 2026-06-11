@@ -466,6 +466,8 @@ impl LoweringState {
     /// explicit accidental applies to same-pitch notes until the end of the
     /// bar, so the measure accidental ledger is deliberately left intact.
     pub(crate) fn set_key(&mut self, key: Option<&KeySignature>) {
+        // An open tie must keep its sounding pitch across the change.
+        self.preserve_tie_pitches_for_key_change();
         self.key_accidentals = key_accidental_policy(key);
     }
 
