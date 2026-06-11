@@ -172,6 +172,14 @@ fn parse_chord_symbol(text: &str) -> Option<ParsedChordSymbol> {
         _ => trimmed,
     };
 
+    // ABC 2.1 §4.18: the chord ROOT is "one of the letters A-G"; only the
+    // bass note is granted case-insensitivity ("any letter (A-G or a-g)").
+    // A lowercase first letter ("d", "play") is not a chord symbol — it
+    // falls through to a <words> direction, matching the spec (and the
+    // baseline, which demotes such strings to text).
+    if !core.starts_with(|ch: char| ch.is_ascii_uppercase()) {
+        return None;
+    }
     let (root, rest) = parse_chord_tone(core)?;
     // The bass `/X` is split off the tail first; the rest before it is the
     // quality + degrees.
