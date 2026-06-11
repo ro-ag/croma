@@ -69,6 +69,43 @@ impl<'line> MusicLineParser<'line> {
             self.parse_barline(false);
             return;
         }
+        // A `:` glued onto the barline it follows (`|]:` before a new
+        // section) is that bar's trailing repeat dots — extend the barline
+        // instead of opening a phantom one-colon measure of its own.
+        let glued_to_barline = matches!(
+            self.items.last(),
+            Some(MusicItem::Barline(previous)) if previous.span.end == self.line_offset + self.index
+        );
+        if glued_to_barline {
+            let colon_start = self.index;
+            self.bump_char();
+            let new_end = self.line_offset + self.index;
+            if let Some(MusicItem::Barline(previous)) = self.items.last_mut() {
+                previous.raw.push(':');
+                previous.span = Span::new(previous.span.start, new_end);
+                let raw_without_dot = previous.raw.strip_prefix('.').unwrap_or(&previous.raw);
+                previous.kind = barline_kind(raw_without_dot, previous.dotted);
+            }
+            let span = self.span(colon_start, self.index);
+            self.push_token(MusicTokenKind::Barline, span);
+            return;
+        }
+        // A lone `:` glued to a note group (`CDEF:GABc`) is still a bar-line
+        // character run under §4.8's liberal-recognition guidance; dropping it
+        // as malformed destroyed the measure boundary and cascaded
+        // misalignment (71 corpus files). parse_barline classifies the bare
+        // `:` as a Liberal boundary (no repeat glyph) with the
+        // liberal-spelling warning. A free-floating `: ` with whitespace on
+        // both sides stays a malformed stray repeat dot.
+        let adjacent_before = self.text[..self.index]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| !ch.is_whitespace());
+        let adjacent_after = self.peek_next_char().is_some_and(|ch| !ch.is_whitespace());
+        if adjacent_before || adjacent_after {
+            self.parse_barline(false);
+            return;
+        }
         self.flush_pending_attachments();
         self.parse_malformed_single(
             MalformedSyntaxKind::InvalidBarline,
@@ -154,7 +191,28 @@ pub(in crate::parse) fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
         _ if raw.contains(']') && has_repeat_start(raw) => BarlineKind::RepeatStart,
         _ if raw.contains(']') && has_repeat_end(raw) => BarlineKind::RepeatEnd,
         _ if raw.starts_with("|]") => BarlineKind::Final,
-        _ => BarlineKind::Liberal,
+        // Liberal runs (§4.8: "bar lines may have any shape, using a sequence
+        // of |, [, ] and :") classify to their strongest component instead of
+        // erasing their meaning. Reading order decides a `|:`-vs-`:|` clash
+        // (`|:|` opens a repeat; `:|...|:` exact forms matched above).
+        _ => {
+            let forward = raw.find("|:");
+            let backward = if raw.starts_with(':') && raw.contains('|') {
+                Some(0)
+            } else {
+                raw.find(":|")
+            };
+            match (forward, backward) {
+                (Some(start), Some(end)) if end < start => BarlineKind::RepeatBoth,
+                (Some(_), Some(_)) | (Some(_), None) => BarlineKind::RepeatStart,
+                (None, Some(_)) => BarlineKind::RepeatEnd,
+                // A colon-less `]`-bearing run (`||]`, `]`) is a thin-thick
+                // final bar; with stray colons (`[::]`) the shape is genuinely
+                // ambiguous and stays a Liberal boundary.
+                (None, None) if raw.contains(']') && !raw.contains(':') => BarlineKind::Final,
+                (None, None) => BarlineKind::Liberal,
+            }
+        }
     }
 }
 

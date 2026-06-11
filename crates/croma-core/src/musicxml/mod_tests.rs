@@ -181,6 +181,75 @@ fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
 }
 
 #[test]
+fn liberal_barline_runs_keep_their_strongest_meaning() {
+    // ABC 2.1 §4.8: "bar lines may have any shape, using a sequence of
+    // |, [, ] and :". Croma recognized such runs as boundaries but erased
+    // their meaning from the output (tune_012890/004928/003884 families).
+    // A `]`-bearing run is a final (thin-thick) bar; leading repeat dots are
+    // a backward repeat; a `|:`-leading run is a forward repeat.
+    let final_run =
+        export_musicxml("X:1\nM:4/4\nL:1/4\nK:C\nCDEF|GABc||]\n").expect("||] should export");
+    assert_balanced_xml(&final_run.musicxml);
+    assert!(
+        final_run
+            .musicxml
+            .contains("<bar-style>light-heavy</bar-style>")
+    );
+
+    let leading_dots = export_musicxml("X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF|GABc:[|]|]\n")
+        .expect(":[|]|] should export");
+    assert_balanced_xml(&leading_dots.musicxml);
+    assert!(
+        leading_dots
+            .musicxml
+            .contains("<repeat direction=\"backward\"/>")
+    );
+
+    let sandwich = export_musicxml("X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF:|\n|:|GABc:|\n")
+        .expect("|:| should export");
+    assert_balanced_xml(&sandwich.musicxml);
+    assert_eq!(
+        count(&sandwich.musicxml, "<repeat direction=\"forward\"/>"),
+        2
+    );
+}
+
+#[test]
+fn trailing_colon_after_final_bar_is_a_repeat_start_not_a_phantom_measure() {
+    // `|]:` before a new section (tune_012511 family): the colon is the
+    // bar's trailing repeat dots — a forward repeat for what follows, never
+    // a separate one-colon measure.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|]:GABc|]\n";
+    let export = export_musicxml(source).expect("|]: should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<measure number="), 2);
+    assert_eq!(
+        count(&export.musicxml, "<repeat direction=\"forward\"/>"),
+        1
+    );
+}
+
+#[test]
+fn lone_colon_between_notes_is_a_liberal_measure_boundary() {
+    // `CDEF:GABc|`: §4.8's liberal-recognition guidance covers colon runs;
+    // dropping the boundary mangled the measure structure (71 files). The
+    // boundary is kept (3 measures), warned, and carries no repeat glyph.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF:GABc|cdef|]\n";
+    let export = export_musicxml(source).expect("lone colon should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<measure number="), 3);
+    assert!(!export.musicxml.contains("<repeat"));
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.music.barline.liberal")
+    );
+}
+
+#[test]
 fn multi_measure_volta_emits_ending_stop_at_closing_barline() {
     // ABC 2.1 §4.9: "The Nth ending starts with [N and ends with one of
     // ||, :| |] or [|" — endings legally span multiple measures. The
@@ -759,28 +828,25 @@ fn triple_repeat_extensions_export_repeat_edges() {
 }
 
 #[test]
-fn excessive_repeat_dots_are_liberal_policy_not_repeat_count() {
+fn excessive_repeat_dots_resolve_to_their_unambiguous_direction() {
+    // `|:::` opens a repeat and `:::|` closes one — the dot COUNT is the
+    // unclear part (a play-count hint croma does not model), not the
+    // direction. Erasing the repeat entirely lost playback structure; the
+    // liberal-run classifier now keeps the direction.
     let source = "X:1\nM:4/4\nL:1/4\nK:C\n|::: C D E F :::|\n";
     let export = export_musicxml(source).expect("liberal repeat dots should recover");
 
     assert_balanced_xml(&export.musicxml);
     assert_eq!(
-        export
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.code == "abc.music.barline.liberal")
-            .count(),
-        2
+        count(&export.musicxml, "<repeat direction=\"forward\"/>"),
+        1
     );
-    assert_diagnostic_span(
-        source,
-        &export.diagnostics,
-        "abc.music.barline.liberal",
-        "|:::",
+    assert_eq!(
+        count(&export.musicxml, "<repeat direction=\"backward\"/>"),
+        1
     );
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1"]);
-    assert!(measures[0].barlines.is_empty());
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
 }
 
