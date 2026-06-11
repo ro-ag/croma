@@ -26,6 +26,12 @@ struct MusicXmlWriter<'score> {
     score: &'score Score,
     xml: XmlWriter,
     diagnostics: Vec<Diagnostic>,
+    /// The key in effect at the current write position — the header key until
+    /// a mid-tune `KeyChange` event passes through `write_event`. Used for
+    /// implicit grace-note alters. Reset to the header key at each part start.
+    /// (Voices within a part share this; per-voice inline divergence is rare
+    /// and only affects implicit grace spelling.)
+    active_key: Option<crate::model::KeySignatureModel>,
 }
 
 impl<'score> MusicXmlWriter<'score> {
@@ -33,6 +39,7 @@ impl<'score> MusicXmlWriter<'score> {
         Self {
             score,
             xml: XmlWriter::new(),
+            active_key: score.metadata.key.clone(),
             diagnostics: Vec::new(),
         }
     }
