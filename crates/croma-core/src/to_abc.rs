@@ -1797,6 +1797,63 @@ mod tests {
         }
     }
 
+    fn change_events(score: &crate::Score) -> Vec<(usize, String)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for (i, e) in voice.events.iter().enumerate() {
+                    match &e.kind {
+                        crate::TimedEventKind::KeyChange(k) => {
+                            v.push((i, format!("K:{}", k.display)));
+                        }
+                        crate::TimedEventKind::MeterChange(m) => {
+                            v.push((i, format!("M:{}", m.display)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn mid_tune_key_meter_changes_roundtrip() {
+        for src in [
+            // inline at a barline + meter change
+            "X:1\nL:1/4\nK:C\nCDEF|[K:F]GAB_B|[M:3/4]ABc|\n",
+            // mid-measure key change
+            "X:1\nL:1/4\nK:C\n^FGA[K:D]F|FGAF|\n",
+            // standalone body lines
+            "X:1\nL:1/4\nK:C\nCDEF|\nK:D\nFGAF|\n",
+            // mode + cut-time displays echo verbatim
+            "X:1\nL:1/4\nK:C\nCDEF|[K:Ador]ABcd|[M:C|]ABcd|\n",
+            // no-op restatement of the header key (49 corpus files do this)
+            "X:1\nL:1/4\nK:C\nCDEF|[K:C]GABc|\n",
+            // same-measure ledger interaction: natural F before [K:D] holds
+            "X:1\nL:1/4\nK:C\n=FGA[K:D]F|FGAF|\n",
+            // multi-voice broadcast: standalone K:D between voice bodies
+            "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nK:D\nV:1\nFGAF|\nV:2\nCDEF|\nFGAF|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc1 = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc1);
+            let abc2 = write_abc(&s2, AbcWriteOptions::default());
+            assert_eq!(abc1, abc2, "not idempotent for {src:?}");
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc1:?}");
+            assert_eq!(
+                change_events(&s1),
+                change_events(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+            assert_eq!(
+                measure_count(&s1),
+                measure_count(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+        }
+    }
+
     #[test]
     fn output_is_a_write_abc_fixed_point() {
         // Idempotency form (avoids a croma-fmt dev-dep cycle): writing the
