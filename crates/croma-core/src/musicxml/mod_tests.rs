@@ -181,6 +181,51 @@ fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
 }
 
 #[test]
+fn tuplet_member_written_type_factors_out_the_time_modification() {
+    // ABC 2.1 §4.13: a (4 quadruplet in 6/8 plays 4 notes in the time of 3.
+    // The WRITTEN type is the de-tupletted duration (eighth + 4:3), not a
+    // re-spelling of the sounding duration (dotted 16th + 4:3, internally
+    // inconsistent — tune_005074 family).
+    let source = "X:1\nM:6/8\nL:1/8\nK:C\nCCC (4BABd|\n";
+    let export = export_musicxml(source).expect("quadruplet should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<type>eighth</type>"), 7);
+    assert!(!export.musicxml.contains("<type>16th</type>"));
+    assert_eq!(count(&export.musicxml, "<actual-notes>4</actual-notes>"), 4);
+
+    // Broken rhythm inside a triplet: `(3F>GG` — the lengthened F is a
+    // dotted eighth under 3:2, not a dotless eighth.
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n(3F>GG ABcd z2|\n";
+    let export = export_musicxml(source).expect("broken triplet should export");
+    assert_balanced_xml(&export.musicxml);
+    let f_note = export
+        .musicxml
+        .split("<step>F</step>")
+        .nth(1)
+        .expect("F note present");
+    let f_note = &f_note[..f_note.find("</note>").expect("note closes")];
+    assert!(f_note.contains("<type>eighth</type>"));
+    assert!(
+        f_note.contains("<dot/>"),
+        "lengthened F keeps its dot: {f_note}"
+    );
+}
+
+#[test]
+fn very_long_durations_spell_as_long_and_maxima() {
+    // MusicXML note-type-value includes long (4 wholes) and maxima (8); croma
+    // capped at breve, mis-typing early-music note values (tune_000386
+    // family, 31 files).
+    let source = "X:1\nM:none\nL:1/4\nK:C\nC16 C32|\n";
+    let export = export_musicxml(source).expect("long values should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<type>long</type>"));
+    assert!(export.musicxml.contains("<type>maxima</type>"));
+}
+
+#[test]
 fn chord_member_slurs_attach_to_their_chords() {
     // ABC 2.1 §4.11: "Both ties and slurs may be used into, out of and
     // between chords". `[(C2(E2] [C2)E2)]` opens two slurs on the first

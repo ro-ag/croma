@@ -397,19 +397,11 @@ fn note_spelling(
         };
     }
 
-    for candidate in note_type_candidates() {
-        for dots in 0..=3 {
-            if dotted_fraction(candidate.fraction, dots) == duration {
-                return NoteSpelling {
-                    note_type: candidate.name,
-                    dots,
-                    time_modification: None,
-                    unsupported: false,
-                };
-            }
-        }
-    }
-
+    // An explicit tuplet time-modification spells the WRITTEN (de-tupletted)
+    // duration: sounding x actual/normal (ABC 2.1 §4.13). Spelling the
+    // sounding duration plainly first produced internally-inconsistent
+    // type+dots/<time-modification> pairs (a 6/8 quadruplet member became a
+    // dotted 16th under 4:3 instead of an eighth).
     if let Some(time_modification) = explicit_time_modification {
         let normal_duration = duration.checked_mul(Fraction::new(
             time_modification.actual_notes,
@@ -425,6 +417,19 @@ fn note_spelling(
                         unsupported: false,
                     };
                 }
+            }
+        }
+    }
+
+    for candidate in note_type_candidates() {
+        for dots in 0..=3 {
+            if dotted_fraction(candidate.fraction, dots) == duration {
+                return NoteSpelling {
+                    note_type: candidate.name,
+                    dots,
+                    time_modification: None,
+                    unsupported: false,
+                };
             }
         }
     }
@@ -472,6 +477,20 @@ struct NoteTypeCandidate {
 
 fn note_type_candidates() -> &'static [NoteTypeCandidate] {
     &[
+        NoteTypeCandidate {
+            name: "maxima",
+            fraction: Fraction {
+                numerator: 8,
+                denominator: 1,
+            },
+        },
+        NoteTypeCandidate {
+            name: "long",
+            fraction: Fraction {
+                numerator: 4,
+                denominator: 1,
+            },
+        },
         NoteTypeCandidate {
             name: "breve",
             fraction: Fraction {
