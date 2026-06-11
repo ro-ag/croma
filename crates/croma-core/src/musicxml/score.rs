@@ -53,6 +53,7 @@ impl<'score> MusicXmlWriter<'score> {
 
     pub(crate) fn write_part(&mut self, part: &'score Part, part_index: usize) {
         let id = part_xml_id(part, part_index);
+        self.active_key = self.score.metadata.key.clone();
         self.xml.start("part", &[("id", id.as_str())]);
         let mut pending_left_repeat = false;
         for (measure_position, measure_id) in part_measure_ids(part).iter().enumerate() {
@@ -202,6 +203,8 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                         | TimedEventKind::Chord(_)
                         | TimedEventKind::Rest(_)
                         | TimedEventKind::Spacer
+                        | TimedEventKind::KeyChange(_)
+                        | TimedEventKind::MeterChange(_)
                 )
             })
             .map(SequenceEvent::Timed)

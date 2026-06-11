@@ -22,6 +22,8 @@ pub(crate) enum LoweredEvent {
     Untimed(Event),
     Overlay(OverlaySyntax),
     VariantEnding(VariantEndingSyntax),
+    KeyChange(crate::model::KeySignatureModel),
+    MeterChange(crate::model::MeterModel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,10 @@ pub(crate) struct LoweringState {
     pub(crate) properties: VoicePropertiesModel,
     pub(crate) source_span: Span,
     pub(crate) unit: Fraction,
+    /// The meter in effect for THIS voice (an inline `[M:..]` scopes to the
+    /// current voice, like abc2xml; a standalone `M:` line updates every
+    /// voice). Drives multi-measure-rest expansion.
+    pub(crate) meter_duration: Option<Fraction>,
     pub(crate) lowered: Vec<LoweredEvent>,
     pub(crate) time_groups: Vec<Vec<usize>>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -117,6 +123,7 @@ impl LoweringState {
         properties: VoicePropertiesModel,
         unit: Fraction,
         key: Option<&KeySignature>,
+        meter_duration: Option<Fraction>,
     ) -> Self {
         let source_span = id.span;
         Self {
@@ -124,6 +131,7 @@ impl LoweringState {
             properties,
             source_span,
             unit,
+            meter_duration,
             lowered: Vec::new(),
             time_groups: Vec::new(),
             diagnostics: Vec::new(),
@@ -458,6 +466,8 @@ impl LoweringState {
     /// explicit accidental applies to same-pitch notes until the end of the
     /// bar, so the measure accidental ledger is deliberately left intact.
     pub(crate) fn set_key(&mut self, key: Option<&KeySignature>) {
+        // An open tie must keep its sounding pitch across the change.
+        self.preserve_tie_pitches_for_key_change();
         self.key_accidentals = key_accidental_policy(key);
     }
 

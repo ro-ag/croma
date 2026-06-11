@@ -191,6 +191,54 @@ impl LoweringState {
         self.accidental_state.extend(preserved);
     }
 
+    /// Preserve open-tie pitches across a mid-measure key change: per ABC 2.1
+    /// §4.20 a tie continues the same sounding pitch, so the stop note must
+    /// not re-resolve under the NEW key. Unlike the barline rule above (which
+    /// carries only explicit/ledger accidentals — key-derived pitches
+    /// re-resolve identically across a barline), a key change also re-pitches
+    /// key-derived notes, so the resolved alter under the OLD key — effective
+    /// accidental, else the old key policy's accidental, else an explicit
+    /// natural — is materialized into the measure ledger before the swap.
+    pub(crate) fn preserve_tie_pitches_for_key_change(&mut self) {
+        let preserved: Vec<MeasureAccidental> = self
+            .pending_ties
+            .iter()
+            .filter_map(|tie| {
+                lowered_timed_note(self.lowered.get(tie.event_index)).and_then(|timed| {
+                    if let LoweredEventAtomKind::Note {
+                        step,
+                        octave,
+                        effective_accidental,
+                        accidental_source,
+                        ..
+                    } = timed.event.kind
+                    {
+                        let step = step.to_ascii_uppercase();
+                        let resolved = effective_accidental.unwrap_or_else(|| {
+                            self.key_accidentals
+                                .iter()
+                                .find(|entry| entry.step == step)
+                                .map(|entry| entry.accidental)
+                                .unwrap_or(Accidental::Natural)
+                        });
+                        Some(MeasureAccidental {
+                            step,
+                            octave,
+                            accidental: resolved,
+                            span: accidental_source.unwrap_or_else(|| {
+                                Span::new(self.source_span.end, self.source_span.end)
+                            }),
+                            from_pending_tie: true,
+                        })
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        self.accidental_state.extend(preserved);
+    }
+
     /// Undo the accidental carry that `reset_measure_accidentals_at_barline`
     /// preserved on behalf of a pending tie that was dropped without finding a
     /// stop note. Entries that come from a written accidental in the current

@@ -45,16 +45,20 @@ from fractions import Fraction
 from pathlib import Path
 
 CROMA = "target/debug/croma"
-
-# Mid-tune key field, inline (`[K:...]`) or as a standalone body line. The writer
-# emits only the header `K:`, and a mid-tune key change is not even preserved in
-# the lowered `Score` (its effect is baked into note alters), so such tunes
-# cannot round-trip and are out of scope. Detected from the source.
-_HEADER_KEY_LINE_RE = re.compile(r"^\s*K:", re.MULTILINE)
 _INLINE_KEY_RE = re.compile(r"\[K:")
 # A slur that wraps only a grace group with no main note (`({Bc})`): the grace
 # close is immediately followed by the slur close. Degenerate; out of scope.
 _BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
+# A mid-tune K: field that carries an octave-shifting clef modifier
+# (`treble+8` -> `treble-8`, `octave=`, `middle=`): stored pitches before and
+# after the change carry different shifts, but the writer's per-voice octave
+# compensation uses the FINAL voice properties only, so such tunes cannot
+# round-trip yet (1 corpus tune). Two shift-bearing K: fields means at least
+# one is mid-tune (the header K: is the last header line).
+_OCTAVE_SHIFT_KEY_RE = re.compile(
+    r"^K:.*?(?:[+-]8|[+-]15|octave=|middle=)|\[K:[^\]]*?(?:[+-]8|[+-]15|octave=|middle=)",
+    re.MULTILINE,
+)
 # A tuplet opened inside another tuplet (`(7:8:8(3A/A/ ...`, abcm2ps nested
 # tuplets): the writer keeps only the innermost tuplet — doubly-nested notes
 # get the outer ratio baked into their written durations, while outer-only
@@ -96,26 +100,11 @@ def lower_failure_reason(stderr: str) -> str:
     return "no error/panic line on stderr"
 
 
-def has_mid_tune_field_change(source: str) -> bool:
-    """True iff the ABC body carries a key change after the header `K:`.
-
-    Anchored on a header `K:` (which ABC requires to terminate the tune header).
-    A pathological tune with only an inline `[K:...]` and no header key is not
-    flagged here, but such input fails to lower and is dropped at `check_one`
-    (the parser, not this regex, is the backstop for that case).
-    """
-    first = _HEADER_KEY_LINE_RE.search(source)
-    if first is None:
-        return False
-    body = source[first.end():]
-    return bool(_HEADER_KEY_LINE_RE.search(body) or _INLINE_KEY_RE.search(body))
-
-
 def is_in_scope(source: str) -> bool:
     """True iff the ABC source uses only currently-supported constructs."""
-    if has_mid_tune_field_change(source):
-        return False
     if _BARE_GRACE_SLUR_RE.search(source):
+        return False
+    if len(_OCTAVE_SHIFT_KEY_RE.findall(source)) >= 2:
         return False
     return not _NESTED_TUPLET_RE.search(source)
 
@@ -138,6 +127,28 @@ def projection(xml: str):
                     div = el.findtext("divisions")
                     if div:
                         divisions = int(div)
+                    # Key and meter (header AND mid-tune changes) are
+                    # structural: capture fifths + explicit key accidentals,
+                    # and beats/beat-type/symbol, in document order.
+                    for key in el.findall("key"):
+                        proj.append((
+                            "KEY",
+                            key.findtext("fifths"),
+                            tuple(
+                                (ks.text, ka.text)
+                                for ks, ka in zip(
+                                    key.findall("key-step"),
+                                    key.findall("key-alter"),
+                                )
+                            ),
+                        ))
+                    for time in el.findall("time"):
+                        proj.append((
+                            "TIME",
+                            time.findtext("beats"),
+                            time.findtext("beat-type"),
+                            time.get("symbol"),
+                        ))
                 elif el.tag in ("backup", "forward"):
                     # Overlay/multi-voice separators: position + duration.
                     proj.append((

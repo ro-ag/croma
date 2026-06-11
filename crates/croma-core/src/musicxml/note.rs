@@ -96,6 +96,13 @@ impl<'score> MusicXmlWriter<'score> {
                 TimedEventKind::Spacer
                 | TimedEventKind::Barline(_)
                 | TimedEventKind::RepeatEnding(_) => {}
+                // Emission lands in the mid-tune attributes pass (write_event
+                // is reached once measure_sequences admits these).
+                TimedEventKind::KeyChange(key) => {
+                    self.active_key = Some(key.clone());
+                    self.write_mid_tune_key(key);
+                }
+                TimedEventKind::MeterChange(meter) => self.write_mid_tune_meter(meter),
             },
             SequenceEvent::Overlay(timed) => match &timed.kind {
                 TimelineEventKind::Note {
@@ -158,6 +165,7 @@ impl<'score> MusicXmlWriter<'score> {
                         tuplet_numbers,
                     );
                 }
+                TimelineEventKind::KeyChange(_) | TimelineEventKind::MeterChange(_) => {}
                 TimelineEventKind::Spacer
                 | TimelineEventKind::Barline { .. }
                 | TimelineEventKind::VariantEnding { .. } => {}
@@ -239,11 +247,7 @@ impl<'score> MusicXmlWriter<'score> {
         }
         if let Some(pitch) = note.pitch {
             let pitch = if note.grace {
-                grace_export_pitch(
-                    pitch,
-                    note.written_accidental,
-                    self.score.metadata.key.as_ref(),
-                )
+                grace_export_pitch(pitch, note.written_accidental, self.active_key.as_ref())
             } else {
                 *pitch
             };

@@ -2651,3 +2651,71 @@ fn unsupported_directive_is_metadata_not_music() {
         Fraction::new(2, 8)
     );
 }
+
+#[test]
+fn mid_tune_key_and_meter_changes_reach_the_score() {
+    let source = "X:1\nL:1/4\nK:C\nCDEF|[K:F]GAB_B|[M:3/4]ABc|\n";
+    let doc = crate::parse_document(source, crate::ParseOptions::default());
+    let score = crate::lower_score(&doc.value, crate::LowerOptions)
+        .value
+        .expect("score");
+    let events = &score.parts[0].voices[0].events;
+    let keys: Vec<&crate::model::KeySignatureModel> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            crate::TimedEventKind::KeyChange(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    let meters: Vec<&crate::model::MeterModel> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            crate::TimedEventKind::MeterChange(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keys.len(), 1, "one key change event");
+    assert_eq!(keys[0].display, "F");
+    assert_eq!(keys[0].fifths, -1);
+    assert_eq!(meters.len(), 1, "one meter change event");
+    assert_eq!(meters[0].display, "3/4");
+    // header metadata stays the header values
+    assert_eq!(
+        score.metadata.key.as_ref().map(|k| k.display.as_str()),
+        Some("C")
+    );
+    // positions: key change directly after the first barline, before the G
+    let key_idx = events
+        .iter()
+        .position(|e| matches!(e.kind, crate::TimedEventKind::KeyChange(_)))
+        .expect("key change present");
+    assert!(key_idx > 0, "key change is not the first event");
+    assert!(matches!(
+        events[key_idx - 1].kind,
+        crate::TimedEventKind::Barline(_)
+    ));
+}
+
+#[test]
+fn standalone_body_key_line_broadcasts_to_all_voices() {
+    let source = "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nK:D\nV:1\nFGAF|\nV:2\nCDEF|\nFGAF|\n";
+    let doc = crate::parse_document(source, crate::ParseOptions::default());
+    let score = crate::lower_score(&doc.value, crate::LowerOptions)
+        .value
+        .expect("score");
+    let key_changes_per_voice: Vec<usize> = score
+        .parts
+        .iter()
+        .flat_map(|p| &p.voices)
+        .map(|v| {
+            v.events
+                .iter()
+                .filter(|e| matches!(e.kind, crate::TimedEventKind::KeyChange(_)))
+                .count()
+        })
+        .collect();
+    assert!(
+        key_changes_per_voice.iter().all(|&n| n == 1),
+        "every voice records the broadcast key change: {key_changes_per_voice:?}"
+    );
+}

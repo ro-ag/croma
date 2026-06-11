@@ -21,12 +21,11 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     if let Some(title) = &meta.title {
         out.push_str(&format!("T:{}\n", title.text.trim()));
     }
-    let meter_display = meta
-        .meter
-        .as_ref()
-        .map(|m| m.display.clone())
-        .unwrap_or_else(|| "4/4".to_string());
-    out.push_str(&format!("M:{meter_display}\n"));
+    // `M:` is optional in ABC; a tune without one must not gain a synthetic
+    // meter (it would add a phantom <time> element on re-export).
+    if let Some(meter) = &meta.meter {
+        out.push_str(&format!("M:{}\n", meter.display));
+    }
     let unit = unit_length(score);
     out.push_str(&format!("L:{}/{}\n", unit.numerator, unit.denominator));
     if let Some(q) = tempo_field(score) {
@@ -347,6 +346,16 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::Spacer => {
                 out.push_str("y ");
             }
+            // Mid-tune changes re-emit inline; `display` is the verbatim
+            // source text (modes, C/C|, exp-accidental lists, clef tokens).
+            // The parser re-applies them at this position, reproducing the
+            // baked-in alters / meter state downstream.
+            TimedEventKind::KeyChange(key) => {
+                out.push_str(&format!("[K:{}] ", key.display));
+            }
+            TimedEventKind::MeterChange(meter) => {
+                out.push_str(&format!("[M:{}] ", meter.display));
+            }
         }
     }
     // Flush overlays of the final measure (and any not reached via barlines).
@@ -525,7 +534,16 @@ fn lyric_lines(events: &[crate::TimedEvent]) -> Vec<String> {
                 LyricControl::Syllable => slot
                     .get_or_insert_with(String::new)
                     .push_str(&lyric_escape(&lyric.text)),
-                LyricControl::Hyphen => slot.get_or_insert_with(String::new).push('-'),
+                LyricControl::Hyphen => {
+                    // At most one written hyphen per slot: extra Hyphen
+                    // attachments are XML-invisible, and a second `-` in the
+                    // token would re-parse as a Skip and shift every later
+                    // syllable one note right.
+                    let token = slot.get_or_insert_with(String::new);
+                    if !token.ends_with('-') {
+                        token.push('-');
+                    }
+                }
                 LyricControl::Extender => *slot = Some("_".to_string()),
                 // Skip is never stored on a note (a `*` advances without
                 // attaching); defensive no-op.
@@ -806,7 +824,9 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
                 out.push_str(barline_str(*kind));
                 out.push(' ');
             }
-            TimelineEventKind::VariantEnding { .. } => {}
+            TimelineEventKind::VariantEnding { .. }
+            | TimelineEventKind::KeyChange(_)
+            | TimelineEventKind::MeterChange(_) => {}
         }
         i += 1;
     }
@@ -1782,6 +1802,63 @@ mod tests {
                 "{src:?} -> {abc1:?}"
             );
             assert_eq!(voice_shape(&s1), voice_shape(&s2), "{src:?} -> {abc1:?}");
+        }
+    }
+
+    fn change_events(score: &crate::Score) -> Vec<(usize, String)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                for (i, e) in voice.events.iter().enumerate() {
+                    match &e.kind {
+                        crate::TimedEventKind::KeyChange(k) => {
+                            v.push((i, format!("K:{}", k.display)));
+                        }
+                        crate::TimedEventKind::MeterChange(m) => {
+                            v.push((i, format!("M:{}", m.display)));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn mid_tune_key_meter_changes_roundtrip() {
+        for src in [
+            // inline at a barline + meter change
+            "X:1\nL:1/4\nK:C\nCDEF|[K:F]GAB_B|[M:3/4]ABc|\n",
+            // mid-measure key change
+            "X:1\nL:1/4\nK:C\n^FGA[K:D]F|FGAF|\n",
+            // standalone body lines
+            "X:1\nL:1/4\nK:C\nCDEF|\nK:D\nFGAF|\n",
+            // mode + cut-time displays echo verbatim
+            "X:1\nL:1/4\nK:C\nCDEF|[K:Ador]ABcd|[M:C|]ABcd|\n",
+            // no-op restatement of the header key (49 corpus files do this)
+            "X:1\nL:1/4\nK:C\nCDEF|[K:C]GABc|\n",
+            // same-measure ledger interaction: natural F before [K:D] holds
+            "X:1\nL:1/4\nK:C\n=FGA[K:D]F|FGAF|\n",
+            // multi-voice broadcast: standalone K:D between voice bodies
+            "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nK:D\nV:1\nFGAF|\nV:2\nCDEF|\nFGAF|\n",
+        ] {
+            let s1 = score_of(src);
+            let abc1 = write_abc(&s1, AbcWriteOptions::default());
+            let s2 = score_of(&abc1);
+            let abc2 = write_abc(&s2, AbcWriteOptions::default());
+            assert_eq!(abc1, abc2, "not idempotent for {src:?}");
+            assert_eq!(pitch_seq(&s1), pitch_seq(&s2), "{src:?} -> {abc1:?}");
+            assert_eq!(
+                change_events(&s1),
+                change_events(&s2),
+                "{src:?} -> {abc1:?}"
+            );
+            assert_eq!(
+                measure_count(&s1),
+                measure_count(&s2),
+                "{src:?} -> {abc1:?}"
+            );
         }
     }
 
