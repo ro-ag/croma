@@ -211,6 +211,12 @@ pub enum TimedEventKind {
     Spacer,
     Barline(MeasureBarline),
     RepeatEnding(RepeatEndingModel),
+    /// A mid-tune key change (`[K:..]` or a body `K:` line). Zero duration;
+    /// the new key's alters are already baked into later pitches — the event
+    /// records WHERE the change was written so exporters can reproduce it.
+    KeyChange(KeySignatureModel),
+    /// A mid-tune meter change (`[M:..]` or a body `M:` line). Zero duration.
+    MeterChange(MeterModel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,6 +524,8 @@ pub enum TimelineEventKind {
     VariantEnding {
         endings: Vec<RepeatEndingPartModel>,
     },
+    KeyChange(KeySignatureModel),
+    MeterChange(MeterModel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
