@@ -91,6 +91,38 @@ impl VoiceTimelineBuilder {
                 }
                 self.start_measure_after_barline(span);
             }
+            LoweredEvent::KeyChange(key) => {
+                let onset = self.onset;
+                let span = key.source_span;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::KeyChange(key),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                    attachments: EventAttachments::default(),
+                });
+            }
+            LoweredEvent::MeterChange(meter) => {
+                let onset = self.onset;
+                let span = meter.source_span;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::MeterChange(meter),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                    attachments: EventAttachments::default(),
+                });
+            }
             LoweredEvent::Untimed(Event::Spacer { span }) => {
                 let onset = self.onset;
                 self.current_measure_mut().events.push(VoiceTimedEvent {

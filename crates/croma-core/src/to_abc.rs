@@ -347,6 +347,16 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::Spacer => {
                 out.push_str("y ");
             }
+            // Mid-tune changes re-emit inline; `display` is the verbatim
+            // source text (modes, C/C|, exp-accidental lists, clef tokens).
+            // The parser re-applies them at this position, reproducing the
+            // baked-in alters / meter state downstream.
+            TimedEventKind::KeyChange(key) => {
+                out.push_str(&format!("[K:{}] ", key.display));
+            }
+            TimedEventKind::MeterChange(meter) => {
+                out.push_str(&format!("[M:{}] ", meter.display));
+            }
         }
     }
     // Flush overlays of the final measure (and any not reached via barlines).
@@ -806,7 +816,9 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
                 out.push_str(barline_str(*kind));
                 out.push(' ');
             }
-            TimelineEventKind::VariantEnding { .. } => {}
+            TimelineEventKind::VariantEnding { .. }
+            | TimelineEventKind::KeyChange(_)
+            | TimelineEventKind::MeterChange(_) => {}
         }
         i += 1;
     }
