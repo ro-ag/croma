@@ -82,16 +82,21 @@ pub(crate) fn lower_tune_music(
         .collect::<Vec<_>>();
     let divisions = all_lowered.iter().fold(8, |divisions, event| match event {
         LoweredEvent::Timed(timed) => lcm(divisions, timed.event.duration.divisions_requirement()),
-        LoweredEvent::Untimed(_) | LoweredEvent::Overlay(_) | LoweredEvent::VariantEnding(_) => {
-            divisions
-        }
+        LoweredEvent::Untimed(_)
+        | LoweredEvent::Overlay(_)
+        | LoweredEvent::VariantEnding(_)
+        | LoweredEvent::KeyChange(_)
+        | LoweredEvent::MeterChange(_) => divisions,
     });
     let events = all_lowered
         .into_iter()
         .filter_map(|event| match event {
             LoweredEvent::Timed(timed) => Some(timed.event.into_event(divisions)),
             LoweredEvent::Untimed(event) => Some(event.clone()),
-            LoweredEvent::Overlay(_) | LoweredEvent::VariantEnding(_) => None,
+            LoweredEvent::Overlay(_)
+            | LoweredEvent::VariantEnding(_)
+            | LoweredEvent::KeyChange(_)
+            | LoweredEvent::MeterChange(_) => None,
         })
         .collect();
     let meter_duration = lowering.meter_duration;
@@ -137,6 +142,12 @@ struct MultiVoiceLowering {
     unit: Fraction,
     key: Option<KeySignature>,
     meter: Option<Meter>,
+    /// True once a standalone mid-tune `K:`/`M:` change occurred; voices
+    /// created after that point seed from the changed state and must record
+    /// it as an explicit change event at their start (or no exporter could
+    /// reproduce their key/meter).
+    key_changed: bool,
+    meter_changed: bool,
     meter_duration: Option<Fraction>,
     voices: Vec<LoweringState>,
     current_voice: String,
@@ -164,6 +175,8 @@ impl MultiVoiceLowering {
             unit,
             key: field_state.key.as_ref().map(|key| key.value.clone()),
             meter: field_state.meter.as_ref().map(|meter| meter.value.clone()),
+            key_changed: false,
+            meter_changed: false,
             meter_duration: field_state
                 .meter
                 .as_ref()
@@ -240,8 +253,13 @@ impl MultiVoiceLowering {
         // (`%%propagate-accidentals` default `pitch`) an explicit accidental
         // applies to same-pitch notes until the end of the bar, so the
         // measure accidental ledger must survive a mid-tune `M:` field.
+        self.meter_changed = true;
+        let model = meter_model(meter);
         for voice in &mut self.voices {
             voice.finish_open_tuplets_at_boundary();
+            // Record the change at each voice's current position so exporters
+            // can reproduce it (the meter applies globally).
+            voice.lowered.push(LoweredEvent::MeterChange(model.clone()));
         }
     }
 
@@ -258,8 +276,13 @@ impl MultiVoiceLowering {
             return;
         }
         self.key = Some(key.value.clone());
+        self.key_changed = true;
+        let model = key_signature_model(key);
         for voice in &mut self.voices {
             voice.set_key(Some(&key.value));
+            // Record the change at each voice's current position so exporters
+            // can reproduce the broadcast on re-parse/re-export.
+            voice.lowered.push(LoweredEvent::KeyChange(model.clone()));
         }
         // A K: field may carry clef/octave/middle/transpose modifiers
         // (ABC 2.1 §4.6, e.g. `K:C treble+8`, `K: Dm octave=1`). These scope to
@@ -285,6 +308,10 @@ impl MultiVoiceLowering {
             return;
         }
         self.current_state().set_key(Some(&key.value));
+        let model = key_signature_model(key);
+        self.current_state()
+            .lowered
+            .push(LoweredEvent::KeyChange(model));
         self.apply_inline_key_clef_properties(&key.value);
     }
 
@@ -487,12 +514,31 @@ impl MultiVoiceLowering {
             span: voice.value.id.span,
         };
         let properties = voice_properties_model(&voice.value);
-        self.voices.push(LoweringState::new(
-            id,
-            properties,
-            self.unit,
-            self.key.as_ref(),
-        ));
+        let mut state = LoweringState::new(id, properties, self.unit, self.key.as_ref());
+        // A voice defined after a standalone K:/M: change seeds from the
+        // changed state; record that as an explicit event at the voice start
+        // so the writer/exporter can reproduce it.
+        if self.key_changed
+            && let Some(key) = &self.key
+        {
+            state
+                .lowered
+                .push(LoweredEvent::KeyChange(key_signature_model(&Spanned::new(
+                    key.clone(),
+                    voice.span,
+                ))));
+        }
+        if self.meter_changed
+            && let Some(meter) = &self.meter
+        {
+            state
+                .lowered
+                .push(LoweredEvent::MeterChange(meter_model(&Spanned::new(
+                    meter.clone(),
+                    voice.span,
+                ))));
+        }
+        self.voices.push(state);
         self.voices.len() - 1
     }
 

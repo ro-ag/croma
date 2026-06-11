@@ -96,6 +96,10 @@ impl<'score> MusicXmlWriter<'score> {
                 TimedEventKind::Spacer
                 | TimedEventKind::Barline(_)
                 | TimedEventKind::RepeatEnding(_) => {}
+                // Emission lands in the mid-tune attributes pass (write_event
+                // is reached once measure_sequences admits these).
+                TimedEventKind::KeyChange(key) => self.write_mid_tune_key(key),
+                TimedEventKind::MeterChange(meter) => self.write_mid_tune_meter(meter),
             },
             SequenceEvent::Overlay(timed) => match &timed.kind {
                 TimelineEventKind::Note {
@@ -158,6 +162,7 @@ impl<'score> MusicXmlWriter<'score> {
                         tuplet_numbers,
                     );
                 }
+                TimelineEventKind::KeyChange(_) | TimelineEventKind::MeterChange(_) => {}
                 TimelineEventKind::Spacer
                 | TimelineEventKind::Barline { .. }
                 | TimelineEventKind::VariantEnding { .. } => {}

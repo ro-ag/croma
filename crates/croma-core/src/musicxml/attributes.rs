@@ -7,29 +7,11 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.start("attributes", &[]);
         self.xml
             .text_element("divisions", &self.score.divisions.max(1).to_string());
-        if let Some(key) = &self.score.metadata.key {
-            self.xml.start("key", &[]);
-            self.xml.text_element("fifths", &key.fifths.to_string());
-            for accidental in &key.explicit_accidentals {
-                self.xml
-                    .text_element("key-step", &accidental.step.to_string());
-                self.xml
-                    .text_element("key-alter", &accidental.accidental.alter().to_string());
-                self.xml
-                    .text_element("key-accidental", accidental.accidental.musicxml_name());
-            }
-            self.xml.end("key");
+        if let Some(key) = &self.score.metadata.key.clone() {
+            self.write_key_element(key);
         }
-        if let Some(meter) = &self.score.metadata.meter
-            && !meter.free_meter
-            && let Some((beats, beat_type, symbol)) = meter_parts(&meter.display)
-        {
-            let attrs = symbol.map(|symbol| [("symbol", symbol)]);
-            let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
-            self.xml.start("time", attrs_slice);
-            self.xml.text_element("beats", beats);
-            self.xml.text_element("beat-type", beat_type);
-            self.xml.end("time");
+        if let Some(meter) = &self.score.metadata.meter.clone() {
+            self.write_time_element(meter);
         }
         if part.staves.len() > 1 {
             self.xml
@@ -37,6 +19,53 @@ impl<'score> MusicXmlWriter<'score> {
         }
         self.write_clefs(part);
         self.write_transpose_if_available(part);
+        self.xml.end("attributes");
+    }
+
+    /// The `<key>` element body shared by the header attributes and mid-tune
+    /// key-change emission.
+    pub(crate) fn write_key_element(&mut self, key: &crate::model::KeySignatureModel) {
+        self.xml.start("key", &[]);
+        self.xml.text_element("fifths", &key.fifths.to_string());
+        for accidental in &key.explicit_accidentals {
+            self.xml
+                .text_element("key-step", &accidental.step.to_string());
+            self.xml
+                .text_element("key-alter", &accidental.accidental.alter().to_string());
+            self.xml
+                .text_element("key-accidental", accidental.accidental.musicxml_name());
+        }
+        self.xml.end("key");
+    }
+
+    /// The `<time>` element body shared by the header attributes and mid-tune
+    /// meter-change emission. Free meters emit nothing.
+    pub(crate) fn write_time_element(&mut self, meter: &crate::model::MeterModel) {
+        if meter.free_meter {
+            return;
+        }
+        let Some((beats, beat_type, symbol)) = meter_parts(&meter.display) else {
+            return;
+        };
+        let attrs = symbol.map(|symbol| [("symbol", symbol)]);
+        let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
+        self.xml.start("time", attrs_slice);
+        self.xml.text_element("beats", beats);
+        self.xml.text_element("beat-type", beat_type);
+        self.xml.end("time");
+    }
+
+    /// A mid-tune key change: a minimal `<attributes>` at the current cursor.
+    pub(crate) fn write_mid_tune_key(&mut self, key: &crate::model::KeySignatureModel) {
+        self.xml.start("attributes", &[]);
+        self.write_key_element(key);
+        self.xml.end("attributes");
+    }
+
+    /// A mid-tune meter change: a minimal `<attributes>` at the current cursor.
+    pub(crate) fn write_mid_tune_meter(&mut self, meter: &crate::model::MeterModel) {
+        self.xml.start("attributes", &[]);
+        self.write_time_element(meter);
         self.xml.end("attributes");
     }
 
