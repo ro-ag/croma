@@ -14,7 +14,15 @@ in-scope with 0 structural diffs, and must not regress the proven set
 
 ## Open: coverage-capping (the remaining ~7.4% of the corpus)
 
-1. **Mid-tune key/meter changes are not modeled** (~5.5% of tunes — the
+1. ~~**Mid-tune key/meter changes are not modeled**~~ **FIXED (PR #70,
+   phase-32):** `TimedEventKind::KeyChange/MeterChange` events now flow
+   through lowering → MusicXML `<attributes>` → writer `[K:]`/`[M:]` tokens.
+   Round-trip 99.25%, reference matches +262. Residual (new, small):
+   mid-tune K: lines that CHANGE the voice octave shift (`treble+8` →
+   `treble-8`, 1 tune — writer needs position-aware octave compensation);
+   trailing changes after the final barline are silently dropped; `[M:]`
+   mid-tuplet force-closes the tuplet while `[K:]` does not; dedupe is
+   display-string-only (`K:C` vs `K:Cmaj` both record). Original text: (~5.5% of tunes — the
    single biggest unlock). `[K:...]`/`[M:...]` inline fields and standalone
    body `K:`/`M:` lines change parser state, but the lowered `Score` keeps no
    key/meter-change event — key effects are baked into note alters, meter
