@@ -1,6 +1,16 @@
 # Croma vs abc2xml — per-file verdict summary
 
-**Genuine Croma issues across the 10,000-tune corpus: 0.**
+> **Superseded in part (2026-06-11):** the phase-33 forensic triage
+> ([12-phase33-triage-ledger.md](12-phase33-triage-ledger.md)) re-verified
+> every category per cause and REFUTED this document's headline — several
+> genuine croma bugs hid inside the POSITIONAL_CASCADE / BARLINE_STYLE
+> classes (dropped boundary attachments, never-closed volta brackets, wedge
+> decorations as words, …). The phase-33a batch fixed the first nine
+> (matches 8,118 → 8,734, 0 regressions); the ledger tracks the rest. Where
+> this file and the ledger disagree, the ledger wins.
+
+**Genuine Croma issues across the 10,000-tune corpus: 0.** *(historical
+claim — see banner above)*
 
 Every tune is given a forensic, per-file verdict by
 [`tools/prove_divergences.py`](../../../tools/prove_divergences.py). The decisive

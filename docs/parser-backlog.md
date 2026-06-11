@@ -48,13 +48,31 @@ in-scope with 0 structural diffs, and must not regress the proven set
 
 ## Open: silent data loss
 
-4. **Quoted text before a barline is silently dropped.** `C "F"| c` loses the
-   chord symbol (`parse_barline` flushes pendings into standalone items that
-   lowering discards at the catch-all arm). REFERENCE VERDICT (verified
-   2026-06-09): abc2xml KEEPS the `<harmony>`, binding it to the next note
-   across the barline. Follow-up to the fixed grace/slur/tuplet cases below —
-   needs a decision on carrying pendings across barlines (today barlines
-   deliberately void pending graces too).
+4. ~~**Quoted text before a barline is silently dropped.**~~ **FIXED
+   (phase-33a, 2026-06-11):** pending chord symbols, annotations, decorations
+   AND grace groups flushed at a barline / line end / multirest / malformed
+   token now buffer in `LoweringState` and bind to the next timed event (ABC
+   2.1 §§4.12/4.14/4.18/4.19); leftovers at the end of a voice warn
+   (`abc.music.dangling_quoted_text` / `dangling_grace_group`). The same
+   batch closed multi-measure volta brackets (`<ending type="stop">` carried
+   across measures per §4.9 — 905 affected files), fixed `<ending>`-before-
+   `<repeat>` order, and mapped `!crescendo(!`-family to `<wedge>` and `!+!`
+   to `<technical><stopped/>`. Corpus matches 8,118 → 8,734, 0 regressions.
+
+## Open: phase-33 triage ledger (2026-06-11)
+
+The forensic triage of all 15 mismatch categories produced per-cause,
+adversarially re-verified verdicts in
+`docs/comparison/abc2xml-divergences/12-phase33-triage-ledger.md` — the
+canonical list of remaining confirmed croma bugs (status OPEN there). The
+biggest by impact: mid-tune `Q:` tempo dropped (~120 files); barline
+liberal-run glyph/repeat drops + lone-`:` boundary (~150 files); voice-scoped
+`L:` unit-length leaking globally; multi-measure-rest single-measure encoding
+(invalid MusicXML; expand per measure); chord-member slur drops; tuplet
+written-type from sounding duration; quoted-text harmony-vs-words
+classification (lowercase root); `[`+quoted-text volta misparse; plus small
+accidental/octave/lyric/tuplet edges. Each entry carries repro evidence and a
+fix sketch.
 
 ## Open: exporter (MusicXML writer) issues
 
