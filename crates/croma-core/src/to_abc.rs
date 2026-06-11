@@ -21,12 +21,11 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     if let Some(title) = &meta.title {
         out.push_str(&format!("T:{}\n", title.text.trim()));
     }
-    let meter_display = meta
-        .meter
-        .as_ref()
-        .map(|m| m.display.clone())
-        .unwrap_or_else(|| "4/4".to_string());
-    out.push_str(&format!("M:{meter_display}\n"));
+    // `M:` is optional in ABC; a tune without one must not gain a synthetic
+    // meter (it would add a phantom <time> element on re-export).
+    if let Some(meter) = &meta.meter {
+        out.push_str(&format!("M:{}\n", meter.display));
+    }
     let unit = unit_length(score);
     out.push_str(&format!("L:{}/{}\n", unit.numerator, unit.denominator));
     if let Some(q) = tempo_field(score) {
@@ -535,7 +534,16 @@ fn lyric_lines(events: &[crate::TimedEvent]) -> Vec<String> {
                 LyricControl::Syllable => slot
                     .get_or_insert_with(String::new)
                     .push_str(&lyric_escape(&lyric.text)),
-                LyricControl::Hyphen => slot.get_or_insert_with(String::new).push('-'),
+                LyricControl::Hyphen => {
+                    // At most one written hyphen per slot: extra Hyphen
+                    // attachments are XML-invisible, and a second `-` in the
+                    // token would re-parse as a Skip and shift every later
+                    // syllable one note right.
+                    let token = slot.get_or_insert_with(String::new);
+                    if !token.ends_with('-') {
+                        token.push('-');
+                    }
+                }
                 LyricControl::Extender => *slot = Some("_".to_string()),
                 // Skip is never stored on a note (a `*` advances without
                 // attaching); defensive no-op.
