@@ -181,6 +181,20 @@ fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
 }
 
 #[test]
+fn lowercase_root_quoted_text_is_words_not_harmony() {
+    // ABC 2.1 §4.18: the chord root is A-G (uppercase); only the bass note
+    // may be lowercase. "d" is annotation text, not a D chord (40 corpus
+    // files). A lowercase BASS after / stays a chord.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"d\"C D \"D/f\"E F|\n";
+    let export = export_musicxml(source).expect("lowercase root should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 1);
+    assert!(export.musicxml.contains("<words>d</words>"));
+    assert!(export.musicxml.contains("<bass-step>F</bass-step>"));
+}
+
+#[test]
 fn body_tempo_field_emits_metronome_direction() {
     // ABC 2.1 §3.1.8 and the field table allow Q: in the tune body
     // (tune_007548 family, ~120 files): a `Q:` line after K: must produce a
