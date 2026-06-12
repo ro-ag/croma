@@ -40,6 +40,18 @@ The remaining dominant barline residual is still
 `barline-spaced-and-newline-split-coalesced`, re-affirmed as
 reference/comparator policy; see `docs/progress/phase-39-corpus-mismatch-burndown.md`.
 
+2026-06-12 phase-40 follow-up: mid-measure repeat-ending markers now split a
+pickup measure before `[1` / `[2` when timed music has already occurred in the
+current measure. The targeted compact-ending files
+`tune_015281.abc`/`tune_015280.abc`/`tune_001062.abc` moved from 0 matches / 3
+mismatches / 5,220 rows to 3 matches / 0 mismatches / 0 rows. Corrected full
+10k compare after rejecting the default-meter compatibility trap: matches 9,187
+-> 9,206, mismatch rows 160,504 -> 145,986, with no import/harness/worker
+failures and no match-to-mismatch file regressions. The phase also re-verified
+that omitted header `M:` is free meter per the local ABC 2.1/2.2 spec text, so
+abc2xml's fabricated `4/4` `<time>` remains a reference quirk rather than a
+Croma bug; see `docs/progress/phase-40-mismatch-followups.md`.
+
 2026-06-12 phase-35 multirest fix: decision was to expand ABC `Zn`/`Xn` in
 lowering when the current voice has a known meter, producing `n` real
 full-measure rest measures in the Score model. MusicXML writes
@@ -655,6 +667,13 @@ Minimal repro /tmp/ma_defaultL.abc: `M:2/4` with no L: field, bar `c6a2|` -> cro
 
 
 Two flavors, one mechanism. (a) No M: anywhere (/tmp/ma_nom.abc): croma emits no <time> (ABC 2.1 SS3.1.6: 'When there is no M: field defined, free meter is assumed'); abc2xml emits <time>4/4</time> it invented — music21 then reports bar_duration 4.0 for the reference vs actual-content for croma. (b) M: after K: — K: ends the header (SS2.2.1), so M:6/8 is a body line effective from the first bar (/tmp/ma_mafterk.abc): croma emits only 6/8 in m1; abc2xml emits TWO <attributes> in m1, the fabricated 4/4 followed by the real 6/8, and the comparator picks up the 4/4 for m1 bar_duration (croma 3.0 vs ref 4.0). Six of the eight evidence-pack samples (tune_005414 etc.) are flavor (b). Of 111 bar_duration-row files, 49 are M-after-K and most of the rest have no M: at all. Croma is the more spec-correct on both.
+
+Phase 40 rechecked this entry after phase 39 incorrectly listed "missing
+default 4/4" as a likely Croma-side target. That candidate is rejected: a
+synthetic default `<time>4/4</time>` improves abc2xml agreement but contradicts
+the local ABC 2.1/2.2 references and the Score model's omitted-meter semantics.
+Regression coverage now locks the free-meter behavior for omitted header `M:`
+with a later body meter change.
 
 
 ### `measure-alignment-overlay-number-skip` — **QUIRK** (reference_quirk, repro=True)
