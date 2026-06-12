@@ -192,26 +192,35 @@ fn recovers_malformed_lengths_and_preserves_valid_neighbors() {
 
 #[test]
 fn lowers_multi_measure_rests_in_known_and_free_meter() {
-    let (known_events, known_diagnostics) = events_for("X:1\nM:2/4\nL:1/8\nK:C\nZ2 X\n");
-    assert!(known_diagnostics.is_empty());
-    let known_durations = known_events
+    let document = parse_document(
+        "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|Z2|GABc|]\n",
+        ParseOptions::default(),
+    )
+    .value;
+    let report = parse_tune_report_from_document(&document);
+    assert!(report.diagnostics.is_empty());
+    let tune = report.value.expect("expected tune");
+    let voice = &tune.score.parts[0].voices[0];
+    assert_eq!(voice.measures.len(), 4);
+    assert_eq!(
+        voice
+            .measures
+            .iter()
+            .map(|measure| measure.actual_duration)
+            .collect::<Vec<_>>(),
+        vec![Fraction::new(4, 4); 4]
+    );
+    let rest_measures = voice
+        .events
         .iter()
-        .filter_map(|event| match event {
-            Event::Rest {
-                duration,
-                visibility,
-                ..
-            } => Some((*duration, *visibility)),
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::Rest(rest) if rest.visibility == RestVisibility::Visible => {
+                Some(event.measure.number)
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        known_durations,
-        vec![
-            (32, RestVisibility::Visible),
-            (16, RestVisibility::Invisible),
-        ]
-    );
+    assert_eq!(rest_measures, vec![2, 3]);
 
     let document = parse_document("X:1\nM:none\nL:1/8\nK:C\nZ3\n", ParseOptions::default()).value;
     let report = parse_tune_report_from_document(&document);
