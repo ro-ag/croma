@@ -469,7 +469,14 @@ fn timeline_event_kind(kind: LoweredEventAtomKind) -> TimelineEventKind {
             accidental_source,
             chord,
         },
-        LoweredEventAtomKind::Rest { visibility, .. } => TimelineEventKind::Rest { visibility },
+        LoweredEventAtomKind::Rest {
+            visibility,
+            multiple_rest,
+            ..
+        } => TimelineEventKind::Rest {
+            visibility,
+            multiple_rest,
+        },
     }
 }
 

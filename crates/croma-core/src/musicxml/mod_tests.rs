@@ -158,6 +158,21 @@ fn chord_symbol_before_multimeasure_rest_is_kept() {
 }
 
 #[test]
+fn multimeasure_rest_exports_real_full_measure_rests() {
+    // ABC 2.1 §4.5: `Z2` means two measures of rest. MusicXML has no legal
+    // one-measure overlong rest encoding; write real measures and use
+    // `<multiple-rest>` only as display metadata.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|Z2|GABc|]\n";
+    let export = export_musicxml(source).expect("multirest should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<measure number="), 4);
+    assert_eq!(count(&export.musicxml, "<rest measure=\"yes\"/>"), 2);
+    assert!(export.musicxml.contains("<multiple-rest>2</multiple-rest>"));
+    assert!(!export.musicxml.contains("<time-modification>"));
+}
+
+#[test]
 fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
     // Quoted text with no following timed event cannot bind to anything; it
     // must surface as a diagnostic, never vanish silently.

@@ -168,6 +168,10 @@ pub struct Measure {
     pub source_span: Span,
     pub expected_duration: Option<Rational>,
     pub actual_duration: Rational,
+    /// Display hint for the first measure of an expanded ABC `Zn` rest run.
+    /// The measures still exist individually; this only requests the compact
+    /// MusicXML multi-rest glyph.
+    pub multiple_rest: Option<u32>,
     pub pickup: bool,
     pub complete: bool,
     pub barlines: Vec<MeasureBarline>,
@@ -518,6 +522,7 @@ pub enum TimelineEventKind {
     },
     Rest {
         visibility: RestVisibility,
+        multiple_rest: Option<u32>,
     },
     Spacer,
     Barline {
@@ -672,6 +677,7 @@ pub(crate) enum LoweredEventAtomKind {
     },
     Rest {
         visibility: RestVisibility,
+        multiple_rest: Option<u32>,
         span: Span,
     },
 }
@@ -696,7 +702,9 @@ impl LoweredEventAtom {
                 duration,
                 span,
             },
-            LoweredEventAtomKind::Rest { visibility, span } => Event::Rest {
+            LoweredEventAtomKind::Rest {
+                visibility, span, ..
+            } => Event::Rest {
                 visibility,
                 duration,
                 span,

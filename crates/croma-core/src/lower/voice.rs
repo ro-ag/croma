@@ -268,6 +268,7 @@ impl LoweringState {
                 LoweredEventAtom {
                     kind: LoweredEventAtomKind::Rest {
                         visibility: rest.visibility,
+                        multiple_rest: None,
                         span: rest.span,
                     },
                     duration: self

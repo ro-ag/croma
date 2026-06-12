@@ -1,8 +1,8 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::model::{
     AccidentalMark, DecorationAttachment, EventAttachments, Fraction, GraceNoteEvent, Pitch,
-    RestEvent, Score, StaffId, TimedEvent, TimedEventKind, TimelineEventKind, TupletAttachment,
-    VoiceTimedEvent,
+    RestEvent, RestVisibility, Score, StaffId, TimedEvent, TimedEventKind, TimelineEventKind,
+    TupletAttachment, VoiceTimedEvent,
 };
 use crate::parse::ParseReport;
 
@@ -96,6 +96,7 @@ pub(crate) struct NoteWrite<'a> {
     written_accidental: Option<&'a AccidentalMark>,
     attachments: &'a EventAttachments,
     chord_member: bool,
+    measure_rest: bool,
     grace: bool,
     grace_slash: bool,
 }
@@ -113,6 +114,8 @@ struct GraceNoteWrite<'a> {
 pub(crate) struct MeasureSequence<'score> {
     voice_number: String,
     staff: StaffId,
+    expected_duration: Option<Fraction>,
+    actual_duration: Fraction,
     events: Vec<SequenceEvent<'score>>,
 }
 
@@ -175,6 +178,16 @@ impl SequenceEvent<'_> {
             Self::Timed(event) => event.source.start,
             Self::Overlay(event) => event.span.start,
         }
+    }
+}
+
+impl MeasureSequence<'_> {
+    fn is_full_measure_rest(&self, onset: Fraction, duration: Fraction, rest: &RestEvent) -> bool {
+        rest.visibility == RestVisibility::Visible
+            && onset == Fraction::zero()
+            && self
+                .expected_duration
+                .is_some_and(|expected| expected == duration && self.actual_duration == expected)
     }
 }
 

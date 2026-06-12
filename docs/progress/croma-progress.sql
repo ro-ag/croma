@@ -42,6 +42,8 @@ INSERT INTO "artifact" VALUES(33,'phase-23','summary','docs/comparison/abc2xml-d
 INSERT INTO "artifact" VALUES(34,'phase-27-abc-writer','harness','tools/prove_abc_roundtrip.py','Local-only Score->ABC corpus round-trip prover (structural projection)');
 INSERT INTO "artifact" VALUES(35,'phase-27-abc-writer','report','docs/untracked/abc/abc-roundtrip-report.json','Generated run report (git-ignored)');
 INSERT INTO "artifact" VALUES(36,'phase-27-abc-writer','source','crates/croma-core/src/to_abc.rs','write_abc canonical ABC writer');
+INSERT INTO "artifact" VALUES(37,'phase-35-ledger-burndown','corpus-compare-report','docs/untracked/phase-35/multirest-b1/full-10k-report-only-compare-report.json','Full 10k report-only comparison after multirest fix');
+INSERT INTO "artifact" VALUES(38,'phase-35-ledger-burndown','per-file-summary','docs/untracked/phase-35/multirest-b1/full-10k-per-file-summary.jsonl','Per-file summary used for zero-regression set diff against phase-33 b8');
 CREATE TABLE memory (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -212,6 +214,9 @@ INSERT INTO "metric" VALUES(131,'phase-32-midtune-key-meter','reference-compare'
 INSERT INTO "metric" VALUES(132,'phase-33-compare-triage','corpus','reference_matches','7536','8825','+1289','files',NULL);
 INSERT INTO "metric" VALUES(133,'phase-33-compare-triage','corpus','mismatch_rows','174701','168183','-6518','rows',NULL);
 INSERT INTO "metric" VALUES(134,'phase-33-compare-triage','corpus','roundtrip_coverage','99.25/0diffs','99.25/0diffs','unchanged','pct',NULL);
+INSERT INTO "metric" VALUES(135,'phase-35-ledger-burndown','corpus','mismatch_rows','167943','164267','-3676','rows','Multirest expansion removed the invalid one-measure overlong-rest cascades; zero per-file regressions.');
+INSERT INTO "metric" VALUES(136,'phase-35-ledger-burndown','corpus','reference_matches','8858','8861','+3','files','Compared docs/untracked/phase-33/b8-per-file-summary.jsonl to docs/untracked/phase-35/multirest-b1/full-10k-per-file-summary.jsonl.');
+INSERT INTO "metric" VALUES(137,'phase-35-ledger-burndown','corpus','roundtrip_coverage','99.25/0diffs','99.25/0diffs','unchanged','pct','uv run python tools/prove_abc_roundtrip.py --abc-root docs/untracked/corpus/zenodo-10k/abc');
 CREATE TABLE phase (
   phase_id TEXT PRIMARY KEY,
   branch TEXT,
@@ -282,6 +287,7 @@ INSERT INTO "phase" VALUES('phase-31-compare-cache','codex/phase-31-compare-perf
 INSERT INTO "phase" VALUES('phase-32-midtune-key-meter','work/midtune-key-meter','merged',70,'https://github.com/ro-ag/croma/pull/70','0d1bebbd8a71f08fa0709307ec21264372363023','Mid-tune K:/M: change events end-to-end','New feature (Score model + lowering + MusicXML export + ABC writer)','TimedEventKind::KeyChange/MeterChange recorded by lowering (per-voice [M:] scoping matching abc2xml, clef-only K: guard, header-aware value dedupe, late-voice seeds, tie-pitch carry across mid-measure key changes); <attributes><key>/<time> exported at the event cursor incl. mid-measure; writer emits inline [K:]/[M:]; no synthetic M:4/4 header; change-event-only measures stay coalescible. Round-trip 92.63->99.25 pct 0 diffs (projection now asserts KEY/TIME); reference comparison +262 fully-matching files, -4861 mismatch rows, no category increases.','Writer-side: position-aware octave compensation for mid-tune clef +-8 changes (1 tune); nested tuplets; remaining items in docs/parser-backlog.md (quoted text before barline, overlay voice collision, syllabic). Then the MusicXML->Score reader epic (roxmltree, feature-gated).','2026-06-11 06:52:31');
 INSERT INTO "phase" VALUES('voice-field-same-line-music','work/voice-field-same-line-music','complete',NULL,NULL,NULL,'Body V: same-line music swallowed when first token contains = (user-reported; corpus hit tune_014784 dropped 4 of voice 2''s 12 measures)','Bug fix (parser correctness; no silent V: text discard)','looks_like_same_line_music treated any first token containing = as a key=value voice parameter, so music starting with a natural accidental (=C2D2) or carrying one mid-token (E2=F2) was silently parsed as voice properties, yielding an empty measure with no diagnostic. Parameter detection now requires a non-empty alphabetic key before the =; a keyless = token left on a body V: line without recovered music emits warning abc.field.voice_property_ignored instead of vanishing. 3 regression tests added. Full 10k before/after compare: structural matches unchanged at 8118; only tune_014784 moved (+218 extra_in_croma rows because the abc2xml reference is degenerate there: 1 empty measure, 0 notes per part), croma now exports its full 12 measures per voice.','Writer residuals per phase-32 backlog; MusicXML->Score reader epic.','2026-06-11 15:15:51');
 INSERT INTO "phase" VALUES('phase-33-compare-triage','codex/phase-33-compare-triage','merged',NULL,NULL,'8c76fc824463fda8ee6ddab74e07cc064728d873','Comparison-residue forensic triage + confirmed-bug fixes (per-cause adversarially verified ledger: docs/comparison/abc2xml-divergences/12-phase33-triage-ledger.md)',NULL,'Comparator now compares sounding alteration (+582 matches). Fix batches: boundary-attachment data loss (text/dynamics/graces survive barlines/EOL), multi-measure volta ending stops (905-file bug), ending-before-repeat XSD order, wedge + stopped decorations, liberal barline runs keep strongest meaning, lone-colon boundary, |]: merge, body L: voice scoping, mid-tune Q: tempo events (model+XML+writer), chord-root case sensitivity. Matches 7536->8825, rows 174701->168183, 0 per-file regressions at every batch; round-trip 99.25%/0 diffs unchanged.','Ledger OPEN bugs: multirest XML encoding (6 files), chord-member slur drops (~25), tuplet written-type, accidental trio, octave pair, lyric trio, nospace-key, complex-meter time, [-quoted volta. Then Mission B on codex/phase-34-midi: translate %%MIDI program/channel/transpose/drummap + control CC7/CC10 per oracle probe (docs/untracked/phase-33/midi/oracle-probe.md); write_abc re-emits ALL preserved directives verbatim; policy doc.','2026-06-12 07:31:41');
+INSERT INTO "phase" VALUES('phase-35-ledger-burndown','codex/phase-35-ledger-burndown','in_progress',NULL,NULL,NULL,'Pre-publish ledger burn-down: stale phase-33 recheck plus multirest MusicXML encoding publish blocker','Parser/export hardening (confirmed ledger bugs)','Closed phase-33 tracker bookkeeping; re-verified stale OPEN ledger entries fixed on main; fixed the multirest family by expanding ABC Zn/Xn into real full-measure rest measures in known meter and emitting MusicXML multiple-rest display metadata on visible Zn. Full 10k compare against phase-33 b8: matches 8858->8861, mismatch rows 167943->164267, zero match-to-mismatch regressions; round-trip remains 99.25 pct / 0 structural diffs.','Continue remaining OPEN ledger bugs: accidental trio, barline final on empty voice, decoration fallback, quoted volta text, lyric trio, complex meter time, nospace-key, octave pair, trailing grace/unclosed-chord recovery, slur grace/numbering, one-note tuplets.','2026-06-12 07:46:27');
 CREATE TABLE validation (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   phase_id TEXT NOT NULL REFERENCES phase(phase_id) ON DELETE CASCADE,
@@ -438,6 +444,14 @@ INSERT INTO "validation" VALUES(145,'phase-32-midtune-key-meter','cargo test --w
 INSERT INTO "validation" VALUES(146,'phase-33-compare-triage','full 10k report-only compare (phase-33 recorded batches)','pass','Recorded from landed phase-33 tracker evidence: matches 7536->8825, mismatch rows 174701->168183, 0 per-file regressions at each batch.');
 INSERT INTO "validation" VALUES(147,'phase-33-compare-triage','uv run python tools/prove_abc_roundtrip.py --abc-root <10k>','pass','Recorded from landed phase-33 tracker evidence: 99.25 percent in-scope coverage, 0 structural diffs unchanged.');
 INSERT INTO "validation" VALUES(148,'phase-33-compare-triage','cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all -- --check','pass','Recorded from landed phase-33 fix commits; subsequent HEAD includes two additional ledger fixes to re-verify in phase-35.');
+INSERT INTO "validation" VALUES(149,'phase-35-ledger-burndown','cargo fmt --all -- --check','pass','clean');
+INSERT INTO "validation" VALUES(150,'phase-35-ledger-burndown','cargo clippy --workspace --all-targets -- -D warnings','pass','clean');
+INSERT INTO "validation" VALUES(151,'phase-35-ledger-burndown','cargo test --workspace','pass','CLI 25, croma-core 326, croma-fmt 25, doc tests pass');
+INSERT INTO "validation" VALUES(152,'phase-35-ledger-burndown','cargo run -p croma-cli -- xml examples/basic.abc','pass','MusicXML smoke export produced score-partwise XML');
+INSERT INTO "validation" VALUES(153,'phase-35-ledger-burndown','uv run pytest','pass','24 passed');
+INSERT INTO "validation" VALUES(154,'phase-35-ledger-burndown','full 10k report-only compare with per-file summary','pass','matches 8858->8861, mismatch rows 167943->164267, zero match-to-mismatch regressions, zero common-file row regressions');
+INSERT INTO "validation" VALUES(155,'phase-35-ledger-burndown','uv run python tools/prove_abc_roundtrip.py --abc-root docs/untracked/corpus/zenodo-10k/abc','pass','total=10000 in_scope=9925 coverage=99.25 structural_diffs=0 errors=0 lower_fail=65 no_music');
+INSERT INTO "validation" VALUES(156,'phase-35-ledger-burndown','cargo publish --dry-run -p croma-core --allow-dirty','pass','Packaged 58 files and verified croma-core v0.1.0; exact no-allow-dirty command will be rerun after commit.');
 CREATE VIEW phase_summary AS
 SELECT
   phase_id,
@@ -452,7 +466,7 @@ SELECT
 FROM phase
 ORDER BY phase_id;
 DELETE FROM "sqlite_sequence";
-INSERT INTO "sqlite_sequence" VALUES('metric',134);
-INSERT INTO "sqlite_sequence" VALUES('artifact',36);
-INSERT INTO "sqlite_sequence" VALUES('validation',148);
+INSERT INTO "sqlite_sequence" VALUES('metric',137);
+INSERT INTO "sqlite_sequence" VALUES('artifact',38);
+INSERT INTO "sqlite_sequence" VALUES('validation',156);
 COMMIT;
