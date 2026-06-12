@@ -1102,12 +1102,14 @@ Those residual rows are a reference/comparator artifact, not an open
 dangling-start Croma bug.
 
 
-### `tuplet-nested-tuplets` — **REVIEW** (needs_deeper_look, repro=None)
+### `tuplet-nested-tuplets` — **RE-VERDICT(37s)** (known_backlog_model_gap, repro=True)
 
 *Share:* 1 direct row + ~5 rows folded into the cascade bucket (<1%), 1 file — *files:* tune_003732.abc
 
 
-tune_003732 m5: comparator reads croma as [(3,2,start),(3,2,start),(2,3,null)] vs ref [(3,2,start)] — croma's nested-tuplet output yields multiple/odd music21 tuplet components (also the source of the (3,2)+(7,12) croma-vs-none rows folded into the cascade bucket: 7:12 x 3:2 = 7:8, the outer ratio). Already cataloged: docs/parser-backlog.md item 3 ('Nested tuplets', 1 corpus tune, harness gate _NESTED_TUPLET_RE) — the model/writer does not represent nesting; which side's MusicXML is more faithful needs the dedicated nested-tuplet work promised there. Not re-derived here since it is a known, gated, single-tune item.
+tune_003732 m5: comparator reads croma as [(3,2,start),(3,2,start),(2,3,null)] vs ref [(3,2,start)] — croma's nested-tuplet output yields multiple/odd music21 tuplet components (also the source of the (3,2)+(7,12) croma-vs-none rows folded into the cascade bucket: 7:12 x 3:2 = 7:8, the outer ratio). Already cataloged: docs/parser-backlog.md item 3 ('Nested tuplets', 1 corpus tune, harness gate _NESTED_TUPLET_RE) — the model/writer does not represent nesting; which side's MusicXML is more faithful needs the dedicated nested-tuplet work promised there.
+
+37s: fresh current-code target compare for `tune_003732` remains a mismatch with 61 rows: `tuplet` 6, `duration` 11, `measure_alignment` 11, `direction` 17, `extra_in_croma` 13, `missing_in_croma` 1, and malformed microtonal `accidental` 2. The tuplet rows are still concentrated on the nested tuplet in measure 5, while the surrounding rows are the same cascade/malformed-feature clutter in this abcm2ps showcase tune. This is not a narrow phase-37 cleanup; keep it as the dedicated nested-tuplet model/export backlog item.
 
 
 ### `tuplet-barline-truncated-group` — **QUIRK** (reference_quirk, repro=True)
