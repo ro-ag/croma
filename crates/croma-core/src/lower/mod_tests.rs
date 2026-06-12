@@ -1333,6 +1333,48 @@ fn overlay_rewinds_to_previous_barline_and_warns_when_incomplete() {
 }
 
 #[test]
+fn lyrics_align_to_overlay_notes_in_source_order() {
+    let document = parse_document(
+        "X:1\nM:C\nL:1/8\nK:G\nG2|A Ac2B BG2|ABc2B4|A3B c2B> A|(A2G2) E2F2|\nw:|||All a-lone and so lone-*ly\nG2F2 E2DC|D2D2 D2\"^*\"D> D&x6C> D|E2F E D2D2|E4 HA2||\nw:|***And tis down by the green-wood side-oh!\n",
+        ParseOptions::default(),
+    )
+    .value;
+    let report = parse_tune_report_from_document(&document);
+    let tune = report.value.expect("expected tune");
+    let voice = &tune.voices[0];
+    let overlay = voice
+        .measures
+        .iter()
+        .flat_map(|measure| &measure.overlays)
+        .next()
+        .expect("expected overlay segment");
+    let overlay_lyrics = overlay
+        .events
+        .iter()
+        .filter(|event| event.alignable)
+        .map(|event| {
+            event
+                .lyrics
+                .iter()
+                .find(|lyric| lyric.control == LyricControl::Syllable)
+                .map(|lyric| lyric.text.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(overlay_lyrics, vec![Some("down"), Some("by")]);
+
+    let main_lyrics = voice
+        .measures
+        .iter()
+        .flat_map(|measure| &measure.events)
+        .flat_map(|event| &event.lyrics)
+        .filter(|lyric| lyric.control == LyricControl::Syllable)
+        .map(|lyric| lyric.text.as_str())
+        .collect::<Vec<_>>();
+    assert!(!main_lyrics.contains(&"down"));
+    assert!(!main_lyrics.contains(&"by"));
+}
+
+#[test]
 fn symbol_lines_align_to_notes_and_preserve_symbol_kinds() {
     let document = parse_document(
         "X:1\nK:C\nC z D E F|\ns: \"C\" * !>! \"^slow\"\n",

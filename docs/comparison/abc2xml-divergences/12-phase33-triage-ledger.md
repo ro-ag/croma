@@ -536,7 +536,7 @@ Minimal: `X:1\nM:6/8\nL:1/8\nK:G\ne2 E E2 ][ f | g3 f3 |\nw: one-ly, Tam. They s
 37n: rechecked the original four-file target after the phase-37 parser/lowering fixes. Fresh target export/compare artifacts are under `docs/untracked/phase-37-ledger-burndown/target-lyric-barline-bracket-37n/`. `tune_009178.abc`, `tune_009179.abc`, and `tune_012835.abc` now structurally match reference; `tune_012962.abc` has 39 residual rows, but the first break is a reference-only zero-duration grace `E` before the disputed `][ B2` boundary. The claimed dropped note after `][` is no longer reproducible in current Croma, so this ledger target is stale/resolved for the original Croma bug. The remaining `tune_012962` rows belong to a separate grace/reference-alignment quirk, and the still-emitted `abc.music.unclosed_chord` warning on `][` is cosmetic for this target because structure is recovered.
 
 
-### `lyric-voice-overlay-syllable-matching` — **OPEN** (croma_bug, repro=None)
+### `lyric-voice-overlay-syllable-matching` — **FIXED(37o)** (croma_bug, repro=True)
 
 *Share:* ~4% rows (5/140), 1/9 files — *files:* tune_006565.abc
 
@@ -545,6 +545,8 @@ Minimal: `C D E F & G, A, B, C, |` + `w: one two three four five six sev- en` �
 
 
 *Fix:* Lower layer. Overlay events are lowered into a separate `{voice}.overlayN` timeline (crates/croma-core/src/lower/timeline.rs, OverlayBuilder around lines 142-151), so crates/croma-core/src/lower/align.rs `alignable_refs` never sees them. Fix: when building alignment refs for a voice, merge in its overlay timelines' alignable events ordered by source_order (AlignableRef already sorts on source_orde
+
+37o: fixed by making lyric/symbol alignment refs address either main voice events or overlay events, then attaching through that event path. Regression `lyrics_align_to_overlay_notes_in_source_order` covers the `tune_006565` overlay phrase and asserts `down`/`by` attach to overlay notes, not later main-voice notes. Target compare for `tune_006565` improved from 11 rows (`lyric`: 5, `missing_in_croma`: 2, `extra_in_croma`: 2, `measure_alignment`: 2) to 2 residual `measure_alignment` measure-number rows; there are no lyric rows after 37o.
 
 
 ### `lyric-malformed-header-field-parsed-as-music` — **QUIRK** (reference_quirk, repro=None)
