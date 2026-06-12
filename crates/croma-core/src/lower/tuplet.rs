@@ -64,12 +64,14 @@ impl LoweringState {
     fn attach_completed_tuplet(&mut self, tuplet: CompletedTuplet) {
         let groups_len = tuplet.groups.len();
         for (index, group) in tuplet.groups.iter().enumerate() {
-            let role = if index == 0 {
-                TupletRole::Start
+            let roles: &[TupletRole] = if groups_len == 1 {
+                &[TupletRole::Start, TupletRole::Stop]
+            } else if index == 0 {
+                &[TupletRole::Start]
             } else if index + 1 == groups_len {
-                TupletRole::Stop
+                &[TupletRole::Stop]
             } else {
-                TupletRole::Continue
+                &[TupletRole::Continue]
             };
             // The role goes on the group's first timed event — the single note
             // or rest, or a chord's first member (never both, so no
@@ -80,7 +82,9 @@ impl LoweringState {
                 .copied()
                 .find(|index| matches!(self.lowered.get(*index), Some(LoweredEvent::Timed(_))))
             {
-                self.attach_tuplet(event_index, &tuplet, role);
+                for role in roles {
+                    self.attach_tuplet(event_index, &tuplet, *role);
+                }
             }
         }
     }

@@ -43,6 +43,18 @@ zero match-to-mismatch regressions; tune_005687/tune_013455/tune_013477 fully
 fixed, tune_009310/tune_010751/tune_010753 improved. Round-trip remains 99.25%
 / 0 structural diffs.
 
+2026-06-12 phase-36 one-note tuplet fix: `attach_completed_tuplet()` now
+attaches both Start and Stop to the same timed event when ABC uses an explicit
+`r=1` tuplet such as `(3:2:1G`. Regression tests:
+`one_note_tuplet_carries_start_and_stop_on_same_event` and
+`one_note_tuplet_emits_balanced_start_and_stop`. Targeted repro export for
+tune_010459/tune_010462 now emits adjacent start+stop pairs on the three
+one-note tuplets in each file; the remaining 6 targeted tuplet comparison rows
+are croma `startStop` vs abc2xml/music21 `null` because abc2xml writes stop-only
+notation for those one-note tuplets. Full 10k report-only compare on the
+phase-36 export: matches 8861, mismatch rows 164265, tuplet rows 607, zero
+MusicXML import failures.
+
 
 ## accidental
 
@@ -982,15 +994,29 @@ Minimal repro /tmp/tuplet-probe/t4.abc (`M:none L:1/4 K:C` + `F16`): croma emits
 *Fix:* MusicXML export layer only: (1) add NoteTypeCandidate entries for "long" (4/1) and "maxima" (8/1) in note_type_candidates() in /Users/rodox/dev/rs/croma/crates/croma-core/src/musicxml/note.rs; (2) for rests spanning the full measure, emit `<rest measure="yes"/>` (note.rs line ~256, currently `self.xml.empty("rest", &[])`) and omit <type>, matching MusicXML semantics; (3) keep the time-modification
 
 
-### `tuplet-one-note-group-dangling-start` — **OPEN** (croma_bug, repro=True)
+### `tuplet-one-note-group-dangling-start` — **FIXED(36a)** (croma_bug, repro=True)
 
 *Share:* 8/691 rows (~1.2%), 2 files — *files:* tune_010459.abc, tune_010462.abc
 
 
-Minimal repro /tmp/tuplet-probe/t1.abc (`(3:2:1G(3:2:1B(3:2:1g Bc dc (3ccc|`, from tune_010459/010462 m14): croma emits `<tuplet type="start" number="1..3"/>` on each single-member tuplet and NEVER closes them (numbers keep growing; downstream readers see three dangling open brackets — music21 even misreads the genuine stop of the later (3ccc as null because of them). ABC 2.1 §4.13 allows r=1 ('put p notes into the time of q for the next r notes'); the correct MusicXML for a one-member group is start+stop on the same note. Mechanism: attach_completed_tuplet() in /Users/rodox/dev/rs/croma/crates/croma-core/src/lower/tuplet.rs lines 64-86 — for groups_len==1 the `index == 0` branch assigns TupletRole::Start and the Stop branch is unreachable; one attachment per event means the Stop is silently lost. Timing (time-modification 3/2 and durations) is identical on both sides. Caveat: abc2xml em…
+Minimal repro /tmp/tuplet-probe/t1.abc (`(3:2:1G(3:2:1B(3:2:1g Bc dc (3ccc|`, from tune_010459/010462 m14): croma emits `<tuplet type="start" number="1..3"/>` on each single-member tuplet and NEVER closes them (numbers keep growing; downstream readers see three dangling open brackets — music21 even misreads the genuine stop of the later (3ccc as null because of them). ABC 2.1 §4.13 allows r=1 ('put p notes into the time of q for the next r notes'); the correct MusicXML for a one-member group is start+stop on the same note. Mechanism: attach_completed_tuplet() in /Users/rodox/dev/rs/croma/crates/croma-core/src/lower/tuplet.rs lines 64-86 — for groups_len==1 the `index == 0` branch assigns TupletRole::Start and the Stop branch is unreachable; one attachment per event means the Stop is silently lost. Timing (time-modification 3/2 and durations) is identical on both sides.
 
 
-*Fix:* Lower layer: in attach_completed_tuplet (/Users/rodox/dev/rs/croma/crates/croma-core/src/lower/tuplet.rs), when tuplet.groups.len()==1 push BOTH a Start and a Stop TupletAttachment on the single timed event (attachments.tuplets is already a Vec). The writer (/Users/rodox/dev/rs/croma/crates/croma-core/src/musicxml/notation.rs lines 60-72) already iterates all attachments and will emit `<tuplet typ
+*Fix:* Lower layer: `attach_completed_tuplet()` now pushes both
+`TupletRole::Start` and `TupletRole::Stop` when a completed tuplet contains
+exactly one note group. `attachments.tuplets` is already a `Vec`, and the
+MusicXML writer already iterates all attachments, so the export emits both
+`<tuplet type="start">` and `<tuplet type="stop">` on the same timed event.
+
+*Phase-36 verification:* Regression tests
+`one_note_tuplet_carries_start_and_stop_on_same_event` and
+`one_note_tuplet_emits_balanced_start_and_stop` cover the lowerer attachment
+vector and exported MusicXML pair. Targeted after-compare for tune_010459 and
+tune_010462 shows 6 residual tuplet rows, all at measure 14 events 0-2: croma
+is now `[{"actual":3,"normal":2,"type":"startStop"}]`, while abc2xml/music21
+reports `[{"actual":3,"normal":2,"type":null}]` from its stop-only encoding.
+Those residual rows are a reference/comparator artifact, not an open
+dangling-start Croma bug.
 
 
 ### `tuplet-nested-tuplets` — **REVIEW** (needs_deeper_look, repro=None)

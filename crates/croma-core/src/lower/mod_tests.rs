@@ -2036,6 +2036,21 @@ fn all_rest_tuplet_carries_roles_on_every_rest() {
 }
 
 #[test]
+fn one_note_tuplet_carries_start_and_stop_on_same_event() {
+    let source = "X:1\nL:1/8\nK:C\n(3:2:1G B|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    assert_eq!(
+        timed_tuplet_roles(&tune),
+        vec![
+            ("note", vec![TupletRole::Start, TupletRole::Stop]),
+            ("note", Vec::new()),
+        ]
+    );
+}
+
+#[test]
 fn rest_led_tuplet_keeps_prefix_attachments_on_the_rest() {
     // `(3"C"zBA`: the chord symbol rides across the tuplet marker and binds to
     // the leading rest, which still carries the Start role.
