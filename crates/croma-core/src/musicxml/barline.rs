@@ -25,11 +25,11 @@ impl<'score> MusicXmlWriter<'score> {
             BarlineKind::Initial => self.xml.text_element("bar-style", "heavy-light"),
             BarlineKind::Dotted => self.xml.text_element("bar-style", "dotted"),
             BarlineKind::Invisible => self.xml.text_element("bar-style", "none"),
-            BarlineKind::RepeatStart
-            | BarlineKind::RepeatEnd
-            | BarlineKind::RepeatBoth
-            | BarlineKind::Regular
-            | BarlineKind::Liberal => {}
+            BarlineKind::RepeatStart => self.xml.text_element("bar-style", "heavy-light"),
+            BarlineKind::RepeatEnd | BarlineKind::RepeatBoth => {
+                self.xml.text_element("bar-style", "light-heavy");
+            }
+            BarlineKind::Regular | BarlineKind::Liberal => {}
         }
         for child in ending_children {
             let attrs = [

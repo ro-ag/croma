@@ -948,8 +948,88 @@ fn leading_repeat_start_exports_left_repeat_without_empty_measure() {
     assert_eq!(measure_numbers(&measures), vec!["1"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
     assert_eq!(note_durations(&measures[0]), vec![8, 8, 8, 8]);
-    assert!(has_barline(&measures[0], "left", None, Some("forward")));
-    assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+}
+
+#[test]
+fn repeat_barlines_emit_explicit_musicxml_bar_styles() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|: C D E F :||: G A B c :|\n";
+    let export = export_musicxml(source).expect("repeat barlines should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[1],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+}
+
+#[test]
+fn repeat_ending_closes_before_trailing_repeat_start() {
+    let source = "X:1\nM:2/4\nL:1/4\nK:C\n|: C D |1 E F :|2 G A |: B c |]\n";
+    let export = export_musicxml(source).expect("repeat ending should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4"]);
+    assert!(has_ending(&measures[2], "right", "2", "stop"));
+    assert!(has_barline(
+        &measures[3],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(!has_ending(&measures[3], "right", "2", "stop"));
+}
+
+#[test]
+fn repeat_ending_closes_before_next_leading_repeat_start() {
+    let source = "X:1\nM:2/4\nL:1/4\nK:C\n|: C D |1 E F :|2 G A |\n|: B c |]\n";
+    let export = export_musicxml(source).expect("repeat ending should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4"]);
+    assert!(has_ending(&measures[2], "right", "2", "stop"));
+    assert!(has_barline(
+        &measures[3],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(!has_ending(&measures[3], "right", "2", "stop"));
 }
 
 #[test]
@@ -1012,8 +1092,18 @@ fn leading_double_repeat_start_exports_left_repeat_without_empty_measure() {
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
-    assert!(has_barline(&measures[0], "left", None, Some("forward")));
-    assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1026,7 +1116,12 @@ fn repeat_end_double_after_notes_exports_right_repeat_and_new_measure() {
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
-    assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1037,8 +1132,18 @@ fn repeat_both_between_sections_exports_right_then_left_repeat() {
     assert_balanced_xml(&export.musicxml);
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
-    assert!(has_barline(&measures[0], "right", None, Some("backward")));
-    assert!(has_barline(&measures[1], "left", None, Some("forward")));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
 }
 
@@ -1050,8 +1155,18 @@ fn triple_repeat_extensions_export_repeat_edges() {
     assert_balanced_xml(&export.musicxml);
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1"]);
-    assert!(has_barline(&measures[0], "left", None, Some("forward")));
-    assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
     assert!(
         measures[0]
             .barlines
@@ -1168,7 +1283,12 @@ fn thick_barline_then_repeat_start_run_is_a_single_boundary() {
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A']);
-    assert!(has_barline(&measures[1], "left", None, Some("forward")));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
 }
 
 #[test]
@@ -1182,7 +1302,12 @@ fn thick_barline_run_after_second_ending_does_not_emit_phantom_measure() {
     assert_eq!(note_steps(&measures[0]), vec!['C']);
     assert_eq!(note_steps(&measures[1]), vec!['C']);
     assert_eq!(note_steps(&measures[2]), vec!['G', 'A']);
-    assert!(has_barline(&measures[2], "left", None, Some("forward")));
+    assert!(has_barline(
+        &measures[2],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
 }
 
 #[test]
@@ -1196,7 +1321,12 @@ fn continued_thick_barline_run_after_second_ending_does_not_emit_phantom_measure
     assert_eq!(note_steps(&measures[0]), vec!['C']);
     assert_eq!(note_steps(&measures[1]), vec!['C']);
     assert_eq!(note_steps(&measures[2]), vec!['G', 'A']);
-    assert!(has_barline(&measures[2], "left", None, Some("forward")));
+    assert!(has_barline(
+        &measures[2],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
 }
 
 #[test]
@@ -1209,7 +1339,12 @@ fn double_barline_repeat_start_between_content_is_a_single_boundary() {
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
-    assert!(has_barline(&measures[1], "left", None, Some("forward")));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
 }
 
 #[test]
@@ -1222,8 +1357,18 @@ fn mid_tune_final_then_repeat_start_does_not_emit_phantom_measure() {
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
-    assert!(has_barline(&measures[1], "left", None, Some("forward")));
-    assert!(has_barline(&measures[1], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[1],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1403,10 +1548,30 @@ fn tune_014868_style_leading_double_repeat_has_no_empty_measure() {
         vec!['A', 'E', 'A', 'B', 'A', 'E', 'A']
     );
     assert_eq!(note_durations(&measures[0]), vec![8, 4, 4, 4, 4, 4, 4]);
-    assert!(has_barline(&measures[0], "left", None, Some("forward")));
-    assert!(has_barline(&measures[7], "right", None, Some("backward")));
-    assert!(has_barline(&measures[8], "left", None, Some("forward")));
-    assert!(has_barline(&measures[15], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[7],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+    assert!(has_barline(
+        &measures[8],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[15],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
     assert!(!measures[0].notes.iter().any(|note| note.rest));
 }
 
@@ -1418,8 +1583,18 @@ fn bracketed_repeat_start_and_final_repeat_end_export_repeat_edges() {
     assert_balanced_xml(&export.musicxml);
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1"]);
-    assert!(has_barline(&measures[0], "left", None, Some("forward")));
-    assert!(has_barline(&measures[0], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1436,11 +1611,21 @@ fn pickup_repeat_start_places_forward_repeat_on_repeated_section() {
     assert_eq!(note_steps(&measures[0]), vec!['E']);
     assert_eq!(note_steps(&measures[1]), vec!['C', 'D', 'E', 'F']);
     assert!(
-        !has_barline(&measures[0], "left", None, Some("forward")),
+        !has_barline(&measures[0], "left", Some("heavy-light"), Some("forward")),
         "pickup measure must not carry the forward repeat"
     );
-    assert!(has_barline(&measures[1], "left", None, Some("forward")));
-    assert!(has_barline(&measures[2], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[2],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1456,11 +1641,21 @@ fn mid_tune_repeat_start_places_forward_repeat_on_repeated_section() {
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
     assert_eq!(note_steps(&measures[2]), vec!['C', 'B', 'A', 'G']);
     assert!(
-        !has_barline(&measures[1], "left", None, Some("forward")),
+        !has_barline(&measures[1], "left", Some("heavy-light"), Some("forward")),
         "measure preceding the repeat must not carry the forward repeat"
     );
-    assert!(has_barline(&measures[2], "left", None, Some("forward")));
-    assert!(has_barline(&measures[3], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[2],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[3],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1474,8 +1669,18 @@ fn leading_repeat_start_after_header_stays_on_its_own_measure() {
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
-    assert!(has_barline(&measures[0], "left", None, Some("forward")));
-    assert!(has_barline(&measures[1], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[1],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1491,11 +1696,21 @@ fn double_then_repeat_start_after_content_defers_forward_repeat() {
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
     assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
     assert!(
-        !has_barline(&measures[0], "left", None, Some("forward")),
+        !has_barline(&measures[0], "left", Some("heavy-light"), Some("forward")),
         "first measure must not carry the forward repeat"
     );
-    assert!(has_barline(&measures[1], "left", None, Some("forward")));
-    assert!(has_barline(&measures[2], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(has_barline(
+        &measures[2],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
@@ -1543,7 +1758,12 @@ fn adjacent_repeat_end_and_second_ending_starts_next_measure() {
     assert!(has_ending(&measures[1], "right", "1", "stop"));
     assert!(has_ending(&measures[2], "left", "2", "start"));
     assert!(has_ending(&measures[2], "right", "2", "stop"));
-    assert!(has_barline(&measures[1], "right", None, Some("backward")));
+    assert!(has_barline(
+        &measures[1],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
 }
 
 #[test]
