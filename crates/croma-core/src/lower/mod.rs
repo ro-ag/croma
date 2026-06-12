@@ -564,10 +564,14 @@ impl MultiVoiceLowering {
                     .current_state()
                     .lowered
                     .push(LoweredEvent::Overlay(*overlay)),
-                MusicItem::VariantEnding(ending) => self
-                    .current_state()
-                    .lowered
-                    .push(LoweredEvent::VariantEnding(ending.clone())),
+                MusicItem::VariantEnding(ending) => {
+                    if self.current_state().broken_left_available {
+                        self.push_implicit_regular_barline(ending.span);
+                    }
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::VariantEnding(ending.clone()));
+                }
                 MusicItem::Barline(barline) => {
                     if matches!(barline.kind, BarlineKind::Dotted | BarlineKind::Invisible) {
                         self.current_state()
