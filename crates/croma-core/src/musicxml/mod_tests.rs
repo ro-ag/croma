@@ -1049,6 +1049,35 @@ fn split_barline_between_content_is_a_single_boundary() {
 }
 
 #[test]
+fn continued_section_leading_double_barline_does_not_close_empty_measure() {
+    // tune_006306 style: a pickup note uses a suppressed line break, then the
+    // continued physical line starts a section with `||`; the next section
+    // also starts with `||` after the previous one closed with `||`. That
+    // second section marker keeps an empty section-leading measure, but must
+    // not be reclassified as a right double barline on it.
+    let source = "X:1\nM:3/4\nL:1/4\nK:Am\nE \\\n|| AA>c | e3 ||\n|| aa>a | a3 ||\n";
+    let export = export_musicxml(source).expect("continued section double should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(
+        measure_numbers(&measures),
+        vec!["1", "2", "3", "4", "5", "6"]
+    );
+    assert_eq!(note_steps(&measures[0]), vec!['E']);
+    assert_eq!(note_steps(&measures[1]), vec!['A', 'A', 'C']);
+    assert_eq!(note_steps(&measures[2]), vec!['E']);
+    assert!(measures[3].notes.is_empty());
+    assert!(
+        measures[3].barlines.is_empty(),
+        "section-leading || empty measure must not carry barlines: {:?}",
+        measures[3].barlines
+    );
+    assert_eq!(note_steps(&measures[4]), vec!['A', 'A', 'A']);
+    assert_eq!(note_steps(&measures[5]), vec!['A']);
+}
+
+#[test]
 fn thick_barline_then_repeat_start_run_is_a_single_boundary() {
     let source = "X:1\nL:1/8\nM:C\nK:C\nCDEF]||: GA |\n";
     let export = export_musicxml(source).expect("]||: barline run should export");
@@ -1212,6 +1241,33 @@ fn multi_voice_tacet_barline_only_measure_is_kept_aligned() {
     assert!(
         v2_measures[2].notes.iter().all(|note| note.rest) || v2_measures[2].notes.is_empty(),
         "V2 trailing measure should be a tacet bar, not real notes"
+    );
+}
+
+#[test]
+fn multi_voice_empty_final_measure_keeps_final_barline() {
+    // A final continuation line that is only `|]` still explicitly notates a
+    // final bar for that voice. Keep the empty measure and its right barline.
+    let source = concat!(
+        "X:1\nM:2/4\nL:1/8\nK:C\n",
+        "[V:1] CDEF |\n[V:2] EFGA |\n",
+        "[V:1] GABc |\n[V:2] |]\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice empty final bar should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let parts = part_bodies(&export.musicxml);
+    assert_eq!(parts.len(), 2, "expected two voices/parts");
+
+    let v1_measures = musicxml_measures(&parts[0]);
+    let v2_measures = musicxml_measures(&parts[1]);
+    assert_eq!(v1_measures.len(), 2);
+    assert_eq!(v2_measures.len(), 2);
+    assert!(v2_measures[1].notes.is_empty());
+    assert!(
+        has_barline(&v2_measures[1], "right", Some("light-heavy"), None),
+        "V2 empty final measure should retain its explicit |] right barline: {:?}",
+        v2_measures[1].barlines
     );
 }
 
