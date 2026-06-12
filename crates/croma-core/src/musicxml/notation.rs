@@ -8,6 +8,7 @@ impl<'score> MusicXmlWriter<'score> {
         attachments: &EventAttachments,
         time_modification: Option<TimeModification>,
         tuplet_numbers: &TupletNumbers,
+        slur_voice_key: &str,
     ) {
         let has_tied = !attachments.ties.is_empty();
         let has_slurs = !attachments.slurs.is_empty();
@@ -41,7 +42,10 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.empty("tied", &attrs);
         }
         for slur in &attachments.slurs {
-            let number = slur.pair_id.to_string();
+            let number = self
+                .slur_numbers
+                .number_for(slur_voice_key, slur.pair_id, slur.role)
+                .to_string();
             let mut attrs = vec![
                 (
                     "type",

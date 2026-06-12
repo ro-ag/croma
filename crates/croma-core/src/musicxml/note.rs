@@ -306,7 +306,12 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml
                 .text_element("staff", &sequence.staff.value.to_string());
         }
-        self.write_notations(note.attachments, time_modification, tuplet_numbers);
+        self.write_notations(
+            note.attachments,
+            time_modification,
+            tuplet_numbers,
+            &sequence.slur_voice_key,
+        );
         self.write_lyrics(&note.attachments.lyrics);
         self.xml.end("note");
     }
