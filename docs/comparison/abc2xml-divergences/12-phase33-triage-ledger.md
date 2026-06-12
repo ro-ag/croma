@@ -346,7 +346,7 @@ tune_001029 (M:C|, L:1/2, %%MIDI nobarlines, opens 'z4' = 8 ql): RAW reference X
 
 ## extra_in_croma
 
-### `extra-abc2xml-drops-text-and-second-staff-dynamics` — **OPEN** (croma_bug, repro=True)
+### `extra-abc2xml-drops-text-and-second-staff-dynamics` — **QUIRK** (reference_quirk/stale_cascade, repro=True)
 
 *Share:* ~0.3% rows (~120) — *files:* tune_015359.abc, tune_012129.abc, tune_008744.abc, tune_008746.abc
 
@@ -354,7 +354,20 @@ tune_001029 (M:C|, L:1/2, %%MIDI nobarlines, opens 'z4' = 8 ql): RAW reference X
 (a) tune_015359 'Q:”Slow”' (Unicode curly quotes; SS3.1.8 requires ASCII double quotes, so malformed input): croma emits <words>”Slow”</words> preserving the text; abc2xml emits nothing (minimal repro confirmed: croma <words>, abc2xml no words/metronome/sound at all). Recovery-choice difference on illegal input - note 'malformed input'. (b) tune_008744 ('V: 1 staves=2' two-staff part): croma keeps V:2's !p!/!f! dynamics (extra Dynamic rows at measures 3/11/15/20/24 match V:2's marks exactly); abc2xml drops dynamics from the second merged staff. A bare '!p!' on a single voice round-trips identically in both tools (minimal repro), isolating the staves-merge as abc2xml's loss. All 25 Dynamic-kind extra rows in the corpus fit this pattern. Croma preserves source information in both sub-cases; abc2xml silently loses it.
 
 
-**Verifier correction:** The cause bundles two unrelated phenomena and should be split. (a) Curly-quoted Q: text (tune_015359, tune_012129, 2 TextExpression rows): verified, correctly reference_quirk — abc2xml's Q: regex requires ASCII quotes (ABC 2.1 SS3.1.8) and silently drops the malformed field; croma preserves the text. (b) All 25 Dynamic-kind extra rows: the triage mechanism ('abc2xml drops !p!/!f! on second staff of staves=2 merged part') is factually wrong — abc2xml drops nothing and neither tool merges the part
+**Verifier correction:** The cause bundles two unrelated phenomena and should be split. (a) Curly-quoted Q: text (tune_015359, tune_012129, 2 TextExpression rows): verified, correctly reference_quirk — abc2xml's Q: regex requires ASCII quotes (ABC 2.1 SS3.1.8) and silently drops the malformed field; croma preserves the text. (b) All 25 Dynamic-kind extra rows: the triage mechanism ('abc2xml drops !p!/!f! on second staff of staves=2 merged part') is factually wrong — abc2xml drops nothing and neither tool merges the part.
+
+*Re-verdicted in 37i:* Current four-file target export/compare confirms no
+Croma code change is warranted. The only remaining rows are two
+`extra_in_croma` direction/TextExpression rows for malformed curly-quoted `Q:`
+fields: `tune_015359.abc` (`Q:”Slow”`) and `tune_012129.abc`
+(`Q:”Slow & sad”`). Croma preserves the source text as MusicXML words; abc2xml
+silently drops it because its Q-text regex accepts only ASCII quotes. The
+alleged second-staff dynamics rows in `tune_008744.abc` and `tune_008746.abc`
+are stale cascade artifacts from older direction alignment: current Croma and
+reference XML both contain the same ten dynamics across P1/P2, and both files
+compare as structural matches. Targeted compare after 37i: 4 exports, 2
+structural matches, 2 mismatch rows, `extra_in_croma` 2, no import, harness,
+or worker failures.
 
 
 ### `extra-decoration-words-fallback` — **FIXED(37a)** (croma_bug, repro=True)
