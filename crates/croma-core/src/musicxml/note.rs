@@ -413,7 +413,7 @@ fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
             .iter()
             .filter(|tuplet| tuplet.role == TupletRole::Stop)
             .collect::<Vec<_>>();
-        stops.sort_by(|a, b| b.pair_id.cmp(&a.pair_id));
+        stops.sort_by_key(|tuplet| std::cmp::Reverse(tuplet.pair_id));
         for tuplet in stops {
             if !numbers
                 .pairs
