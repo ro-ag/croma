@@ -71,7 +71,7 @@ Minimal repros, K:C. `{^f}f2 f2 f4`: croma gives the main f's NO alter (natural)
 37k: fixed by lowering grace notes through the voice's measure accidental ledger before the host note/chord member resolves. Written grace accidentals now seed later same-pitch notes in the bar, and unwritten grace notes inherit prior same-pitch measure accidentals/key alters. Focused tests cover `{^f}f2 f2 f4`, `^c2 {dc}d2 c4`, shifted voice-octave identity, pending/direct grace order, and chord-member ordering. Target compare for tune_013736/tune_011097/tune_012949/tune_009036: 4 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
 
-### `accidental-late-voice-key-seed` — **OPEN** (croma_bug, repro=None)
+### `accidental-late-voice-key-seed` — **FIXED(37l)** (croma_bug, repro=True)
 
 *Share:* ~0.5% rows (21/3876), 2 files; 19% of genuine solo rows — *files:* tune_010949.abc, tune_012206.abc
 
@@ -80,6 +80,8 @@ Minimal repro (V:1 body, then standalone K:Dm, then V:2 body — the Village Mus
 
 
 *Fix:* Lowering layer: crates/croma-core/src/lower/mod.rs, MultiVoiceLowering (fields ~lines 142-155, seeding block ~lines 580-615). Scope standalone body K:/M: changes to the voice that is current when they appear; seed a voice whose body starts later from the HEADER key/meter (header_key_display/header_meter_display already exist as the dedupe baseline). Keep the changed-state seed only for voices that
+
+37l: fixed by making standalone body `K:`/`M:` changes current-voice timeline events, sharing the same scoping as inline `[K:]`/`[M:]`, and removing global changed-key/meter seeding for voices whose streams have not reached the body field. Focused tests cover late body voices, header-predeclared late voices, standalone body meter scoping, MusicXML key attributes, and ABC writer idempotency. Target compare for tune_010949/tune_012206: 2 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
 
 ### `accidental-tie-carry-pollutes-next-bar` — **FIXED(37k)** (croma_bug, repro=True)

@@ -3348,26 +3348,170 @@ fn supported_body_additive_meter_change_does_not_warn() {
     );
 }
 
+fn part_note_steps_and_alters(score: &crate::model::Score, part_index: usize) -> Vec<(char, i8)> {
+    score.parts[part_index].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::Note(note) => Some((note.pitch.step, note.pitch.alter)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn part_key_change_fifths(score: &crate::model::Score, part_index: usize) -> Vec<i8> {
+    score.parts[part_index].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::KeyChange(key) => Some(key.fifths),
+            _ => None,
+        })
+        .collect()
+}
+
+fn part_meter_change_displays(score: &crate::model::Score, part_index: usize) -> Vec<&str> {
+    score.parts[part_index].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::MeterChange(meter) => Some(meter.display.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn notes_before_first_key_change(score: &crate::model::Score, part_index: usize) -> usize {
+    let events = &score.parts[part_index].voices[0].events;
+    let key_index = events
+        .iter()
+        .position(|event| matches!(event.kind, TimedEventKind::KeyChange(_)))
+        .expect("key change");
+    events[..key_index]
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::Note(_)))
+        .count()
+}
+
+fn notes_before_first_meter_change(score: &crate::model::Score, part_index: usize) -> usize {
+    let events = &score.parts[part_index].voices[0].events;
+    let meter_index = events
+        .iter()
+        .position(|event| matches!(event.kind, TimedEventKind::MeterChange(_)))
+        .expect("meter change");
+    events[..meter_index]
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::Note(_)))
+        .count()
+}
+
 #[test]
-fn standalone_body_key_line_broadcasts_to_all_voices() {
-    let source = "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nK:D\nV:1\nFGAF|\nV:2\nCDEF|\nFGAF|\n";
+fn standalone_body_key_line_scopes_to_current_voice_timeline() {
+    let late_body_voice = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:D\n",
+        "V:1\n",
+        "B B B B|\n",
+        "K:Dm\n",
+        "B B B B|\n",
+        "V:2\n",
+        "F C B F|\n",
+        "K:Dm\n",
+        "F C B F|\n",
+    );
+    let header_predeclared_late_voice = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "V:1\n",
+        "V:2\n",
+        "K:D\n",
+        "V:1\n",
+        "B B B B|\n",
+        "K:Dm\n",
+        "B B B B|\n",
+        "V:2\n",
+        "F C B F|\n",
+        "K:Dm\n",
+        "F C B F|\n",
+    );
+
+    for (label, source) in [
+        ("late body voice", late_body_voice),
+        (
+            "header-predeclared late voice",
+            header_predeclared_late_voice,
+        ),
+    ] {
+        let doc = crate::parse_document(source, crate::ParseOptions::default());
+        let score = crate::lower_score(&doc.value, crate::LowerOptions)
+            .value
+            .expect("score");
+
+        assert_eq!(score.parts.len(), 2, "{label}: expected two parts");
+        assert_eq!(
+            part_key_change_fifths(&score, 0),
+            vec![-1],
+            "{label}: V1 records only its Dm change"
+        );
+        assert_eq!(
+            part_key_change_fifths(&score, 1),
+            vec![-1],
+            "{label}: V2 records only its own Dm change"
+        );
+        assert_eq!(
+            notes_before_first_key_change(&score, 1),
+            4,
+            "{label}: V2 must stay in the header key until its own K:Dm"
+        );
+        assert_eq!(
+            part_note_steps_and_alters(&score, 1),
+            vec![
+                ('F', 1),
+                ('C', 1),
+                ('B', 0),
+                ('F', 1),
+                ('F', 0),
+                ('C', 0),
+                ('B', -1),
+                ('F', 0),
+            ],
+            "{label}: V2 first bar stays in D major, second bar changes to D minor"
+        );
+    }
+}
+
+#[test]
+fn standalone_body_meter_line_scopes_to_current_voice_timeline() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "V:1\n",
+        "V:2\n",
+        "K:C\n",
+        "V:1\n",
+        "C D E F|\n",
+        "M:3/4\n",
+        "G A B|\n",
+        "V:2\n",
+        "C D E F|\n",
+        "M:3/4\n",
+        "G A B|\n",
+    );
     let doc = crate::parse_document(source, crate::ParseOptions::default());
     let score = crate::lower_score(&doc.value, crate::LowerOptions)
         .value
         .expect("score");
-    let key_changes_per_voice: Vec<usize> = score
-        .parts
-        .iter()
-        .flat_map(|p| &p.voices)
-        .map(|v| {
-            v.events
-                .iter()
-                .filter(|e| matches!(e.kind, crate::TimedEventKind::KeyChange(_)))
-                .count()
-        })
-        .collect();
-    assert!(
-        key_changes_per_voice.iter().all(|&n| n == 1),
-        "every voice records the broadcast key change: {key_changes_per_voice:?}"
+
+    assert_eq!(score.parts.len(), 2, "expected two parts");
+    assert_eq!(part_meter_change_displays(&score, 0), vec!["3/4"]);
+    assert_eq!(part_meter_change_displays(&score, 1), vec!["3/4"]);
+    assert_eq!(
+        notes_before_first_meter_change(&score, 1),
+        4,
+        "V2 must stay in the header meter until its own M:3/4"
     );
 }
