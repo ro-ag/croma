@@ -477,7 +477,9 @@ struct OverlayBuilder {
 
 fn timed_span(event: LoweredEventAtom) -> Span {
     match event.kind {
-        LoweredEventAtomKind::Note { span, .. } | LoweredEventAtomKind::Rest { span, .. } => span,
+        LoweredEventAtomKind::Note { span, .. }
+        | LoweredEventAtomKind::Rest { span, .. }
+        | LoweredEventAtomKind::Spacer { span } => span,
     }
 }
 
@@ -507,6 +509,7 @@ fn timeline_event_kind(kind: LoweredEventAtomKind) -> TimelineEventKind {
             visibility,
             multiple_rest,
         },
+        LoweredEventAtomKind::Spacer { .. } => TimelineEventKind::Spacer,
     }
 }
 
