@@ -1329,12 +1329,24 @@ def add_event_rows(
     builder.add("tuplet", "tuplets", duration.get("tuplets", []), **event_base)
     builder.add("tie", "type", event.get("tie"), **event_base)
 
-    for lyric_index, lyric_text in enumerate(event.get("lyrics", [])):
+    for lyric_index, lyric in enumerate(event.get("lyrics", [])):
         lyric_base = {**event_base, "alignment_index": lyric_index}
+        if isinstance(lyric, dict):
+            lyric_text = lyric.get("text", "")
+            lyric_syllabic = lyric.get("syllabic")
+        else:
+            lyric_text = lyric
+            lyric_syllabic = None
         builder.add(
             "lyric",
             "text",
             lyric_text,
+            **lyric_base,
+        )
+        builder.add(
+            "lyric",
+            "syllabic",
+            lyric_syllabic,
             **lyric_base,
         )
 

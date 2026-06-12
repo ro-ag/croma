@@ -297,9 +297,12 @@ def tie_facts(element: Any) -> str | None:
     return None if tie is None else tie.type
 
 
-def lyric_facts(element: Any) -> list[str]:
+def lyric_facts(element: Any) -> list[dict[str, str]]:
     return [
-        lyric.text if lyric.text is not None else ""
+        {
+            "text": lyric.text if lyric.text is not None else "",
+            "syllabic": optional_string(getattr(lyric, "syllabic", None)),
+        }
         for lyric in getattr(element, "lyrics", [])
     ]
 

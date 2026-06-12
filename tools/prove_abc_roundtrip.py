@@ -19,12 +19,10 @@ Bar: **0 structural diffs over the in-scope subset.** Coverage (in_scope/total)
 is reported so later slices can track growth.
 
 In-scope filter (`is_in_scope`, applied to the ABC source): a tune is out of
-scope if its body carries a mid-tune key change (a second `K:` line or an
-inline `[K:...]` — the writer emits only the header `K:`), a bare-grace slur
-(`({Bc})`, a slur wrapping only a grace group with no main note), or a nested
-tuplet (`(7:8:8(3...` — the writer flattens the outer tuplet). Tunes that
-fail to lower are not a writer concern; they are excluded from scope and
-tallied separately in the summary as `lower_fail` with a reason→count bucket.
+scope if its body carries multiple octave-shifting key/clef changes (the writer
+still compensates from the final voice properties). Tunes that fail to lower are
+not a writer concern; they are excluded from scope and tallied separately in the
+summary as `lower_fail` with a reason→count bucket.
 
 LOCAL ONLY — never wire this into CI. The corpus is external; provision it per
 AGENTS.md. Report is written under docs/untracked/abc/.
@@ -46,9 +44,6 @@ from pathlib import Path
 
 CROMA = "target/debug/croma"
 _INLINE_KEY_RE = re.compile(r"\[K:")
-# A slur that wraps only a grace group with no main note (`({Bc})`): the grace
-# close is immediately followed by the slur close. Degenerate; out of scope.
-_BARE_GRACE_SLUR_RE = re.compile(r"\}\)")
 # A mid-tune K: field that carries an octave-shifting clef modifier
 # (`treble+8` -> `treble-8`, `octave=`, `middle=`): stored pitches before and
 # after the change carry different shifts, but the writer's per-voice octave
@@ -59,14 +54,6 @@ _OCTAVE_SHIFT_KEY_RE = re.compile(
     r"^K:.*?(?:[+-]8|[+-]15|octave=|middle=)|\[K:[^\]]*?(?:[+-]8|[+-]15|octave=|middle=)",
     re.MULTILINE,
 )
-# A tuplet opened inside another tuplet (`(7:8:8(3A/A/ ...`, abcm2ps nested
-# tuplets): the writer keeps only the innermost tuplet — doubly-nested notes
-# get the outer ratio baked into their written durations, while outer-only
-# notes are written plain, so both the outer <tuplet> notation and the
-# outer-only durations are lost on the round trip. Out of scope until the
-# writer models nested tuplets. Detected as two consecutive tuplet opens.
-_NESTED_TUPLET_RE = re.compile(r"\(\d+(?::\d*){0,2}\s*\(\d")
-
 
 def _init_worker(croma: str) -> None:
     global CROMA
@@ -102,11 +89,9 @@ def lower_failure_reason(stderr: str) -> str:
 
 def is_in_scope(source: str) -> bool:
     """True iff the ABC source uses only currently-supported constructs."""
-    if _BARE_GRACE_SLUR_RE.search(source):
-        return False
     if len(_OCTAVE_SHIFT_KEY_RE.findall(source)) >= 2:
         return False
-    return not _NESTED_TUPLET_RE.search(source)
+    return True
 
 
 def projection(xml: str):

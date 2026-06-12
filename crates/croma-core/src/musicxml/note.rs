@@ -5,7 +5,8 @@ use crate::model::{
 
 use super::{
     FractionExt, MeasureSequence, MusicXmlWriter, NoteWrite, SequenceEvent, TimeModification,
-    TupletNumbers, unsupported_note_type_warning, variable_chord_duration_export_warning,
+    TupletNumbers, unsupported_note_type_warning, unsupported_tuplet_time_modification_warning,
+    variable_chord_duration_export_warning,
 };
 
 impl<'score> MusicXmlWriter<'score> {
@@ -273,7 +274,14 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.empty("rest", &[]);
         }
         let explicit_time_modification =
-            note.attachments.tuplets.first().map(TimeModification::from);
+            match TimeModification::composite(&note.attachments.tuplets) {
+                Ok(time_modification) => time_modification,
+                Err(()) => {
+                    self.diagnostics
+                        .push(unsupported_tuplet_time_modification_warning(note.source));
+                    None
+                }
+            };
         let spelling = note_spelling(note.duration, explicit_time_modification);
         let omit_inexpressible_measure_rest_spelling = note.measure_rest
             && explicit_time_modification.is_none()
@@ -313,13 +321,20 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml
                 .text_element("staff", &sequence.staff.value.to_string());
         }
+        let ordered_attachments;
+        let notation_attachments = if note.attachments.tuplets.len() > 1 {
+            ordered_attachments = ordered_tuplet_notation_attachments(note.attachments);
+            &ordered_attachments
+        } else {
+            note.attachments
+        };
         self.write_notations(
-            note.attachments,
+            notation_attachments,
             time_modification,
             tuplet_numbers,
             &sequence.slur_voice_key,
         );
-        self.write_lyrics(&note.attachments.lyrics);
+        self.write_lyrics(&note.attachments.lyrics, &sequence.slur_voice_key);
         self.xml.end("note");
     }
 
@@ -349,17 +364,37 @@ impl<'score> MusicXmlWriter<'score> {
     }
 }
 
+fn ordered_tuplet_notation_attachments(attachments: &EventAttachments) -> EventAttachments {
+    let mut ordered = attachments.clone();
+    ordered.tuplets.sort_by(|a, b| {
+        let role_rank = |role| match role {
+            TupletRole::Start => 0u8,
+            TupletRole::Continue => 1,
+            TupletRole::Stop => 2,
+        };
+        role_rank(a.role)
+            .cmp(&role_rank(b.role))
+            .then_with(|| match a.role {
+                TupletRole::Stop => b.pair_id.cmp(&a.pair_id),
+                TupletRole::Start | TupletRole::Continue => a.pair_id.cmp(&b.pair_id),
+            })
+    });
+    ordered
+}
+
 fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
     let mut numbers = TupletNumbers::default();
     let mut active = Vec::<(u32, u32)>::new();
 
     for event in &sequence.events {
-        for tuplet in event
+        let mut starts = event
             .attachments()
             .tuplets
             .iter()
             .filter(|tuplet| tuplet.role == TupletRole::Start)
-        {
+            .collect::<Vec<_>>();
+        starts.sort_by_key(|tuplet| tuplet.pair_id);
+        for tuplet in starts {
             if numbers
                 .pairs
                 .iter()
@@ -372,12 +407,14 @@ fn sequence_tuplet_numbers(sequence: &MeasureSequence<'_>) -> TupletNumbers {
             active.push((tuplet.pair_id, number));
         }
 
-        for tuplet in event
+        let mut stops = event
             .attachments()
             .tuplets
             .iter()
             .filter(|tuplet| tuplet.role == TupletRole::Stop)
-        {
+            .collect::<Vec<_>>();
+        stops.sort_by(|a, b| b.pair_id.cmp(&a.pair_id));
+        for tuplet in stops {
             if !numbers
                 .pairs
                 .iter()

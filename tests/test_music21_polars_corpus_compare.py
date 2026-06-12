@@ -313,9 +313,32 @@ def test_empty_lyric_extenders_preserve_alignment_slots(tmp_path: Path) -> None:
         for row in read_jsonl(paths.output / "melisma-facts.jsonl")
         if row["component"] == "lyric"
     ]
-    croma_lyrics = [row for row in lyric_rows if row["source_side"] == "croma"]
+    croma_lyrics = [
+        row
+        for row in lyric_rows
+        if row["source_side"] == "croma" and row["field_name"] == "text"
+    ]
     assert [row["value_str"] for row in croma_lyrics] == ["time", "", "day"]
     assert {row["value_kind"] for row in croma_lyrics} == {"str"}
+
+
+def test_lyric_syllabic_participates_in_comparison(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["syllabic"])
+    write_musicxml(
+        paths.croma_xml("syllabic"),
+        [note(lyric_xml="<lyric number=\"1\"><syllabic>begin</syllabic><text>A</text></lyric>")],
+    )
+    write_musicxml(
+        paths.reference_xml("syllabic"),
+        [note(lyric_xml="<lyric number=\"1\"><syllabic>single</syllabic><text>A</text></lyric>")],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="syllabic")
+
+    assert report["mismatch_category_counts"] == {"lyric": 1}
+    mismatches = read_jsonl(paths.output / "syllabic-mismatches.jsonl")
+    assert mismatches[0]["field_name"] == "syllabic"
 
 
 def test_baseline_delta_classification(tmp_path: Path) -> None:

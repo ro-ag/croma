@@ -26,8 +26,10 @@ in `crates/croma-core/src/musicxml/mod_tests.rs` or
 and lone-colon boundaries (c8b19d3), body unit-length voice scoping (8eb91bb),
 body Q: tempo events (fc4f59c), lowercase-root quoted text classification
 (03922fa), chord-member slurs (858b53e), and long/maxima plus tuplet written
-note types (8c76fc8). Their headings below are updated to fixed; the remaining
-OPEN rows are still the phase-35 work queue unless separately re-verdicted.
+note types (8c76fc8). Their headings below are updated to fixed. Later phases
+35-38 fixed or re-verdicted the remaining active `OPEN` /
+`known_backlog_model_gap` rows; any surviving mismatch families below are not
+active Croma parser/export bugs unless a later entry explicitly reopens them.
 
 2026-06-12 phase-35 multirest fix: decision was to expand ABC `Zn`/`Xn` in
 lowering when the current voice has a known meter, producing `n` real
@@ -1102,14 +1104,29 @@ Those residual rows are a reference/comparator artifact, not an open
 dangling-start Croma bug.
 
 
-### `tuplet-nested-tuplets` — **RE-VERDICT(37s)** (known_backlog_model_gap, repro=True)
+### `tuplet-nested-tuplets` — **FIXED / RE-VERDICT(38a)** (stale_backlog_model_gap, repro=True)
 
 *Share:* 1 direct row + ~5 rows folded into the cascade bucket (<1%), 1 file — *files:* tune_003732.abc
 
 
-tune_003732 m5: comparator reads croma as [(3,2,start),(3,2,start),(2,3,null)] vs ref [(3,2,start)] — croma's nested-tuplet output yields multiple/odd music21 tuplet components (also the source of the (3,2)+(7,12) croma-vs-none rows folded into the cascade bucket: 7:12 x 3:2 = 7:8, the outer ratio). Already cataloged: docs/parser-backlog.md item 3 ('Nested tuplets', 1 corpus tune, harness gate _NESTED_TUPLET_RE) — the model/writer does not represent nesting; which side's MusicXML is more faithful needs the dedicated nested-tuplet work promised there.
+tune_003732 m5: comparator read pre-38 croma as [(3,2,start),(3,2,start),(2,3,null)] vs ref [(3,2,start)] — croma's nested-tuplet output yielded multiple/odd music21 tuplet components (also the source of the (3,2)+(7,12) croma-vs-none rows folded into the cascade bucket: 7:12 x 3:2 = 7:8, the outer ratio). The issue was cataloged as docs/parser-backlog.md item 3 ('Nested tuplets', 1 corpus tune, harness gate _NESTED_TUPLET_RE).
 
 37s: fresh current-code target compare for `tune_003732` remains a mismatch with 61 rows: `tuplet` 6, `duration` 11, `measure_alignment` 11, `direction` 17, `extra_in_croma` 13, `missing_in_croma` 1, and malformed microtonal `accidental` 2. The tuplet rows are still concentrated on the nested tuplet in measure 5, while the surrounding rows are the same cascade/malformed-feature clutter in this abcm2ps showcase tune. This is not a narrow phase-37 cleanup; keep it as the dedicated nested-tuplet model/export backlog item.
+
+38a: dedicated nested-tuplet model/export work is complete. The lowerer and
+ABC writer preserve multiple tuplet markers per event, and MusicXML now emits
+composite `<time-modification>` ratios plus ordered nested start/stop tuplet
+notations; overflowed ratio products diagnose instead of saturating. The
+`_NESTED_TUPLET_RE` ABC-roundtrip gate was removed. Croma self-roundtrip target
+for `tune_003732` is 1/1 in-scope with 0 structural diffs
+(`docs/untracked/phase-38-empty-backlog/target-nested-tuplets/abc-roundtrip-report.json`).
+The refreshed abc2xml comparison remains a mismatch with 60 rows (`tuplet`: 8,
+`duration`: 8, `measure_alignment`: 11, `direction`: 17, `extra_in_croma`: 13,
+`missing_in_croma`: 1, malformed microtonal `accidental`: 2) and no
+import/harness/worker failures. Given the clean Croma roundtrip and abc2xml's
+lossy/simplified nested-tuplet interpretation in this abcm2ps showcase tune,
+the remaining target comparison rows are not an active Croma parser/export
+bug.
 
 
 ### `tuplet-barline-truncated-group` — **QUIRK** (reference_quirk, repro=True)
