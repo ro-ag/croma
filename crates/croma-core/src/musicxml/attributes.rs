@@ -44,14 +44,16 @@ impl<'score> MusicXmlWriter<'score> {
         if meter.free_meter {
             return;
         }
-        let Some((beats, beat_type, symbol)) = meter_parts(&meter.display) else {
+        let Some(parts) = meter_parts(&meter.display) else {
             return;
         };
-        let attrs = symbol.map(|symbol| [("symbol", symbol)]);
+        let attrs = parts.symbol.map(|symbol| [("symbol", symbol)]);
         let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
         self.xml.start("time", attrs_slice);
-        self.xml.text_element("beats", beats);
-        self.xml.text_element("beat-type", beat_type);
+        for part in parts.parts {
+            self.xml.text_element("beats", &part.beats);
+            self.xml.text_element("beat-type", &part.beat_type);
+        }
         self.xml.end("time");
     }
 
@@ -130,16 +132,69 @@ impl<'score> MusicXmlWriter<'score> {
     }
 }
 
-fn meter_parts(display: &str) -> Option<(&str, &str, Option<&'static str>)> {
+struct MeterParts {
+    parts: Vec<MeterPart>,
+    symbol: Option<&'static str>,
+}
+
+struct MeterPart {
+    beats: String,
+    beat_type: String,
+}
+
+fn meter_parts(display: &str) -> Option<MeterParts> {
     match display.trim() {
-        "C" => Some(("4", "4", Some("common"))),
-        "C|" => Some(("2", "2", Some("cut"))),
+        "C" => Some(meter_parts_with_symbol("4", "4", Some("common"))),
+        "C|" => Some(meter_parts_with_symbol("2", "2", Some("cut"))),
         "none" | "M:none" => None,
         value => {
-            let (beats, beat_type) = value.split_once('/')?;
-            Some((beats.trim(), beat_type.trim(), None))
+            let parts = if value.contains('+') && !value.trim_start().starts_with('(') {
+                value
+                    .split('+')
+                    .map(|part| {
+                        let (beats, beat_type) = part.trim().split_once('/')?;
+                        Some(MeterPart {
+                            beats: beats.trim().to_owned(),
+                            beat_type: beat_type.trim().to_owned(),
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            } else {
+                let (beats, beat_type) = value.split_once('/')?;
+                vec![MeterPart {
+                    beats: strip_grouping_parentheses(beats).to_owned(),
+                    beat_type: beat_type.trim().to_owned(),
+                }]
+            };
+            (!parts.is_empty()).then_some(MeterParts {
+                parts,
+                symbol: None,
+            })
         }
     }
+}
+
+fn meter_parts_with_symbol(
+    beats: &str,
+    beat_type: &str,
+    symbol: Option<&'static str>,
+) -> MeterParts {
+    MeterParts {
+        parts: vec![MeterPart {
+            beats: beats.to_owned(),
+            beat_type: beat_type.to_owned(),
+        }],
+        symbol,
+    }
+}
+
+fn strip_grouping_parentheses(value: &str) -> &str {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(trimmed)
+        .trim()
 }
 
 struct ClefModel {

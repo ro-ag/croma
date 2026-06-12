@@ -528,7 +528,7 @@ tune_006403 ('Al Hanisim', sections `\"A\"\\`, `\"B\"\\`, `\"Bridge\"`): ordered
 
 ## measure_alignment
 
-### `measure-alignment-complex-meter-time-dropped` — **OPEN** (croma_bug, repro=True)
+### `measure-alignment-complex-meter-time-dropped` — **FIXED(37c)** (croma_bug, repro=True)
 
 *Share:* ~0.5% rows (34 rows in tune_011528 + a few '?' bar_duration files like tune_003733/tune_003808) — *files:* tune_011528.abc, mod.rs, attributes.rs
 
@@ -536,7 +536,9 @@ tune_006403 ('Al Hanisim', sections `\"A\"\\`, `\"B\"\\`, `\"Bridge\"`): ordered
 Minimal repros: header `M:(2+3+2)/8` (/tmp/ma_complex.abc) — explicitly legal per ABC 2.1 SS3.1.6 line 539 ('It is also possible to specify a complex meter, e.g. M:(2+3+2)/8') — croma emits NO <time> element and NO diagnostic; abc2xml emits <beats>(2+3+2)</beats><beat-type>8</beat-type>. Header `M:3/4+2/4` (/tmp/ma_additive.abc, extension syntax, tune_011528): croma again silent + no <time>; abc2xml fabricates 4/4 (also wrong — its 34 bar_duration rows compare croma's free-meter fallback against that fabrication). Mechanism: crates/croma-core/src/lower/mod.rs:1195 meter_duration() returns None for MeterKind::Complex -> meter_model() sets free_meter=true (line 1015) -> write_time_element() early-returns (crates/croma-core/src/musicxml/attributes.rs:43-48). The mid-tune path warns abc.music.meter.unsupported_complex (lower/mod.rs:302-306) but the header path is silent — spec-legal meter in…
 
 
-*Fix:* Lower + export. crates/croma-core/src/lower/mod.rs meter_duration (line 1187): compute the additive sum for Complex meters so measures validate and free_meter is false; crates/croma-core/src/musicxml/attributes.rs meter_parts (line ~125, naive split_once('/')): emit beats '2+3+2' (strip parentheses; MusicXML beats permits '+'-separated values) and, for the 'a/b+c/d' extension form, a composite <ti
+*Fix:* Lower + export. `crates/croma-core/src/lower/mod.rs` `meter_duration`: compute the additive sum for `MeterKind::Complex` so measures validate and `free_meter` is false. `crates/croma-core/src/musicxml/attributes.rs` `meter_parts`: emit beats `2+3+2` for grouped complex meter and, for the `a/b+c/d` extension form, emit a composite MusicXML `<time>` with repeated `<beats>/<beat-type>` pairs.
+
+**Phase 37c verification:** `crates/croma-core/src/lower/mod.rs` now computes additive durations for supported complex meters (`M:(2+3+2)/8` -> 7/8, `M:3/4+2/4` -> 5/4 / composite parts) instead of treating them as free meter, and `crates/croma-core/src/musicxml/attributes.rs` now emits `<time>` for both the grouped ABC 2.1 form and the additive extension form. Regression coverage: `complex_header_meter_uses_additive_duration`, `additive_extension_header_meter_uses_summed_duration`, `supported_body_additive_meter_change_does_not_warn`, `complex_header_meter_exports_additive_time`, and `additive_extension_header_meter_exports_composite_time`. Minimal before/after XML probes under `docs/untracked/phase-37-ledger-burndown/probes/` show both repros changed from `NO_TIME` to explicit `<time>` elements (`2+3+2/8` and composite `3/4 + 2/4`). Target corpus compare for `tune_011528.abc`, `tune_003733.abc`, and `tune_003808.abc` remains mismatch-count neutral because the comparator does not score this time-signature surface directly and abc2xml fabricates the additive extension differently. Verification: `cargo fmt --all -- --check`, `cargo test -p croma-core`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, full 10k export + report-only comparison, targeted compare, and ABC round-trip proof. Full 10k aggregate remains at structural matches 8868 / mismatch rows 164215 with no harness/import failures; ABC round-trip remains 99.25 pct in-scope with 0 structural diffs.
 
 
 ### `measure-alignment-multirest-encoding` — **FIXED(35a)** (croma_bug, repro=True)
