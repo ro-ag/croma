@@ -5,7 +5,10 @@ use crate::model::{
     TimelineEventKind,
 };
 
-use super::{BarlineLocation, EndingType, MeasureSequence, MusicXmlWriter, SequenceEvent};
+use super::{
+    BarlineLocation, EndingType, MeasureSequence, MusicXmlWriter, SequenceEvent,
+    barline::EndingDisplay,
+};
 
 impl<'score> MusicXmlWriter<'score> {
     /// `W:` post-tune words are text printed after the tune (ABC 2.1), not music
@@ -54,6 +57,7 @@ impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_part(&mut self, part: &'score Part, part_index: usize) {
         let id = part_xml_id(part, part_index);
         self.active_key = self.score.metadata.key.clone();
+        self.slur_numbers = Default::default();
         self.xml.start("part", &[("id", id.as_str())]);
         let mut pending_left_repeat = false;
         let measure_ids = part_measure_ids(part);
@@ -205,6 +209,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
     let base_count = part.voices.len();
     for (voice_index, voice) in part.voices.iter().enumerate() {
         let voice_number = (voice_index + 1).to_string();
+        let slur_voice_key = voice.id.value.clone();
         let events = voice
             .events
             .iter()
@@ -218,6 +223,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                         | TimedEventKind::Spacer
                         | TimedEventKind::KeyChange(_)
                         | TimedEventKind::MeterChange(_)
+                        | TimedEventKind::ClefChange(_)
                         | TimedEventKind::TempoChange(_)
                 )
             })
@@ -227,6 +233,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
             let measure = voice.measures.iter().find(|measure| measure.id == id);
             sequences.push(MeasureSequence {
                 voice_number,
+                slur_voice_key: slur_voice_key.clone(),
                 staff: voice.staff,
                 expected_duration: measure.and_then(|measure| measure.expected_duration),
                 actual_duration: measure
@@ -255,6 +262,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                 }
                 sequences.push(MeasureSequence {
                     voice_number: (base_count + overlay_index + 1).to_string(),
+                    slur_voice_key: slur_voice_key.clone(),
                     staff: voice.staff,
                     expected_duration: Some(overlay.expected_duration),
                     actual_duration: overlay.actual_duration,
@@ -337,9 +345,9 @@ fn trailing_left_repeat_pending(measures: &[&Measure]) -> bool {
 /// open force-closes it at the previous measure, and a bracket still open at
 /// the part end closes on the last measure — an `<ending type="start">` must
 /// never dangle.
-fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Vec<String>>> {
-    let mut stops: Vec<Option<Vec<String>>> = vec![None; measure_ids.len()];
-    let mut open: Option<Vec<String>> = None;
+fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Vec<EndingDisplay>>> {
+    let mut stops: Vec<Option<Vec<EndingDisplay>>> = vec![None; measure_ids.len()];
+    let mut open: Option<Vec<EndingDisplay>> = None;
     for (position, measure_id) in measure_ids.iter().enumerate() {
         let measure_refs = part_measure_refs(part, *measure_id);
         let starts = unique_endings(&measure_refs);
@@ -372,13 +380,23 @@ fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
     )
 }
 
-/// Render one volta bracket's passes as a single MusicXML `ending-number`
-/// value: a comma-separated list of its parts (e.g. `1,3`). A bracket may list
-/// several passes (`|1,3`), and the MusicXML `<ending>` `number` attribute is
-/// itself a comma list, so the whole bracket is ONE element — not one element
-/// per pass. No space follows the comma, matching abc2xml's output.
-fn ending_number_string(ending: &crate::model::RepeatEndingModel) -> String {
-    ending
+/// Render one volta bracket for MusicXML. Numeric ABC endings use their pass
+/// list as the required MusicXML `number` attribute. Text labels from the
+/// `["label"` extension need a numeric XML number for readers such as music21,
+/// with the source label carried as element text.
+fn ending_display(ending: &crate::model::RepeatEndingModel) -> EndingDisplay {
+    let text = ending.endings.iter().find_map(|part| match part {
+        crate::model::RepeatEndingPartModel::Text(text) => Some(text.clone()),
+        _ => None,
+    });
+    if let Some(text) = text {
+        return EndingDisplay {
+            number: "33".to_owned(),
+            text: Some(text),
+        };
+    }
+
+    let number = ending
         .endings
         .iter()
         .map(|part| match part {
@@ -386,16 +404,18 @@ fn ending_number_string(ending: &crate::model::RepeatEndingModel) -> String {
             crate::model::RepeatEndingPartModel::Range { start, end } => {
                 format!("{start}-{end}")
             }
+            crate::model::RepeatEndingPartModel::Text(_) => unreachable!(),
         })
         .collect::<Vec<_>>()
-        .join(",")
+        .join(",");
+    EndingDisplay { number, text: None }
 }
 
-fn unique_endings(measures: &[&Measure]) -> Vec<String> {
+fn unique_endings(measures: &[&Measure]) -> Vec<EndingDisplay> {
     let mut endings = measures
         .iter()
         .flat_map(|measure| &measure.repeat_endings)
-        .map(ending_number_string)
+        .map(ending_display)
         .collect::<Vec<_>>();
     endings.sort();
     endings.dedup();

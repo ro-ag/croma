@@ -94,6 +94,12 @@ pub struct KeySignatureModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClefChangeModel {
+    pub clef: TextLine,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyAccidentalModel {
     pub step: char,
     pub accidental: Accidental,
@@ -150,6 +156,7 @@ pub struct StaffId {
 pub struct Voice {
     pub id: VoiceId,
     pub staff: StaffId,
+    pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<Measure>,
     pub events: Vec<TimedEvent>,
@@ -191,10 +198,11 @@ pub struct RepeatEndingModel {
     pub endings: Vec<RepeatEndingPartModel>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepeatEndingPartModel {
     Single(u32),
     Range { start: u32, end: u32 },
+    Text(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +229,10 @@ pub enum TimedEventKind {
     KeyChange(KeySignatureModel),
     /// A mid-tune meter change (`[M:..]` or a body `M:` line). Zero duration.
     MeterChange(MeterModel),
+    /// A mid-tune clef change carried by `[K:..]` or a body `K:` line. Zero
+    /// duration; following pitches are already lowered with the new voice
+    /// octave shift.
+    ClefChange(ClefChangeModel),
     /// A mid-tune tempo change (`[Q:..]` or a body `Q:` line). Zero duration.
     TempoChange(TempoModel),
 }
@@ -271,6 +283,7 @@ pub struct AccidentalMark {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EventAttachments {
     pub grace_groups: Vec<GraceGroupAttachment>,
+    pub after_grace_groups: Vec<GraceGroupAttachment>,
     pub chord_symbols: Vec<TextAttachment>,
     pub annotations: Vec<TextAttachment>,
     pub decorations: Vec<DecorationAttachment>,
@@ -284,6 +297,7 @@ pub struct EventAttachments {
 impl EventAttachments {
     pub fn is_empty(&self) -> bool {
         self.grace_groups.is_empty()
+            && self.after_grace_groups.is_empty()
             && self.chord_symbols.is_empty()
             && self.annotations.is_empty()
             && self.decorations.is_empty()
@@ -296,6 +310,7 @@ impl EventAttachments {
 
     pub(crate) fn extend(&mut self, other: EventAttachments) {
         self.grace_groups.extend(other.grace_groups);
+        self.after_grace_groups.extend(other.after_grace_groups);
         self.chord_symbols.extend(other.chord_symbols);
         self.annotations.extend(other.annotations);
         self.decorations.extend(other.decorations);
@@ -323,6 +338,7 @@ pub struct GraceGroupAttachment {
 pub struct GraceEvent {
     pub source_span: Span,
     pub kind: GraceEventKind,
+    pub slurs: Vec<SlurAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,6 +474,7 @@ impl Event {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceTimeline {
     pub id: VoiceId,
+    pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<VoiceMeasureTimeline>,
     pub source_span: Span,
@@ -533,6 +550,7 @@ pub enum TimelineEventKind {
     },
     KeyChange(KeySignatureModel),
     MeterChange(MeterModel),
+    ClefChange(ClefChangeModel),
     TempoChange(TempoModel),
 }
 

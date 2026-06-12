@@ -21,9 +21,9 @@ use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    AccidentalPolicy, AccidentalScope, BarlineKind, Event, EventAttachments, Fraction,
-    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel,
-    Part, PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
+    AccidentalPolicy, AccidentalScope, BarlineKind, ClefChangeModel, Event, EventAttachments,
+    Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind,
+    MeterModel, Part, PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
     ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
     StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline,
     lcm,
@@ -88,6 +88,7 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::VariantEnding(_)
         | LoweredEvent::KeyChange(_)
         | LoweredEvent::MeterChange(_)
+        | LoweredEvent::ClefChange(_)
         | LoweredEvent::TempoChange(_) => divisions,
     });
     let events = all_lowered
@@ -99,6 +100,7 @@ pub(crate) fn lower_tune_music(
             | LoweredEvent::VariantEnding(_)
             | LoweredEvent::KeyChange(_)
             | LoweredEvent::MeterChange(_)
+            | LoweredEvent::ClefChange(_)
             | LoweredEvent::TempoChange(_) => None,
         })
         .collect();
@@ -143,18 +145,16 @@ pub(crate) fn lower_tune_music(
 
 struct MultiVoiceLowering {
     unit: Fraction,
+    /// Header key signature used to seed each voice when its stream first
+    /// appears. Body `K:` changes are per-voice timeline events and must not
+    /// rewrite this baseline for voices that have not reached the field.
     key: Option<KeySignature>,
-    meter: Option<Meter>,
-    /// True once a standalone mid-tune `K:`/`M:` change occurred; voices
-    /// created after that point seed from the changed state and must record
-    /// it as an explicit change event at their start (or no exporter could
-    /// reproduce their key/meter).
-    key_changed: bool,
-    meter_changed: bool,
     /// Verbatim header `K:`/`M:` display text — the dedupe baseline for
     /// no-op restatements.
     header_key_display: Option<String>,
     header_meter_display: Option<String>,
+    /// Header meter duration used to seed each voice when its stream first
+    /// appears. Body `M:` changes update only the current voice.
     meter_duration: Option<Fraction>,
     voices: Vec<LoweringState>,
     current_voice: String,
@@ -181,9 +181,6 @@ impl MultiVoiceLowering {
         let mut lowering = Self {
             unit,
             key: field_state.key.as_ref().map(|key| key.value.clone()),
-            meter: field_state.meter.as_ref().map(|meter| meter.value.clone()),
-            key_changed: false,
-            meter_changed: false,
             header_key_display: field_state.key.as_ref().map(|key| key.value.raw.clone()),
             header_meter_display: field_state
                 .meter
@@ -192,7 +189,7 @@ impl MultiVoiceLowering {
             meter_duration: field_state
                 .meter
                 .as_ref()
-                .and_then(|meter| meter_duration(&meter.value.kind)),
+                .and_then(|meter| meter_duration(&meter.value)),
             voices: Vec::new(),
             current_voice: String::new(),
             source_order: 0,
@@ -220,9 +217,16 @@ impl MultiVoiceLowering {
         // merge its modifiers into the initial (current) voice here. In a
         // single-voice tune that is the whole tune; abc2xml does the same.
         if let Some(key) = field_state.key.as_ref() {
+            if key.value.compact_accidentals_ignored {
+                lowering
+                    .diagnostics
+                    .push(compact_key_accidentals_ignored_warning(key.span));
+            }
             let key_props = key_clef_properties_model(&key.value.properties);
             if key_props != VoicePropertiesModel::default() {
-                merge_voice_properties(&mut lowering.current_state().properties, key_props);
+                let state = lowering.current_state();
+                merge_voice_properties(&mut state.initial_properties, key_props.clone());
+                merge_voice_properties(&mut state.properties, key_props);
             }
         }
         lowering
@@ -251,29 +255,30 @@ impl MultiVoiceLowering {
     }
 
     fn apply_meter_change(&mut self, meter: &Spanned<Meter>) {
+        self.apply_current_voice_meter_change(meter);
+    }
+
+    fn apply_current_voice_meter_change(&mut self, meter: &Spanned<Meter>) {
         if !self.validate_meter_change(meter) {
             return;
         }
-        self.meter_duration = meter_duration(&meter.value.kind);
-        self.meter = Some(meter.value.clone());
         // A meter change is NOT a bar line: per ABC 2.1 §11.3
         // (`%%propagate-accidentals` default `pitch`) an explicit accidental
         // applies to same-pitch notes until the end of the bar, so the
         // measure accidental ledger must survive a mid-tune `M:` field.
-        self.meter_changed = true;
         let model = meter_model(meter);
         let header = self.header_meter_display.clone();
-        for voice in &mut self.voices {
-            voice.finish_open_tuplets_at_boundary();
-            voice.meter_duration = meter_duration(&meter.value.kind);
-            // Record the change at each voice's current position so exporters
-            // can reproduce it. A change to the voice's already-effective
-            // meter (header included) records nothing: interleaved sources
-            // restate `[M:..]` once per voice line, and re-applications would
-            // otherwise stack duplicate events.
-            if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
-                voice.lowered.push(LoweredEvent::MeterChange(model.clone()));
-            }
+        let duration = meter_duration(&meter.value);
+        let voice = self.current_state();
+        voice.finish_open_tuplets_at_boundary();
+        voice.meter_duration = duration;
+        // Record the change at the current voice's position so exporters can
+        // reproduce it. A change to the voice's already-effective meter
+        // (header included) records nothing: interleaved sources restate
+        // `[M:..]` once per voice line, and re-applications would otherwise
+        // stack duplicate events.
+        if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
+            voice.lowered.push(LoweredEvent::MeterChange(model));
         }
     }
 
@@ -283,18 +288,7 @@ impl MultiVoiceLowering {
     /// sources: a global application would leak each voice's `[M:..]` token
     /// into every other voice at the wrong position.
     fn apply_inline_meter_change(&mut self, meter: &Spanned<Meter>) {
-        if !self.validate_meter_change(meter) {
-            return;
-        }
-        let model = meter_model(meter);
-        let header = self.header_meter_display.clone();
-        let duration = meter_duration(&meter.value.kind);
-        let voice = self.current_state();
-        voice.finish_open_tuplets_at_boundary();
-        voice.meter_duration = duration;
-        if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
-            voice.lowered.push(LoweredEvent::MeterChange(model));
-        }
+        self.apply_current_voice_meter_change(meter);
     }
 
     fn validate_meter_change(&mut self, meter: &Spanned<Meter>) -> bool {
@@ -303,7 +297,8 @@ impl MultiVoiceLowering {
                 .push(invalid_meter_change_warning(meter.span));
             return false;
         }
-        if matches!(meter.value.kind, MeterKind::Complex) {
+        if matches!(meter.value.kind, MeterKind::Complex) && meter_duration(&meter.value).is_none()
+        {
             self.diagnostics
                 .push(unsupported_complex_meter_warning(meter.span));
         }
@@ -334,33 +329,34 @@ impl MultiVoiceLowering {
     }
 
     fn apply_key_change(&mut self, key: &Spanned<KeySignature>) {
+        self.apply_current_voice_key_change(key);
+    }
+
+    fn apply_current_voice_key_change(&mut self, key: &Spanned<KeySignature>) {
         if key_is_invalid_for_lowering(&key.value) {
             self.diagnostics.push(invalid_key_change_warning(key.span));
             return;
         }
+        self.warn_if_compact_key_accidentals_ignored(key);
         // A clef-only K: line (`K: clef=treble`) changes no key signature —
         // mirror the inline `[K:..]` guard: merge its clef properties into the
         // current voice but leave the key (and the recorded events) untouched.
         if !inline_key_changes_signature(&key.value) {
-            let key_props = key_clef_properties_model(&key.value.properties);
-            if key_props != VoicePropertiesModel::default() {
-                merge_voice_properties(&mut self.current_state().properties, key_props);
-            }
+            self.apply_current_voice_key_properties(&key.value.properties);
             return;
         }
-        self.key = Some(key.value.clone());
-        self.key_changed = true;
         let model = key_signature_model(key);
         let header = self.header_key_display.clone();
-        for voice in &mut self.voices {
+        {
+            let voice = self.current_state();
             voice.set_key(Some(&key.value));
-            // Record the change at each voice's current position so exporters
-            // can reproduce the broadcast on re-parse/re-export. A change to
-            // the voice's already-effective key records nothing (see the
-            // meter-change dedupe above; also collapses no-op restatements
-            // identically on both generations, keeping the round-trip stable).
+            // Record the change at the current voice's position so exporters
+            // can reproduce it. A change to the voice's already-effective key
+            // records nothing (see the meter-change dedupe above; also
+            // collapses no-op restatements identically on both generations,
+            // keeping the round-trip stable).
             if effective_key_display(voice, header.as_deref()) != Some(model.display.as_str()) {
-                voice.lowered.push(LoweredEvent::KeyChange(model.clone()));
+                voice.lowered.push(LoweredEvent::KeyChange(model));
             }
         }
         // A K: field may carry clef/octave/middle/transpose modifiers
@@ -369,10 +365,7 @@ impl MultiVoiceLowering {
         // and must not broadcast to the other voices. Merge them into the active
         // voice's properties so `voice_octave_shift` applies the resulting shift
         // to the notes that follow.
-        let key_props = key_clef_properties_model(&key.value.properties);
-        if key_props != VoicePropertiesModel::default() {
-            merge_voice_properties(&mut self.current_state().properties, key_props);
-        }
+        self.apply_current_voice_key_properties(&key.value.properties);
     }
 
     /// Apply an inline `[K:..]` key change to the currently-active voice only.
@@ -382,30 +375,40 @@ impl MultiVoiceLowering {
     /// key signature. The active voice is the one `current_state()` resolves via
     /// `self.current_voice`.
     fn apply_inline_key_change(&mut self, key: &Spanned<KeySignature>) {
-        if key_is_invalid_for_lowering(&key.value) {
-            self.diagnostics.push(invalid_key_change_warning(key.span));
-            return;
-        }
-        self.current_state().set_key(Some(&key.value));
-        let model = key_signature_model(key);
-        let header = self.header_key_display.clone();
-        if effective_key_display(self.current_state(), header.as_deref())
-            != Some(model.display.as_str())
-        {
-            self.current_state()
-                .lowered
-                .push(LoweredEvent::KeyChange(model));
-        }
-        self.apply_inline_key_clef_properties(&key.value);
+        self.apply_current_voice_key_change(key);
     }
 
     /// Merge clef/octave/middle/transpose modifiers carried on a `[K:..]` field
     /// into the current voice's properties (ABC 2.1 §4.6). Scoped to the active
     /// voice, like a whole-line K: change.
     fn apply_inline_key_clef_properties(&mut self, key: &KeySignature) {
-        let key_props = key_clef_properties_model(&key.properties);
-        if key_props != VoicePropertiesModel::default() {
-            merge_voice_properties(&mut self.current_state().properties, key_props);
+        self.apply_current_voice_key_properties(&key.properties);
+    }
+
+    fn apply_current_voice_key_properties(&mut self, properties: &VoiceProperties) {
+        let key_props = key_clef_properties_model(properties);
+        if key_props == VoicePropertiesModel::default() {
+            return;
+        }
+        let clef_change = key_clef_change_model(properties);
+        let voice = self.current_state();
+        if let Some(clef_change) = clef_change {
+            let current_clef = voice
+                .properties
+                .clef
+                .as_ref()
+                .map(|clef| clef.text.as_str());
+            if current_clef != Some(clef_change.clef.text.as_str()) {
+                voice.lowered.push(LoweredEvent::ClefChange(clef_change));
+            }
+        }
+        merge_voice_properties(&mut voice.properties, key_props);
+    }
+
+    fn warn_if_compact_key_accidentals_ignored(&mut self, key: &Spanned<KeySignature>) {
+        if key.value.compact_accidentals_ignored {
+            self.diagnostics
+                .push(compact_key_accidentals_ignored_warning(key.span));
         }
     }
 
@@ -571,15 +574,16 @@ impl MultiVoiceLowering {
                             .diagnostics
                             .push(barline_export_policy_info(barline.span, barline.kind));
                     }
+                    self.current_state()
+                        .attach_pending_grace_groups_to_previous_note();
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
                     self.current_state().reset_measure_accidentals_at_barline();
                     // A grace flushed ahead of its note stays pending across the
-                    // bar: ABC 2.1 §4.12 defines no void-at-barline rule and
-                    // §4.20 binds the grace to the note it precedes — which may
-                    // be the first note of the next measure (`{e/}|d3`). A
-                    // leftover at the end of the voice surfaces as a
-                    // dangling-grace diagnostic instead of a silent drop.
+                    // bar unless the boundary resolves it backward as an
+                    // after-grace on a previous timed note. A leftover at the
+                    // end of the voice surfaces as a dangling-grace diagnostic
+                    // instead of a silent drop.
                     for kind in barline_lowering_kinds(barline) {
                         self.current_state()
                             .lowered
@@ -599,11 +603,9 @@ impl MultiVoiceLowering {
                     // A grace group becomes a standalone item only when the parser
                     // flushed it ahead of its note (e.g. an intervening barline
                     // `{g}|` or inline field `{g}[M:3/4]c`; ties and overlays also
-                    // flush). Per ABC 2.1 §4.20 the grace still attaches to the
-                    // note it precedes, so buffer it and merge it into the next
-                    // timed event. If a hard boundary (barline / voice switch /
-                    // end of tune) arrives first, the buffer is dropped and the
-                    // grace is voided.
+                    // flush). Buffer it until lowering can see whether it belongs
+                    // to the next timed event as a leading grace or to the
+                    // previous timed note as an after-grace at a boundary.
                     self.current_state()
                         .pending_grace_groups
                         .push(grace.clone());
@@ -635,8 +637,27 @@ impl MultiVoiceLowering {
     }
 
     fn switch_voice(&mut self, voice: Spanned<VoiceDefinition>) {
+        let existing = self
+            .voices
+            .iter()
+            .position(|state| state.id.value == voice.value.id.value);
+        let previous_clef = existing
+            .and_then(|index| self.voices[index].properties.clef.as_ref())
+            .map(|clef| clef.text.clone());
+        let incoming = voice_properties_model(&voice.value);
         self.current_voice = voice.value.id.value.clone();
-        self.ensure_voice(voice);
+        let index = self.ensure_voice(voice);
+        if existing.is_some()
+            && let Some(clef) = incoming.clef
+            && previous_clef.as_deref() != Some(clef.text.as_str())
+        {
+            self.voices[index]
+                .lowered
+                .push(LoweredEvent::ClefChange(ClefChangeModel {
+                    source_span: clef.span,
+                    clef,
+                }));
+        }
     }
 
     fn next_source_order(&mut self) -> u32 {
@@ -664,40 +685,13 @@ impl MultiVoiceLowering {
             span: voice.value.id.span,
         };
         let properties = voice_properties_model(&voice.value);
-        let mut state = LoweringState::new(
+        let state = LoweringState::new(
             id,
             properties,
             self.unit,
             self.key.as_ref(),
             self.meter_duration,
         );
-        // A voice defined after a standalone K:/M: change seeds from the
-        // changed state; record that as an explicit event at the voice start
-        // so the writer/exporter can reproduce it — but only when the
-        // prevailing value actually differs from the header (a restated
-        // header key/meter seeds nothing, like every other dedupe site).
-        if self.key_changed
-            && let Some(key) = &self.key
-            && self.header_key_display.as_deref() != Some(key.raw.as_str())
-        {
-            state
-                .lowered
-                .push(LoweredEvent::KeyChange(key_signature_model(&Spanned::new(
-                    key.clone(),
-                    voice.span,
-                ))));
-        }
-        if self.meter_changed
-            && let Some(meter) = &self.meter
-            && self.header_meter_display.as_deref() != Some(meter.raw.as_str())
-        {
-            state
-                .lowered
-                .push(LoweredEvent::MeterChange(meter_model(&Spanned::new(
-                    meter.clone(),
-                    voice.span,
-                ))));
-        }
         self.voices.push(state);
         self.voices.len() - 1
     }
@@ -717,6 +711,7 @@ impl MultiVoiceLowering {
 
     fn push_implicit_regular_barline(&mut self, span: Span) {
         let voice = self.current_state();
+        voice.attach_pending_grace_groups_to_previous_note();
         voice.finish_pending_broken_at_boundary();
         voice.finish_open_tuplets_at_boundary();
         voice.reset_measure_accidentals_at_barline();
@@ -886,6 +881,13 @@ fn key_clef_properties_model(properties: &VoiceProperties) -> VoicePropertiesMod
     }
 }
 
+fn key_clef_change_model(properties: &VoiceProperties) -> Option<ClefChangeModel> {
+    properties.clef.as_ref().map(|clef| ClefChangeModel {
+        clef: text_line_from_spanned(clef),
+        source_span: clef.span,
+    })
+}
+
 fn text_line_from_spanned(value: &Spanned<String>) -> TextLine {
     TextLine {
         text: value.value.clone(),
@@ -926,10 +928,8 @@ pub(crate) struct ScoreModelInput<'a> {
 /// Group voice indices into parts according to a `%%staves` / `%%score`
 /// directive. A parenthesis `( )` group merges its voices into one part
 /// (overlay voices on a shared staff); `[ ]` brackets and `{ }` braces are
-/// visual bracketing only and keep one part per voice. With no grouping
-/// directive — or a directive that never merges voices — each voice is its own
-/// part in voice-definition order (so the common bracket/brace cases keep the
-/// existing ordering).
+/// visual bracketing only and keep one part per voice in directive order. With
+/// no grouping directive, each voice is its own part in voice-definition order.
 fn part_voice_groups(
     directives: &[ScoreDirectiveModel],
     voices: &[VoiceTimeline],
@@ -983,10 +983,7 @@ fn part_voice_groups(
             groups.push(vec![index]);
         }
     }
-    // Only honour the directive ordering/grouping when it actually merges voices;
-    // otherwise keep the simple one-part-per-voice order to avoid reordering the
-    // common bracket/brace cases.
-    if groups.is_empty() || groups.iter().all(|group| group.len() <= 1) {
+    if groups.is_empty() {
         return one_per_voice();
     }
     groups
@@ -1104,7 +1101,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
 }
 
 fn meter_model(meter: &Spanned<Meter>) -> MeterModel {
-    let duration = meter_duration(&meter.value.kind);
+    let duration = meter_duration(&meter.value);
     MeterModel {
         display: meter.value.raw.clone(),
         duration,
@@ -1173,6 +1170,7 @@ fn key_is_invalid_for_lowering(key: &KeySignature) -> bool {
     !key.raw.is_empty()
         && !key.raw.eq_ignore_ascii_case("none")
         && key.tonic.is_none()
+        && key_clef_properties_model(&key.properties) == VoicePropertiesModel::default()
         && !matches!(
             key.mode,
             KeyMode::Explicit
@@ -1280,16 +1278,56 @@ pub(crate) fn music_code_span(line: &crate::syntax::tune::ClassifiedLine) -> Spa
     Span::new(line.text_span.start, end)
 }
 
-pub(crate) fn meter_duration(kind: &MeterKind) -> Option<Fraction> {
-    match kind {
+pub(crate) fn meter_duration(meter: &Meter) -> Option<Fraction> {
+    match &meter.kind {
         MeterKind::CommonTime => Some(Fraction::new(4, 4)),
         MeterKind::CutTime => Some(Fraction::new(2, 2)),
         MeterKind::Fraction {
             numerator,
             denominator,
         } => Some(Fraction::new(*numerator, *denominator)),
-        MeterKind::None | MeterKind::Complex => None,
+        MeterKind::None => None,
+        MeterKind::Complex => complex_meter_duration(&meter.raw),
     }
+}
+
+fn complex_meter_duration(raw: &str) -> Option<Fraction> {
+    let value = raw.trim();
+    if value.contains('+') && !value.trim_start().starts_with('(') {
+        let mut total = Fraction::zero();
+        let mut saw_part = false;
+        for part in value.split('+') {
+            let (numerator, denominator) = part.trim().split_once('/')?;
+            total = total.checked_add(Fraction::new(
+                numerator.trim().parse().ok()?,
+                denominator.trim().parse().ok()?,
+            ));
+            saw_part = true;
+        }
+        return saw_part.then_some(total);
+    }
+
+    if let Some((beats, beat_type)) = value.split_once('/') {
+        let beats = beats
+            .trim()
+            .strip_prefix('(')
+            .and_then(|beats| beats.strip_suffix(')'))
+            .unwrap_or_else(|| beats.trim());
+        let denominator = beat_type.trim().parse::<u32>().ok()?;
+        let numerator = additive_u32(beats)?;
+        return Some(Fraction::new(numerator, denominator));
+    }
+    None
+}
+
+fn additive_u32(value: &str) -> Option<u32> {
+    let mut total = 0u32;
+    let mut saw_part = false;
+    for part in value.split('+') {
+        total = total.checked_add(part.trim().parse::<u32>().ok()?)?;
+        saw_part = true;
+    }
+    saw_part.then_some(total)
 }
 
 fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {

@@ -378,6 +378,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::MeterChange(meter) => {
                 out.push_str(&format!("[M:{}] ", meter.display));
             }
+            TimedEventKind::ClefChange(_) => {}
             TimedEventKind::TempoChange(tempo) => {
                 out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
             }
@@ -696,7 +697,7 @@ fn decoration_str(name: &str) -> String {
 }
 
 /// Attachments emitted AFTER a note/rest (length suffix already written): the
-/// tie marker, then one `)` per slur that stops on this event.
+/// tie marker, one `)` per slur stop, then any after-grace/trill termination.
 fn event_suffix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
@@ -708,21 +709,29 @@ fn event_suffix(attachments: &crate::EventAttachments) -> String {
             out.push(')');
         }
     }
+    for grace in &attachments.after_grace_groups {
+        out.push_str(&grace_str(grace));
+    }
     out
 }
 
 /// Canonical ABC first/second-ending marker, e.g. `[1`, `[2`, `[1,3`, `[1-2`.
 fn ending_str(model: &crate::model::RepeatEndingModel) -> String {
-    use crate::model::RepeatEndingPartModel::{Range, Single};
+    use crate::model::RepeatEndingPartModel::{Range, Single, Text};
     let parts: Vec<String> = model
         .endings
         .iter()
         .map(|p| match p {
             Single(n) => n.to_string(),
             Range { start, end } => format!("{start}-{end}"),
+            Text(text) => format!("\"{}\"", escape_abc_quotes(text)),
         })
         .collect();
     format!("[{}", parts.join(","))
+}
+
+fn escape_abc_quotes(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Canonical ABC text for a barline kind.
@@ -852,6 +861,7 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
             TimelineEventKind::VariantEnding { .. }
             | TimelineEventKind::KeyChange(_)
             | TimelineEventKind::MeterChange(_)
+            | TimelineEventKind::ClefChange(_)
             | TimelineEventKind::TempoChange(_) => {}
         }
         i += 1;
@@ -989,12 +999,17 @@ fn length_ratio_str(mult: Rational) -> String {
 /// ABC grace group: `{...}` (or `{/...}` for an acciaccatura/slashed group).
 /// Grace-note lengths are relative to the grace base unit via `length_multiplier`.
 fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
-    use crate::model::GraceEventKind;
+    use crate::model::{GraceEventKind, SlurRole};
     let mut out = String::from("{");
     if group.slash.is_some() {
         out.push('/');
     }
     for grace in &group.events {
+        for slur in &grace.slurs {
+            if slur.role == SlurRole::Start {
+                out.push('(');
+            }
+        }
         match &grace.kind {
             GraceEventKind::Note(note) => {
                 out.push_str(note_accidental(
@@ -1014,6 +1029,11 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
                     out.push_str(&length_ratio_str(note.length_multiplier));
                 }
                 out.push(']');
+            }
+        }
+        for slur in &grace.slurs {
+            if slur.role == SlurRole::Stop {
+                out.push(')');
             }
         }
     }
@@ -1429,6 +1449,40 @@ mod tests {
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
+    }
+
+    #[test]
+    fn grace_internal_slurs_roundtrip() {
+        let src = "X:1\nL:1/8\nK:C\n{(fg)}a2 {(ef)}g2|]\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+
+        assert!(
+            abc.contains("{(fg)}a2 {(ef)}g2"),
+            "grace-internal slurs missing from ABC: {abc:?}"
+        );
+        assert_eq!(grace_pitches(&s1), grace_pitches(&s2));
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+    }
+
+    #[test]
+    fn trailing_trill_grace_notes_roundtrip_after_principal_note() {
+        let src = "X:1\nT:Trailing Grace\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+
+        assert!(
+            abc.contains("!trill!e6{de}"),
+            "after-grace suffix missing from ABC: {abc:?}"
+        );
+        assert_eq!(
+            grace_pitches(&s1),
+            grace_pitches(&s2),
+            "grace for {src:?} -> {abc:?}"
+        );
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
     }
 
     #[test]

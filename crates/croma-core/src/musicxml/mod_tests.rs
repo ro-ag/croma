@@ -173,6 +173,25 @@ fn multimeasure_rest_exports_real_full_measure_rests() {
 }
 
 #[test]
+fn full_measure_rest_omits_fabricated_type_for_inexpressible_duration() {
+    // tune_006472: a 5/4 full-measure `z5` rest needs a MusicXML duration and
+    // voice, but should not fabricate a breve plus 8:5 time-modification just
+    // to spell an inexpressible measure rest display type.
+    let source = "X:1\nM:5/4\nL:1/4\nK:C\nz5|\n";
+    let export = export_musicxml(source).expect("full-measure rest should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measure_rest = musicxml_note_blocks(&export.musicxml)
+        .into_iter()
+        .find(|note| note.contains("<rest measure=\"yes\"/>"))
+        .expect("expected a measure rest note");
+    assert!(measure_rest.contains("<duration>40</duration>"));
+    assert!(measure_rest.contains("<voice>1</voice>"));
+    assert!(!measure_rest.contains("<type>"));
+    assert!(!measure_rest.contains("<time-modification>"));
+}
+
+#[test]
 fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
     // Quoted text with no following timed event cannot bind to anything; it
     // must surface as a diagnostic, never vanish silently.
@@ -408,6 +427,48 @@ fn multi_measure_volta_emits_ending_stop_at_closing_barline() {
 }
 
 #[test]
+fn quoted_text_volta_extension_exports_ending_and_harmony() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n\"G\"B2A2 G2F2 |[\"cont\" \"Am7\"F2G2 A2B2 | \"D7\"c2d2 \"G\"e4 |]\n";
+    let export = export_musicxml(source).expect("quoted-text volta should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"33\" type=\"start\">cont</ending>"),
+        "quoted volta text should export as an ending start:\n{}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"33\" type=\"stop\"/>"),
+        "quoted volta text should close at the final barline:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export.musicxml.contains("<ending number=\"cont\""),
+        "MusicXML ending-number must stay numeric for readers:\n{}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<kind text=\"Am7\">minor-seventh</kind>"),
+        "harmony after the quoted volta label should still bind to F2:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unclosed_chord"),
+        "quoted volta text must not be parsed as an unclosed chord: {:?}",
+        export.diagnostics
+    );
+}
+
+#[test]
 fn volta_unclosed_in_source_stays_open_at_part_end() {
     // ABC 2.1 §4.9 closes an ending at `||`, `:|`, `|]` or `[|`. When the
     // source never writes one (the tune just ends on a plain bar), no stop
@@ -486,6 +547,26 @@ fn grace_group_before_barline_attaches_to_note_across_the_bar() {
 }
 
 #[test]
+fn trailing_grace_group_before_barline_stays_after_previous_note() {
+    // abc2xml 268 treats `T e6 {de} |` as a trill termination: the two grace
+    // notes remain after the principal E inside measure 1, not as leading
+    // graces before the D that opens measure 2.
+    let source = "X:1\nT:Trailing Grace\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+    let export = export_musicxml(source).expect("trailing grace should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['E', 'D', 'E']);
+    assert_eq!(note_grace_flags(&measures[0]), vec![false, true, true]);
+    assert_eq!(note_steps(&measures[1]), vec!['D', 'F', 'F', 'F']);
+    assert_eq!(
+        note_grace_flags(&measures[1]),
+        vec![false, false, false, false]
+    );
+}
+
+#[test]
 fn dangling_grace_group_at_tune_end_warns_instead_of_silent_drop() {
     // A grace group with no following note has nothing to decorate; it must
     // surface as a diagnostic, never vanish silently.
@@ -555,6 +636,33 @@ fn plus_decoration_emits_stopped_technical_not_words() {
     assert_balanced_xml(&export.musicxml);
     assert_eq!(count(&export.musicxml, "<stopped/>"), 1);
     assert!(!export.musicxml.contains("<words>+</words>"));
+}
+
+#[test]
+fn fingering_arpeggio_and_slide_decorations_emit_notations_not_words() {
+    // ABC 2.1 §4.14 defines !0!-!5! as fingerings, !arpeggio! as a vertical
+    // squiggle, and !slide! as a slide up to a note. These are note-attached
+    // notations, not detached direction words.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n!3!C !arpeggio![CEG] !slide!D E|\n";
+    let export = export_musicxml(source).expect("decoration notations should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<fingering>3</fingering>"), 1);
+    assert_eq!(count(&export.musicxml, "<arpeggiate"), 1);
+    assert_eq!(count(&export.musicxml, "<scoop/>"), 1);
+    for text in ["3", "arpeggio", "slide"] {
+        assert!(
+            !export.musicxml.contains(&format!("<words>{text}</words>")),
+            "{text} decoration should not be emitted as words"
+        );
+    }
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported decorations should not produce unsupported-decoration diagnostics"
+    );
 }
 
 #[test]
@@ -1022,6 +1130,35 @@ fn split_barline_between_content_is_a_single_boundary() {
 }
 
 #[test]
+fn continued_section_leading_double_barline_does_not_close_empty_measure() {
+    // tune_006306 style: a pickup note uses a suppressed line break, then the
+    // continued physical line starts a section with `||`; the next section
+    // also starts with `||` after the previous one closed with `||`. That
+    // second section marker keeps an empty section-leading measure, but must
+    // not be reclassified as a right double barline on it.
+    let source = "X:1\nM:3/4\nL:1/4\nK:Am\nE \\\n|| AA>c | e3 ||\n|| aa>a | a3 ||\n";
+    let export = export_musicxml(source).expect("continued section double should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(
+        measure_numbers(&measures),
+        vec!["1", "2", "3", "4", "5", "6"]
+    );
+    assert_eq!(note_steps(&measures[0]), vec!['E']);
+    assert_eq!(note_steps(&measures[1]), vec!['A', 'A', 'C']);
+    assert_eq!(note_steps(&measures[2]), vec!['E']);
+    assert!(measures[3].notes.is_empty());
+    assert!(
+        measures[3].barlines.is_empty(),
+        "section-leading || empty measure must not carry barlines: {:?}",
+        measures[3].barlines
+    );
+    assert_eq!(note_steps(&measures[4]), vec!['A', 'A', 'A']);
+    assert_eq!(note_steps(&measures[5]), vec!['A']);
+}
+
+#[test]
 fn thick_barline_then_repeat_start_run_is_a_single_boundary() {
     let source = "X:1\nL:1/8\nM:C\nK:C\nCDEF]||: GA |\n";
     let export = export_musicxml(source).expect("]||: barline run should export");
@@ -1185,6 +1322,33 @@ fn multi_voice_tacet_barline_only_measure_is_kept_aligned() {
     assert!(
         v2_measures[2].notes.iter().all(|note| note.rest) || v2_measures[2].notes.is_empty(),
         "V2 trailing measure should be a tacet bar, not real notes"
+    );
+}
+
+#[test]
+fn multi_voice_empty_final_measure_keeps_final_barline() {
+    // A final continuation line that is only `|]` still explicitly notates a
+    // final bar for that voice. Keep the empty measure and its right barline.
+    let source = concat!(
+        "X:1\nM:2/4\nL:1/8\nK:C\n",
+        "[V:1] CDEF |\n[V:2] EFGA |\n",
+        "[V:1] GABc |\n[V:2] |]\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice empty final bar should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let parts = part_bodies(&export.musicxml);
+    assert_eq!(parts.len(), 2, "expected two voices/parts");
+
+    let v1_measures = musicxml_measures(&parts[0]);
+    let v2_measures = musicxml_measures(&parts[1]);
+    assert_eq!(v1_measures.len(), 2);
+    assert_eq!(v2_measures.len(), 2);
+    assert!(v2_measures[1].notes.is_empty());
+    assert!(
+        has_barline(&v2_measures[1], "right", Some("light-heavy"), None),
+        "V2 empty final measure should retain its explicit |] right barline: {:?}",
+        v2_measures[1].barlines
     );
 }
 
@@ -1648,6 +1812,157 @@ fn grace_before_plain_note_still_attaches() {
 }
 
 #[test]
+fn grace_group_internal_slurs_export_on_grace_notes_in_source_order() {
+    let source = "X:1\nT:Grace Internal Slurs\nM:4/4\nL:1/8\nK:C\n{(fg)}a2 {(ef)}g2|]\n";
+    let export = export_musicxml(source).expect("grace-internal slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        export
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.music.unknown_grace_token")
+            .count(),
+        0,
+        "grace-internal slur markers should not warn: {:?}",
+        export.diagnostics
+    );
+    assert_eq!(count(&export.musicxml, "<grace/>"), 4);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 2);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 2);
+
+    let note_blocks = musicxml_note_blocks(&export.musicxml);
+    let grace_slurs = note_blocks
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .map(|note| {
+            (
+                element_text(note, "step")
+                    .and_then(|text| text.chars().next())
+                    .expect("grace note should have a pitch step"),
+                note.contains("<slur type=\"start\""),
+                note.contains("<slur type=\"stop\""),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        grace_slurs,
+        vec![
+            ('F', true, false),
+            ('G', false, true),
+            ('E', true, false),
+            ('F', false, true),
+        ]
+    );
+    assert!(
+        note_blocks
+            .iter()
+            .filter(|note| !note.contains("<grace"))
+            .all(|note| !note.contains("<slur")),
+        "main notes should not receive the grace-internal slurs"
+    );
+}
+
+#[test]
+fn malformed_grace_group_internal_slurs_warn_without_musicxml_slur_pairs() {
+    for (source, code, marker) in [
+        (
+            "X:1\nT:t\nM:4/4\nK:C\n{(fg}a|]\n",
+            "abc.music.unclosed_slur",
+            "(",
+        ),
+        (
+            "X:1\nT:t\nM:4/4\nK:C\n{fg)}a|]\n",
+            "abc.music.unmatched_slur",
+            ")",
+        ),
+    ] {
+        let export = export_musicxml(source).expect("malformed grace slur should recover");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_diagnostic_span(source, &export.diagnostics, code, marker);
+        assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+        assert!(
+            !export.musicxml.contains("<slur "),
+            "malformed grace-internal slur should not export an unpaired MusicXML slur: {}",
+            export.musicxml
+        );
+    }
+}
+
+#[test]
+fn grace_group_internal_slur_can_export_from_chord_to_note() {
+    let source = "X:1\nT:Grace Chord Slur\nM:4/4\nL:1/8\nK:C\n{([fg]a)}c|]\n";
+    let export = export_musicxml(source).expect("grace chord slur should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.diagnostics.is_empty(), "{:?}", export.diagnostics);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 3);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 1);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 1);
+
+    let grace_slurs = musicxml_note_blocks(&export.musicxml)
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .map(|note| {
+            (
+                element_text(note, "step")
+                    .and_then(|text| text.chars().next())
+                    .expect("grace note should have a pitch step"),
+                note.contains("<chord/>"),
+                note.contains("<slur type=\"start\""),
+                note.contains("<slur type=\"stop\""),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        grace_slurs,
+        vec![
+            ('F', false, true, false),
+            ('G', true, false, false),
+            ('A', false, false, true),
+        ]
+    );
+}
+
+#[test]
+fn grace_group_internal_slur_across_rest_stays_on_grace_note() {
+    let source = "X:1\nT:Grace Rest Slur\nM:4/4\nL:1/8\nK:C\n{(fz)}a|]\n";
+    let export = export_musicxml(source).expect("grace rest slur should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.diagnostics.is_empty(), "{:?}", export.diagnostics);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 1);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 1);
+
+    let note_blocks = musicxml_note_blocks(&export.musicxml);
+    let grace_slurs = note_blocks
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .map(|note| {
+            (
+                element_text(note, "step").and_then(|text| text.chars().next()),
+                note.contains("<rest/>"),
+                note.contains("<slur type=\"start\""),
+                note.contains("<slur type=\"stop\""),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        grace_slurs,
+        vec![(Some('F'), false, true, true), (None, true, false, false)]
+    );
+    assert!(
+        note_blocks
+            .iter()
+            .filter(|note| !note.contains("<grace"))
+            .all(|note| !note.contains("<slur")),
+        "rest-adjacent grace slur should not leak to the main note"
+    );
+}
+
+#[test]
 fn chord_symbol_before_grace_group_emits_harmony() {
     // `"F"{AB}c4`: the chord symbol written before the grace group binds to
     // the main note `c` and exports as a <harmony>; before the fix the first
@@ -2066,6 +2381,124 @@ fn staves_parenthesis_group_merges_voices_into_one_part() {
 }
 
 #[test]
+fn slur_number_collision_shared_part_uses_distinct_musicxml_numbers() {
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\n%%staves 1 (2 3)\n",
+        "V:1\nV:2\nV:3\nK:C\n",
+        "V:1\nz z z z|z z z z|]\n",
+        "V:2\n(e e e e|e) z z z|]\n",
+        "V:3\n(c c c c|c) z z z|]\n",
+    );
+    let export = export_musicxml(source).expect("grouped slurs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let parts = musicxml_part_blocks(&export.musicxml);
+    assert_eq!(
+        parts.len(),
+        2,
+        "expected one solo part and one grouped part"
+    );
+    let shared_part = parts
+        .iter()
+        .find(|part| count(part, "<slur ") == 4)
+        .expect("grouped part should contain both slur pairs");
+    assert!(shared_part.contains("<voice>1</voice>"));
+    assert!(shared_part.contains("<voice>2</voice>"));
+
+    let slur_events = musicxml_note_blocks(shared_part)
+        .into_iter()
+        .filter_map(|note| {
+            let slur_start = note.find("<slur ")?;
+            let slur_end = note[slur_start..]
+                .find("/>")
+                .map(|end| slur_start + end + 2)
+                .expect("slur tag should close");
+            let slur = &note[slur_start..slur_end];
+            Some((
+                element_text(note, "voice").expect("slurred note should have voice"),
+                element_text(note, "step")
+                    .and_then(|step| step.chars().next())
+                    .expect("slurred note should have pitch step"),
+                attr_value(slur, "type").expect("slur should have type"),
+                attr_value(slur, "number").expect("slur should have number"),
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        slur_events,
+        vec![
+            ("1".to_owned(), 'E', "start".to_owned(), "1".to_owned()),
+            ("2".to_owned(), 'C', "start".to_owned(), "2".to_owned()),
+            ("1".to_owned(), 'E', "stop".to_owned(), "1".to_owned()),
+            ("2".to_owned(), 'C', "stop".to_owned(), "2".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn slur_number_collision_overlay_stop_uses_overlay_start_number() {
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\n%%staves (1 2)\n",
+        "V:1\nV:2\nK:C\n",
+        "V:1\n(a a a a & (e e e e|e) a a a)|]\n",
+        "V:2\nz z z z|z z z z|]\n",
+    );
+    let export = export_musicxml(source).expect("overlay slurs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let slur_events = musicxml_note_blocks(&export.musicxml)
+        .into_iter()
+        .flat_map(slur_events_in_note)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        slur_events,
+        vec![
+            SlurEvent::new("1", 'A', "start", "1"),
+            SlurEvent::new("3", 'E', "start", "2"),
+            SlurEvent::new("1", 'E', "stop", "2"),
+            SlurEvent::new("1", 'A', "stop", "1"),
+        ]
+    );
+}
+
+#[test]
+fn slur_number_allocator_preserves_high_pair_ids_and_remaps_collisions() {
+    let mut slur_numbers = SlurNumbers::default();
+
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 17, crate::model::SlurRole::Start),
+        17
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 17, crate::model::SlurRole::Stop),
+        17
+    );
+
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 1, crate::model::SlurRole::Start),
+        1
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-b", 1, crate::model::SlurRole::Start),
+        2
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 1, crate::model::SlurRole::Stop),
+        1
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-b", 1, crate::model::SlurRole::Stop),
+        2
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-c", 1, crate::model::SlurRole::Start),
+        1
+    );
+}
+
+#[test]
 fn staves_bracket_group_keeps_one_part_per_voice() {
     let source = concat!(
         "X:1\nL:1/4\n%%staves [1 2 3]\n",
@@ -2074,6 +2507,28 @@ fn staves_bracket_group_keeps_one_part_per_voice() {
     );
     let export = export_musicxml(source).expect("bracketed score should export");
     assert_eq!(count(&export.musicxml, "<part id="), 3);
+}
+
+#[test]
+fn staves_bracket_group_orders_parts_by_directive() {
+    let source = concat!(
+        "X:1\nL:1/4\n%%staves [1 2 3]\n",
+        "V:1\nV:3\nV:2\nK:C\n",
+        "V:1\nC|\nV:2\nE|\nV:3\nG|\n",
+    );
+    let export = export_musicxml(source).expect("bracketed score should export");
+    let first_steps = musicxml_part_blocks(&export.musicxml)
+        .into_iter()
+        .map(|part| {
+            let first_note = musicxml_note_blocks(part)
+                .into_iter()
+                .find(|note| note.contains("<pitch>"))
+                .expect("part should contain a pitched note");
+            element_text(first_note, "step").expect("pitched note should have a step")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(first_steps, vec!["C", "E", "G"]);
 }
 
 #[test]
@@ -2134,6 +2589,61 @@ fn inline_clef_only_key_field_does_not_reset_the_signature() {
         second.contains("<step>F</step>\n          <alter>1</alter>"),
         "F should stay sharp; clef-only inline key must not reset the signature"
     );
+}
+
+#[test]
+fn inline_clef_shorthand_key_field_emits_mid_tune_clef_and_shifts_notes() {
+    let source = "X:1\nL:1/4\nK:C\nC C|[K:treble-8]C C|[K:treble+8]C C|\n";
+    let export = export_musicxml(source).expect("inline clef shorthand should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let first = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .next()
+        .expect("first measure");
+    let second = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .nth(1)
+        .and_then(|tail| tail.split("<measure number=\"3\">").next())
+        .expect("second measure");
+    let third = export
+        .musicxml
+        .split("<measure number=\"3\">")
+        .nth(1)
+        .expect("third measure");
+
+    assert!(
+        !first.contains("<clef-octave-change>"),
+        "the header clef must stay unshifted"
+    );
+    assert!(
+        second.contains("<clef-octave-change>-1</clef-octave-change>"),
+        "treble-8 should emit a mid-tune clef octave change"
+    );
+    assert!(
+        second.contains("<octave>3</octave>"),
+        "treble-8 should shift following C notes down to octave 3"
+    );
+    assert!(
+        third.contains("<clef-octave-change>1</clef-octave-change>"),
+        "treble+8 should emit a mid-tune clef octave change"
+    );
+    assert!(
+        third.contains("<octave>5</octave>"),
+        "treble+8 should shift following C notes up to octave 5"
+    );
+}
+
+#[test]
+fn nospace_key_global_accidentals_export_base_key() {
+    let export = export_musicxml("X:1\nL:1/4\nK:D_B^g\nF B G|\n").expect("score should export");
+    assert_balanced_xml(&export.musicxml);
+
+    assert!(export.musicxml.contains("<fifths>2</fifths>"));
+    assert_eq!(count(&export.musicxml, "<key-step>"), 0);
+    assert_eq!(count(&export.musicxml, "<key-accidental>"), 0);
 }
 
 #[test]
@@ -2285,6 +2795,18 @@ fn grace_notes_apply_implicit_key_signature_alter() {
     assert_eq!(count(&export.musicxml, "<grace/>"), 2);
     assert_eq!(count(&export.musicxml, "<alter>1</alter>"), 1);
     assert!(export.musicxml.contains("<accidental>natural</accidental>"));
+}
+
+#[test]
+fn grace_notes_export_inherited_measure_accidentals() {
+    let source = "X:1\nL:1/8\nK:C\n^c2 {dc}d2 c4 |]\n";
+    let export = export_musicxml(source).expect("grace accidental should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        note_steps_and_alters(&export.musicxml),
+        vec![('C', 1), ('D', 0), ('C', 1), ('D', 0), ('C', 1)]
+    );
 }
 
 #[test]
@@ -2647,12 +3169,64 @@ fn unclosed_chord_bracket_before_barline_preserves_following_measures() {
 }
 
 #[test]
-fn unclosed_chord_with_quoted_text_before_barline_preserves_measures() {
-    // A chord-symbol-like quoted text inside an unclosed bracket must also stop
-    // at the barline rather than eating the following measures.
-    let source = "X:1\nM:2/4\nL:1/8\nK:C\n[\"x\" CDEF | GABc |\n";
+fn unclosed_chord_member_before_barline_exports_pickup_note() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\ne2 E E2 ][ f |\n";
+    let export = export_musicxml(source).expect("unclosed chord pickup should still export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_diagnostic_span(
+        source,
+        &export.diagnostics,
+        "abc.music.unclosed_chord",
+        "[ f ",
+    );
+    let steps = musicxml_notes(&export.musicxml)
+        .iter()
+        .filter_map(|note| note.step)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        steps,
+        vec!['E', 'E', 'E', 'F'],
+        "the F inside the unclosed bracket should survive as the pickup note"
+    );
+}
+
+#[test]
+fn unclosed_chord_quoted_run_before_barline_exports_member_notes() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[F\"cont\" \"Am7\"GAB cAFA |\n";
     let export = export_musicxml(source).expect("unclosed quoted chord run should still export");
 
+    assert_balanced_xml(&export.musicxml);
+    assert_diagnostic_span(
+        source,
+        &export.diagnostics,
+        "abc.music.unclosed_chord",
+        "[F\"cont\" \"Am7\"GAB cAFA ",
+    );
+    let steps = musicxml_notes(&export.musicxml)
+        .iter()
+        .filter_map(|note| note.step)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        steps,
+        vec!['F', 'G', 'A', 'B', 'C', 'A', 'F', 'A'],
+        "all notes inside the quoted unclosed bracket should survive in order"
+    );
+}
+
+#[test]
+fn unclosed_chord_with_quoted_text_before_barline_preserves_measures() {
+    // A quoted text inside an actual unclosed chord bracket must also stop at
+    // the barline rather than eating the following measures.
+    let source = "X:1\nM:2/4\nL:1/8\nK:C\n[C\"x\"DEF | GABc |\n";
+    let export = export_musicxml(source).expect("unclosed quoted chord run should still export");
+
+    assert_diagnostic_span(
+        source,
+        &export.diagnostics,
+        "abc.music.unclosed_chord",
+        "[C\"x\"DEF ",
+    );
     // The chord scan stops at the first bar line, so the measure that follows
     // the unclosed bracket (`GABc`) is no longer swallowed. Before the fix the
     // scan ran to end-of-line, eating both bar lines and discarding every
@@ -2674,6 +3248,93 @@ fn count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
 
+fn musicxml_note_blocks(xml: &str) -> Vec<&str> {
+    let mut notes = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = xml[index..].find("<note") {
+        let start = index + offset;
+        let open_end = xml[start..]
+            .find('>')
+            .map(|end| start + end)
+            .expect("note start tag should terminate");
+        let end_tag = "</note>";
+        let end = xml[open_end..]
+            .find(end_tag)
+            .map(|end| open_end + end + end_tag.len())
+            .expect("note should have closing tag");
+        notes.push(&xml[start..end]);
+        index = end;
+    }
+    notes
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SlurEvent {
+    voice: String,
+    step: char,
+    slur_type: String,
+    number: String,
+}
+
+impl SlurEvent {
+    fn new(voice: &str, step: char, slur_type: &str, number: &str) -> Self {
+        Self {
+            voice: voice.to_owned(),
+            step,
+            slur_type: slur_type.to_owned(),
+            number: number.to_owned(),
+        }
+    }
+}
+
+fn slur_events_in_note(note: &str) -> Vec<SlurEvent> {
+    if !note.contains("<slur ") {
+        return Vec::new();
+    }
+    let voice = element_text(note, "voice").expect("slurred note should have voice");
+    let step = element_text(note, "step")
+        .and_then(|step| step.chars().next())
+        .expect("slurred note should have pitch step");
+    let mut events = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = note[index..].find("<slur ") {
+        let start = index + offset;
+        let end = note[start..]
+            .find("/>")
+            .map(|end| start + end + 2)
+            .expect("slur tag should close");
+        let slur = &note[start..end];
+        events.push(SlurEvent {
+            voice: voice.clone(),
+            step,
+            slur_type: attr_value(slur, "type").expect("slur should have type"),
+            number: attr_value(slur, "number").expect("slur should have number"),
+        });
+        index = end;
+    }
+    events
+}
+
+fn musicxml_part_blocks(xml: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = xml[index..].find("<part id=") {
+        let start = index + offset;
+        let open_end = xml[start..]
+            .find('>')
+            .map(|end| start + end)
+            .expect("part start tag should terminate");
+        let end_tag = "</part>";
+        let end = xml[open_end..]
+            .find(end_tag)
+            .map(|end| open_end + end + end_tag.len())
+            .expect("part should have closing tag");
+        parts.push(&xml[start..end]);
+        index = end;
+    }
+    parts
+}
+
 #[derive(Debug)]
 struct XmlMeasure {
     number: String,
@@ -2686,6 +3347,7 @@ struct XmlNote {
     rest: bool,
     step: Option<char>,
     duration: Option<u32>,
+    grace: bool,
 }
 
 #[derive(Debug)]
@@ -2748,6 +3410,7 @@ fn musicxml_notes(xml: &str) -> Vec<XmlNote> {
             rest: body.contains("<rest"),
             step: element_text(body, "step").and_then(|text| text.chars().next()),
             duration: element_text(body, "duration").and_then(|text| text.parse().ok()),
+            grace: body.contains("<grace"),
         });
         index = end + end_tag.len();
     }
@@ -2832,6 +3495,10 @@ fn note_durations(measure: &XmlMeasure) -> Vec<u32> {
         .iter()
         .filter_map(|note| note.duration)
         .collect()
+}
+
+fn note_grace_flags(measure: &XmlMeasure) -> Vec<bool> {
+    measure.notes.iter().map(|note| note.grace).collect()
 }
 
 fn has_barline(
@@ -2989,6 +3656,60 @@ fn inline_key_change_scopes_to_current_voice_only() {
 }
 
 #[test]
+fn standalone_body_key_change_keeps_late_voice_in_header_key_until_own_change() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:D\n",
+        "V:1\n",
+        "B B B B|\n",
+        "K:Dm\n",
+        "B B B B|\n",
+        "V:2\n",
+        "F C B F|\n",
+        "K:Dm\n",
+        "F C B F|\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice score should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let parts = part_bodies(&export.musicxml);
+    assert_eq!(parts.len(), 2, "expected two voices/parts");
+    let p2_measures = parts[1].split("<measure ").collect::<Vec<_>>();
+    assert!(p2_measures.len() >= 3, "expected two V2 measures");
+    assert!(
+        p2_measures[1].contains("<fifths>2</fifths>"),
+        "V2 measure 1 keeps the header D major key: {}",
+        p2_measures[1]
+    );
+    assert!(
+        !p2_measures[1].contains("<fifths>-1</fifths>"),
+        "V2 measure 1 must not receive V1's body K:Dm: {}",
+        p2_measures[1]
+    );
+    assert!(
+        p2_measures[2].contains("<fifths>-1</fifths>"),
+        "V2 measure 2 carries V2's own K:Dm: {}",
+        p2_measures[2]
+    );
+    assert_eq!(
+        note_steps_and_alters(&parts[1]),
+        vec![
+            ('F', 1),
+            ('C', 1),
+            ('B', 0),
+            ('F', 1),
+            ('F', 0),
+            ('C', 0),
+            ('B', -1),
+            ('F', 0),
+        ],
+        "V2 first bar stays in D major, second bar changes to D minor"
+    );
+}
+
+#[test]
 fn tie_across_barline_keeps_natural_against_flat_key() {
     // `=B-` ties a natural B across the barline; the stop note must remain
     // natural (alter 0) and not pick up key F's B-flat.
@@ -3125,4 +3846,30 @@ fn free_meter_change_emits_no_empty_attributes() {
             && !export.musicxml.contains("<attributes/>"),
         "no empty attributes wrapper"
     );
+}
+
+#[test]
+fn complex_header_meter_exports_additive_time() {
+    let source = "X:1\nM:(2+3+2)/8\nL:1/8\nK:C\nCDEFGAB|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+
+    assert_balanced_xml(&xml);
+    assert_eq!(count(&xml, "<time>"), 1);
+    assert!(xml.contains("<beats>2+3+2</beats>"));
+    assert!(xml.contains("<beat-type>8</beat-type>"));
+}
+
+#[test]
+fn additive_extension_header_meter_exports_composite_time() {
+    let source = "X:1\nM:3/4+2/4\nL:1/4\nK:C\nCDEFG|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+
+    assert_balanced_xml(&xml);
+    assert_eq!(count(&xml, "<time>"), 1);
+    assert!(xml.contains("<beats>3</beats>"));
+    assert!(xml.contains("<beat-type>4</beat-type>"));
+    assert!(xml.contains("<beats>2</beats>"));
+    assert_eq!(count(&xml, "<beat-type>4</beat-type>"), 2);
 }

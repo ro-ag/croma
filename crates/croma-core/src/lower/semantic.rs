@@ -17,7 +17,7 @@ pub(crate) fn semantic_voice_from_timeline(
     let expected_duration = field_state
         .meter
         .as_ref()
-        .and_then(|meter| meter_duration(&meter.value.kind));
+        .and_then(|meter| meter_duration(&meter.value));
     let mut events = Vec::new();
     let measures = voice
         .measures
@@ -35,6 +35,7 @@ pub(crate) fn semantic_voice_from_timeline(
     Voice {
         id: voice.id.clone(),
         staff: staff_id,
+        initial_properties: voice.initial_properties.clone(),
         properties: voice.properties.clone(),
         measures,
         events,
@@ -199,6 +200,7 @@ fn non_note_event_from_timeline(event: &VoiceTimedEvent, measure_id: MeasureId) 
         }
         TimelineEventKind::KeyChange(key) => TimedEventKind::KeyChange(key.clone()),
         TimelineEventKind::MeterChange(meter) => TimedEventKind::MeterChange(meter.clone()),
+        TimelineEventKind::ClefChange(clef) => TimedEventKind::ClefChange(clef.clone()),
         TimelineEventKind::TempoChange(tempo) => TimedEventKind::TempoChange(tempo.clone()),
         TimelineEventKind::Note { .. } => TimedEventKind::Spacer,
     };
