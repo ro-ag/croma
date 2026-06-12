@@ -907,7 +907,7 @@ compare after 37g: structural matches 8873->8874 vs 37f, mismatch rows
 harness, or worker failures.
 
 
-### `slur-number-collision-shared-part` — **OPEN** (croma_bug, repro=True)
+### `slur-number-collision-shared-part` — **FIXED(37h)** (croma_bug, repro=True)
 
 *Share:* ~2% rows (3/129: 010662=2, 013200=1 — 013200's count=3 row shows abc2xml's own number=1 reuse colliding too) — *files:* tune_010662.abc, tune_013200.abc
 
@@ -916,6 +916,20 @@ Minimal: two voices on one staff (`%%staves (1 2)`), `V:1 (e2 e|e) z z` / `V:2 (
 
 
 *Fix:* Export layer: crates/croma-core/src/musicxml/notation.rs:43-58 — stop emitting raw `slur.pair_id` as the number; allocate per-part live numbers the way tuplets already do (`tuplet_numbers.number_for(pair_id)`, notation.rs:68): pick the lowest number not currently open in the part at the start event, free it at the stop. Alternative: allocate `next_slur_id` per part instead of per voice in crates/c
+
+*Fixed in 37h:* MusicXML export now keeps a per-part live slur-number
+allocator, keyed by semantic source voice plus lowered slur pair id, so
+simultaneous slurs from voices merged into one part receive distinct MusicXML
+`number` values while overlay continuation events still stop the number opened
+by their source voice. The allocator preserves raw pair ids unless another slur
+with that number is already active in the same part, which avoids regressing
+files that already use high slur numbers. Target `tune_010662.abc` now compares
+as a structural match; the two-file target changed from 0 structural matches /
+19 mismatch rows / 3 slur rows to 1 structural match / 17 mismatch rows / 1 slur
+row, leaving only the known residual `tune_013200.abc` abc2xml numbering
+behavior. Full 10k report-only compare after 37h: structural matches
+8874->8875 vs 37g, mismatch rows 162475->162473, `slur` 102->100; no import,
+harness, or worker failures.
 
 
 ### `slur-single-target-count-encoding` — **EQUIV** (legitimate_difference, repro=None)

@@ -54,6 +54,7 @@ impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_part(&mut self, part: &'score Part, part_index: usize) {
         let id = part_xml_id(part, part_index);
         self.active_key = self.score.metadata.key.clone();
+        self.slur_numbers = Default::default();
         self.xml.start("part", &[("id", id.as_str())]);
         let mut pending_left_repeat = false;
         let measure_ids = part_measure_ids(part);
@@ -205,6 +206,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
     let base_count = part.voices.len();
     for (voice_index, voice) in part.voices.iter().enumerate() {
         let voice_number = (voice_index + 1).to_string();
+        let slur_voice_key = voice.id.value.clone();
         let events = voice
             .events
             .iter()
@@ -227,6 +229,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
             let measure = voice.measures.iter().find(|measure| measure.id == id);
             sequences.push(MeasureSequence {
                 voice_number,
+                slur_voice_key: slur_voice_key.clone(),
                 staff: voice.staff,
                 expected_duration: measure.and_then(|measure| measure.expected_duration),
                 actual_duration: measure
@@ -255,6 +258,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                 }
                 sequences.push(MeasureSequence {
                     voice_number: (base_count + overlay_index + 1).to_string(),
+                    slur_voice_key: slur_voice_key.clone(),
                     staff: voice.staff,
                     expected_duration: Some(overlay.expected_duration),
                     actual_duration: overlay.actual_duration,

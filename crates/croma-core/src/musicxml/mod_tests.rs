@@ -2320,6 +2320,124 @@ fn staves_parenthesis_group_merges_voices_into_one_part() {
 }
 
 #[test]
+fn slur_number_collision_shared_part_uses_distinct_musicxml_numbers() {
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\n%%staves 1 (2 3)\n",
+        "V:1\nV:2\nV:3\nK:C\n",
+        "V:1\nz z z z|z z z z|]\n",
+        "V:2\n(e e e e|e) z z z|]\n",
+        "V:3\n(c c c c|c) z z z|]\n",
+    );
+    let export = export_musicxml(source).expect("grouped slurs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let parts = musicxml_part_blocks(&export.musicxml);
+    assert_eq!(
+        parts.len(),
+        2,
+        "expected one solo part and one grouped part"
+    );
+    let shared_part = parts
+        .iter()
+        .find(|part| count(part, "<slur ") == 4)
+        .expect("grouped part should contain both slur pairs");
+    assert!(shared_part.contains("<voice>1</voice>"));
+    assert!(shared_part.contains("<voice>2</voice>"));
+
+    let slur_events = musicxml_note_blocks(shared_part)
+        .into_iter()
+        .filter_map(|note| {
+            let slur_start = note.find("<slur ")?;
+            let slur_end = note[slur_start..]
+                .find("/>")
+                .map(|end| slur_start + end + 2)
+                .expect("slur tag should close");
+            let slur = &note[slur_start..slur_end];
+            Some((
+                element_text(note, "voice").expect("slurred note should have voice"),
+                element_text(note, "step")
+                    .and_then(|step| step.chars().next())
+                    .expect("slurred note should have pitch step"),
+                attr_value(slur, "type").expect("slur should have type"),
+                attr_value(slur, "number").expect("slur should have number"),
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        slur_events,
+        vec![
+            ("1".to_owned(), 'E', "start".to_owned(), "1".to_owned()),
+            ("2".to_owned(), 'C', "start".to_owned(), "2".to_owned()),
+            ("1".to_owned(), 'E', "stop".to_owned(), "1".to_owned()),
+            ("2".to_owned(), 'C', "stop".to_owned(), "2".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn slur_number_collision_overlay_stop_uses_overlay_start_number() {
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\n%%staves (1 2)\n",
+        "V:1\nV:2\nK:C\n",
+        "V:1\n(a a a a & (e e e e|e) a a a)|]\n",
+        "V:2\nz z z z|z z z z|]\n",
+    );
+    let export = export_musicxml(source).expect("overlay slurs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let slur_events = musicxml_note_blocks(&export.musicxml)
+        .into_iter()
+        .flat_map(slur_events_in_note)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        slur_events,
+        vec![
+            SlurEvent::new("1", 'A', "start", "1"),
+            SlurEvent::new("3", 'E', "start", "2"),
+            SlurEvent::new("1", 'E', "stop", "2"),
+            SlurEvent::new("1", 'A', "stop", "1"),
+        ]
+    );
+}
+
+#[test]
+fn slur_number_allocator_preserves_high_pair_ids_and_remaps_collisions() {
+    let mut slur_numbers = SlurNumbers::default();
+
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 17, crate::model::SlurRole::Start),
+        17
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 17, crate::model::SlurRole::Stop),
+        17
+    );
+
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 1, crate::model::SlurRole::Start),
+        1
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-b", 1, crate::model::SlurRole::Start),
+        2
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-a", 1, crate::model::SlurRole::Stop),
+        1
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-b", 1, crate::model::SlurRole::Stop),
+        2
+    );
+    assert_eq!(
+        slur_numbers.number_for("voice-c", 1, crate::model::SlurRole::Start),
+        1
+    );
+}
+
+#[test]
 fn staves_bracket_group_keeps_one_part_per_voice() {
     let source = concat!(
         "X:1\nL:1/4\n%%staves [1 2 3]\n",
@@ -3002,6 +3120,73 @@ fn musicxml_note_blocks(xml: &str) -> Vec<&str> {
         index = end;
     }
     notes
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SlurEvent {
+    voice: String,
+    step: char,
+    slur_type: String,
+    number: String,
+}
+
+impl SlurEvent {
+    fn new(voice: &str, step: char, slur_type: &str, number: &str) -> Self {
+        Self {
+            voice: voice.to_owned(),
+            step,
+            slur_type: slur_type.to_owned(),
+            number: number.to_owned(),
+        }
+    }
+}
+
+fn slur_events_in_note(note: &str) -> Vec<SlurEvent> {
+    if !note.contains("<slur ") {
+        return Vec::new();
+    }
+    let voice = element_text(note, "voice").expect("slurred note should have voice");
+    let step = element_text(note, "step")
+        .and_then(|step| step.chars().next())
+        .expect("slurred note should have pitch step");
+    let mut events = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = note[index..].find("<slur ") {
+        let start = index + offset;
+        let end = note[start..]
+            .find("/>")
+            .map(|end| start + end + 2)
+            .expect("slur tag should close");
+        let slur = &note[start..end];
+        events.push(SlurEvent {
+            voice: voice.clone(),
+            step,
+            slur_type: attr_value(slur, "type").expect("slur should have type"),
+            number: attr_value(slur, "number").expect("slur should have number"),
+        });
+        index = end;
+    }
+    events
+}
+
+fn musicxml_part_blocks(xml: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = xml[index..].find("<part id=") {
+        let start = index + offset;
+        let open_end = xml[start..]
+            .find('>')
+            .map(|end| start + end)
+            .expect("part start tag should terminate");
+        let end_tag = "</part>";
+        let end = xml[open_end..]
+            .find(end_tag)
+            .map(|end| open_end + end + end_tag.len())
+            .expect("part should have closing tag");
+        parts.push(&xml[start..end]);
+        index = end;
+    }
+    parts
 }
 
 #[derive(Debug)]
