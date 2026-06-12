@@ -826,7 +826,7 @@ Minimal repro /tmp/trailgrace.abc: `Te6{de}|d2f f2f|`. abc2xml emits the princip
 *Fix:* Phase 37e adds an `after_grace_groups` attachment slot and resolves a pending standalone grace group backward only for a standalone trill-decorated note immediately before a hard boundary. MusicXML now writes those groups after the owning note, and ABC dump preserves them as an event suffix. The target repro `Te6{de}|d2f f2f|` now exports the principal E followed by D/E grace notes in measure 1, matching abc2xml ordering; ordinary `{g}|d` cross-bar leading-grace behavior remains unchanged. A guard keeps chord-member trills from draining graces into member attachments that exporters do not emit. Evidence: focused lower/MusicXML/to_abc grace tests pass; target `tune_006695.abc` exports nine `<grace/>` notes, matching the reference count and placing the new D/E pair after the trill E; full 10k compare vs phase 37d improves structural matches 8869->8870 and mismatch rows 164188->164052 (`missing_in_croma -64`, `extra_in_croma -64`, `duration -3`, `measure_alignment -4`, `voice -4`, with small positional `accidental +2`/`pitch +1` in the same target file), with no harness or MusicXML import failures.
 
 
-### `pitch-unclosed-chord-recovery-drops-notes` — **OPEN** (croma_bug, repro=True)
+### `pitch-unclosed-chord-recovery-drops-notes` — **FIXED(37f)** (croma_bug, repro=True)
 
 *Share:* ~0.3% rows (37 rows, 2 files) — *files:* tune_009179.abc, tune_005224.abc
 
@@ -835,6 +835,8 @@ Malformed input. tune_009179 `e2 E E2 ][ f |`: minimal repro /tmp/bracketbar.abc
 
 
 **Verifier correction:** The factual claim is fully accurate (mechanism, code location note.rs:244-252, both corpus examples, exact pitch counts 83v84 and 115v131, cascade shape). Only the verdict label is wrong. Triage's spec basis — "][ not among §4.8 barline tokens, so illegal ABC" — misses §4.8's liberal-barline paragraph (abc_standard_v2.1.full.md line 961): "bar lines may have any shape, using a sequence of | (thin), [ or ] (thick), and : (dots), e.g. |[| or [|:::" and "Abc parsers should be quite liberal in recog
+
+*Fix:* Phase 37f keeps the existing `abc.music.unclosed_chord` diagnostic but recovers parsed members as ordinary notes when a top-level unclosed `[` is stopped by a barline, leaving that barline to be parsed by the main music loop. The target `e2 E E2 ][ f |` now exports the lost F pickup, and the quoted bracket runs in `tune_005224.abc` now export their eight note sequences instead of swallowing them. Recovery is gated to the top-level music-line chord path; grace-internal malformed chords keep the old no-leak behavior (`{[CDE | G} A|` only yields mainline A). Evidence: `cargo test -p croma-core unclosed_chord -- --nocapture` passes 8 focused tests, target `tune_009179.abc`/`tune_005224.abc` exports both succeed and compare to 1 structural match plus 5 residual rows in `tune_005224.abc` (separate text/barline artifacts), and full 10k compare vs phase 37e improves structural matches 8870->8873 and mismatch rows 164052->162483 (`missing_in_croma -859`, `extra_in_croma -312`, `pitch -95`, `duration -91`, `lyric -63`, plus smaller category improvements), with no harness or MusicXML import failures.
 
 
 ### `pitch-staves-voice-order` — **EQUIV** (legitimate_difference, repro=True)
