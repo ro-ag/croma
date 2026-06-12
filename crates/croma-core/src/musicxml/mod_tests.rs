@@ -408,6 +408,48 @@ fn multi_measure_volta_emits_ending_stop_at_closing_barline() {
 }
 
 #[test]
+fn quoted_text_volta_extension_exports_ending_and_harmony() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n\"G\"B2A2 G2F2 |[\"cont\" \"Am7\"F2G2 A2B2 | \"D7\"c2d2 \"G\"e4 |]\n";
+    let export = export_musicxml(source).expect("quoted-text volta should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"33\" type=\"start\">cont</ending>"),
+        "quoted volta text should export as an ending start:\n{}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"33\" type=\"stop\"/>"),
+        "quoted volta text should close at the final barline:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export.musicxml.contains("<ending number=\"cont\""),
+        "MusicXML ending-number must stay numeric for readers:\n{}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<kind text=\"Am7\">minor-seventh</kind>"),
+        "harmony after the quoted volta label should still bind to F2:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unclosed_chord"),
+        "quoted volta text must not be parsed as an unclosed chord: {:?}",
+        export.diagnostics
+    );
+}
+
+#[test]
 fn volta_unclosed_in_source_stays_open_at_part_end() {
     // ABC 2.1 §4.9 closes an ending at `||`, `:|`, `|]` or `[|`. When the
     // source never writes one (the tune just ends on a plain bar), no stop
@@ -3053,7 +3095,7 @@ fn unclosed_chord_member_before_barline_exports_pickup_note() {
 
 #[test]
 fn unclosed_chord_quoted_run_before_barline_exports_member_notes() {
-    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[\"cont\" \"Am7\"FGAB cAFA |\n";
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[F\"cont\" \"Am7\"GAB cAFA |\n";
     let export = export_musicxml(source).expect("unclosed quoted chord run should still export");
 
     assert_balanced_xml(&export.musicxml);
@@ -3061,7 +3103,7 @@ fn unclosed_chord_quoted_run_before_barline_exports_member_notes() {
         source,
         &export.diagnostics,
         "abc.music.unclosed_chord",
-        "[\"cont\" \"Am7\"FGAB cAFA ",
+        "[F\"cont\" \"Am7\"GAB cAFA ",
     );
     let steps = musicxml_notes(&export.musicxml)
         .iter()
@@ -3076,11 +3118,17 @@ fn unclosed_chord_quoted_run_before_barline_exports_member_notes() {
 
 #[test]
 fn unclosed_chord_with_quoted_text_before_barline_preserves_measures() {
-    // A chord-symbol-like quoted text inside an unclosed bracket must also stop
-    // at the barline rather than eating the following measures.
-    let source = "X:1\nM:2/4\nL:1/8\nK:C\n[\"x\" CDEF | GABc |\n";
+    // A quoted text inside an actual unclosed chord bracket must also stop at
+    // the barline rather than eating the following measures.
+    let source = "X:1\nM:2/4\nL:1/8\nK:C\n[C\"x\"DEF | GABc |\n";
     let export = export_musicxml(source).expect("unclosed quoted chord run should still export");
 
+    assert_diagnostic_span(
+        source,
+        &export.diagnostics,
+        "abc.music.unclosed_chord",
+        "[C\"x\"DEF ",
+    );
     // The chord scan stops at the first bar line, so the measure that follows
     // the unclosed bracket (`GABc`) is no longer swallowed. Before the fix the
     // scan ran to end-of-line, eating both bar lines and discarding every

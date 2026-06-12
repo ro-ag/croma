@@ -440,7 +440,7 @@ Minimal repro /tmp/harmony-probe/t2_chord_before_plusdeco.abc: `"F"+>+a4 gfed | 
 *Fix:* Parse layer: crates/croma-core/src/parse/decoration.rs:69 (and sibling flush sites in that file) — stash/restore the pending bundle around `+...+` parsing exactly like the fixed parse_grace_group/parse_slur/parse_tuplet cases (backlog item 9), so the quoted text rides through to the following note.
 
 
-### `harmony-quoted-in-unterminated-bracket` — **OPEN** (croma_bug, repro=True)
+### `harmony-quoted-in-unterminated-bracket` — **FIXED(37j)** (croma_bug, repro=True)
 
 *Share:* ~0.2% rows (6/2428), 1 file — *files:* tune_005224.abc
 
@@ -448,7 +448,22 @@ Minimal repro /tmp/harmony-probe/t2_chord_before_plusdeco.abc: `"F"+>+a4 gfed | 
 Malformed input. Minimal repro /tmp/harmony-probe/t5_bracket_quoted.abc: `"G"B2A2 G2F2 |["cont" "Am7"F2G2 A2B2 | ...` — croma emits G, D7, G (drops Am7 and the 'cont' annotation); abc2xml emits G, Am7, D7, G. The source violates ABC 2.1 §4.20 (chord delimiters [ ] should enclose note sequences with chord symbols OUTSIDE the bracket) and the bracket is never closed — illegal input, so the recovery-choice difference is not a croma bug per triage policy. Note: croma's recovery does silently lose a well-formed chord symbol, and the cause-1 fix (carrying pending quoted text to the next timed event) would likely rescue this case for free. Single corpus file: tune_005224 (manifest verdict PHANTOM_MEASURE; harmony-sequence diff shows croma 20 vs ref 23 items, missing Am7 x2 + D:dominant).
 
 
-**Verifier correction:** The claimed difference reproduces, but the verdict reference_quirk rests on a false premise. `|["cont"` is not an unterminated chord bracket with illegally-placed chord symbols: abc2xml parses `[` + quoted string as a quoted-text volta (variant ending label) via an explicit grammar production (abc2xml.py line 420 `volta_text = Suppress(Literal('[')) + pas(r'"[^"]+"')`, emitted as <ending>cont</ending> at lines 1927-1930). This is the well-known abcm2ps/abc2svg/abcjs text repeat-bracket extension
+**Verifier correction:** The claimed difference reproduces, but the verdict reference_quirk rests on a false premise. `|["cont"` is not an unterminated chord bracket with illegally-placed chord symbols: abc2xml parses `[` + quoted string as a quoted-text volta (variant ending label) via an explicit grammar production (abc2xml.py line 420 `volta_text = Suppress(Literal('[')) + pas(r'"[^"]+"')`, emitted as <ending>cont</ending> at lines 1927-1930). This is the well-known abcm2ps/abc2svg/abcjs text repeat-bracket extension.
+
+*Fixed in 37j:* Parser now recognizes `[` followed immediately by quoted text
+as the de-facto text repeat-bracket extension when no unquoted `]` closes the
+bracket before the next barline. The first quoted string becomes a repeat
+ending label, following quoted chord symbols still bind to the next note, and
+actual unclosed chord groups such as `[C"x"DEF |` keep the existing recovery
+and diagnostics. MusicXML writes text labels as `<ending number="33"
+type="start">label</ending>` and empty stop elements, matching abc2xml's
+numeric ending-number convention while preserving valid MusicXML reader import.
+Target `tune_005224.abc` changed from 0 structural matches / 5 mismatch rows
+(`barline` 2, `extra_in_croma` 2, `missing_in_croma` 1) to 1 structural match
+with 0 mismatch rows and no diagnostics. Full 10k report-only compare after
+37j: structural matches 8875->8878 vs 37h, mismatch rows 162473->162455,
+`barline` 3536->3533, `direction` 460->459, `extra_in_croma` 47189->47182,
+`missing_in_croma` 55760->55753; no import, harness, or worker failures.
 
 
 ### `harmony-quoted-symbol-dropped-at-boundary` — **FIXED(33a)** (croma_bug, repro=True)

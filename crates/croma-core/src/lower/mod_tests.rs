@@ -819,7 +819,7 @@ fn unclosed_chord_member_before_barline_recovers_as_note() {
 
 #[test]
 fn unclosed_chord_quoted_run_before_barline_recovers_members_as_notes() {
-    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[\"cont\" \"Am7\"FGAB cAFA |\n";
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[F\"cont\" \"Am7\"GAB cAFA |\n";
     let document_report = parse_document(source, ParseOptions::default());
     assert_eq!(
         count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
@@ -833,7 +833,7 @@ fn unclosed_chord_quoted_run_before_barline_recovers_members_as_notes() {
         .expect("expected unclosed-chord diagnostic");
     assert_eq!(
         &source[diagnostic.span.start..diagnostic.span.end],
-        "[\"cont\" \"Am7\"FGAB cAFA ",
+        "[F\"cont\" \"Am7\"GAB cAFA ",
         "the diagnostic span should stay on the malformed quoted bracket run before the barline"
     );
 

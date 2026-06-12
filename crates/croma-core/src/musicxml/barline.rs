@@ -32,19 +32,21 @@ impl<'score> MusicXmlWriter<'score> {
             | BarlineKind::Liberal => {}
         }
         for child in ending_children {
-            self.xml.empty(
-                "ending",
-                &[
-                    ("number", child.number),
-                    (
-                        "type",
-                        match child.kind {
-                            EndingType::Start => "start",
-                            EndingType::Stop => "stop",
-                        },
-                    ),
-                ],
-            );
+            let attrs = [
+                ("number", child.number),
+                (
+                    "type",
+                    match child.kind {
+                        EndingType::Start => "start",
+                        EndingType::Stop => "stop",
+                    },
+                ),
+            ];
+            if let Some(text) = child.text {
+                self.xml.text_element_attrs("ending", &attrs, text);
+            } else {
+                self.xml.empty("ending", &attrs);
+            }
         }
         match kind {
             BarlineKind::RepeatStart => {
@@ -61,14 +63,18 @@ impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_ending_barline(
         &mut self,
         location: BarlineLocation,
-        endings: &[String],
+        endings: &[EndingDisplay],
         ending_type: EndingType,
         repeat_kind: Option<BarlineKind>,
     ) {
         let children = endings
             .iter()
-            .map(|number| EndingChild {
-                number: number.as_str(),
+            .map(|ending| EndingChild {
+                number: ending.number.as_str(),
+                text: match ending_type {
+                    EndingType::Start => ending.text.as_deref(),
+                    EndingType::Stop => None,
+                },
                 kind: ending_type,
             })
             .collect::<Vec<_>>();
@@ -82,5 +88,12 @@ impl<'score> MusicXmlWriter<'score> {
 
 pub(crate) struct EndingChild<'a> {
     number: &'a str,
+    text: Option<&'a str>,
     kind: EndingType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EndingDisplay {
+    pub(crate) number: String,
+    pub(crate) text: Option<String>,
 }

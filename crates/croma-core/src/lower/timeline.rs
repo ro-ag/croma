@@ -494,12 +494,13 @@ fn timeline_event_kind(kind: LoweredEventAtomKind) -> TimelineEventKind {
 fn repeat_ending_parts_model(parts: &[VariantEndingPart]) -> Vec<RepeatEndingPartModel> {
     parts
         .iter()
-        .map(|part| match *part {
+        .map(|part| match part {
             VariantEndingPart::Single(number) => RepeatEndingPartModel::Single(number.value),
             VariantEndingPart::Range { start, end, .. } => RepeatEndingPartModel::Range {
                 start: start.value,
                 end: end.value,
             },
+            VariantEndingPart::Text { text, .. } => RepeatEndingPartModel::Text(text.clone()),
         })
         .collect()
 }
