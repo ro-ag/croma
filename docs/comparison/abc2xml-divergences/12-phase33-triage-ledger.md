@@ -355,7 +355,7 @@ tune_001029 (M:C|, L:1/2, %%MIDI nobarlines, opens 'z4' = 8 ql): RAW reference X
 **Verifier correction:** The cause bundles two unrelated phenomena and should be split. (a) Curly-quoted Q: text (tune_015359, tune_012129, 2 TextExpression rows): verified, correctly reference_quirk — abc2xml's Q: regex requires ASCII quotes (ABC 2.1 SS3.1.8) and silently drops the malformed field; croma preserves the text. (b) All 25 Dynamic-kind extra rows: the triage mechanism ('abc2xml drops !p!/!f! on second staff of staves=2 merged part') is factually wrong — abc2xml drops nothing and neither tool merges the part
 
 
-### `extra-decoration-words-fallback` — **OPEN** (croma_bug, repro=True)
+### `extra-decoration-words-fallback` — **FIXED(37a)** (croma_bug, repro=True)
 
 *Share:* ~0.6% rows (~300; spread over ~80 files) — *files:* tune_003450.abc, tune_008364.abc, tune_012804.abc, tune_003269.abc
 
@@ -364,6 +364,8 @@ Minimal repro '!+!C4 !3!D4 | !diminuendo(!E2F2 !diminuendo)!G4 |': croma emits <
 
 
 *Fix:* MusicXML export layer only (parse already carries the decoration name). crates/croma-core/src/musicxml/notation.rs: decoration_notation() (line 160) lacks arms for "0"..="5" (needs a NotationKind variant carrying fingering text -> <technical><fingering>), "+"/"plus" -> Technical("stopped"), "arpeggio" -> new arpeggiate notation, "slide" -> <slide>/scoop. Wedges are spanners, so "diminuendo("/")", 
+
+**Phase 37a verification:** `crates/croma-core/src/musicxml/notation.rs` now maps the remaining supported decoration fallbacks to MusicXML note-attached notations: `!0!`-`!5!` -> `<technical><fingering>`, `!arpeggio!` -> `<arpeggiate/>`, and `!slide!` -> `<articulations><scoop/>`, matching an abc2xml 268 probe for the minimal repro shape. Regression test `fingering_arpeggio_and_slide_decorations_emit_notations_not_words` fails on main for the missing fingering and passes after the fix. Verification: `cargo fmt --all -- --check`, `cargo test -p croma-core musicxml::tests::`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, and full 10k report-only comparison. Phase-36 -> phase-37a aggregate corpus delta: structural matches 8861 -> 8865, mismatch rows 164265 -> 164220, `direction` 463 -> 459, `extra_in_croma` 47606 -> 47565, no harness/import failures.
 
 
 ### `extra-multirest-collapsed-vs-expanded` — **FIXED(35a)** (croma_bug, repro=True)

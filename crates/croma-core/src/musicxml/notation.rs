@@ -72,15 +72,20 @@ impl<'score> MusicXmlWriter<'score> {
             );
         }
         if has_notation_decorations {
+            let notation_kinds = attachments
+                .decorations
+                .iter()
+                .filter_map(decoration_notation)
+                .collect::<Vec<_>>();
             let kinds = |want: fn(NotationKind) -> Option<&'static str>| {
-                attachments
-                    .decorations
+                notation_kinds
                     .iter()
-                    .filter_map(|decoration| decoration_notation(decoration).and_then(want))
+                    .copied()
+                    .filter_map(want)
                     .collect::<Vec<_>>()
             };
             // MusicXML groups these per category, in schema order: ornaments,
-            // technical, articulations, then fermata.
+            // technical, articulations, fermata, then arpeggiate.
             let ornaments = kinds(|kind| match kind {
                 NotationKind::Ornament(name) => Some(name),
                 _ => None,
@@ -92,14 +97,26 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 self.xml.end("ornaments");
             }
-            let technical = kinds(|kind| match kind {
-                NotationKind::Technical(name) => Some(name),
-                _ => None,
-            });
+            let technical = notation_kinds
+                .iter()
+                .copied()
+                .filter(|kind| {
+                    matches!(
+                        kind,
+                        NotationKind::Technical(_) | NotationKind::TechnicalText { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
             if !technical.is_empty() {
                 self.xml.start("technical", &[]);
-                for name in technical {
-                    self.xml.empty(name, &[]);
+                for kind in technical {
+                    match kind {
+                        NotationKind::Technical(name) => self.xml.empty(name, &[]),
+                        NotationKind::TechnicalText { name, text } => {
+                            self.xml.text_element(name, text);
+                        }
+                        _ => unreachable!("technical list only contains technical notations"),
+                    }
                 }
                 self.xml.end("technical");
             }
@@ -114,13 +131,14 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 self.xml.end("articulations");
             }
-            for kind in attachments
-                .decorations
-                .iter()
-                .filter_map(decoration_notation)
-            {
+            for kind in notation_kinds.iter().copied() {
                 if let NotationKind::Fermata(fermata_type) = kind {
                     self.xml.empty("fermata", &[("type", fermata_type)]);
+                }
+            }
+            for kind in notation_kinds {
+                if kind == NotationKind::Arpeggiate {
+                    self.xml.empty("arpeggiate", &[]);
                 }
             }
         }
@@ -150,8 +168,15 @@ pub(crate) enum NotationKind {
     Articulation(&'static str),
     /// Inside `<technical>` (e.g. up-bow, down-bow, open string).
     Technical(&'static str),
+    /// Text inside a `<technical>` child element (e.g. fingering).
+    TechnicalText {
+        name: &'static str,
+        text: &'static str,
+    },
     /// A `<fermata>` element with the given type attribute.
     Fermata(&'static str),
+    /// A note/chord arpeggiation mark.
+    Arpeggiate,
 }
 
 /// Map an ABC decoration to its MusicXML notation, per the ABC 2.1 decoration
@@ -180,6 +205,32 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
         // `!+!` is left-hand pizzicato (ABC 2.1 line 1101); MusicXML's
         // <stopped/> renders the same + glyph on the note.
         "+" | "plus" => NotationKind::Technical("stopped"),
+        "0" => NotationKind::TechnicalText {
+            name: "fingering",
+            text: "0",
+        },
+        "1" => NotationKind::TechnicalText {
+            name: "fingering",
+            text: "1",
+        },
+        "2" => NotationKind::TechnicalText {
+            name: "fingering",
+            text: "2",
+        },
+        "3" => NotationKind::TechnicalText {
+            name: "fingering",
+            text: "3",
+        },
+        "4" => NotationKind::TechnicalText {
+            name: "fingering",
+            text: "4",
+        },
+        "5" => NotationKind::TechnicalText {
+            name: "fingering",
+            text: "5",
+        },
+        "arpeggio" => NotationKind::Arpeggiate,
+        "slide" => NotationKind::Articulation("scoop"),
         _ => return None,
     })
 }
