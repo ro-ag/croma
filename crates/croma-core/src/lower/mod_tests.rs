@@ -676,6 +676,153 @@ fn unclosed_chord_scan_stops_at_barline() {
 }
 
 #[test]
+fn unclosed_chord_member_before_barline_recovers_as_note() {
+    let source = "X:1\nL:1/8\nK:C\ne2 E E2 ][ f |\n";
+    let document_report = parse_document(source, ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the unclosed bracket should yield exactly one unclosed-chord diagnostic"
+    );
+    let diagnostic = document_report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "abc.music.unclosed_chord")
+        .expect("expected unclosed-chord diagnostic");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "[ f ",
+        "the diagnostic span should stay on the malformed bracket run before the barline"
+    );
+
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['e', 'E', 'E', 'f'],
+        "the note inside the unclosed bracket should recover as an ordinary note"
+    );
+    let recovered_note_index = tune_music.lines[0]
+        .items
+        .iter()
+        .position(|item| matches!(item, MusicItem::Note(note) if note.pitch.step == 'f'))
+        .expect("expected recovered f note");
+    assert!(
+        tune_music.lines[0].items[recovered_note_index + 1..]
+            .iter()
+            .any(|item| matches!(item, MusicItem::Barline(_))),
+        "the barline that stopped the malformed chord scan must still be parsed"
+    );
+    let malformed = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Malformed(item) if item.kind == MalformedSyntaxKind::UnclosedChord => {
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(malformed.len(), 1);
+    assert_eq!(
+        &source[malformed[0].span.start..malformed[0].span.end],
+        "[ f ",
+        "the malformed syntax span should stay on the malformed bracket run"
+    );
+}
+
+#[test]
+fn unclosed_chord_quoted_run_before_barline_recovers_members_as_notes() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[\"cont\" \"Am7\"FGAB cAFA |\n";
+    let document_report = parse_document(source, ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the unclosed bracket should yield exactly one unclosed-chord diagnostic"
+    );
+    let diagnostic = document_report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "abc.music.unclosed_chord")
+        .expect("expected unclosed-chord diagnostic");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "[\"cont\" \"Am7\"FGAB cAFA ",
+        "the diagnostic span should stay on the malformed quoted bracket run before the barline"
+    );
+
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['F', 'G', 'A', 'B', 'c', 'A', 'F', 'A'],
+        "all notes inside the unclosed bracket should recover in source order"
+    );
+}
+
+#[test]
+fn unclosed_chord_inside_grace_group_does_not_recover_members_as_main_notes() {
+    let source = "X:1\nL:1/8\nK:C\n{[CDE | G} A|\n";
+    let document_report = parse_document(source, ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the grace-internal unclosed bracket should still diagnose once"
+    );
+    let diagnostic = document_report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "abc.music.unclosed_chord")
+        .expect("expected unclosed-chord diagnostic");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "[CDE ",
+        "the diagnostic span should stay on the malformed grace-internal bracket run"
+    );
+
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['A'],
+        "grace-internal malformed chord members must not leak as mainline notes"
+    );
+}
+
+#[test]
 fn valid_chord_before_barline_does_not_swallow_following_note() {
     // Guard: a closed chord immediately followed by a barline parses as a chord
     // then a barline, with no unclosed-chord diagnostic and the following note

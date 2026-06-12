@@ -2760,6 +2760,52 @@ fn unclosed_chord_bracket_before_barline_preserves_following_measures() {
 }
 
 #[test]
+fn unclosed_chord_member_before_barline_exports_pickup_note() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\ne2 E E2 ][ f |\n";
+    let export = export_musicxml(source).expect("unclosed chord pickup should still export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_diagnostic_span(
+        source,
+        &export.diagnostics,
+        "abc.music.unclosed_chord",
+        "[ f ",
+    );
+    let steps = musicxml_notes(&export.musicxml)
+        .iter()
+        .filter_map(|note| note.step)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        steps,
+        vec!['E', 'E', 'E', 'F'],
+        "the F inside the unclosed bracket should survive as the pickup note"
+    );
+}
+
+#[test]
+fn unclosed_chord_quoted_run_before_barline_exports_member_notes() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[\"cont\" \"Am7\"FGAB cAFA |\n";
+    let export = export_musicxml(source).expect("unclosed quoted chord run should still export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_diagnostic_span(
+        source,
+        &export.diagnostics,
+        "abc.music.unclosed_chord",
+        "[\"cont\" \"Am7\"FGAB cAFA ",
+    );
+    let steps = musicxml_notes(&export.musicxml)
+        .iter()
+        .filter_map(|note| note.step)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        steps,
+        vec!['F', 'G', 'A', 'B', 'C', 'A', 'F', 'A'],
+        "all notes inside the quoted unclosed bracket should survive in order"
+    );
+}
+
+#[test]
 fn unclosed_chord_with_quoted_text_before_barline_preserves_measures() {
     // A chord-symbol-like quoted text inside an unclosed bracket must also stop
     // at the barline rather than eating the following measures.

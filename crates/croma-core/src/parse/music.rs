@@ -718,7 +718,7 @@ impl<'line> MusicLineParser<'line> {
             return;
         }
 
-        self.parse_chord();
+        self.parse_chord(true);
     }
 
     pub(super) fn parse_inline_field(&mut self) {
