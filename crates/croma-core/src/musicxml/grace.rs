@@ -1,5 +1,5 @@
 use crate::model::{
-    AccidentalMark, EventAttachments, Fraction, GraceEventKind, GraceGroupAttachment,
+    AccidentalMark, EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment,
     KeySignatureModel, Part, Pitch,
 };
 
@@ -57,24 +57,15 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
         tuplet_numbers: &TupletNumbers,
     ) {
-        // Slurs that opened before the grace `{` (`({grace}note)`) bind to the
-        // FIRST grace note of the group; carry them as notations on that note
-        // only. Subsequent grace notes and the main note are unaffected.
-        let first_note_attachments = EventAttachments {
-            slurs: group.slurs.clone(),
-            ..EventAttachments::default()
-        };
-        let empty_attachments = EventAttachments::default();
+        // Slurs that opened before the grace `{` (`({grace}note)`) still bind
+        // to the FIRST grace note. Slurs written inside the braces bind to the
+        // individual grace events that lowering paired from source order.
         let mut first_note = true;
         let mut first_chord_member = true;
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
-                    let attachments = if first_note {
-                        &first_note_attachments
-                    } else {
-                        &empty_attachments
-                    };
+                    let attachments = grace_note_attachments(group, event, first_note);
                     self.write_grace_note(
                         GraceNoteWrite {
                             note,
@@ -86,7 +77,7 @@ impl<'score> MusicXmlWriter<'score> {
                                 note.length_multiplier,
                             ),
                         },
-                        attachments,
+                        &attachments,
                         sequence,
                         part,
                         tuplet_numbers,
@@ -95,11 +86,7 @@ impl<'score> MusicXmlWriter<'score> {
                     first_chord_member = false;
                 }
                 GraceEventKind::Rest(rest) => {
-                    let attachments = if first_note {
-                        &first_note_attachments
-                    } else {
-                        &empty_attachments
-                    };
+                    let attachments = grace_note_attachments(group, event, first_note);
                     self.write_note(
                         NoteWrite {
                             pitch: None,
@@ -107,7 +94,7 @@ impl<'score> MusicXmlWriter<'score> {
                             duration: grace_base_unit(group.note_count),
                             source: event.source_span,
                             written_accidental: None,
-                            attachments,
+                            attachments: &attachments,
                             chord_member: false,
                             measure_rest: false,
                             grace: true,
@@ -121,11 +108,12 @@ impl<'score> MusicXmlWriter<'score> {
                     first_chord_member = false;
                 }
                 GraceEventKind::Chord(notes) => {
+                    let mut event_first_note = true;
                     for note in notes {
-                        let attachments = if first_note {
-                            &first_note_attachments
+                        let attachments = if event_first_note {
+                            grace_note_attachments(group, event, first_note)
                         } else {
-                            &empty_attachments
+                            EventAttachments::default()
                         };
                         self.write_grace_note(
                             GraceNoteWrite {
@@ -138,13 +126,14 @@ impl<'score> MusicXmlWriter<'score> {
                                     note.length_multiplier,
                                 ),
                             },
-                            attachments,
+                            &attachments,
                             sequence,
                             part,
                             tuplet_numbers,
                         );
                         first_note = false;
                         first_chord_member = false;
+                        event_first_note = false;
                     }
                 }
             }
@@ -176,6 +165,22 @@ impl<'score> MusicXmlWriter<'score> {
             part,
             tuplet_numbers,
         );
+    }
+}
+
+fn grace_note_attachments(
+    group: &GraceGroupAttachment,
+    event: &GraceEvent,
+    first_note: bool,
+) -> EventAttachments {
+    let mut slurs = Vec::new();
+    if first_note {
+        slurs.extend(group.slurs.iter().copied());
+    }
+    slurs.extend(event.slurs.iter().copied());
+    EventAttachments {
+        slurs,
+        ..EventAttachments::default()
     }
 }
 

@@ -275,6 +275,7 @@ pub enum GraceElementSyntax {
     Note(NoteSyntax),
     Chord(ChordSyntax),
     Rest(RestSyntax),
+    Slur(SlurSyntax),
     Malformed(MalformedSyntax),
 }
 

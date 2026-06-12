@@ -992,12 +992,17 @@ fn length_ratio_str(mult: Rational) -> String {
 /// ABC grace group: `{...}` (or `{/...}` for an acciaccatura/slashed group).
 /// Grace-note lengths are relative to the grace base unit via `length_multiplier`.
 fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
-    use crate::model::GraceEventKind;
+    use crate::model::{GraceEventKind, SlurRole};
     let mut out = String::from("{");
     if group.slash.is_some() {
         out.push('/');
     }
     for grace in &group.events {
+        for slur in &grace.slurs {
+            if slur.role == SlurRole::Start {
+                out.push('(');
+            }
+        }
         match &grace.kind {
             GraceEventKind::Note(note) => {
                 out.push_str(note_accidental(
@@ -1017,6 +1022,11 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
                     out.push_str(&length_ratio_str(note.length_multiplier));
                 }
                 out.push(']');
+            }
+        }
+        for slur in &grace.slurs {
+            if slur.role == SlurRole::Stop {
+                out.push(')');
             }
         }
     }
@@ -1432,6 +1442,21 @@ mod tests {
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
+    }
+
+    #[test]
+    fn grace_internal_slurs_roundtrip() {
+        let src = "X:1\nL:1/8\nK:C\n{(fg)}a2 {(ef)}g2|]\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+
+        assert!(
+            abc.contains("{(fg)}a2 {(ef)}g2"),
+            "grace-internal slurs missing from ABC: {abc:?}"
+        );
+        assert_eq!(grace_pitches(&s1), grace_pitches(&s2));
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
     }
 
     #[test]

@@ -885,7 +885,7 @@ Minimal: `[(C2(E2] [C)E)] z2|]` -> croma emits ZERO <slur> elements and warns `a
 *Fix:* Parse layer: crates/croma-core/src/parse/note.rs ~line 230-240 (the `abc.music.unknown_chord_token` branch) skips `(`/`)` inside chord brackets instead of producing slur tokens. Accept member-level slur open/close inside `[...]` and route them through crates/croma-core/src/lower/voice.rs `apply_slur` (line 424), attaching to the chord event (hoisting to chord-level start/stop is sufficient for Mus
 
 
-### `slur-grace-group-slurs-dropped` — **OPEN** (croma_bug, repro=True)
+### `slur-grace-group-slurs-dropped` — **FIXED(37g)** (croma_bug, repro=True)
 
 *Share:* ~1.5% rows (2/129) — *files:* tune_006367.abc
 
@@ -894,6 +894,17 @@ Minimal: `{(fg)}a2 {(ef)}g2|]` -> croma emits no slurs and warns `abc.music.unkn
 
 
 *Fix:* Parse layer: crates/croma-core/src/parse/note.rs ~line 374 (`abc.music.unknown_grace_token` branch) — tokenize `(`/`)` inside grace braces as slur markers scoped to the grace group; lower via the existing grace slur path (crates/croma-core/src/musicxml/grace.rs handles grace slur emission already for `({g}a)` shapes).
+
+*Fixed in 37g:* Parser now tokenizes `(`/`)` inside grace groups as
+grace-scoped slurs instead of `abc.music.unknown_grace_token`; lowering pairs
+them onto grace note/chord events, diagnoses malformed grace-internal slurs with
+the existing `abc.music.unclosed_slur` / `abc.music.unmatched_slur` policy, and
+the MusicXML/ABC writers preserve the scoped slur markers without leaking them
+to the main note. Target `tune_006367.abc` now compares as 1 structural match
+with 0 mismatch rows and no harness/import failures. Full 10k report-only
+compare after 37g: structural matches 8873->8874 vs 37f, mismatch rows
+162483->162475, `missing_in_croma` 55766->55760, `slur` 104->102; no import,
+harness, or worker failures.
 
 
 ### `slur-number-collision-shared-part` — **OPEN** (croma_bug, repro=True)
