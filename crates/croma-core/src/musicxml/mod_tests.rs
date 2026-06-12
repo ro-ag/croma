@@ -1642,6 +1642,89 @@ fn slur_opening_before_grace_group_starts_on_first_grace_note() {
 }
 
 #[test]
+fn bare_grace_slur_exports_start_and_stop_on_grace_notes() {
+    let source = "X:1\nT:Bare Grace Slur\nM:4/4\nL:1/8\nK:C\n({Bc})D|\n";
+    let export = export_musicxml(source).expect("bare grace slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "abc.music.unmatched_slur"),
+        "bare grace slur should not warn: {:?}",
+        export.diagnostics
+    );
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<slur type=\"stop\" number=\"1\"/>"),
+        1
+    );
+
+    let note_blocks = musicxml_note_blocks(&export.musicxml);
+    let grace_blocks = note_blocks
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .copied()
+        .collect::<Vec<_>>();
+    assert_eq!(grace_blocks.len(), 2);
+    assert!(
+        grace_blocks[0].contains("<slur type=\"start\" number=\"1\"/>"),
+        "first grace note should open the slur: {}",
+        grace_blocks[0]
+    );
+    assert!(
+        grace_blocks[1].contains("<slur type=\"stop\" number=\"1\"/>"),
+        "last grace note should close the slur: {}",
+        grace_blocks[1]
+    );
+    let main_note = note_blocks
+        .iter()
+        .find(|note| !note.contains("<grace"))
+        .expect("main note should be present");
+    assert!(
+        !main_note.contains("<slur"),
+        "main note should not carry the bare grace slur: {main_note}"
+    );
+}
+
+#[test]
+fn bare_grace_slur_before_barline_exports_as_after_grace_pair() {
+    let source = "X:1\nT:Bare Grace Before Bar\nM:4/4\nL:1/8\nK:C\nA2({Bc})|\n";
+    let export = export_musicxml(source).expect("bare grace before barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "abc.music.dangling_grace_group"),
+        "bare grace before barline should not dangle: {:?}",
+        export.diagnostics
+    );
+    let note_blocks = musicxml_note_blocks(&export.musicxml);
+    let main_note = note_blocks
+        .iter()
+        .find(|note| !note.contains("<grace"))
+        .expect("main note should be present");
+    assert!(
+        !main_note.contains("<slur"),
+        "main note should not carry the bare grace slur: {main_note}"
+    );
+    let grace_blocks = note_blocks
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .copied()
+        .collect::<Vec<_>>();
+    assert_eq!(grace_blocks.len(), 2);
+    assert!(grace_blocks[0].contains("<slur type=\"start\" number=\"1\"/>"));
+    assert!(grace_blocks[1].contains("<slur type=\"stop\" number=\"1\"/>"));
+}
+
+#[test]
 fn slur_opening_after_a_grace_starts_on_main_note_not_grace() {
     // Discrimination guard: `{g}c(de)` — the grace `{g}` leads note `c`, but the
     // slur opens AFTER it, before `d`. The slurred note `d` has NO leading grace
@@ -2021,6 +2104,102 @@ fn lyric_hyphen_controls_do_not_export_as_sung_text() {
             .count(),
         1
     );
+}
+
+#[test]
+fn lyric_hyphen_controls_export_syllabic_begin_middle_end() {
+    let source = "X:1\nT:Syllabic Lyrics\nM:4/4\nL:1/4\nK:C\nC D E F|\nw: A-des-te all\n";
+    let export = export_musicxml(source).expect("hyphen lyric score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let syllabic = export
+        .musicxml
+        .match_indices("<syllabic>")
+        .map(|(index, _)| {
+            let start = index + "<syllabic>".len();
+            let end = export.musicxml[start..]
+                .find("</syllabic>")
+                .map(|offset| start + offset)
+                .expect("syllabic should close");
+            &export.musicxml[start..end]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(syllabic, vec!["begin", "middle", "end", "single"]);
+    assert!(export.musicxml.contains("<text>A</text>"));
+    assert!(export.musicxml.contains("<text>des</text>"));
+    assert!(export.musicxml.contains("<text>te</text>"));
+    assert!(export.musicxml.contains("<text>all</text>"));
+    assert!(!export.musicxml.contains("<text>-</text>"));
+    assert!(export.diagnostics.is_empty());
+}
+
+#[test]
+fn orphan_lyric_hyphen_does_not_start_syllabic_word() {
+    let source = "X:1\nT:Orphan Hyphen\nM:1/4\nL:1/4\nK:C\nC|\nw: a-b\n";
+    let export = export_musicxml(source).expect("orphan hyphen score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<syllabic>single</syllabic>"));
+    assert!(export.musicxml.contains("<text>a</text>"));
+    assert!(!export.musicxml.contains("<syllabic>begin</syllabic>"));
+    assert!(!export.musicxml.contains("<text>b</text>"));
+    assert_eq!(
+        export
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.lyric.syllable_count")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn lyric_hyphen_across_non_adjacent_blocks_exports_begin_end() {
+    let source = "X:1\nT:Block Hyphen\nM:1/4\nL:1/4\nK:C\nC|\nw: A-\nD|\nw: men\n";
+    let export = export_musicxml(source).expect("block hyphen score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let syllabic = export
+        .musicxml
+        .match_indices("<syllabic>")
+        .map(|(index, _)| {
+            let start = index + "<syllabic>".len();
+            let end = export.musicxml[start..]
+                .find("</syllabic>")
+                .map(|offset| start + offset)
+                .expect("syllabic should close");
+            &export.musicxml[start..end]
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(syllabic, vec!["begin", "end"]);
+    assert!(export.musicxml.contains("<text>A</text>"));
+    assert!(export.musicxml.contains("<text>men</text>"));
+    assert!(export.diagnostics.is_empty());
+}
+
+#[test]
+fn lyric_syllabic_state_follows_source_voice_across_overlays() {
+    let source = "X:1\nT:Overlay Lyrics\nM:3/4\nL:1/4\nK:C\nC & E F|\nw: A-men all\n";
+    let export = export_musicxml(source).expect("overlay lyric score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let syllabic = export
+        .musicxml
+        .match_indices("<syllabic>")
+        .map(|(index, _)| {
+            let start = index + "<syllabic>".len();
+            let end = export.musicxml[start..]
+                .find("</syllabic>")
+                .map(|offset| start + offset)
+                .expect("syllabic should close");
+            &export.musicxml[start..end]
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(syllabic, vec!["begin", "end", "single"]);
+    assert!(export.musicxml.contains("<text>A</text>"));
+    assert!(export.musicxml.contains("<text>men</text>"));
+    assert!(export.musicxml.contains("<text>all</text>"));
 }
 
 #[test]
@@ -2464,6 +2643,63 @@ fn slur_number_collision_overlay_stop_uses_overlay_start_number() {
 }
 
 #[test]
+fn grouped_voice_overlays_use_part_unique_voice_numbers() {
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\n%%staves (1 2)\n",
+        "V:1\nV:2\nK:C\n",
+        "V:1\nC D & E F|\n",
+        "V:2\nG A & B c|\n",
+    );
+    let export = export_musicxml(source).expect("grouped overlays should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let parts = musicxml_part_blocks(&export.musicxml);
+    assert_eq!(parts.len(), 1, "voices should share one grouped part");
+    let part = parts[0];
+    for voice in ["1", "2", "3", "4"] {
+        assert!(
+            part.contains(&format!("<voice>{voice}</voice>")),
+            "expected grouped part to contain voice {voice}: {part}"
+        );
+    }
+    let voice_sequence = musicxml_note_blocks(part)
+        .into_iter()
+        .map(|note| element_text(note, "voice").expect("note should have voice"))
+        .collect::<Vec<_>>();
+    assert_eq!(voice_sequence, vec!["1", "1", "3", "3", "2", "2", "4", "4"]);
+}
+
+#[test]
+fn grouped_voice_overlay_numbers_are_stable_across_measures() {
+    let source = concat!(
+        "X:1\nM:2/4\nL:1/4\n%%staves (1 2)\n",
+        "V:1\nV:2\nK:C\n",
+        "V:1\nC & E|D F|\n",
+        "V:2\nG A|B & c|\n",
+    );
+    let export = export_musicxml(source).expect("staggered overlays should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let part = musicxml_part_blocks(&export.musicxml)
+        .into_iter()
+        .next()
+        .expect("grouped part should be present");
+    let voice_for_pitch = |step: char, octave: &str| {
+        musicxml_note_blocks(part)
+            .into_iter()
+            .find(|note| {
+                element_text(note, "step").is_some_and(|text| text.starts_with(step))
+                    && element_text(note, "octave").is_some_and(|text| text == octave)
+            })
+            .and_then(|note| element_text(note, "voice"))
+            .expect("pitch should have a voice")
+    };
+
+    assert_eq!(voice_for_pitch('E', "4"), "3");
+    assert_eq!(voice_for_pitch('C', "5"), "4");
+}
+
+#[test]
 fn slur_number_allocator_preserves_high_pair_ids_and_remaps_collisions() {
     let mut slur_numbers = SlurNumbers::default();
 
@@ -2848,6 +3084,79 @@ fn one_note_tuplet_emits_balanced_start_and_stop() {
         1
     );
     assert!(!export.musicxml.contains("number=\"2\""));
+}
+
+#[test]
+fn nested_tuplets_emit_composite_time_modification_and_ordered_notations() {
+    let source = concat!(
+        "X:1\n",
+        "T:Nested Tuplets\n",
+        "M:C\n",
+        "L:1/4\n",
+        "K:C\n",
+        "(7:8:8(3A/A/A/ A/A/A/A/A/|\n",
+    );
+    let export = export_musicxml(source).expect("nested tuplets should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.duration.unsupported_note_type"),
+        "diagnostics: {:?}",
+        export.diagnostics
+    );
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"stop\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"start\" number=\"2\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"stop\" number=\"2\"/>"),
+        1
+    );
+    assert!(export.musicxml.contains("<actual-notes>21</actual-notes>"));
+    assert!(export.musicxml.contains("<normal-notes>16</normal-notes>"));
+    assert!(export.musicxml.contains("<actual-notes>7</actual-notes>"));
+    assert!(export.musicxml.contains("<normal-notes>8</normal-notes>"));
+}
+
+#[test]
+fn overflowing_nested_tuplet_product_warns_without_saturated_time_modification() {
+    let source = concat!(
+        "X:1\n",
+        "M:C\n",
+        "L:1/8\n",
+        "K:C\n",
+        "(9:8:1(9:8:1(9:8:1(9:8:1(9:8:1(9:8:1",
+        "(9:8:1(9:8:1(9:8:1(9:8:1(9:8:1A|\n",
+    );
+    let export = export_musicxml(source).expect("deep nested tuplets should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.tuplet.time_modification_overflow"),
+        "diagnostics: {:?}",
+        export.diagnostics
+    );
+    assert!(
+        !export.musicxml.contains("4294967295"),
+        "overflow must not saturate into MusicXML ratios: {}",
+        export.musicxml
+    );
+    assert_eq!(count(&export.musicxml, "<tuplet type=\"start\""), 11);
+    assert_eq!(count(&export.musicxml, "<tuplet type=\"stop\""), 11);
 }
 
 #[test]
