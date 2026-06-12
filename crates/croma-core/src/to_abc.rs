@@ -378,6 +378,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::MeterChange(meter) => {
                 out.push_str(&format!("[M:{}] ", meter.display));
             }
+            TimedEventKind::ClefChange(_) => {}
             TimedEventKind::TempoChange(tempo) => {
                 out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
             }
@@ -860,6 +861,7 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
             TimelineEventKind::VariantEnding { .. }
             | TimelineEventKind::KeyChange(_)
             | TimelineEventKind::MeterChange(_)
+            | TimelineEventKind::ClefChange(_)
             | TimelineEventKind::TempoChange(_) => {}
         }
         i += 1;

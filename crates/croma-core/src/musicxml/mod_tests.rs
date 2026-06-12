@@ -173,6 +173,25 @@ fn multimeasure_rest_exports_real_full_measure_rests() {
 }
 
 #[test]
+fn full_measure_rest_omits_fabricated_type_for_inexpressible_duration() {
+    // tune_006472: a 5/4 full-measure `z5` rest needs a MusicXML duration and
+    // voice, but should not fabricate a breve plus 8:5 time-modification just
+    // to spell an inexpressible measure rest display type.
+    let source = "X:1\nM:5/4\nL:1/4\nK:C\nz5|\n";
+    let export = export_musicxml(source).expect("full-measure rest should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measure_rest = musicxml_note_blocks(&export.musicxml)
+        .into_iter()
+        .find(|note| note.contains("<rest measure=\"yes\"/>"))
+        .expect("expected a measure rest note");
+    assert!(measure_rest.contains("<duration>40</duration>"));
+    assert!(measure_rest.contains("<voice>1</voice>"));
+    assert!(!measure_rest.contains("<type>"));
+    assert!(!measure_rest.contains("<time-modification>"));
+}
+
+#[test]
 fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
     // Quoted text with no following timed event cannot bind to anything; it
     // must surface as a diagnostic, never vanish silently.
@@ -2491,6 +2510,28 @@ fn staves_bracket_group_keeps_one_part_per_voice() {
 }
 
 #[test]
+fn staves_bracket_group_orders_parts_by_directive() {
+    let source = concat!(
+        "X:1\nL:1/4\n%%staves [1 2 3]\n",
+        "V:1\nV:3\nV:2\nK:C\n",
+        "V:1\nC|\nV:2\nE|\nV:3\nG|\n",
+    );
+    let export = export_musicxml(source).expect("bracketed score should export");
+    let first_steps = musicxml_part_blocks(&export.musicxml)
+        .into_iter()
+        .map(|part| {
+            let first_note = musicxml_note_blocks(part)
+                .into_iter()
+                .find(|note| note.contains("<pitch>"))
+                .expect("part should contain a pitched note");
+            element_text(first_note, "step").expect("pitched note should have a step")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(first_steps, vec!["C", "E", "G"]);
+}
+
+#[test]
 fn each_voice_becomes_its_own_part() {
     // A multi-voice tune exports as one score with one <part> per voice, in
     // voice order, all in a single document (matching abc2xml/music21).
@@ -2547,6 +2588,51 @@ fn inline_clef_only_key_field_does_not_reset_the_signature() {
     assert!(
         second.contains("<step>F</step>\n          <alter>1</alter>"),
         "F should stay sharp; clef-only inline key must not reset the signature"
+    );
+}
+
+#[test]
+fn inline_clef_shorthand_key_field_emits_mid_tune_clef_and_shifts_notes() {
+    let source = "X:1\nL:1/4\nK:C\nC C|[K:treble-8]C C|[K:treble+8]C C|\n";
+    let export = export_musicxml(source).expect("inline clef shorthand should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let first = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .next()
+        .expect("first measure");
+    let second = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .nth(1)
+        .and_then(|tail| tail.split("<measure number=\"3\">").next())
+        .expect("second measure");
+    let third = export
+        .musicxml
+        .split("<measure number=\"3\">")
+        .nth(1)
+        .expect("third measure");
+
+    assert!(
+        !first.contains("<clef-octave-change>"),
+        "the header clef must stay unshifted"
+    );
+    assert!(
+        second.contains("<clef-octave-change>-1</clef-octave-change>"),
+        "treble-8 should emit a mid-tune clef octave change"
+    );
+    assert!(
+        second.contains("<octave>3</octave>"),
+        "treble-8 should shift following C notes down to octave 3"
+    );
+    assert!(
+        third.contains("<clef-octave-change>1</clef-octave-change>"),
+        "treble+8 should emit a mid-tune clef octave change"
+    );
+    assert!(
+        third.contains("<octave>5</octave>"),
+        "treble+8 should shift following C notes up to octave 5"
     );
 }
 

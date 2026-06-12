@@ -21,9 +21,9 @@ use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    AccidentalPolicy, AccidentalScope, BarlineKind, Event, EventAttachments, Fraction,
-    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel,
-    Part, PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
+    AccidentalPolicy, AccidentalScope, BarlineKind, ClefChangeModel, Event, EventAttachments,
+    Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind,
+    MeterModel, Part, PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
     ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
     StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline,
     lcm,
@@ -88,6 +88,7 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::VariantEnding(_)
         | LoweredEvent::KeyChange(_)
         | LoweredEvent::MeterChange(_)
+        | LoweredEvent::ClefChange(_)
         | LoweredEvent::TempoChange(_) => divisions,
     });
     let events = all_lowered
@@ -99,6 +100,7 @@ pub(crate) fn lower_tune_music(
             | LoweredEvent::VariantEnding(_)
             | LoweredEvent::KeyChange(_)
             | LoweredEvent::MeterChange(_)
+            | LoweredEvent::ClefChange(_)
             | LoweredEvent::TempoChange(_) => None,
         })
         .collect();
@@ -222,7 +224,9 @@ impl MultiVoiceLowering {
             }
             let key_props = key_clef_properties_model(&key.value.properties);
             if key_props != VoicePropertiesModel::default() {
-                merge_voice_properties(&mut lowering.current_state().properties, key_props);
+                let state = lowering.current_state();
+                merge_voice_properties(&mut state.initial_properties, key_props.clone());
+                merge_voice_properties(&mut state.properties, key_props);
             }
         }
         lowering
@@ -338,10 +342,7 @@ impl MultiVoiceLowering {
         // mirror the inline `[K:..]` guard: merge its clef properties into the
         // current voice but leave the key (and the recorded events) untouched.
         if !inline_key_changes_signature(&key.value) {
-            let key_props = key_clef_properties_model(&key.value.properties);
-            if key_props != VoicePropertiesModel::default() {
-                merge_voice_properties(&mut self.current_state().properties, key_props);
-            }
+            self.apply_current_voice_key_properties(&key.value.properties);
             return;
         }
         let model = key_signature_model(key);
@@ -364,10 +365,7 @@ impl MultiVoiceLowering {
         // and must not broadcast to the other voices. Merge them into the active
         // voice's properties so `voice_octave_shift` applies the resulting shift
         // to the notes that follow.
-        let key_props = key_clef_properties_model(&key.value.properties);
-        if key_props != VoicePropertiesModel::default() {
-            merge_voice_properties(&mut self.current_state().properties, key_props);
-        }
+        self.apply_current_voice_key_properties(&key.value.properties);
     }
 
     /// Apply an inline `[K:..]` key change to the currently-active voice only.
@@ -384,10 +382,27 @@ impl MultiVoiceLowering {
     /// into the current voice's properties (ABC 2.1 §4.6). Scoped to the active
     /// voice, like a whole-line K: change.
     fn apply_inline_key_clef_properties(&mut self, key: &KeySignature) {
-        let key_props = key_clef_properties_model(&key.properties);
-        if key_props != VoicePropertiesModel::default() {
-            merge_voice_properties(&mut self.current_state().properties, key_props);
+        self.apply_current_voice_key_properties(&key.properties);
+    }
+
+    fn apply_current_voice_key_properties(&mut self, properties: &VoiceProperties) {
+        let key_props = key_clef_properties_model(properties);
+        if key_props == VoicePropertiesModel::default() {
+            return;
         }
+        let clef_change = key_clef_change_model(properties);
+        let voice = self.current_state();
+        if let Some(clef_change) = clef_change {
+            let current_clef = voice
+                .properties
+                .clef
+                .as_ref()
+                .map(|clef| clef.text.as_str());
+            if current_clef != Some(clef_change.clef.text.as_str()) {
+                voice.lowered.push(LoweredEvent::ClefChange(clef_change));
+            }
+        }
+        merge_voice_properties(&mut voice.properties, key_props);
     }
 
     fn warn_if_compact_key_accidentals_ignored(&mut self, key: &Spanned<KeySignature>) {
@@ -622,8 +637,27 @@ impl MultiVoiceLowering {
     }
 
     fn switch_voice(&mut self, voice: Spanned<VoiceDefinition>) {
+        let existing = self
+            .voices
+            .iter()
+            .position(|state| state.id.value == voice.value.id.value);
+        let previous_clef = existing
+            .and_then(|index| self.voices[index].properties.clef.as_ref())
+            .map(|clef| clef.text.clone());
+        let incoming = voice_properties_model(&voice.value);
         self.current_voice = voice.value.id.value.clone();
-        self.ensure_voice(voice);
+        let index = self.ensure_voice(voice);
+        if existing.is_some()
+            && let Some(clef) = incoming.clef
+            && previous_clef.as_deref() != Some(clef.text.as_str())
+        {
+            self.voices[index]
+                .lowered
+                .push(LoweredEvent::ClefChange(ClefChangeModel {
+                    source_span: clef.span,
+                    clef,
+                }));
+        }
     }
 
     fn next_source_order(&mut self) -> u32 {
@@ -847,6 +881,13 @@ fn key_clef_properties_model(properties: &VoiceProperties) -> VoicePropertiesMod
     }
 }
 
+fn key_clef_change_model(properties: &VoiceProperties) -> Option<ClefChangeModel> {
+    properties.clef.as_ref().map(|clef| ClefChangeModel {
+        clef: text_line_from_spanned(clef),
+        source_span: clef.span,
+    })
+}
+
 fn text_line_from_spanned(value: &Spanned<String>) -> TextLine {
     TextLine {
         text: value.value.clone(),
@@ -887,10 +928,8 @@ pub(crate) struct ScoreModelInput<'a> {
 /// Group voice indices into parts according to a `%%staves` / `%%score`
 /// directive. A parenthesis `( )` group merges its voices into one part
 /// (overlay voices on a shared staff); `[ ]` brackets and `{ }` braces are
-/// visual bracketing only and keep one part per voice. With no grouping
-/// directive — or a directive that never merges voices — each voice is its own
-/// part in voice-definition order (so the common bracket/brace cases keep the
-/// existing ordering).
+/// visual bracketing only and keep one part per voice in directive order. With
+/// no grouping directive, each voice is its own part in voice-definition order.
 fn part_voice_groups(
     directives: &[ScoreDirectiveModel],
     voices: &[VoiceTimeline],
@@ -944,10 +983,7 @@ fn part_voice_groups(
             groups.push(vec![index]);
         }
     }
-    // Only honour the directive ordering/grouping when it actually merges voices;
-    // otherwise keep the simple one-part-per-voice order to avoid reordering the
-    // common bracket/brace cases.
-    if groups.is_empty() || groups.iter().all(|group| group.len() <= 1) {
+    if groups.is_empty() {
         return one_per_voice();
     }
     groups
@@ -1134,6 +1170,7 @@ fn key_is_invalid_for_lowering(key: &KeySignature) -> bool {
     !key.raw.is_empty()
         && !key.raw.eq_ignore_ascii_case("none")
         && key.tonic.is_none()
+        && key_clef_properties_model(&key.properties) == VoicePropertiesModel::default()
         && !matches!(
             key.mode,
             KeyMode::Explicit

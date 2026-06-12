@@ -94,6 +94,12 @@ pub struct KeySignatureModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClefChangeModel {
+    pub clef: TextLine,
+    pub source_span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyAccidentalModel {
     pub step: char,
     pub accidental: Accidental,
@@ -150,6 +156,7 @@ pub struct StaffId {
 pub struct Voice {
     pub id: VoiceId,
     pub staff: StaffId,
+    pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<Measure>,
     pub events: Vec<TimedEvent>,
@@ -222,6 +229,10 @@ pub enum TimedEventKind {
     KeyChange(KeySignatureModel),
     /// A mid-tune meter change (`[M:..]` or a body `M:` line). Zero duration.
     MeterChange(MeterModel),
+    /// A mid-tune clef change carried by `[K:..]` or a body `K:` line. Zero
+    /// duration; following pitches are already lowered with the new voice
+    /// octave shift.
+    ClefChange(ClefChangeModel),
     /// A mid-tune tempo change (`[Q:..]` or a body `Q:` line). Zero duration.
     TempoChange(TempoModel),
 }
@@ -463,6 +474,7 @@ impl Event {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceTimeline {
     pub id: VoiceId,
+    pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<VoiceMeasureTimeline>,
     pub source_span: Span,
@@ -538,6 +550,7 @@ pub enum TimelineEventKind {
     },
     KeyChange(KeySignatureModel),
     MeterChange(MeterModel),
+    ClefChange(ClefChangeModel),
     TempoChange(TempoModel),
 }
 

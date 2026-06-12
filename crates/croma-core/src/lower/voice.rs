@@ -24,6 +24,7 @@ pub(crate) enum LoweredEvent {
     VariantEnding(VariantEndingSyntax),
     KeyChange(crate::model::KeySignatureModel),
     MeterChange(crate::model::MeterModel),
+    ClefChange(crate::model::ClefChangeModel),
     TempoChange(crate::model::TempoModel),
 }
 
@@ -59,6 +60,7 @@ pub(crate) struct CompletedTuplet {
 #[derive(Debug)]
 pub(crate) struct LoweringState {
     pub(crate) id: VoiceId,
+    pub(crate) initial_properties: VoicePropertiesModel,
     pub(crate) properties: VoicePropertiesModel,
     pub(crate) source_span: Span,
     pub(crate) unit: Fraction,
@@ -144,6 +146,7 @@ impl LoweringState {
         let source_span = id.span;
         Self {
             id,
+            initial_properties: properties.clone(),
             properties,
             source_span,
             unit,

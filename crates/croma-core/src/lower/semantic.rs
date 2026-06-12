@@ -35,6 +35,7 @@ pub(crate) fn semantic_voice_from_timeline(
     Voice {
         id: voice.id.clone(),
         staff: staff_id,
+        initial_properties: voice.initial_properties.clone(),
         properties: voice.properties.clone(),
         measures,
         events,
@@ -199,6 +200,7 @@ fn non_note_event_from_timeline(event: &VoiceTimedEvent, measure_id: MeasureId) 
         }
         TimelineEventKind::KeyChange(key) => TimedEventKind::KeyChange(key.clone()),
         TimelineEventKind::MeterChange(meter) => TimedEventKind::MeterChange(meter.clone()),
+        TimelineEventKind::ClefChange(clef) => TimedEventKind::ClefChange(clef.clone()),
         TimelineEventKind::TempoChange(tempo) => TimedEventKind::TempoChange(tempo.clone()),
         TimelineEventKind::Note { .. } => TimedEventKind::Spacer,
     };
