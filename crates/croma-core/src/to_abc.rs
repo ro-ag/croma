@@ -716,16 +716,21 @@ fn event_suffix(attachments: &crate::EventAttachments) -> String {
 
 /// Canonical ABC first/second-ending marker, e.g. `[1`, `[2`, `[1,3`, `[1-2`.
 fn ending_str(model: &crate::model::RepeatEndingModel) -> String {
-    use crate::model::RepeatEndingPartModel::{Range, Single};
+    use crate::model::RepeatEndingPartModel::{Range, Single, Text};
     let parts: Vec<String> = model
         .endings
         .iter()
         .map(|p| match p {
             Single(n) => n.to_string(),
             Range { start, end } => format!("{start}-{end}"),
+            Text(text) => format!("\"{}\"", escape_abc_quotes(text)),
         })
         .collect();
     format!("[{}", parts.join(","))
+}
+
+fn escape_abc_quotes(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Canonical ABC text for a barline kind.

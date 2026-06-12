@@ -3,7 +3,7 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::abc_barline_reference;
 use crate::model::BarlineKind;
-use crate::parse::music::{MusicLineParser, is_barline_char};
+use crate::parse::music::{MusicLineParser, is_barline_char, is_escaped};
 use crate::syntax::{
     BarlineSyntax, MalformedSyntaxKind, MusicItem, MusicTokenKind, VariantEndingPart,
     VariantEndingSyntax,
@@ -121,30 +121,36 @@ impl<'line> MusicLineParser<'line> {
         }
 
         let mut endings = Vec::new();
-        while let Some(first) = self.parse_number_token() {
-            if self.peek_char() == Some('-') {
-                self.bump_char();
-                if let Some(second) = self.parse_number_token() {
-                    endings.push(VariantEndingPart::Range {
-                        start: first,
-                        end: second,
-                        span: Span::new(first.span.start, second.span.end),
-                    });
+        if !shorthand && self.peek_char() == Some('"') {
+            if let Some(text) = self.parse_quoted_variant_ending_part() {
+                endings.push(text);
+            }
+        } else {
+            while let Some(first) = self.parse_number_token() {
+                if self.peek_char() == Some('-') {
+                    self.bump_char();
+                    if let Some(second) = self.parse_number_token() {
+                        endings.push(VariantEndingPart::Range {
+                            start: first,
+                            end: second,
+                            span: Span::new(first.span.start, second.span.end),
+                        });
+                    } else {
+                        endings.push(VariantEndingPart::Single(first));
+                        self.diagnostics
+                            .push(invalid_repeat_ending_warning(self.span(start, self.index)));
+                        break;
+                    }
                 } else {
                     endings.push(VariantEndingPart::Single(first));
-                    self.diagnostics
-                        .push(invalid_repeat_ending_warning(self.span(start, self.index)));
-                    break;
                 }
-            } else {
-                endings.push(VariantEndingPart::Single(first));
-            }
 
-            if self.peek_char() == Some(',') {
-                self.bump_char();
-                continue;
+                if self.peek_char() == Some(',') {
+                    self.bump_char();
+                    continue;
+                }
+                break;
             }
-            break;
         }
 
         if !shorthand && self.peek_char() == Some(']') {
@@ -168,6 +174,28 @@ impl<'line> MusicLineParser<'line> {
                     endings,
                 }));
         }
+    }
+
+    fn parse_quoted_variant_ending_part(&mut self) -> Option<VariantEndingPart> {
+        let start = self.index;
+        self.bump_char();
+        let mut closed = false;
+        while let Some(ch) = self.bump_char() {
+            if ch == '"' && !is_escaped(self.text, self.index - ch.len_utf8()) {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            return None;
+        }
+        let span = self.span(start, self.index);
+        let text = self
+            .text
+            .get(start + 1..self.index.saturating_sub(1))
+            .unwrap_or("")
+            .to_owned();
+        Some(VariantEndingPart::Text { text, span })
     }
 }
 

@@ -718,7 +718,34 @@ impl<'line> MusicLineParser<'line> {
             return;
         }
 
+        if self.peek_next_char() == Some('"') && !self.left_bracket_closes_before_barline() {
+            self.flush_pending_attachments();
+            self.parse_variant_ending(false);
+            return;
+        }
+
         self.parse_chord(true);
+    }
+
+    fn left_bracket_closes_before_barline(&self) -> bool {
+        let scan_start = self.index + '['.len_utf8();
+        let mut in_quote = false;
+        for (offset, ch) in self.text[scan_start..].char_indices() {
+            let index = scan_start + offset;
+            if ch == '"' && !is_escaped(self.text, index) {
+                in_quote = !in_quote;
+                continue;
+            }
+            if in_quote {
+                continue;
+            }
+            match ch {
+                ']' => return true,
+                '|' => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     pub(super) fn parse_inline_field(&mut self) {

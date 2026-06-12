@@ -191,10 +191,11 @@ pub struct RepeatEndingModel {
     pub endings: Vec<RepeatEndingPartModel>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepeatEndingPartModel {
     Single(u32),
     Range { start: u32, end: u32 },
+    Text(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
