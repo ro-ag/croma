@@ -18,6 +18,31 @@ croma bug awaiting fix; QUIRK = abc2xml artifact, croma keeps its behavior;
 EQUIV = legitimate equivalent representations (documented; comparator
 normalization considered case by case).
 
+2026-06-12 HEAD recheck before phase-35 burn-down: `cargo test -p
+croma-core --lib` passed 325/325. The following ledger entries were already
+fixed by landed commits after this ledger was filed and have regression tests
+in `crates/croma-core/src/musicxml/mod_tests.rs` or
+`crates/croma-core/src/lower/mod_tests.rs`: liberal barline run glyph/repeat
+and lone-colon boundaries (c8b19d3), body unit-length voice scoping (8eb91bb),
+body Q: tempo events (fc4f59c), lowercase-root quoted text classification
+(03922fa), chord-member slurs (858b53e), and long/maxima plus tuplet written
+note types (8c76fc8). Their headings below are updated to fixed; the remaining
+OPEN rows are still the phase-35 work queue unless separately re-verdicted.
+
+2026-06-12 phase-35 multirest fix: decision was to expand ABC `Zn`/`Xn` in
+lowering when the current voice has a known meter, producing `n` real
+full-measure rest measures in the Score model. MusicXML writes
+`<rest measure="yes"/>` for visible full-measure rests and places
+`<measure-style><multiple-rest>n</multiple-rest></measure-style>` on the first
+visible expanded `Zn` measure as display metadata; free-meter `Zn` keeps the
+existing warning and single-duration fallback. Regression tests:
+`lowers_multi_measure_rests_in_known_and_free_meter` and
+`multimeasure_rest_exports_real_full_measure_rests`. Full 10k compare against
+the phase-33 b8 baseline: matches 8858->8861, mismatch rows 167943->164267,
+zero match-to-mismatch regressions; tune_005687/tune_013455/tune_013477 fully
+fixed, tune_009310/tune_010751/tune_010753 improved. Round-trip remains 99.25%
+/ 0 structural diffs.
+
 
 ## accidental
 
@@ -100,7 +125,7 @@ Minimal: two-voice tune where V:2's last music line is just `|]` (its final meas
 *Fix:* lower layer: crates/croma-core/src/lower/timeline.rs — when finishing a voice, preserve the Final/Double barline kind on the last (possibly empty) measure instead of losing it with the coalesced/empty measure; export already handles Final on empty measures (P2 m2 exists, just lacks the barline).
 
 
-### `barline-liberal-run-glyph-dropped` — **OPEN** (croma_bug, repro=True)
+### `barline-liberal-run-glyph-dropped` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~5-8% rows (47 aligned files/90 rows ref-final, 32 of them warning-tagged; plus shifted analogues) — *files:* tune_012890.abc, tune_011970.abc, tune_004928.abc
 
@@ -111,7 +136,7 @@ Minimal: `CDEF|GABc||]` — croma warns `abc.music.barline.liberal: Liberal barl
 *Fix:* parse layer: crates/croma-core/src/parse/barline.rs barline_kind() — classify colon-less liberal runs to their strongest component (any `]`/`[` → Final/Initial, >=2 bars → Double) instead of Liberal; or lower layer: crates/croma-core/src/lower/mod.rs barline_lowering_kinds (line 1199) split the raw run. Heed docs/parser-backlog.md lines 156-158: round-trip span-equality detection depends on barlin
 
 
-### `barline-liberal-run-repeat-dropped` — **OPEN** (croma_bug, repro=True)
+### `barline-liberal-run-repeat-dropped` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~2-3% rows (31 aligned files/52 rows ref_repeat_croma_none + a few shifted) — *files:* tune_006040.abc, tune_003884.abc, tune_012511.abc
 
@@ -122,7 +147,7 @@ Minimal 1: `|:CDEF:|` newline `|:|GABc:|` — croma warns liberal and emits an e
 *Fix:* parse layer: crates/croma-core/src/parse/barline.rs — (a) barline_kind(): a liberal run ending in `:` → RepeatStart, starting with `:` → RepeatEnd, both → RepeatBoth (the existing has_repeat_start/has_repeat_end helpers only fire when raw contains `]`); (b) parse_colon() (lines 63-78): accept `:[`-led runs (e.g. `:[|]`) as barlines instead of malformed; (c) the tokenizer break at `]` (lines 33-37)
 
 
-### `barline-lone-colon-boundary-dropped` — **OPEN** (croma_bug, repro=True)
+### `barline-lone-colon-boundary-dropped` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~2% of barline rows (71 files, ~77 positional diffs) plus larger cascades booked under measure_alignment — *files:* tune_008774.abc, tune_006702.abc, tune_007591.abc
 
@@ -231,7 +256,7 @@ Malformed input. (a) '" >"G2' (tune_007910): first char is a space so per §4.18
 
 ## duration
 
-### `duration-missing-long-maxima-note-types` — **OPEN** (croma_bug, repro=True)
+### `duration-missing-long-maxima-note-types` — **FIXED(HEAD 8c76fc8)** (croma_bug, repro=True)
 
 *Share:* ~0.4% rows (78/19,973) — *files:* tune_000386.abc, tune_004577.abc, tune_001028.abc
 
@@ -242,7 +267,7 @@ Minimal: L:1/4 / M:4/2 / 'C16|' (16 quarters = 4 whole notes = a long): croma em
 *Fix:* crates/croma-core/src/musicxml/note.rs note_type_candidates(): add NoteTypeCandidate entries for 'long' (4/1) and 'maxima' (8/1) ahead of breve; the existing dot/ratio search then covers dotted longs without touching the fallback.
 
 
-### `duration-tuplet-written-type-from-sounding` — **OPEN** (croma_bug, repro=True)
+### `duration-tuplet-written-type-from-sounding` — **FIXED(HEAD 8c76fc8)** (croma_bug, repro=True)
 
 *Share:* ~1% rows (~150-200/19,973), but over-represented in single-category files (6 of the 8 evidence-pack samples) — *files:* tune_005074.abc, tune_003186.abc, tune_008083.abc, tune_006746.abc
 
@@ -253,7 +278,7 @@ Minimal 1: M:6/8 'CCC (4BABd|' (quadruplet, 4-in-time-of-3 per ABC 2.1 section 4
 *Fix:* crates/croma-core/src/musicxml/note.rs note_spelling(): when explicit_time_modification is Some, compute normal_duration = duration x actual/normal and try spelling THAT first (returning the explicit TM), before the sounding-duration loop; keep sounding-duration spelling only for the no-TM path. The existing test 'reduced_duration_note_types_do_not_emit_spurious_tuplets' (musicxml/mod_tests.rs:186
 
 
-### `duration-voice-scoped-unit-length-global-leak` — **OPEN** (croma_bug, repro=True)
+### `duration-voice-scoped-unit-length-global-leak` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~4.4% rows (884/19,973) — *files:* tune_014637.abc, tune_005353.abc, tune_000346.abc
 
@@ -329,7 +354,7 @@ Minimal repro '!+!C4 !3!D4 | !diminuendo(!E2F2 !diminuendo)!G4 |': croma emits <
 *Fix:* MusicXML export layer only (parse already carries the decoration name). crates/croma-core/src/musicxml/notation.rs: decoration_notation() (line 160) lacks arms for "0"..="5" (needs a NotationKind variant carrying fingering text -> <technical><fingering>), "+"/"plus" -> Technical("stopped"), "arpeggio" -> new arpeggiate notation, "slide" -> <slide>/scoop. Wedges are spanners, so "diminuendo("/")", 
 
 
-### `extra-multirest-collapsed-vs-expanded` — **OPEN** (croma_bug, repro=True)
+### `extra-multirest-collapsed-vs-expanded` — **FIXED(35a)** (croma_bug, repro=True)
 
 *Share:* ~2.5% rows (1,231; 4 files) — *files:* tune_009310.abc, tune_005687.abc, tune_013477.abc, tune_013455.abc
 
@@ -498,7 +523,7 @@ Minimal repros: header `M:(2+3+2)/8` (/tmp/ma_complex.abc) — explicitly legal 
 *Fix:* Lower + export. crates/croma-core/src/lower/mod.rs meter_duration (line 1187): compute the additive sum for Complex meters so measures validate and free_meter is false; crates/croma-core/src/musicxml/attributes.rs meter_parts (line ~125, naive split_once('/')): emit beats '2+3+2' (strip parentheses; MusicXML beats permits '+'-separated values) and, for the 'a/b+c/d' extension form, a composite <ti
 
 
-### `measure-alignment-multirest-encoding` — **OPEN** (croma_bug, repro=True)
+### `measure-alignment-multirest-encoding` — **FIXED(35a)** (croma_bug, repro=True)
 
 *Share:* ~2% rows (216 rows, 6 files; MULTIREST_EXPANSION class) — *files:* tune_009310.abc, mod.rs, 03-multi-measure-rest.md
 
@@ -509,7 +534,7 @@ REFINES prior doc 03 ('croma correct, representation choice'). Minimal repro /tm
 *Fix:* Lower + export. crates/croma-core/src/lower/mod.rs:452-478 (MusicItem::MultiMeasureRest arm) flattens count n into a single duration=meter*n rest event, losing n; keep the count (dedicated event kind or per-measure attribute). crates/croma-core/src/musicxml/note.rs note_spelling fallback (~lines 410-460) is where the breve+2:4 time-modification gets fabricated for the unexpressible duration. The M
 
 
-### `measure-alignment-voice-scoped-unit-length` — **OPEN** (croma_bug, repro=True)
+### `measure-alignment-voice-scoped-unit-length` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~1.6% rows (161 rows, 2 files) — *files:* tune_000346.abc, tune_014637.abc
 
@@ -590,7 +615,7 @@ MALFORMED INPUT. tune_009832 has `H:Written for ...` followed by a bare continua
 
 ## missing_in_croma
 
-### `missing-body-tempo-q-field-dropped` — **OPEN** (croma_bug, repro=True)
+### `missing-body-tempo-q-field-dropped` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~0.25% rows (148), ~120 files — *files:* tune_007548.abc, qb.abc, qc.abc
 
@@ -601,7 +626,7 @@ Minimal: `K:C` then line `Q:1/4=132` then music (/tmp/qb.abc, also mid-body /tmp
 *Fix:* No mid-tune tempo concept exists: metadata holds a single header `tempo: Option<TextLine>` (crates/croma-core/src/lower/mod.rs:819, parse_tempo_model at mod.rs:982). Mirror the PR #70 mid-tune K:/M: event design: lower body Q: fields into a tempo-change event on the timeline (crates/croma-core/src/lower/), then emit a <direction><metronome>+<sound tempo> at that offset in crates/croma-core/src/mus
 
 
-### `missing-chord-member-slurs-dropped` — **OPEN** (croma_bug, repro=True)
+### `missing-chord-member-slurs-dropped` — **FIXED(HEAD 858b53e)** (croma_bug, repro=True)
 
 *Share:* ~0.1% rows (subset of 108 slur rows, 23 files) — *files:* tune_011867.abc, slur2.abc
 
@@ -612,7 +637,7 @@ Minimal: `[(C(E] [C)D)]|` (/tmp/slur2.abc) — croma emits 0 slur elements with 
 *Fix:* Parse layer: chord-member tokenizer in crates/croma-core/src/parse/note.rs — accept '(' / ')' on chord members and lower them as slur start/stop attachments on the chord (or per member), reusing the existing slur attachment path.
 
 
-### `missing-multimeasure-rest-expansion` — **OPEN** (croma_bug, repro=True)
+### `missing-multimeasure-rest-expansion` — **FIXED(35a)** (croma_bug, repro=True)
 
 *Share:* ~2.8% rows (1,700) — *files:* tune_010751.abc, mr1.abc
 
@@ -645,7 +670,7 @@ Three fresh minimal repros: (1) `"Trio"[K:G]|:` boundary — croma keeps the key
 *Fix:* Parse layer per backlog item 4: crates/croma-core/src/parse/barline.rs flushes pending quoted-text/decorations into standalone items that crates/croma-core/src/lower discards at the catch-all arm — carry pendings across barlines and line ends to the next note (the grace/slur/tuplet pending-stash fix from backlog item 9 is the template).
 
 
-### `missing-quoted-text-harmony-vs-words-classification` — **OPEN** (croma_bug, repro=True)
+### `missing-quoted-text-harmony-vs-words-classification` — **FIXED(33b)** (croma_bug, repro=True)
 
 *Share:* ~0.2% rows (subset of TextExpression misses; 40 files) — *files:* tune_000534.abc, tune_000456.abc
 
@@ -759,7 +784,7 @@ MALFORMED INPUT. 89 of 247 octave files contain a non-field line inside the tune
 
 ## pitch
 
-### `pitch-multirest-expansion-shift` — **OPEN** (croma_bug, repro=True)
+### `pitch-multirest-expansion-shift` — **FIXED(35a)** (croma_bug, repro=True)
 
 *Share:* ~0.7% rows (89 rows, 4 files) — *files:* tune_009310.abc, tune_013477.abc, tune_005687.abc, tune_013455.abc
 
@@ -827,7 +852,7 @@ Malformed input. tune_006279 has a bare prose continuation of N: (`for this tune
 
 ## slur
 
-### `slur-chord-member-slurs-dropped` — **OPEN** (croma_bug, repro=True)
+### `slur-chord-member-slurs-dropped` — **FIXED(HEAD 858b53e)** (croma_bug, repro=True)
 
 *Share:* ~32% rows (41/129: 011938=26, 011866=11, 004626=4) — *files:* tune_011938.abc, tune_011866.abc, tune_004626.abc
 
@@ -1014,7 +1039,7 @@ Minimal: `X:1\nL:1/8\nM:6/8\nK:D\nGB2Af2{e/}|d3D2|]` -> abc2xml keeps the grace 
 *Fix:* Lower layer: crates/croma-core/src/lower/mod.rs:512-514 — stop clearing pending_grace_groups at MusicItem::Barline; keep the buffer so lower/voice.rs (pending_grace_groups merge at lines 154-167/264-292) attaches the graces to the next timed event across the bar (the §4.20-literal reading), or alternatively model a trailing/after-grace on the last event of the closing measure. Serialization alread
 
 
-### `voice-multirest-collapsed-single-measure` — **OPEN** (croma_bug, repro=True)
+### `voice-multirest-collapsed-single-measure` — **FIXED(35a)** (croma_bug, repro=True)
 
 *Share:* ~2-3% rows (4 files, but each Zn shifts all following measures: 446/14524 raw rows) — *files:* tune_009310.abc, tune_010751.abc
 
@@ -1055,4 +1080,3 @@ Malformed input: header fields wrapped across lines without the ABC 2.1 `+:` con
 
 
 Minimal: `X:1\nL:1/8\nM:6/8\nK:G\nGAB GAB||\n\"variation, bars 2 and 6\"|dBd dBd|]` -> croma emits 2 measures; abc2xml emits 3, the middle one containing ONLY `<words>variation, bars 2 and 6</words>` and zero notes. After the phantom, every croma measure N pairs against ref measure N holding different music, so the comparator emits one voice (event_count) row per following measure. Corpus: tune_011491 (ref m11 = 0 events, croma m11 = the 10-note variation bar; verified by dumping both XMLs) and tune_003837 (8 phantom measures from section-letter annotations `"A"\` before `|:`; ref 78 vs croma 70 measures). An annotation before a barline is not a measure of music (ABC 2.1 §2.2.1, §4.8 — annotations attach to the following note); croma's folded layout is spec-correct. Verifies docs/comparison/abc2xml-divergences/02-phantom-measures.md. Comparator-side realignment that skips zero-note refer…
-

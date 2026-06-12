@@ -64,6 +64,7 @@ impl<'score> MusicXmlWriter<'score> {
                             written_accidental: note.written_accidental.as_ref(),
                             attachments,
                             chord_member: chord_member || note.chord_member,
+                            measure_rest: false,
                             grace: false,
                             grace_slash: false,
                         },
@@ -85,6 +86,11 @@ impl<'score> MusicXmlWriter<'score> {
                             written_accidental: None,
                             attachments,
                             chord_member: false,
+                            measure_rest: sequence.is_full_measure_rest(
+                                timed.onset,
+                                timed.duration,
+                                rest,
+                            ),
                             grace: false,
                             grace_slash: false,
                         },
@@ -137,6 +143,7 @@ impl<'score> MusicXmlWriter<'score> {
                             written_accidental: written_accidental.as_ref(),
                             attachments,
                             chord_member: chord_member || *chord,
+                            measure_rest: false,
                             grace: false,
                             grace_slash: false,
                         },
@@ -145,7 +152,7 @@ impl<'score> MusicXmlWriter<'score> {
                         tuplet_numbers,
                     );
                 }
-                TimelineEventKind::Rest { visibility } => {
+                TimelineEventKind::Rest { visibility, .. } => {
                     let rest = RestEvent {
                         visibility: *visibility,
                     };
@@ -158,6 +165,11 @@ impl<'score> MusicXmlWriter<'score> {
                             written_accidental: None,
                             attachments,
                             chord_member: false,
+                            measure_rest: sequence.is_full_measure_rest(
+                                timed.onset,
+                                timed.duration,
+                                &rest,
+                            ),
                             grace: false,
                             grace_slash: false,
                         },
@@ -215,6 +227,7 @@ impl<'score> MusicXmlWriter<'score> {
                     written_accidental: member.written_accidental.as_ref(),
                     attachments: &attachments,
                     chord_member: index > 0,
+                    measure_rest: false,
                     grace: false,
                     grace_slash: false,
                 },
@@ -255,6 +268,8 @@ impl<'score> MusicXmlWriter<'score> {
                 *pitch
             };
             self.write_pitch(&pitch);
+        } else if note.measure_rest {
+            self.xml.empty("rest", &[("measure", "yes")]);
         } else {
             self.xml.empty("rest", &[]);
         }

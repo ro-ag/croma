@@ -21,11 +21,12 @@ use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    AccidentalPolicy, AccidentalScope, BarlineKind, Event, Fraction, KeyAccidentalModel,
-    KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel, Part, PartId,
-    PreservedDirective, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
-    ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId, StemDirectionModel, TextLine,
-    TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
+    AccidentalPolicy, AccidentalScope, BarlineKind, Event, EventAttachments, Fraction,
+    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, MeterModel,
+    Part, PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
+    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
+    StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline,
+    lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -475,37 +476,71 @@ impl MultiVoiceLowering {
                         .push_rest_group(rest, line.line_index, source_order);
                 }
                 MusicItem::MultiMeasureRest(rest) => {
-                    let count = rest.count.map(|count| count.value).unwrap_or(1);
+                    let count = rest.count.map(|count| count.value).unwrap_or(1).max(1);
                     let voice_meter = self.current_state().meter_duration;
-                    let duration = if let Some(meter_duration) = voice_meter {
-                        meter_duration.checked_mul_u32(count)
+                    if let Some(meter_duration) = voice_meter {
+                        let source_order = self.next_source_order();
+                        // Multi-measure rests carry no syntax-level bundle, but
+                        // flushed-ahead attachments (`"Dm"Z`) still bind to the
+                        // first expanded rest measure.
+                        let attachments = self
+                            .current_state()
+                            .take_timed_attachments(&AttachmentBundle::default());
+                        for index in 0..count {
+                            let rest_attachments = if index == 0 {
+                                attachments.clone()
+                            } else {
+                                EventAttachments::default()
+                            };
+                            self.current_state().push_time_group(
+                                vec![(
+                                    LoweredEventAtom {
+                                        kind: LoweredEventAtomKind::Rest {
+                                            visibility: rest.visibility,
+                                            multiple_rest: (index == 0
+                                                && count > 1
+                                                && rest.visibility == RestVisibility::Visible)
+                                                .then_some(count),
+                                            span: rest.span,
+                                        },
+                                        duration: meter_duration,
+                                    },
+                                    false,
+                                    rest_attachments,
+                                )],
+                                line.line_index,
+                                source_order,
+                            );
+                            if index + 1 < count {
+                                self.push_implicit_regular_barline(rest.span);
+                            }
+                        }
                     } else {
                         self.current_state()
                             .diagnostics
                             .push(free_meter_multirest_warning(rest.span));
-                        self.unit.checked_mul_u32(count)
-                    };
-                    let source_order = self.next_source_order();
-                    // Multi-measure rests carry no syntax-level bundle, but
-                    // flushed-ahead attachments (`"Dm"Z`) still bind here.
-                    let attachments = self
-                        .current_state()
-                        .take_timed_attachments(&AttachmentBundle::default());
-                    self.current_state().push_time_group(
-                        vec![(
-                            LoweredEventAtom {
-                                kind: LoweredEventAtomKind::Rest {
-                                    visibility: rest.visibility,
-                                    span: rest.span,
+                        let duration = self.unit.checked_mul_u32(count);
+                        let source_order = self.next_source_order();
+                        let attachments = self
+                            .current_state()
+                            .take_timed_attachments(&AttachmentBundle::default());
+                        self.current_state().push_time_group(
+                            vec![(
+                                LoweredEventAtom {
+                                    kind: LoweredEventAtomKind::Rest {
+                                        visibility: rest.visibility,
+                                        multiple_rest: None,
+                                        span: rest.span,
+                                    },
+                                    duration,
                                 },
-                                duration,
-                            },
-                            false,
-                            attachments,
-                        )],
-                        line.line_index,
-                        source_order,
-                    );
+                                false,
+                                attachments,
+                            )],
+                            line.line_index,
+                            source_order,
+                        );
+                    }
                 }
                 MusicItem::Spacer(spacer) => self
                     .current_state()
@@ -678,6 +713,17 @@ impl MultiVoiceLowering {
                 self.ensure_voice(voice)
             });
         &mut self.voices[index]
+    }
+
+    fn push_implicit_regular_barline(&mut self, span: Span) {
+        let voice = self.current_state();
+        voice.finish_pending_broken_at_boundary();
+        voice.finish_open_tuplets_at_boundary();
+        voice.reset_measure_accidentals_at_barline();
+        voice.lowered.push(LoweredEvent::Untimed(Event::Barline {
+            kind: BarlineKind::Regular,
+            span,
+        }));
     }
 
     fn finish_open_constructs(&mut self) -> Vec<Diagnostic> {

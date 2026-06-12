@@ -55,6 +55,13 @@ fn semantic_measure_from_timeline(
         && expected_duration.is_some_and(|expected| {
             actual_duration != Fraction::zero() && actual_duration.less_than(expected)
         });
+    let multiple_rest = measure.events.iter().find_map(|event| match event.kind {
+        TimelineEventKind::Rest {
+            multiple_rest: Some(count),
+            ..
+        } => Some(count),
+        _ => None,
+    });
     let barlines = measure
         .events
         .iter()
@@ -83,6 +90,7 @@ fn semantic_measure_from_timeline(
         source_span: measure.span,
         expected_duration,
         actual_duration,
+        multiple_rest,
         pickup,
         complete,
         barlines,
@@ -175,7 +183,7 @@ fn note_event_from_timeline(event: &VoiceTimedEvent, measure_id: MeasureId) -> T
 
 fn non_note_event_from_timeline(event: &VoiceTimedEvent, measure_id: MeasureId) -> TimedEvent {
     let kind = match &event.kind {
-        TimelineEventKind::Rest { visibility } => TimedEventKind::Rest(RestEvent {
+        TimelineEventKind::Rest { visibility, .. } => TimedEventKind::Rest(RestEvent {
             visibility: *visibility,
         }),
         TimelineEventKind::Spacer => TimedEventKind::Spacer,
