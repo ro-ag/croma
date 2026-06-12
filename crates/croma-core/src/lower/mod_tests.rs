@@ -1512,6 +1512,26 @@ fn leading_bar_marker_advances_past_a_filled_first_measure() {
 }
 
 #[test]
+fn lyric_bar_marker_advances_across_rest_only_measure() {
+    let per_measure = syllables_per_measure("X:1\nL:1/4\nK:C\nz2|C D|E F|\nw: |one two\n");
+
+    assert!(per_measure[0].is_empty());
+    assert_eq!(per_measure[1], vec!["one".to_owned(), "two".to_owned()]);
+    assert_eq!(per_measure[2], vec!["".to_owned(), "".to_owned()]);
+}
+
+#[test]
+fn lyric_bar_markers_after_rest_only_gap_start_from_previous_block() {
+    let per_measure = syllables_per_measure("X:1\nL:1/4\nK:C\nC|\nw: old\nz|z|D|E|\nw: ||new\n");
+
+    assert_eq!(per_measure[0], vec!["old".to_owned()]);
+    assert!(per_measure[1].is_empty());
+    assert!(per_measure[2].is_empty());
+    assert_eq!(per_measure[3], vec!["new".to_owned()]);
+    assert_eq!(per_measure[4], vec!["".to_owned()]);
+}
+
+#[test]
 fn consecutive_bar_markers_each_advance_one_measure() {
     // `|||` must skip three bars, not collapse into a single no-op at the
     // first boundary. The first word therefore lands in the fourth measure.

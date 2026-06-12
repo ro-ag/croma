@@ -510,7 +510,7 @@ Minimal repro /tmp/harmony-probe/t3_lowercase_bass.abc: `"C"edB "G/b"gBB` — cr
 
 ## lyric
 
-### `lyric-bar-advance-blind-to-rest-only-measures` — **OPEN** (croma_bug, repro=None)
+### `lyric-bar-advance-blind-to-rest-only-measures` — **FIXED(37m)** (croma_bug, repro=True)
 
 *Share:* ~4% rows (5/140), 1/9 files — *files:* tune_013577.abc
 
@@ -519,6 +519,8 @@ Minimal: `C C C C | z4 | D D D D |` + `w: one two three four||five six sev- en` 
 
 
 *Fix:* Lower layer. crates/croma-core/src/lower/align.rs: replace the refs-gap heuristic in advance_bar_marker with an explicit bar cursor over the voice's measure list (current measure number; each `|` increments it by exactly one, then position jumps to the first alignable ref with measure_number >= cursor). Also consider upgrading the end-of-line syllable spill (line 138-145) so dropped syllables are 
+
+37m: fixed by tracking a concrete bar-marker cursor in lyric/symbol alignment and deriving each block's first music measure so rest-only bars count even when no alignable note refs exist. Focused tests cover leading rest-only pickup bars, later lyric blocks after rest-only gaps, ordinary boundary no-ops, and consecutive markers. Target compare for tune_013577 improved 40 lyric rows with 26 lyric-count diagnostics to 1 residual extra empty `<extend/>` row and 0 diagnostics; all missing/different lyric text rows from the rest-only bar lag are gone. The residual is unrelated extender serialization in Treble m8, not the rest-only bar-advance defect.
 
 
 ### `lyric-liberal-barline-bracket-pair-note-drop` — **OPEN** (croma_bug, repro=None)
