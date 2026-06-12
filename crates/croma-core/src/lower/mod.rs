@@ -192,7 +192,7 @@ impl MultiVoiceLowering {
             meter_duration: field_state
                 .meter
                 .as_ref()
-                .and_then(|meter| meter_duration(&meter.value.kind)),
+                .and_then(|meter| meter_duration(&meter.value)),
             voices: Vec::new(),
             current_voice: String::new(),
             source_order: 0,
@@ -254,7 +254,7 @@ impl MultiVoiceLowering {
         if !self.validate_meter_change(meter) {
             return;
         }
-        self.meter_duration = meter_duration(&meter.value.kind);
+        self.meter_duration = meter_duration(&meter.value);
         self.meter = Some(meter.value.clone());
         // A meter change is NOT a bar line: per ABC 2.1 §11.3
         // (`%%propagate-accidentals` default `pitch`) an explicit accidental
@@ -265,7 +265,7 @@ impl MultiVoiceLowering {
         let header = self.header_meter_display.clone();
         for voice in &mut self.voices {
             voice.finish_open_tuplets_at_boundary();
-            voice.meter_duration = meter_duration(&meter.value.kind);
+            voice.meter_duration = meter_duration(&meter.value);
             // Record the change at each voice's current position so exporters
             // can reproduce it. A change to the voice's already-effective
             // meter (header included) records nothing: interleaved sources
@@ -288,7 +288,7 @@ impl MultiVoiceLowering {
         }
         let model = meter_model(meter);
         let header = self.header_meter_display.clone();
-        let duration = meter_duration(&meter.value.kind);
+        let duration = meter_duration(&meter.value);
         let voice = self.current_state();
         voice.finish_open_tuplets_at_boundary();
         voice.meter_duration = duration;
@@ -303,7 +303,8 @@ impl MultiVoiceLowering {
                 .push(invalid_meter_change_warning(meter.span));
             return false;
         }
-        if matches!(meter.value.kind, MeterKind::Complex) {
+        if matches!(meter.value.kind, MeterKind::Complex) && meter_duration(&meter.value).is_none()
+        {
             self.diagnostics
                 .push(unsupported_complex_meter_warning(meter.span));
         }
@@ -1104,7 +1105,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
 }
 
 fn meter_model(meter: &Spanned<Meter>) -> MeterModel {
-    let duration = meter_duration(&meter.value.kind);
+    let duration = meter_duration(&meter.value);
     MeterModel {
         display: meter.value.raw.clone(),
         duration,
@@ -1280,16 +1281,56 @@ pub(crate) fn music_code_span(line: &crate::syntax::tune::ClassifiedLine) -> Spa
     Span::new(line.text_span.start, end)
 }
 
-pub(crate) fn meter_duration(kind: &MeterKind) -> Option<Fraction> {
-    match kind {
+pub(crate) fn meter_duration(meter: &Meter) -> Option<Fraction> {
+    match &meter.kind {
         MeterKind::CommonTime => Some(Fraction::new(4, 4)),
         MeterKind::CutTime => Some(Fraction::new(2, 2)),
         MeterKind::Fraction {
             numerator,
             denominator,
         } => Some(Fraction::new(*numerator, *denominator)),
-        MeterKind::None | MeterKind::Complex => None,
+        MeterKind::None => None,
+        MeterKind::Complex => complex_meter_duration(&meter.raw),
     }
+}
+
+fn complex_meter_duration(raw: &str) -> Option<Fraction> {
+    let value = raw.trim();
+    if value.contains('+') && !value.trim_start().starts_with('(') {
+        let mut total = Fraction::zero();
+        let mut saw_part = false;
+        for part in value.split('+') {
+            let (numerator, denominator) = part.trim().split_once('/')?;
+            total = total.checked_add(Fraction::new(
+                numerator.trim().parse().ok()?,
+                denominator.trim().parse().ok()?,
+            ));
+            saw_part = true;
+        }
+        return saw_part.then_some(total);
+    }
+
+    if let Some((beats, beat_type)) = value.split_once('/') {
+        let beats = beats
+            .trim()
+            .strip_prefix('(')
+            .and_then(|beats| beats.strip_suffix(')'))
+            .unwrap_or_else(|| beats.trim());
+        let denominator = beat_type.trim().parse::<u32>().ok()?;
+        let numerator = additive_u32(beats)?;
+        return Some(Fraction::new(numerator, denominator));
+    }
+    None
+}
+
+fn additive_u32(value: &str) -> Option<u32> {
+    let mut total = 0u32;
+    let mut saw_part = false;
+    for part in value.split('+') {
+        total = total.checked_add(part.trim().parse::<u32>().ok()?)?;
+        saw_part = true;
+    }
+    saw_part.then_some(total)
 }
 
 fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {

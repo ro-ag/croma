@@ -1699,6 +1699,36 @@ fn semantic_score_marks_pickup_and_keeps_fixed_measure_numbers() {
 }
 
 #[test]
+fn complex_header_meter_uses_additive_duration() {
+    let source = "X:1\nM:(2+3+2)/8\nL:1/8\nK:C\nCDEFGAB|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let meter = tune.score.metadata.meter.as_ref().expect("header meter");
+    assert_eq!(meter.duration, Some(Fraction::new(7, 8)));
+    assert!(!meter.free_meter);
+    let measures = &tune.score.parts[0].voices[0].measures;
+    assert_eq!(measures[0].expected_duration, Some(Fraction::new(7, 8)));
+    assert_eq!(measures[0].actual_duration, Fraction::new(7, 8));
+    assert!(measures[0].complete);
+}
+
+#[test]
+fn additive_extension_header_meter_uses_summed_duration() {
+    let source = "X:1\nM:3/4+2/4\nL:1/4\nK:C\nCDEFG|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let meter = tune.score.metadata.meter.as_ref().expect("header meter");
+    assert_eq!(meter.duration, Some(Fraction::new(5, 4)));
+    assert!(!meter.free_meter);
+    let measure = &tune.score.parts[0].voices[0].measures[0];
+    assert_eq!(measure.expected_duration, Some(Fraction::new(5, 4)));
+    assert_eq!(measure.actual_duration, Fraction::new(5, 4));
+    assert!(measure.complete);
+}
+
+#[test]
 fn leading_repeat_start_stays_on_first_measure() {
     let source = "X:1\nM:3/4\nL:1/4\nK:C\n|: G c d | E D C |\n";
     let (tune, diagnostics) = tune_for(source);
@@ -2843,6 +2873,36 @@ fn mid_tune_key_and_meter_changes_reach_the_score() {
         events[key_idx - 1].kind,
         crate::TimedEventKind::Barline(_)
     ));
+}
+
+#[test]
+fn supported_body_additive_meter_change_does_not_warn() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "abc.music.meter.unsupported_complex"),
+        "supported additive meter should not warn: {diagnostics:?}"
+    );
+    let meter_changes = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::MeterChange(meter) => Some(meter),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(meter_changes.len(), 1);
+    assert_eq!(meter_changes[0].display, "3/4+4/4");
+    assert_eq!(meter_changes[0].duration, Some(Fraction::new(7, 4)));
+    assert!(!meter_changes[0].free_meter);
+
+    assert_eq!(
+        tune.score.parts[0].voices[0].measures[1].actual_duration,
+        Fraction::new(7, 4)
+    );
 }
 
 #[test]

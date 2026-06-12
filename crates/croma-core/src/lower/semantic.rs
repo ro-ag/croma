@@ -17,7 +17,7 @@ pub(crate) fn semantic_voice_from_timeline(
     let expected_duration = field_state
         .meter
         .as_ref()
-        .and_then(|meter| meter_duration(&meter.value.kind));
+        .and_then(|meter| meter_duration(&meter.value));
     let mut events = Vec::new();
     let measures = voice
         .measures

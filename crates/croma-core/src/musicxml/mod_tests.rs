@@ -3209,3 +3209,29 @@ fn free_meter_change_emits_no_empty_attributes() {
         "no empty attributes wrapper"
     );
 }
+
+#[test]
+fn complex_header_meter_exports_additive_time() {
+    let source = "X:1\nM:(2+3+2)/8\nL:1/8\nK:C\nCDEFGAB|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+
+    assert_balanced_xml(&xml);
+    assert_eq!(count(&xml, "<time>"), 1);
+    assert!(xml.contains("<beats>2+3+2</beats>"));
+    assert!(xml.contains("<beat-type>8</beat-type>"));
+}
+
+#[test]
+fn additive_extension_header_meter_exports_composite_time() {
+    let source = "X:1\nM:3/4+2/4\nL:1/4\nK:C\nCDEFG|\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+
+    assert_balanced_xml(&xml);
+    assert_eq!(count(&xml, "<time>"), 1);
+    assert!(xml.contains("<beats>3</beats>"));
+    assert!(xml.contains("<beat-type>4</beat-type>"));
+    assert!(xml.contains("<beats>2</beats>"));
+    assert_eq!(count(&xml, "<beat-type>4</beat-type>"), 2);
+}
