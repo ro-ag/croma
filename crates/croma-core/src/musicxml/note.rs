@@ -3,7 +3,6 @@ use crate::model::{
     TieRole, TimedEventKind, TimelineEventKind, TupletRole,
 };
 
-use super::grace::grace_export_pitch;
 use super::{
     FractionExt, MeasureSequence, MusicXmlWriter, NoteWrite, SequenceEvent, TimeModification,
     TupletNumbers, unsupported_note_type_warning, variable_chord_duration_export_warning,
@@ -263,12 +262,7 @@ impl<'score> MusicXmlWriter<'score> {
             }
         }
         if let Some(pitch) = note.pitch {
-            let pitch = if note.grace {
-                grace_export_pitch(pitch, note.written_accidental, self.active_key.as_ref())
-            } else {
-                *pitch
-            };
-            self.write_pitch(&pitch);
+            self.write_pitch(pitch);
         } else if note.measure_rest {
             self.xml.empty("rest", &[("measure", "yes")]);
         } else {

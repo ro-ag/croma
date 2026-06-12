@@ -116,10 +116,11 @@ impl LoweringState {
             match matched {
                 Some(next_index) => {
                     used_next.push(next_index);
-                    // The stop note consumed the barline-preserved accidental
-                    // carry; keep it for the rest of the measure and protect
-                    // it from a same-signature sibling tie dropping below.
-                    self.confirm_pending_tie_carry(start_signature);
+                    // The stop note has already resolved against the
+                    // barline-preserved carry. Consume the synthetic ledger
+                    // entry so later same-pitch notes in this bar resolve
+                    // normally unless the stop note rewrote the accidental.
+                    self.consume_pending_tie_carry(start_signature);
                     let pair_id = self.next_tie_id;
                     self.next_tie_id = self.next_tie_id.saturating_add(1);
                     self.attach_tie(tie.event_index, pair_id, TieRole::Start, tie.marker);

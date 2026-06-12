@@ -177,22 +177,19 @@ impl LoweringState {
     /// attachments, and multiple flushed items keep their relative order. The
     /// buffers are drained once consumed.
     pub(crate) fn take_timed_attachments(&mut self, bundle: &AttachmentBundle) -> EventAttachments {
-        let mut attachments =
-            attachment_bundle_model(bundle, &mut self.next_slur_id, &mut self.diagnostics);
-        if !self.pending_grace_groups.is_empty() {
+        let mut pending_graces = if self.pending_grace_groups.is_empty() {
+            Vec::new()
+        } else {
             let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
-            let mut graces: Vec<_> = pending_grace_groups
+            pending_grace_groups
                 .iter()
-                .map(|grace| {
-                    grace_group_attachment_model(
-                        grace,
-                        &mut self.next_slur_id,
-                        &mut self.diagnostics,
-                    )
-                })
-                .collect();
-            graces.append(&mut attachments.grace_groups);
-            attachments.grace_groups = graces;
+                .map(|grace| grace_group_attachment_model(grace, self))
+                .collect::<Vec<_>>()
+        };
+        let mut attachments = attachment_bundle_model(bundle, self);
+        if !pending_graces.is_empty() {
+            pending_graces.append(&mut attachments.grace_groups);
+            attachments.grace_groups = pending_graces;
         }
         if !self.pending_chord_symbols.is_empty() {
             let mut symbols: Vec<_> = self
@@ -230,6 +227,7 @@ impl LoweringState {
         line_index: usize,
         source_order: u32,
     ) {
+        let attachments = self.take_timed_attachments(&note.attachments);
         let octave = lowered_octave(note).saturating_add(voice_octave_shift(&self.properties));
         let written_accidental = note.accidental.map(|accidental| accidental.sign);
         let (effective_accidental, accidental_source) = self.effective_accidental(
@@ -238,7 +236,6 @@ impl LoweringState {
             written_accidental,
             note.accidental.map(|accidental| accidental.span),
         );
-        let attachments = self.take_timed_attachments(&note.attachments);
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -316,14 +313,12 @@ impl LoweringState {
 
         // Attachments flushed ahead of this chord (graces, chord symbols,
         // annotations) attach to the chord as a whole (its first member),
-        // mirroring chord-level attachments. Drain the buffers before the
-        // per-member closure, which borrows `self` immutably.
+        // mirroring chord-level attachments. They were written before the
+        // chord, so lower them before any chord member resolves accidentals.
         let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
         let mut pending_graces: Vec<GraceGroupAttachment> = pending_grace_groups
             .iter()
-            .map(|grace| {
-                grace_group_attachment_model(grace, &mut self.next_slur_id, &mut self.diagnostics)
-            })
+            .map(|grace| grace_group_attachment_model(grace, self))
             .collect();
         let mut pending_symbols: Vec<TextAttachment> = self
             .pending_chord_symbols
@@ -340,81 +335,62 @@ impl LoweringState {
             .drain(..)
             .map(|decoration| decoration_attachment_model(&decoration))
             .collect();
-        let member_attachments = chord
-            .members
-            .iter()
-            .map(|member| {
-                attachment_bundle_model(
-                    &member.note.attachments,
-                    &mut self.next_slur_id,
-                    &mut self.diagnostics,
-                )
-            })
-            .collect::<Vec<_>>();
-        let chord_attachments = attachment_bundle_model(
-            &chord.attachments,
-            &mut self.next_slur_id,
-            &mut self.diagnostics,
-        );
+        let chord_attachments = attachment_bundle_model(&chord.attachments, self);
 
-        let events = chord
-            .members
-            .iter()
-            .enumerate()
-            .map(|(index, member)| {
-                let octave = lowered_octave(&member.note)
-                    .saturating_add(voice_octave_shift(&self.properties));
-                let written_accidental = member.note.accidental.map(|accidental| accidental.sign);
-                let (effective_accidental, accidental_source) = self.effective_accidental(
-                    member.note.pitch.step,
-                    octave,
-                    written_accidental,
-                    member.note.accidental.map(|accidental| accidental.span),
-                );
-                let member_multiplier =
-                    length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
-                let mut attachments = member_attachments[index].clone();
-                if index == 0 {
-                    attachments.extend(chord_attachments.clone());
-                    if !pending_graces.is_empty() {
-                        let mut graces = std::mem::take(&mut pending_graces);
-                        graces.append(&mut attachments.grace_groups);
-                        attachments.grace_groups = graces;
-                    }
-                    if !pending_symbols.is_empty() {
-                        let mut symbols = std::mem::take(&mut pending_symbols);
-                        symbols.append(&mut attachments.chord_symbols);
-                        attachments.chord_symbols = symbols;
-                    }
-                    if !pending_annotations.is_empty() {
-                        let mut annotations = std::mem::take(&mut pending_annotations);
-                        annotations.append(&mut attachments.annotations);
-                        attachments.annotations = annotations;
-                    }
-                    if !pending_decorations.is_empty() {
-                        let mut decorations = std::mem::take(&mut pending_decorations);
-                        decorations.append(&mut attachments.decorations);
-                        attachments.decorations = decorations;
-                    }
+        let mut events = Vec::with_capacity(chord.members.len());
+        for (index, member) in chord.members.iter().enumerate() {
+            let mut attachments = attachment_bundle_model(&member.note.attachments, self);
+            if index == 0 {
+                attachments.extend(chord_attachments.clone());
+                if !pending_graces.is_empty() {
+                    let mut graces = std::mem::take(&mut pending_graces);
+                    graces.append(&mut attachments.grace_groups);
+                    attachments.grace_groups = graces;
                 }
-                (
-                    LoweredEventAtom {
-                        kind: LoweredEventAtomKind::Note {
-                            step: member.note.pitch.step.to_ascii_uppercase(),
-                            octave,
-                            accidental: written_accidental,
-                            effective_accidental,
-                            accidental_source,
-                            chord: index > 0,
-                            span: member.note.span,
-                        },
-                        duration: self.unit.checked_mul(member_multiplier),
+                if !pending_symbols.is_empty() {
+                    let mut symbols = std::mem::take(&mut pending_symbols);
+                    symbols.append(&mut attachments.chord_symbols);
+                    attachments.chord_symbols = symbols;
+                }
+                if !pending_annotations.is_empty() {
+                    let mut annotations = std::mem::take(&mut pending_annotations);
+                    annotations.append(&mut attachments.annotations);
+                    attachments.annotations = annotations;
+                }
+                if !pending_decorations.is_empty() {
+                    let mut decorations = std::mem::take(&mut pending_decorations);
+                    decorations.append(&mut attachments.decorations);
+                    attachments.decorations = decorations;
+                }
+            }
+            let octave =
+                lowered_octave(&member.note).saturating_add(voice_octave_shift(&self.properties));
+            let written_accidental = member.note.accidental.map(|accidental| accidental.sign);
+            let (effective_accidental, accidental_source) = self.effective_accidental(
+                member.note.pitch.step,
+                octave,
+                written_accidental,
+                member.note.accidental.map(|accidental| accidental.span),
+            );
+            let member_multiplier =
+                length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
+            events.push((
+                LoweredEventAtom {
+                    kind: LoweredEventAtomKind::Note {
+                        step: member.note.pitch.step.to_ascii_uppercase(),
+                        octave,
+                        accidental: written_accidental,
+                        effective_accidental,
+                        accidental_source,
+                        chord: index > 0,
+                        span: member.note.span,
                     },
-                    index == 0,
-                    attachments,
-                )
-            })
-            .collect();
+                    duration: self.unit.checked_mul(member_multiplier),
+                },
+                index == 0,
+                attachments,
+            ));
+        }
         self.push_time_group(events, line_index, source_order);
 
         // Register chord-internal tie markers (`[DA-]`) as pending ties keyed to
@@ -601,9 +577,7 @@ impl LoweringState {
             .drain(..)
             .collect::<Vec<_>>()
             .iter()
-            .map(|grace| {
-                grace_group_attachment_model(grace, &mut self.next_slur_id, &mut self.diagnostics)
-            })
+            .map(|grace| grace_group_attachment_model(grace, self))
             .collect();
         if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index) {
             timed.attachments.after_grace_groups.extend(graces);
@@ -793,8 +767,7 @@ pub(crate) fn note_signature(kind: LoweredEventAtomKind) -> Option<(char, i8)> {
 
 fn grace_group_attachment_model(
     grace: &GraceGroupSyntax,
-    next_slur_id: &mut u32,
-    diagnostics: &mut Vec<Diagnostic>,
+    state: &mut LoweringState,
 ) -> GraceGroupAttachment {
     let mut events: Vec<GraceEvent> = Vec::new();
     let mut pending_slur_starts = Vec::new();
@@ -806,16 +779,16 @@ fn grace_group_attachment_model(
             GraceElementSyntax::Slur(slur) => match slur.direction {
                 SlurDirection::Start => {
                     let open = OpenSlur {
-                        pair_id: *next_slur_id,
+                        pair_id: state.next_slur_id,
                         marker: *slur,
                     };
-                    *next_slur_id = (*next_slur_id).saturating_add(1);
+                    state.next_slur_id = state.next_slur_id.saturating_add(1);
                     pending_slur_starts.push(open);
                     open_slurs.push(open);
                 }
                 SlurDirection::End => {
                     let Some(open) = open_slurs.pop() else {
-                        diagnostics.push(unmatched_slur_warning(slur.span));
+                        state.diagnostics.push(unmatched_slur_warning(slur.span));
                         continue;
                     };
                     let start_was_pending = pending_slur_starts
@@ -825,12 +798,12 @@ fn grace_group_attachment_model(
                     if !start_was_pending && let Some(index) = last_note_event_index {
                         attach_grace_slur(&mut events[index], open.pair_id, SlurRole::Stop, *slur);
                     } else {
-                        diagnostics.push(unmatched_slur_warning(slur.span));
+                        state.diagnostics.push(unmatched_slur_warning(slur.span));
                     }
                 }
             },
             _ => {
-                let Some(mut event) = grace_event_model(element) else {
+                let Some(mut event) = grace_event_model(element, state) else {
                     continue;
                 };
                 if is_grace_note_event(&event) {
@@ -848,7 +821,9 @@ fn grace_group_attachment_model(
         .map(|open| open.pair_id)
         .collect::<Vec<_>>();
     for open in open_slurs {
-        diagnostics.push(unclosed_slur_warning(open.marker.span));
+        state
+            .diagnostics
+            .push(unclosed_slur_warning(open.marker.span));
     }
     if !unclosed_pair_ids.is_empty() {
         for event in &mut events {
@@ -896,14 +871,13 @@ fn is_grace_note_event(event: &GraceEvent) -> bool {
 
 fn attachment_bundle_model(
     bundle: &AttachmentBundle,
-    next_slur_id: &mut u32,
-    diagnostics: &mut Vec<Diagnostic>,
+    state: &mut LoweringState,
 ) -> EventAttachments {
     EventAttachments {
         grace_groups: bundle
             .grace_groups
             .iter()
-            .map(|grace| grace_group_attachment_model(grace, next_slur_id, diagnostics))
+            .map(|grace| grace_group_attachment_model(grace, state))
             .collect(),
         after_grace_groups: Vec::new(),
         chord_symbols: bundle
@@ -975,11 +949,14 @@ pub(crate) fn decoration_attachment_model(decoration: &DecorationSyntax) -> Deco
     }
 }
 
-fn grace_event_model(element: &GraceElementSyntax) -> Option<GraceEvent> {
+fn grace_event_model(
+    element: &GraceElementSyntax,
+    state: &mut LoweringState,
+) -> Option<GraceEvent> {
     match element {
         GraceElementSyntax::Note(note) => Some(GraceEvent {
             source_span: note.span,
-            kind: GraceEventKind::Note(grace_note_event_model(note)),
+            kind: GraceEventKind::Note(grace_note_event_model(note, state)),
             slurs: Vec::new(),
         }),
         GraceElementSyntax::Rest(rest) => Some(GraceEvent {
@@ -995,7 +972,7 @@ fn grace_event_model(element: &GraceElementSyntax) -> Option<GraceEvent> {
                 chord
                     .members
                     .iter()
-                    .map(|member| grace_note_event_model(&member.note))
+                    .map(|member| grace_note_event_model(&member.note, state))
                     .collect(),
             ),
             slurs: Vec::new(),
@@ -1004,13 +981,21 @@ fn grace_event_model(element: &GraceElementSyntax) -> Option<GraceEvent> {
     }
 }
 
-fn grace_note_event_model(note: &NoteSyntax) -> GraceNoteEvent {
+fn grace_note_event_model(note: &NoteSyntax, state: &mut LoweringState) -> GraceNoteEvent {
+    let octave = lowered_octave(note);
+    let ledger_octave = octave.saturating_add(voice_octave_shift(&state.properties));
     let accidental = note.accidental.map(|accidental| accidental.sign);
+    let (effective_accidental, _) = state.effective_accidental(
+        note.pitch.step,
+        ledger_octave,
+        accidental,
+        note.accidental.map(|accidental| accidental.span),
+    );
     GraceNoteEvent {
         pitch: Pitch {
             step: note.pitch.step.to_ascii_uppercase(),
-            alter: accidental.map(Accidental::alter).unwrap_or(0),
-            octave: lowered_octave(note),
+            alter: effective_accidental.map(Accidental::alter).unwrap_or(0),
+            octave,
             spelling_source: note.pitch.span,
         },
         written_accidental: accidental.map(|kind| AccidentalMark {
