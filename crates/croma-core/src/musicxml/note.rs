@@ -186,6 +186,7 @@ impl<'score> MusicXmlWriter<'score> {
                 | TimelineEventKind::VariantEnding { .. } => {}
             },
         }
+        self.write_after_grace_groups(attachments, sequence, part, tuplet_numbers);
     }
 
     fn write_chord(

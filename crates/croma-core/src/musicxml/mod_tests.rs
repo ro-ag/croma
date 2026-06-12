@@ -486,6 +486,26 @@ fn grace_group_before_barline_attaches_to_note_across_the_bar() {
 }
 
 #[test]
+fn trailing_grace_group_before_barline_stays_after_previous_note() {
+    // abc2xml 268 treats `T e6 {de} |` as a trill termination: the two grace
+    // notes remain after the principal E inside measure 1, not as leading
+    // graces before the D that opens measure 2.
+    let source = "X:1\nT:Trailing Grace\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+    let export = export_musicxml(source).expect("trailing grace should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert_eq!(note_steps(&measures[0]), vec!['E', 'D', 'E']);
+    assert_eq!(note_grace_flags(&measures[0]), vec![false, true, true]);
+    assert_eq!(note_steps(&measures[1]), vec!['D', 'F', 'F', 'F']);
+    assert_eq!(
+        note_grace_flags(&measures[1]),
+        vec![false, false, false, false]
+    );
+}
+
+#[test]
 fn dangling_grace_group_at_tune_end_warns_instead_of_silent_drop() {
     // A grace group with no following note has nothing to decorate; it must
     // surface as a diagnostic, never vanish silently.
@@ -2779,6 +2799,7 @@ struct XmlNote {
     rest: bool,
     step: Option<char>,
     duration: Option<u32>,
+    grace: bool,
 }
 
 #[derive(Debug)]
@@ -2841,6 +2862,7 @@ fn musicxml_notes(xml: &str) -> Vec<XmlNote> {
             rest: body.contains("<rest"),
             step: element_text(body, "step").and_then(|text| text.chars().next()),
             duration: element_text(body, "duration").and_then(|text| text.parse().ok()),
+            grace: body.contains("<grace"),
         });
         index = end + end_tag.len();
     }
@@ -2925,6 +2947,10 @@ fn note_durations(measure: &XmlMeasure) -> Vec<u32> {
         .iter()
         .filter_map(|note| note.duration)
         .collect()
+}
+
+fn note_grace_flags(measure: &XmlMeasure) -> Vec<bool> {
+    measure.notes.iter().map(|note| note.grace).collect()
 }
 
 fn has_barline(

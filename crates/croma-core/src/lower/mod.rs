@@ -586,15 +586,16 @@ impl MultiVoiceLowering {
                             .diagnostics
                             .push(barline_export_policy_info(barline.span, barline.kind));
                     }
+                    self.current_state()
+                        .attach_pending_grace_groups_to_previous_note();
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
                     self.current_state().reset_measure_accidentals_at_barline();
                     // A grace flushed ahead of its note stays pending across the
-                    // bar: ABC 2.1 §4.12 defines no void-at-barline rule and
-                    // §4.20 binds the grace to the note it precedes — which may
-                    // be the first note of the next measure (`{e/}|d3`). A
-                    // leftover at the end of the voice surfaces as a
-                    // dangling-grace diagnostic instead of a silent drop.
+                    // bar unless the boundary resolves it backward as an
+                    // after-grace on a previous timed note. A leftover at the
+                    // end of the voice surfaces as a dangling-grace diagnostic
+                    // instead of a silent drop.
                     for kind in barline_lowering_kinds(barline) {
                         self.current_state()
                             .lowered
@@ -614,11 +615,9 @@ impl MultiVoiceLowering {
                     // A grace group becomes a standalone item only when the parser
                     // flushed it ahead of its note (e.g. an intervening barline
                     // `{g}|` or inline field `{g}[M:3/4]c`; ties and overlays also
-                    // flush). Per ABC 2.1 §4.20 the grace still attaches to the
-                    // note it precedes, so buffer it and merge it into the next
-                    // timed event. If a hard boundary (barline / voice switch /
-                    // end of tune) arrives first, the buffer is dropped and the
-                    // grace is voided.
+                    // flush). Buffer it until lowering can see whether it belongs
+                    // to the next timed event as a leading grace or to the
+                    // previous timed note as an after-grace at a boundary.
                     self.current_state()
                         .pending_grace_groups
                         .push(grace.clone());
@@ -732,6 +731,7 @@ impl MultiVoiceLowering {
 
     fn push_implicit_regular_barline(&mut self, span: Span) {
         let voice = self.current_state();
+        voice.attach_pending_grace_groups_to_previous_note();
         voice.finish_pending_broken_at_boundary();
         voice.finish_open_tuplets_at_boundary();
         voice.reset_measure_accidentals_at_barline();
