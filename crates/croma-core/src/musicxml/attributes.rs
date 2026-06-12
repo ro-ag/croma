@@ -73,6 +73,14 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.end("attributes");
     }
 
+    pub(crate) fn write_multiple_rest_measure_style(&mut self, count: u32) {
+        self.xml.start("attributes", &[]);
+        self.xml.start("measure-style", &[]);
+        self.xml.text_element("multiple-rest", &count.to_string());
+        self.xml.end("measure-style");
+        self.xml.end("attributes");
+    }
+
     fn write_clefs(&mut self, part: &Part) {
         let staves = if part.staves.is_empty() {
             vec![StaffId {

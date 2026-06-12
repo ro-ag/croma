@@ -82,6 +82,10 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_ending_barline(BarlineLocation::Left, &endings, EndingType::Start, None);
             }
 
+            if let Some(count) = unique_multiple_rest(&measure_refs) {
+                self.write_multiple_rest_measure_style(count);
+            }
+
             let sequences = measure_sequences(part, *measure_id);
             for (sequence_index, sequence) in sequences.iter().enumerate() {
                 let cursor = self.write_sequence(sequence, part);
@@ -220,9 +224,14 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
             .map(SequenceEvent::Timed)
             .collect::<Vec<_>>();
         if !events.is_empty() {
+            let measure = voice.measures.iter().find(|measure| measure.id == id);
             sequences.push(MeasureSequence {
                 voice_number,
                 staff: voice.staff,
+                expected_duration: measure.and_then(|measure| measure.expected_duration),
+                actual_duration: measure
+                    .map(|measure| measure.actual_duration)
+                    .unwrap_or_else(Fraction::zero),
                 events,
             });
         }
@@ -247,6 +256,8 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                 sequences.push(MeasureSequence {
                     voice_number: (base_count + overlay_index + 1).to_string(),
                     staff: voice.staff,
+                    expected_duration: Some(overlay.expected_duration),
+                    actual_duration: overlay.actual_duration,
                     events: overlay_events,
                 });
             }
@@ -389,4 +400,11 @@ fn unique_endings(measures: &[&Measure]) -> Vec<String> {
     endings.sort();
     endings.dedup();
     endings
+}
+
+fn unique_multiple_rest(measures: &[&Measure]) -> Option<u32> {
+    measures
+        .iter()
+        .filter_map(|measure| measure.multiple_rest)
+        .find(|count| *count > 1)
 }

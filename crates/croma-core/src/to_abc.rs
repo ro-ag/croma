@@ -834,7 +834,7 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
                 i = end;
                 continue;
             }
-            TimelineEventKind::Rest { visibility } => {
+            TimelineEventKind::Rest { visibility, .. } => {
                 out.push_str(&event_prefix(&event.attachments));
                 out.push(match visibility {
                     RestVisibility::Visible => 'z',
