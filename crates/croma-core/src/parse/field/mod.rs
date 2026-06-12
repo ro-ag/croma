@@ -448,6 +448,7 @@ pub struct KeySignature {
     pub mode: KeyMode,
     pub accidentals: Vec<KeyAccidental>,
     pub explicit: bool,
+    pub compact_accidentals_ignored: bool,
     /// Clef/octave/middle/transpose modifiers carried on the `K:` field
     /// (ABC 2.1 §4.6), e.g. `K:C treble+8` or `K: Dm octave=1`. Empty when the
     /// key field carries only tonic/mode/accidentals.
