@@ -3570,6 +3570,60 @@ fn inline_key_change_scopes_to_current_voice_only() {
 }
 
 #[test]
+fn standalone_body_key_change_keeps_late_voice_in_header_key_until_own_change() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:D\n",
+        "V:1\n",
+        "B B B B|\n",
+        "K:Dm\n",
+        "B B B B|\n",
+        "V:2\n",
+        "F C B F|\n",
+        "K:Dm\n",
+        "F C B F|\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice score should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let parts = part_bodies(&export.musicxml);
+    assert_eq!(parts.len(), 2, "expected two voices/parts");
+    let p2_measures = parts[1].split("<measure ").collect::<Vec<_>>();
+    assert!(p2_measures.len() >= 3, "expected two V2 measures");
+    assert!(
+        p2_measures[1].contains("<fifths>2</fifths>"),
+        "V2 measure 1 keeps the header D major key: {}",
+        p2_measures[1]
+    );
+    assert!(
+        !p2_measures[1].contains("<fifths>-1</fifths>"),
+        "V2 measure 1 must not receive V1's body K:Dm: {}",
+        p2_measures[1]
+    );
+    assert!(
+        p2_measures[2].contains("<fifths>-1</fifths>"),
+        "V2 measure 2 carries V2's own K:Dm: {}",
+        p2_measures[2]
+    );
+    assert_eq!(
+        note_steps_and_alters(&parts[1]),
+        vec![
+            ('F', 1),
+            ('C', 1),
+            ('B', 0),
+            ('F', 1),
+            ('F', 0),
+            ('C', 0),
+            ('B', -1),
+            ('F', 0),
+        ],
+        "V2 first bar stays in D major, second bar changes to D minor"
+    );
+}
+
+#[test]
 fn tie_across_barline_keeps_natural_against_flat_key() {
     // `=B-` ties a natural B across the barline; the stop note must remain
     // natural (alter 0) and not pick up key F's B-flat.

@@ -143,18 +143,16 @@ pub(crate) fn lower_tune_music(
 
 struct MultiVoiceLowering {
     unit: Fraction,
+    /// Header key signature used to seed each voice when its stream first
+    /// appears. Body `K:` changes are per-voice timeline events and must not
+    /// rewrite this baseline for voices that have not reached the field.
     key: Option<KeySignature>,
-    meter: Option<Meter>,
-    /// True once a standalone mid-tune `K:`/`M:` change occurred; voices
-    /// created after that point seed from the changed state and must record
-    /// it as an explicit change event at their start (or no exporter could
-    /// reproduce their key/meter).
-    key_changed: bool,
-    meter_changed: bool,
     /// Verbatim header `K:`/`M:` display text — the dedupe baseline for
     /// no-op restatements.
     header_key_display: Option<String>,
     header_meter_display: Option<String>,
+    /// Header meter duration used to seed each voice when its stream first
+    /// appears. Body `M:` changes update only the current voice.
     meter_duration: Option<Fraction>,
     voices: Vec<LoweringState>,
     current_voice: String,
@@ -181,9 +179,6 @@ impl MultiVoiceLowering {
         let mut lowering = Self {
             unit,
             key: field_state.key.as_ref().map(|key| key.value.clone()),
-            meter: field_state.meter.as_ref().map(|meter| meter.value.clone()),
-            key_changed: false,
-            meter_changed: false,
             header_key_display: field_state.key.as_ref().map(|key| key.value.raw.clone()),
             header_meter_display: field_state
                 .meter
@@ -256,29 +251,30 @@ impl MultiVoiceLowering {
     }
 
     fn apply_meter_change(&mut self, meter: &Spanned<Meter>) {
+        self.apply_current_voice_meter_change(meter);
+    }
+
+    fn apply_current_voice_meter_change(&mut self, meter: &Spanned<Meter>) {
         if !self.validate_meter_change(meter) {
             return;
         }
-        self.meter_duration = meter_duration(&meter.value);
-        self.meter = Some(meter.value.clone());
         // A meter change is NOT a bar line: per ABC 2.1 §11.3
         // (`%%propagate-accidentals` default `pitch`) an explicit accidental
         // applies to same-pitch notes until the end of the bar, so the
         // measure accidental ledger must survive a mid-tune `M:` field.
-        self.meter_changed = true;
         let model = meter_model(meter);
         let header = self.header_meter_display.clone();
-        for voice in &mut self.voices {
-            voice.finish_open_tuplets_at_boundary();
-            voice.meter_duration = meter_duration(&meter.value);
-            // Record the change at each voice's current position so exporters
-            // can reproduce it. A change to the voice's already-effective
-            // meter (header included) records nothing: interleaved sources
-            // restate `[M:..]` once per voice line, and re-applications would
-            // otherwise stack duplicate events.
-            if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
-                voice.lowered.push(LoweredEvent::MeterChange(model.clone()));
-            }
+        let duration = meter_duration(&meter.value);
+        let voice = self.current_state();
+        voice.finish_open_tuplets_at_boundary();
+        voice.meter_duration = duration;
+        // Record the change at the current voice's position so exporters can
+        // reproduce it. A change to the voice's already-effective meter
+        // (header included) records nothing: interleaved sources restate
+        // `[M:..]` once per voice line, and re-applications would otherwise
+        // stack duplicate events.
+        if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
+            voice.lowered.push(LoweredEvent::MeterChange(model));
         }
     }
 
@@ -288,18 +284,7 @@ impl MultiVoiceLowering {
     /// sources: a global application would leak each voice's `[M:..]` token
     /// into every other voice at the wrong position.
     fn apply_inline_meter_change(&mut self, meter: &Spanned<Meter>) {
-        if !self.validate_meter_change(meter) {
-            return;
-        }
-        let model = meter_model(meter);
-        let header = self.header_meter_display.clone();
-        let duration = meter_duration(&meter.value);
-        let voice = self.current_state();
-        voice.finish_open_tuplets_at_boundary();
-        voice.meter_duration = duration;
-        if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
-            voice.lowered.push(LoweredEvent::MeterChange(model));
-        }
+        self.apply_current_voice_meter_change(meter);
     }
 
     fn validate_meter_change(&mut self, meter: &Spanned<Meter>) -> bool {
@@ -340,6 +325,10 @@ impl MultiVoiceLowering {
     }
 
     fn apply_key_change(&mut self, key: &Spanned<KeySignature>) {
+        self.apply_current_voice_key_change(key);
+    }
+
+    fn apply_current_voice_key_change(&mut self, key: &Spanned<KeySignature>) {
         if key_is_invalid_for_lowering(&key.value) {
             self.diagnostics.push(invalid_key_change_warning(key.span));
             return;
@@ -355,19 +344,18 @@ impl MultiVoiceLowering {
             }
             return;
         }
-        self.key = Some(key.value.clone());
-        self.key_changed = true;
         let model = key_signature_model(key);
         let header = self.header_key_display.clone();
-        for voice in &mut self.voices {
+        {
+            let voice = self.current_state();
             voice.set_key(Some(&key.value));
-            // Record the change at each voice's current position so exporters
-            // can reproduce the broadcast on re-parse/re-export. A change to
-            // the voice's already-effective key records nothing (see the
-            // meter-change dedupe above; also collapses no-op restatements
-            // identically on both generations, keeping the round-trip stable).
+            // Record the change at the current voice's position so exporters
+            // can reproduce it. A change to the voice's already-effective key
+            // records nothing (see the meter-change dedupe above; also
+            // collapses no-op restatements identically on both generations,
+            // keeping the round-trip stable).
             if effective_key_display(voice, header.as_deref()) != Some(model.display.as_str()) {
-                voice.lowered.push(LoweredEvent::KeyChange(model.clone()));
+                voice.lowered.push(LoweredEvent::KeyChange(model));
             }
         }
         // A K: field may carry clef/octave/middle/transpose modifiers
@@ -389,22 +377,7 @@ impl MultiVoiceLowering {
     /// key signature. The active voice is the one `current_state()` resolves via
     /// `self.current_voice`.
     fn apply_inline_key_change(&mut self, key: &Spanned<KeySignature>) {
-        if key_is_invalid_for_lowering(&key.value) {
-            self.diagnostics.push(invalid_key_change_warning(key.span));
-            return;
-        }
-        self.warn_if_compact_key_accidentals_ignored(key);
-        self.current_state().set_key(Some(&key.value));
-        let model = key_signature_model(key);
-        let header = self.header_key_display.clone();
-        if effective_key_display(self.current_state(), header.as_deref())
-            != Some(model.display.as_str())
-        {
-            self.current_state()
-                .lowered
-                .push(LoweredEvent::KeyChange(model));
-        }
-        self.apply_inline_key_clef_properties(&key.value);
+        self.apply_current_voice_key_change(key);
     }
 
     /// Merge clef/octave/middle/transpose modifiers carried on a `[K:..]` field
@@ -678,40 +651,13 @@ impl MultiVoiceLowering {
             span: voice.value.id.span,
         };
         let properties = voice_properties_model(&voice.value);
-        let mut state = LoweringState::new(
+        let state = LoweringState::new(
             id,
             properties,
             self.unit,
             self.key.as_ref(),
             self.meter_duration,
         );
-        // A voice defined after a standalone K:/M: change seeds from the
-        // changed state; record that as an explicit event at the voice start
-        // so the writer/exporter can reproduce it — but only when the
-        // prevailing value actually differs from the header (a restated
-        // header key/meter seeds nothing, like every other dedupe site).
-        if self.key_changed
-            && let Some(key) = &self.key
-            && self.header_key_display.as_deref() != Some(key.raw.as_str())
-        {
-            state
-                .lowered
-                .push(LoweredEvent::KeyChange(key_signature_model(&Spanned::new(
-                    key.clone(),
-                    voice.span,
-                ))));
-        }
-        if self.meter_changed
-            && let Some(meter) = &self.meter
-            && self.header_meter_display.as_deref() != Some(meter.raw.as_str())
-        {
-            state
-                .lowered
-                .push(LoweredEvent::MeterChange(meter_model(&Spanned::new(
-                    meter.clone(),
-                    voice.span,
-                ))));
-        }
         self.voices.push(state);
         self.voices.len() - 1
     }
