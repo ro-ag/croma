@@ -203,7 +203,9 @@ impl VoiceTimelineBuilder {
 
     fn push_barline(&mut self, kind: BarlineKind, span: Span) {
         let onset = self.onset;
+        let measure_index = self.measure_index;
         let measure = self.current_measure_mut();
+        let measure_span = measure.span;
         measure.events.push(VoiceTimedEvent {
             onset,
             duration: Fraction::zero(),
@@ -216,7 +218,12 @@ impl VoiceTimelineBuilder {
             symbols: Vec::new(),
             attachments: EventAttachments::default(),
         });
-        measure.span = extend_span(measure.span, span);
+        measure.span =
+            if measure_index > 0 && measure_span.is_empty() && closes_empty_measure_barline(kind) {
+                Span::new(measure_span.start, span.end)
+            } else {
+                extend_span(measure_span, span)
+            };
     }
 
     fn is_empty_measure_start(&self) -> bool {
@@ -432,6 +439,10 @@ fn starts_first_body_measure_barline(kind: BarlineKind) -> bool {
         kind,
         BarlineKind::Double | BarlineKind::Final | BarlineKind::Liberal
     )
+}
+
+fn closes_empty_measure_barline(kind: BarlineKind) -> bool {
+    kind == BarlineKind::Final
 }
 
 struct OverlayBuilder {

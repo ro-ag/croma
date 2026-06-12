@@ -126,7 +126,7 @@ Minimal repro `K:D\n=c4- | =c2 B2 c4 |]` — the natural glyph is literally re-w
 
 ## barline
 
-### `barline-final-dropped-on-empty-voice-measure` — **OPEN** (croma_bug, repro=True)
+### `barline-final-dropped-on-empty-voice-measure` — **FIXED(37b)** (croma_bug, repro=True)
 
 *Share:* <1% rows (a handful of multi-voice files) — *files:* tune_010088.abc
 
@@ -135,6 +135,8 @@ Minimal: two-voice tune where V:2's last music line is just `|]` (its final meas
 
 
 *Fix:* lower layer: crates/croma-core/src/lower/timeline.rs — when finishing a voice, preserve the Final/Double barline kind on the last (possibly empty) measure instead of losing it with the coalesced/empty measure; export already handles Final on empty measures (P2 m2 exists, just lacks the barline).
+
+**Phase 37b verification:** `crates/croma-core/src/lower/timeline.rs` now preserves the source span of a non-first empty measure closed by `|]`, allowing MusicXML export to classify the explicit empty-voice final as a right `light-heavy` barline. The fix is deliberately limited to `BarlineKind::Final`: a regression test keeps the phase-36/reference shape for tune_006306-style section-leading `||` after a suppressed line break, where an empty measure is retained but must not gain a right double barline. Targeted comparison for `tune_010088.abc` and `tune_006306.abc`: 2 structural matches, 0 mismatches. Verification: `cargo fmt --all -- --check`, focused final/double-barline tests, `cargo test -p croma-core barline`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, full 10k report-only comparison, and ABC round-trip proof. Phase-36 -> phase-37b aggregate corpus delta (including 37a): structural matches 8861 -> 8868, mismatch rows 164265 -> 164215, `barline` 3545 -> 3540, `direction` 463 -> 459, `extra_in_croma` 47606 -> 47565, no harness/import failures. ABC round-trip remains total=10000, in_scope=9925, structural_diffs=0, errors=0.
 
 
 ### `barline-liberal-run-glyph-dropped` — **FIXED(33b)** (croma_bug, repro=True)
