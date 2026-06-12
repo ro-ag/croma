@@ -2,7 +2,9 @@
 
 use crate::diagnostic::Diagnostic;
 use crate::model::{AlignedLyric, AlignedSymbol, AlignedSymbolKind, LyricControl, VoiceTimeline};
-use crate::syntax::{LyricLineSyntax, LyricTokenKind, SymbolLineSyntax, SymbolTokenKind};
+use crate::syntax::{
+    LyricLineSyntax, LyricTokenKind, LyricTokenSyntax, SymbolLineSyntax, SymbolTokenKind,
+};
 
 use crate::lower::{
     VoicedLyricLine, VoicedSymbolLine, lyric_syllable_count_warning, symbol_count_warning,
@@ -31,6 +33,15 @@ struct BarMarkerCursor {
     measure_index: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LyricLineContext<'a> {
+    line: &'a LyricLineSyntax,
+    start: usize,
+    end: usize,
+    verse: u32,
+    block_measure: usize,
+}
+
 pub(crate) fn align_lyrics(
     voices: &mut [VoiceTimeline],
     lyric_lines: &[VoicedLyricLine],
@@ -52,11 +63,23 @@ fn align_lyrics_for_voice(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let refs = alignable_refs(voice);
+    let contexts = lyric_line_contexts(&refs, lyric_lines);
+
+    for (index, context) in contexts.iter().copied().enumerate() {
+        align_lyric_line(voice, &refs, context, &contexts[index + 1..], diagnostics);
+    }
+}
+
+fn lyric_line_contexts<'a>(
+    refs: &[AlignableRef],
+    lyric_lines: &[&'a LyricLineSyntax],
+) -> Vec<LyricLineContext<'a>> {
     let mut cursor = 0usize;
     let mut block_start = 0usize;
     let mut block_available_end = 0usize;
     let mut previous_line = None;
     let mut verse = 1u32;
+    let mut contexts = Vec::new();
 
     for line in lyric_lines {
         let available_end = refs
@@ -75,24 +98,35 @@ fn align_lyrics_for_voice(
             (block_start, block_available_end, verse)
         };
 
-        align_lyric_line(voice, &refs, start, end, line_verse, line, diagnostics);
+        contexts.push(LyricLineContext {
+            line,
+            start,
+            end,
+            verse: line_verse,
+            block_measure: block_start_measure(refs, start, end),
+        });
         previous_line = Some(line.line_index);
     }
+    contexts
 }
 
 fn align_lyric_line(
     voice: &mut VoiceTimeline,
     refs: &[AlignableRef],
-    start: usize,
-    end: usize,
-    verse: u32,
-    line: &LyricLineSyntax,
+    context: LyricLineContext<'_>,
+    future_contexts: &[LyricLineContext<'_>],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let LyricLineContext {
+        line,
+        start,
+        end,
+        verse,
+        block_measure,
+    } = context;
     let mut position = start;
     let mut last_bar_consume: Option<BarMarkerCursor> = None;
-    let block_measure = block_start_measure(refs, start, end);
-    for token in &line.tokens {
+    for (token_index, token) in line.tokens.iter().enumerate() {
         match token.kind {
             LyricTokenKind::Syllable => {
                 if let Some(reference) = refs.get(position).copied().filter(|_| position < end) {
@@ -113,6 +147,15 @@ fn align_lyric_line(
             }
             LyricTokenKind::Hyphen => {
                 if position > start
+                    && (future_syllable_can_attach(
+                        refs,
+                        start,
+                        end,
+                        position,
+                        block_measure,
+                        last_bar_consume,
+                        &line.tokens[token_index + 1..],
+                    ) || future_same_verse_syllable_can_attach(refs, verse, future_contexts))
                     && let Some(reference) = refs.get(position - 1).copied()
                 {
                     attach_lyric(
@@ -165,6 +208,58 @@ fn align_lyric_line(
     {
         diagnostics.push(lyric_syllable_count_warning(line.value.span));
     }
+}
+
+fn future_same_verse_syllable_can_attach(
+    refs: &[AlignableRef],
+    verse: u32,
+    contexts: &[LyricLineContext<'_>],
+) -> bool {
+    contexts
+        .iter()
+        .filter(|context| context.verse == verse)
+        .any(|context| {
+            future_syllable_can_attach(
+                refs,
+                context.start,
+                context.end,
+                context.start,
+                context.block_measure,
+                None,
+                &context.line.tokens,
+            )
+        })
+}
+
+fn future_syllable_can_attach(
+    refs: &[AlignableRef],
+    start: usize,
+    end: usize,
+    mut position: usize,
+    block_measure: usize,
+    mut last_bar_consume: Option<BarMarkerCursor>,
+    tokens: &[LyricTokenSyntax],
+) -> bool {
+    for token in tokens {
+        match token.kind {
+            LyricTokenKind::Syllable => return position < end && refs.get(position).is_some(),
+            LyricTokenKind::Extender | LyricTokenKind::Skip => {
+                position = position.saturating_add(1).min(end);
+            }
+            LyricTokenKind::Bar => {
+                position = advance_bar_marker(
+                    refs,
+                    start,
+                    end,
+                    position,
+                    block_measure,
+                    &mut last_bar_consume,
+                );
+            }
+            LyricTokenKind::Hyphen => {}
+        }
+    }
+    false
 }
 
 pub(crate) fn align_symbols(

@@ -160,7 +160,7 @@ fn parse_lyric_tokens(value: &str, offset: usize) -> Vec<LyricTokenSyntax> {
 }
 
 fn is_lyric_separator(ch: char) -> bool {
-    matches!(ch, ' ' | '\t')
+    matches!(ch, ' ' | '\t' | '\n' | '\r')
 }
 
 fn flush_lyric_syllable(

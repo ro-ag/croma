@@ -4,15 +4,18 @@ Defects and model gaps in `parse_document`/`lower_score` discovered while
 proving `write_abc` over the 10k corpus (2026-06, PRs #65/#66/#67). The
 2026-06 parser-fix phase (branch `work/parser-bug-fixes`) fixed the silent
 data-loss items and several coverage caps; the resolved entries are kept below
-(marked **FIXED**/**TRIAGED**) for archaeology, with the still-open items
-re-prioritized.
+(marked **FIXED**/**TRIAGED**) for archaeology.
 
-The round-trip harness (`tools/prove_abc_roundtrip.py`, local-only) is the
-regression net for every fix: each one should flip its excluded tunes to
-in-scope with 0 structural diffs, and must not regress the proven set
-(92.63% as of the parser-fix phase, up from 92.49%).
+As of phase 38 (2026-06-12, branch `codex/phase-38-empty-backlog`), the active
+Croma parser/model/export backlog in this file is empty. The formerly open
+items below are either fixed with regression tests and target evidence, or
+re-verdicted with fresh evidence as not an active Croma bug.
 
-## Open: coverage-capping (the remaining ~7.4% of the corpus)
+The round-trip harness (`tools/prove_abc_roundtrip.py`, local-only) remains the
+regression net for writer/model fixes: each one should keep affected tunes
+in-scope with 0 structural diffs, and must not regress the proven set.
+
+## Resolved: coverage-capping
 
 1. ~~**Mid-tune key/meter changes are not modeled**~~ **FIXED (PR #70,
    phase-32):** `TimedEventKind::KeyChange/MeterChange` events now flow
@@ -35,18 +38,33 @@ in-scope with 0 structural diffs, and must not regress the proven set
    carry at mid-tune `M:`/`K:` fields (ABC 2.1 §11.3: carry runs to the end
    of the bar; abc2xml agrees) — only barlines reset.
 
-2. **Bare-grace slurs `({Bc})`** (a slur wrapping only a grace group, no main
-   note): slur halves land somewhere unreproducible. Degenerate; 7 tunes.
-   Harness gate: `_BARE_GRACE_SLUR_RE`.
+2. ~~**Bare-grace slurs `({Bc})`**~~ **FIXED (phase-38, 2026-06-12):**
+   slur starts/stops around a closed bare grace group now attach to that grace
+   group instead of drifting to the previous/next timed event. Closed bare
+   groups before a barline remain after-graces on the previous note and
+   `write_abc` preserves `({Bc})` without producing a stray `)`. The
+   `_BARE_GRACE_SLUR_RE` round-trip gate was removed. Regression tests cover
+   the model and MusicXML/ABC emission. Target evidence:
+   `docs/untracked/phase-38-empty-backlog/target-bare-grace-slur/abc-roundtrip-report.json`
+   is 2/2 in-scope with 0 structural diffs; the old seven-file regex corpus
+   still has 3 structural diffs in `tune_001365`-family malformed-header lyric
+   cascades, not the bare-grace slur symptom.
 
-3. **Nested tuplets** (new, found while removing the `[I:tuplets` gate). The
-   writer keeps only the innermost tuplet of `(7:8:8(3A/A/A/ ...`:
-   doubly-nested notes get the outer ratio baked into written durations,
-   outer-only notes are written plain — outer `<tuplet>` notation and
-   outer-only durations are lost. 1 corpus tune (tune_003732). Out of scope
-   until the writer models nested tuplets. Harness gate: `_NESTED_TUPLET_RE`.
+3. ~~**Nested tuplets**~~ **FIXED / RE-VERDICTED (phase-38, 2026-06-12):**
+   Croma now preserves nested tuplet markers in the lowered model, MusicXML
+   exporter, and ABC writer. The XML writer emits composite
+   `<time-modification>` ratios and ordered start/stop tuplet notations instead
+   of collapsing to the innermost tuplet or saturating overflowed products.
+   The `_NESTED_TUPLET_RE` round-trip gate was removed. Target Croma
+   self-roundtrip evidence for `tune_003732` is 1/1 in-scope with 0 structural
+   diffs:
+   `docs/untracked/phase-38-empty-backlog/target-nested-tuplets/abc-roundtrip-report.json`.
+   The refreshed abc2xml comparison for the same tune still has 60 rows
+   (`tuplet`: 8 plus malformed-feature cascades), but that reflects reference
+   interpretation and surrounding malformed corpus features rather than a
+   remaining Croma nested-tuplet writer gap.
 
-## Open: silent data loss
+## Resolved: silent data loss
 
 4. ~~**Quoted text before a barline is silently dropped.**~~ **FIXED
    (phase-33a, 2026-06-11):** pending chord symbols, annotations, decorations
@@ -59,45 +77,56 @@ in-scope with 0 structural diffs, and must not regress the proven set
    `<repeat>` order, and mapped `!crescendo(!`-family to `<wedge>` and `!+!`
    to `<technical><stopped/>`. Corpus matches 8,118 → 8,734, 0 regressions.
 
-## Open: phase-33 triage ledger (2026-06-11)
+## Resolved: phase-33 triage ledger (2026-06-11)
 
 The forensic triage of all 15 mismatch categories produced per-cause,
 adversarially re-verified verdicts in
 `docs/comparison/abc2xml-divergences/12-phase33-triage-ledger.md` — the
-canonical list of remaining confirmed croma bugs (status OPEN there). The
-biggest by impact: mid-tune `Q:` tempo dropped (~120 files); barline
-liberal-run glyph/repeat drops + lone-`:` boundary (~150 files); voice-scoped
-`L:` unit-length leaking globally; multi-measure-rest single-measure encoding
-(invalid MusicXML; expand per measure); chord-member slur drops; tuplet
-written-type from sounding duration; quoted-text harmony-vs-words
-classification (lowercase root); `[`+quoted-text volta misparse; plus small
-accidental/octave/lyric/tuplet edges. Each entry carries repro evidence and a
-fix sketch.
+canonical record for phase-33 residuals. Phases 35-38 fixed or re-verdicted
+the active `OPEN`/`known_backlog_model_gap` entries. The remaining mismatch
+families in that ledger are documented as reference quirks, equivalent
+serializations, malformed-input recovery differences, or comparator
+normalization candidates rather than active Croma parser/export bugs.
 
-## Open: exporter (MusicXML writer) issues
+## Resolved: exporter (MusicXML writer) issues
 
-5. **Overlay `<voice>` number collision**: two voices in one merged part that
-   both carry an overlay in the same measure get the same `<voice>` number
-   (`musicxml/score.rs` base_count+overlay_index+1 restarts per voice).
-   Currently invisible to the projection only because such tunes don't
-   co-occur in the corpus subset.
+5. ~~**Overlay `<voice>` number collision**~~ **FIXED (phase-38,
+   2026-06-12):** grouped-part overlays now use part-wide stable overlay voice
+   numbers keyed by source voice plus overlay index, so simultaneous overlays
+   from different source voices do not collide and repeated overlay identities
+   remain deterministic across measures. Regression tests cover same-measure
+   collision and cross-measure determinism.
 
-6. **`<syllabic>` is always `single`** (`musicxml/lyric.rs`): Hyphen lyric
-   attachments never become `begin`/`middle`/`end`, so hyphenation is
-   dropped from MusicXML. If fixed, the writer's hyphen emission is already
-   faithful and the projection's lyric tuple should grow a syllabic field.
+6. ~~**`<syllabic>` is always `single`**~~ **FIXED (phase-38, 2026-06-12):**
+   MusicXML lyric export now tracks open hyphenated words by source voice key
+   and verse, emitting `begin`/`middle`/`end`/`single` from stored lyric hyphen
+   controls. Regression tests cover a normal `A-des-te all` chain and a
+   source-order lyric chain crossing an overlay. The music21/Polars comparison
+   projection now emits `lyric/text` and `lyric/syllabic` facts. Target
+   20-file hyphenated lyric comparison:
+   `docs/untracked/phase-38-empty-backlog/target-lyrics/hyphen-compare-report.json`
+   has 19 structural matches, 1 non-lyric measure-number/direction mismatch,
+   0 lyric mismatches, and exact Croma/reference syllabic fact counts
+   (`single`: 797, `begin`: 757, `middle`: 402, `end`: 757).
 
-7. **`+:` continuation lines join with a raw newline** inside the stored
-   lyric syllable (`w:a b` + `+:c d` → syllable `"b\nc"`). Questionable
-   tokenization; the writer folds the newline into `~` (a space) when
-   re-emitting, so the MusicXML `<text>` differs (newline vs space) for such
-   tunes. Consider joining with a space at parse time.
+7. ~~**`+:` continuation lines join with a raw newline**~~ **FIXED
+   (phase-38, 2026-06-12):** lyric continuation text is tokenized across the
+   inserted continuation newline as a separator, so `w:a b` + `+:c d` stores
+   four syllables `a b c d` rather than `"b\nc"`. Regression coverage asserts
+   zero lyric-count diagnostics and Croma self-roundtrip evidence for the
+   synthetic target is clean.
 
-8. **Orphan lyric hyphens.** A `w:` line that overflows mid-hyphenated-word
-   attaches a lone `{text:"-", control:Hyphen}` to the last in-block note;
-   XML-invisible and unencodable in any clean `w:` emission (a bare `--`
-   token would re-parse as two skips). Low value; consider not storing
-   orphan hyphens.
+8. ~~**Orphan lyric hyphens**~~ **FIXED (phase-38, 2026-06-12):** lyric
+   alignment now stores a hyphen control only when a later same-verse syllable
+   can attach in the current lyric line or a future lyric block, respecting
+   skips, extenders, and lyric bar markers. `w:a-b` over one note stores only
+   `a`, warns on the overflowed `b`, dumps as `w:a`, and exports
+   `<syllabic>single</syllabic>`. The valid two-note `a-b` case, including
+   same-verse continuation across non-adjacent lyric blocks, still stores and
+   exports `begin`/`end`. Synthetic lyric
+   roundtrip target:
+   `docs/untracked/phase-38-empty-backlog/target-lyrics/abc-roundtrip-report.json`
+   is 3/3 in-scope with 0 structural diffs.
 
 ## Resolved in the parser-fix phase (2026-06)
 

@@ -84,6 +84,7 @@ pub(crate) struct LoweringState {
     pub(crate) next_tie_id: u32,
     pub(crate) pending_slur_starts: Vec<OpenSlur>,
     pub(crate) open_slurs: Vec<OpenSlur>,
+    pub(crate) pending_grace_slur_stops: Vec<PendingGraceSlurStop>,
     pub(crate) next_slur_id: u32,
     pub(crate) next_tuplet_id: u32,
     /// Grace groups flushed out of the parser's pending attachments by an
@@ -135,6 +136,12 @@ pub(crate) struct OpenSlur {
     pub(crate) marker: SlurSyntax,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingGraceSlurStop {
+    pub(crate) pair_id: u32,
+    pub(crate) marker: SlurSyntax,
+}
+
 impl LoweringState {
     pub(crate) fn new(
         id: VoiceId,
@@ -163,6 +170,7 @@ impl LoweringState {
             next_tie_id: 1,
             pending_slur_starts: Vec::new(),
             open_slurs: Vec::new(),
+            pending_grace_slur_stops: Vec::new(),
             next_slur_id: 1,
             next_tuplet_id: 1,
             pending_grace_groups: Vec::new(),
@@ -180,15 +188,7 @@ impl LoweringState {
     /// attachments, and multiple flushed items keep their relative order. The
     /// buffers are drained once consumed.
     pub(crate) fn take_timed_attachments(&mut self, bundle: &AttachmentBundle) -> EventAttachments {
-        let mut pending_graces = if self.pending_grace_groups.is_empty() {
-            Vec::new()
-        } else {
-            let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
-            pending_grace_groups
-                .iter()
-                .map(|grace| grace_group_attachment_model(grace, self))
-                .collect::<Vec<_>>()
-        };
+        let mut pending_graces = self.take_pending_grace_group_attachments();
         let mut attachments = attachment_bundle_model(bundle, self);
         if !pending_graces.is_empty() {
             pending_graces.append(&mut attachments.grace_groups);
@@ -318,11 +318,7 @@ impl LoweringState {
         // annotations) attach to the chord as a whole (its first member),
         // mirroring chord-level attachments. They were written before the
         // chord, so lower them before any chord member resolves accidentals.
-        let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
-        let mut pending_graces: Vec<GraceGroupAttachment> = pending_grace_groups
-            .iter()
-            .map(|grace| grace_group_attachment_model(grace, self))
-            .collect();
+        let mut pending_graces = self.take_pending_grace_group_attachments();
         let mut pending_symbols: Vec<TextAttachment> = self
             .pending_chord_symbols
             .drain(..)
@@ -533,7 +529,12 @@ impl LoweringState {
                 };
 
                 if let Some(open) = open {
-                    if let Some(event_index) = self.last_note_event_index() {
+                    if self.pending_grace_group_between(open.marker.span, slur.span) {
+                        self.pending_grace_slur_stops.push(PendingGraceSlurStop {
+                            pair_id: open.pair_id,
+                            marker: slur,
+                        });
+                    } else if let Some(event_index) = self.last_note_event_index() {
                         self.attach_slur(event_index, open.pair_id, SlurRole::Stop, slur);
                     } else {
                         self.diagnostics.push(unmatched_slur_warning(slur.span));
@@ -572,16 +573,10 @@ impl LoweringState {
         let Some(event_index) = self.previous_timed_note_event_index() else {
             return false;
         };
-        if !self.timed_event_has_trill(event_index) {
+        if !self.timed_event_has_trill(event_index) && self.pending_grace_slur_stops.is_empty() {
             return false;
         }
-        let graces: Vec<_> = self
-            .pending_grace_groups
-            .drain(..)
-            .collect::<Vec<_>>()
-            .iter()
-            .map(|grace| grace_group_attachment_model(grace, self))
-            .collect();
+        let graces = self.take_pending_grace_group_attachments();
         if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index) {
             timed.attachments.after_grace_groups.extend(graces);
             return true;
@@ -658,6 +653,84 @@ impl LoweringState {
                 dotted: marker.dotted,
             });
         }
+    }
+
+    fn pending_grace_group_between(&self, open_span: Span, close_span: Span) -> bool {
+        self.pending_grace_groups.iter().any(|grace| {
+            grace.span.start > open_span.start
+                && grace.span.end <= close_span.start
+                && grace_contains_note_event(grace)
+        })
+    }
+
+    fn take_pending_grace_group_attachments(&mut self) -> Vec<GraceGroupAttachment> {
+        let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
+        if pending_grace_groups.is_empty() {
+            return Vec::new();
+        }
+
+        let mut starts_by_group = vec![Vec::new(); pending_grace_groups.len()];
+        let mut remaining_starts = Vec::new();
+        for start in std::mem::take(&mut self.pending_slur_starts) {
+            if let Some(index) = pending_grace_groups
+                .iter()
+                .enumerate()
+                .filter(|(_, grace)| {
+                    grace.span.start > start.marker.span.start && grace_contains_note_event(grace)
+                })
+                .min_by_key(|(_, grace)| grace.span.start)
+                .map(|(index, _)| index)
+            {
+                starts_by_group[index].push(start);
+            } else {
+                remaining_starts.push(start);
+            }
+        }
+        self.pending_slur_starts = remaining_starts;
+
+        let mut stops_by_group = vec![Vec::new(); pending_grace_groups.len()];
+        let mut unapplied_stops = Vec::new();
+        for stop in self.pending_grace_slur_stops.drain(..) {
+            if let Some(index) = pending_grace_groups
+                .iter()
+                .enumerate()
+                .filter(|(_, grace)| {
+                    grace.span.end <= stop.marker.span.start && grace_contains_note_event(grace)
+                })
+                .map(|(index, _)| index)
+                .next_back()
+            {
+                stops_by_group[index].push(stop);
+            } else {
+                unapplied_stops.push(stop);
+            }
+        }
+        self.pending_grace_slur_stops = unapplied_stops;
+
+        let mut attachments = Vec::with_capacity(pending_grace_groups.len());
+        for ((grace, starts), stops) in pending_grace_groups
+            .iter()
+            .zip(starts_by_group)
+            .zip(stops_by_group)
+        {
+            let mut attachment = grace_group_attachment_model(grace, self);
+            for start in starts {
+                attachment.slurs.push(SlurAttachment {
+                    pair_id: start.pair_id,
+                    role: SlurRole::Start,
+                    span: start.marker.span,
+                    dotted: start.marker.dotted,
+                });
+            }
+            for stop in stops {
+                if !attach_grace_group_slur_stop(&mut attachment, stop.pair_id, stop.marker) {
+                    self.diagnostics
+                        .push(unmatched_slur_warning(stop.marker.span));
+                }
+            }
+            attachments.push(attachment);
+        }
+        attachments
     }
 
     pub(crate) fn last_note_event_index(&self) -> Option<usize> {
@@ -863,6 +936,32 @@ fn attach_grace_slur(event: &mut GraceEvent, pair_id: u32, role: SlurRole, marke
         span: marker.span,
         dotted: marker.dotted,
     });
+}
+
+fn attach_grace_group_slur_stop(
+    group: &mut GraceGroupAttachment,
+    pair_id: u32,
+    marker: SlurSyntax,
+) -> bool {
+    let Some(event) = group
+        .events
+        .iter_mut()
+        .rev()
+        .find(|event| is_grace_note_event(event))
+    else {
+        return false;
+    };
+    attach_grace_slur(event, pair_id, SlurRole::Stop, marker);
+    true
+}
+
+fn grace_contains_note_event(grace: &GraceGroupSyntax) -> bool {
+    grace.elements.iter().any(|element| {
+        matches!(
+            element,
+            GraceElementSyntax::Note(_) | GraceElementSyntax::Chord(_)
+        )
+    })
 }
 
 fn is_grace_note_event(event: &GraceEvent) -> bool {

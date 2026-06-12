@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use crate::model::{
     BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, Part, Score, TimedEventKind,
@@ -58,9 +59,11 @@ impl<'score> MusicXmlWriter<'score> {
         let id = part_xml_id(part, part_index);
         self.active_key = self.score.metadata.key.clone();
         self.slur_numbers = Default::default();
+        self.lyric_hyphen_open.clear();
         self.xml.start("part", &[("id", id.as_str())]);
         let mut pending_left_repeat = false;
         let measure_ids = part_measure_ids(part);
+        let overlay_voice_numbers = overlay_voice_numbers(part);
         let ending_stops = ending_stop_schedule(part, &measure_ids);
         for (measure_position, measure_id) in measure_ids.iter().enumerate() {
             let number = measure_id.number.to_string();
@@ -90,7 +93,7 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_multiple_rest_measure_style(count);
             }
 
-            let sequences = measure_sequences(part, *measure_id);
+            let sequences = measure_sequences(part, *measure_id, &overlay_voice_numbers);
             for (sequence_index, sequence) in sequences.iter().enumerate() {
                 let cursor = self.write_sequence(sequence, part);
                 if sequence_index + 1 < sequences.len() && cursor != Fraction::zero() {
@@ -204,9 +207,12 @@ fn part_measure_refs(part: &Part, id: MeasureId) -> Vec<&Measure> {
         .collect()
 }
 
-fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSequence<'score>> {
+fn measure_sequences<'score>(
+    part: &'score Part,
+    id: MeasureId,
+    overlay_voice_numbers: &BTreeMap<(usize, usize), String>,
+) -> Vec<MeasureSequence<'score>> {
     let mut sequences = Vec::new();
-    let base_count = part.voices.len();
     for (voice_index, voice) in part.voices.iter().enumerate() {
         let voice_number = (voice_index + 1).to_string();
         let slur_voice_key = voice.id.value.clone();
@@ -261,7 +267,10 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                     continue;
                 }
                 sequences.push(MeasureSequence {
-                    voice_number: (base_count + overlay_index + 1).to_string(),
+                    voice_number: overlay_voice_numbers
+                        .get(&(voice_index, overlay_index))
+                        .cloned()
+                        .unwrap_or_else(|| (part.voices.len() + overlay_index + 1).to_string()),
                     slur_voice_key: slur_voice_key.clone(),
                     staff: voice.staff,
                     expected_duration: Some(overlay.expected_duration),
@@ -278,6 +287,28 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
         });
     }
     sequences
+}
+
+fn overlay_voice_numbers(part: &Part) -> BTreeMap<(usize, usize), String> {
+    let mut numbers = BTreeMap::new();
+    let mut next = part.voices.len() + 1;
+    for (voice_index, voice) in part.voices.iter().enumerate() {
+        for measure in &voice.measures {
+            for (overlay_index, overlay) in measure.overlays.iter().enumerate() {
+                if overlay.events.is_empty() {
+                    continue;
+                }
+                numbers
+                    .entry((voice_index, overlay_index))
+                    .or_insert_with(|| {
+                        let number = next.to_string();
+                        next += 1;
+                        number
+                    });
+            }
+        }
+    }
+    numbers
 }
 
 fn compare_fraction(left: Fraction, right: Fraction) -> Ordering {
