@@ -383,6 +383,14 @@ impl<'line> MusicLineParser<'line> {
                     let rest = self.parse_rest_syntax(RestVisibility::Invisible);
                     elements.push(GraceElementSyntax::Rest(rest));
                 }
+                '(' => {
+                    let slur = self.parse_grace_slur(SlurDirection::Start);
+                    elements.push(GraceElementSyntax::Slur(slur));
+                }
+                ')' => {
+                    let slur = self.parse_grace_slur(SlurDirection::End);
+                    elements.push(GraceElementSyntax::Slur(slur));
+                }
                 '[' => {
                     self.parse_chord(false);
                     if let Some(MusicItem::Chord(chord)) = self.items.pop() {
@@ -439,6 +447,18 @@ impl<'line> MusicLineParser<'line> {
                 "abc.music.unclosed_grace",
                 "Grace group was preserved and skipped",
             );
+        }
+    }
+
+    fn parse_grace_slur(&mut self, direction: SlurDirection) -> SlurSyntax {
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Slur, span);
+        SlurSyntax {
+            span,
+            dotted: false,
+            direction,
         }
     }
 

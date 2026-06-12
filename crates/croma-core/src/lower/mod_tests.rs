@@ -524,6 +524,81 @@ fn quoted_text_before_grace_group_stays_in_main_note_bundle() {
 }
 
 #[test]
+fn grace_group_internal_slur_tokens_do_not_warn() {
+    let source = "X:1\nL:1/8\nK:C\n{(fg)}a2 {(ef)}g2|]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        count_diagnostics(&diagnostics, "abc.music.unknown_grace_token"),
+        0,
+        "grace-internal slur markers should not warn: {diagnostics:?}"
+    );
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes[0].attachments.grace_groups.len(), 1);
+    assert_eq!(notes[1].attachments.grace_groups.len(), 1);
+    for group in [
+        &notes[0].attachments.grace_groups[0],
+        &notes[1].attachments.grace_groups[0],
+    ] {
+        assert_eq!(group.events.len(), 2);
+        assert_eq!(group.events[0].slurs.len(), 1);
+        assert_eq!(group.events[0].slurs[0].role, SlurRole::Start);
+        assert_eq!(group.events[1].slurs.len(), 1);
+        assert_eq!(group.events[1].slurs[0].role, SlurRole::Stop);
+        assert_eq!(
+            group.events[0].slurs[0].pair_id,
+            group.events[1].slurs[0].pair_id
+        );
+    }
+    assert_ne!(
+        notes[0].attachments.grace_groups[0].events[0].slurs[0].pair_id,
+        notes[1].attachments.grace_groups[0].events[0].slurs[0].pair_id
+    );
+}
+
+#[test]
+fn malformed_grace_group_internal_slurs_warn_and_skip_attachments() {
+    for (source, code) in [
+        ("X:1\nL:1/8\nK:C\n{(fg}a|]\n", "abc.music.unclosed_slur"),
+        ("X:1\nL:1/8\nK:C\n{fg)}a|]\n", "abc.music.unmatched_slur"),
+    ] {
+        let (tune, diagnostics) = tune_for(source);
+
+        assert_eq!(
+            count_diagnostics(&diagnostics, code),
+            1,
+            "expected {code} for {source:?}: {diagnostics:?}"
+        );
+        let notes = semantic_note_events(&tune);
+        let grace = &notes[0].attachments.grace_groups[0];
+        assert_eq!(grace.events.len(), 2);
+        assert!(
+            grace.events.iter().all(|event| event.slurs.is_empty()),
+            "malformed grace-internal slur markers should be skipped: {grace:?}"
+        );
+    }
+}
+
+#[test]
+fn grace_group_internal_slur_can_span_chord_and_note() {
+    let source = "X:1\nL:1/8\nK:C\n{([fg]a)}c|]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let grace = &notes[0].attachments.grace_groups[0];
+    assert_eq!(grace.events.len(), 2);
+    assert_eq!(grace.events[0].slurs.len(), 1);
+    assert_eq!(grace.events[0].slurs[0].role, SlurRole::Start);
+    assert_eq!(grace.events[1].slurs.len(), 1);
+    assert_eq!(grace.events[1].slurs[0].role, SlurRole::Stop);
+    assert_eq!(
+        grace.events[0].slurs[0].pair_id,
+        grace.events[1].slurs[0].pair_id
+    );
+}
+
+#[test]
 fn parses_user_defined_and_legacy_decoration_symbols_from_dialect_state() {
     let user_symbol = parse_document("X:1\nU:W=!trill!\nK:C\nWC\n", ParseOptions::default());
     assert!(user_symbol.diagnostics.is_empty());

@@ -326,6 +326,7 @@ pub struct GraceGroupAttachment {
 pub struct GraceEvent {
     pub source_span: Span,
     pub kind: GraceEventKind,
+    pub slurs: Vec<SlurAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

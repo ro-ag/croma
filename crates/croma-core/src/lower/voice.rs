@@ -177,12 +177,19 @@ impl LoweringState {
     /// attachments, and multiple flushed items keep their relative order. The
     /// buffers are drained once consumed.
     pub(crate) fn take_timed_attachments(&mut self, bundle: &AttachmentBundle) -> EventAttachments {
-        let mut attachments = attachment_bundle_model(bundle);
+        let mut attachments =
+            attachment_bundle_model(bundle, &mut self.next_slur_id, &mut self.diagnostics);
         if !self.pending_grace_groups.is_empty() {
-            let mut graces: Vec<_> = self
-                .pending_grace_groups
-                .drain(..)
-                .map(|grace| grace_group_attachment_model(&grace))
+            let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
+            let mut graces: Vec<_> = pending_grace_groups
+                .iter()
+                .map(|grace| {
+                    grace_group_attachment_model(
+                        grace,
+                        &mut self.next_slur_id,
+                        &mut self.diagnostics,
+                    )
+                })
                 .collect();
             graces.append(&mut attachments.grace_groups);
             attachments.grace_groups = graces;
@@ -311,10 +318,12 @@ impl LoweringState {
         // annotations) attach to the chord as a whole (its first member),
         // mirroring chord-level attachments. Drain the buffers before the
         // per-member closure, which borrows `self` immutably.
-        let mut pending_graces: Vec<GraceGroupAttachment> = self
-            .pending_grace_groups
-            .drain(..)
-            .map(|grace| grace_group_attachment_model(&grace))
+        let pending_grace_groups = self.pending_grace_groups.drain(..).collect::<Vec<_>>();
+        let mut pending_graces: Vec<GraceGroupAttachment> = pending_grace_groups
+            .iter()
+            .map(|grace| {
+                grace_group_attachment_model(grace, &mut self.next_slur_id, &mut self.diagnostics)
+            })
             .collect();
         let mut pending_symbols: Vec<TextAttachment> = self
             .pending_chord_symbols
@@ -331,6 +340,22 @@ impl LoweringState {
             .drain(..)
             .map(|decoration| decoration_attachment_model(&decoration))
             .collect();
+        let member_attachments = chord
+            .members
+            .iter()
+            .map(|member| {
+                attachment_bundle_model(
+                    &member.note.attachments,
+                    &mut self.next_slur_id,
+                    &mut self.diagnostics,
+                )
+            })
+            .collect::<Vec<_>>();
+        let chord_attachments = attachment_bundle_model(
+            &chord.attachments,
+            &mut self.next_slur_id,
+            &mut self.diagnostics,
+        );
 
         let events = chord
             .members
@@ -348,9 +373,9 @@ impl LoweringState {
                 );
                 let member_multiplier =
                     length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
-                let mut attachments = attachment_bundle_model(&member.note.attachments);
+                let mut attachments = member_attachments[index].clone();
                 if index == 0 {
-                    attachments.extend(attachment_bundle_model(&chord.attachments));
+                    attachments.extend(chord_attachments.clone());
                     if !pending_graces.is_empty() {
                         let mut graces = std::mem::take(&mut pending_graces);
                         graces.append(&mut attachments.grace_groups);
@@ -574,7 +599,11 @@ impl LoweringState {
         let graces: Vec<_> = self
             .pending_grace_groups
             .drain(..)
-            .map(|grace| grace_group_attachment_model(&grace))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|grace| {
+                grace_group_attachment_model(grace, &mut self.next_slur_id, &mut self.diagnostics)
+            })
             .collect();
         if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index) {
             timed.attachments.after_grace_groups.extend(graces);
@@ -762,7 +791,73 @@ pub(crate) fn note_signature(kind: LoweredEventAtomKind) -> Option<(char, i8)> {
     }
 }
 
-fn grace_group_attachment_model(grace: &GraceGroupSyntax) -> GraceGroupAttachment {
+fn grace_group_attachment_model(
+    grace: &GraceGroupSyntax,
+    next_slur_id: &mut u32,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> GraceGroupAttachment {
+    let mut events: Vec<GraceEvent> = Vec::new();
+    let mut pending_slur_starts = Vec::new();
+    let mut open_slurs = Vec::new();
+    let mut last_note_event_index = None;
+
+    for element in &grace.elements {
+        match element {
+            GraceElementSyntax::Slur(slur) => match slur.direction {
+                SlurDirection::Start => {
+                    let open = OpenSlur {
+                        pair_id: *next_slur_id,
+                        marker: *slur,
+                    };
+                    *next_slur_id = (*next_slur_id).saturating_add(1);
+                    pending_slur_starts.push(open);
+                    open_slurs.push(open);
+                }
+                SlurDirection::End => {
+                    let Some(open) = open_slurs.pop() else {
+                        diagnostics.push(unmatched_slur_warning(slur.span));
+                        continue;
+                    };
+                    let start_was_pending = pending_slur_starts
+                        .iter()
+                        .any(|pending| pending.pair_id == open.pair_id);
+                    pending_slur_starts.retain(|pending| pending.pair_id != open.pair_id);
+                    if !start_was_pending && let Some(index) = last_note_event_index {
+                        attach_grace_slur(&mut events[index], open.pair_id, SlurRole::Stop, *slur);
+                    } else {
+                        diagnostics.push(unmatched_slur_warning(slur.span));
+                    }
+                }
+            },
+            _ => {
+                let Some(mut event) = grace_event_model(element) else {
+                    continue;
+                };
+                if is_grace_note_event(&event) {
+                    for open in pending_slur_starts.drain(..) {
+                        attach_grace_slur(&mut event, open.pair_id, SlurRole::Start, open.marker);
+                    }
+                    last_note_event_index = Some(events.len());
+                }
+                events.push(event);
+            }
+        }
+    }
+    let unclosed_pair_ids = open_slurs
+        .iter()
+        .map(|open| open.pair_id)
+        .collect::<Vec<_>>();
+    for open in open_slurs {
+        diagnostics.push(unclosed_slur_warning(open.marker.span));
+    }
+    if !unclosed_pair_ids.is_empty() {
+        for event in &mut events {
+            event
+                .slurs
+                .retain(|slur| !unclosed_pair_ids.contains(&slur.pair_id));
+        }
+    }
+
     GraceGroupAttachment {
         span: grace.span,
         slash: grace.slash_span,
@@ -778,21 +873,37 @@ fn grace_group_attachment_model(grace: &GraceGroupSyntax) -> GraceGroupAttachmen
             .count()
             .try_into()
             .unwrap_or(u32::MAX),
-        events: grace
-            .elements
-            .iter()
-            .filter_map(grace_event_model)
-            .collect(),
+        events,
         slurs: Vec::new(),
     }
 }
 
-fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
+fn attach_grace_slur(event: &mut GraceEvent, pair_id: u32, role: SlurRole, marker: SlurSyntax) {
+    event.slurs.push(SlurAttachment {
+        pair_id,
+        role,
+        span: marker.span,
+        dotted: marker.dotted,
+    });
+}
+
+fn is_grace_note_event(event: &GraceEvent) -> bool {
+    matches!(
+        event.kind,
+        GraceEventKind::Note(_) | GraceEventKind::Chord(_)
+    )
+}
+
+fn attachment_bundle_model(
+    bundle: &AttachmentBundle,
+    next_slur_id: &mut u32,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> EventAttachments {
     EventAttachments {
         grace_groups: bundle
             .grace_groups
             .iter()
-            .map(grace_group_attachment_model)
+            .map(|grace| grace_group_attachment_model(grace, next_slur_id, diagnostics))
             .collect(),
         after_grace_groups: Vec::new(),
         chord_symbols: bundle
@@ -869,12 +980,14 @@ fn grace_event_model(element: &GraceElementSyntax) -> Option<GraceEvent> {
         GraceElementSyntax::Note(note) => Some(GraceEvent {
             source_span: note.span,
             kind: GraceEventKind::Note(grace_note_event_model(note)),
+            slurs: Vec::new(),
         }),
         GraceElementSyntax::Rest(rest) => Some(GraceEvent {
             source_span: rest.span,
             kind: GraceEventKind::Rest(RestEvent {
                 visibility: rest.visibility,
             }),
+            slurs: Vec::new(),
         }),
         GraceElementSyntax::Chord(chord) => Some(GraceEvent {
             source_span: chord.span,
@@ -885,8 +998,9 @@ fn grace_event_model(element: &GraceElementSyntax) -> Option<GraceEvent> {
                     .map(|member| grace_note_event_model(&member.note))
                     .collect(),
             ),
+            slurs: Vec::new(),
         }),
-        GraceElementSyntax::Malformed(_) => None,
+        GraceElementSyntax::Slur(_) | GraceElementSyntax::Malformed(_) => None,
     }
 }
 

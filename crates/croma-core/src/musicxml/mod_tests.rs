@@ -1751,6 +1751,157 @@ fn grace_before_plain_note_still_attaches() {
 }
 
 #[test]
+fn grace_group_internal_slurs_export_on_grace_notes_in_source_order() {
+    let source = "X:1\nT:Grace Internal Slurs\nM:4/4\nL:1/8\nK:C\n{(fg)}a2 {(ef)}g2|]\n";
+    let export = export_musicxml(source).expect("grace-internal slur score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        export
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.music.unknown_grace_token")
+            .count(),
+        0,
+        "grace-internal slur markers should not warn: {:?}",
+        export.diagnostics
+    );
+    assert_eq!(count(&export.musicxml, "<grace/>"), 4);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 2);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 2);
+
+    let note_blocks = musicxml_note_blocks(&export.musicxml);
+    let grace_slurs = note_blocks
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .map(|note| {
+            (
+                element_text(note, "step")
+                    .and_then(|text| text.chars().next())
+                    .expect("grace note should have a pitch step"),
+                note.contains("<slur type=\"start\""),
+                note.contains("<slur type=\"stop\""),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        grace_slurs,
+        vec![
+            ('F', true, false),
+            ('G', false, true),
+            ('E', true, false),
+            ('F', false, true),
+        ]
+    );
+    assert!(
+        note_blocks
+            .iter()
+            .filter(|note| !note.contains("<grace"))
+            .all(|note| !note.contains("<slur")),
+        "main notes should not receive the grace-internal slurs"
+    );
+}
+
+#[test]
+fn malformed_grace_group_internal_slurs_warn_without_musicxml_slur_pairs() {
+    for (source, code, marker) in [
+        (
+            "X:1\nT:t\nM:4/4\nK:C\n{(fg}a|]\n",
+            "abc.music.unclosed_slur",
+            "(",
+        ),
+        (
+            "X:1\nT:t\nM:4/4\nK:C\n{fg)}a|]\n",
+            "abc.music.unmatched_slur",
+            ")",
+        ),
+    ] {
+        let export = export_musicxml(source).expect("malformed grace slur should recover");
+
+        assert_balanced_xml(&export.musicxml);
+        assert_diagnostic_span(source, &export.diagnostics, code, marker);
+        assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+        assert!(
+            !export.musicxml.contains("<slur "),
+            "malformed grace-internal slur should not export an unpaired MusicXML slur: {}",
+            export.musicxml
+        );
+    }
+}
+
+#[test]
+fn grace_group_internal_slur_can_export_from_chord_to_note() {
+    let source = "X:1\nT:Grace Chord Slur\nM:4/4\nL:1/8\nK:C\n{([fg]a)}c|]\n";
+    let export = export_musicxml(source).expect("grace chord slur should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.diagnostics.is_empty(), "{:?}", export.diagnostics);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 3);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 1);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 1);
+
+    let grace_slurs = musicxml_note_blocks(&export.musicxml)
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .map(|note| {
+            (
+                element_text(note, "step")
+                    .and_then(|text| text.chars().next())
+                    .expect("grace note should have a pitch step"),
+                note.contains("<chord/>"),
+                note.contains("<slur type=\"start\""),
+                note.contains("<slur type=\"stop\""),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        grace_slurs,
+        vec![
+            ('F', false, true, false),
+            ('G', true, false, false),
+            ('A', false, false, true),
+        ]
+    );
+}
+
+#[test]
+fn grace_group_internal_slur_across_rest_stays_on_grace_note() {
+    let source = "X:1\nT:Grace Rest Slur\nM:4/4\nL:1/8\nK:C\n{(fz)}a|]\n";
+    let export = export_musicxml(source).expect("grace rest slur should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.diagnostics.is_empty(), "{:?}", export.diagnostics);
+    assert_eq!(count(&export.musicxml, "<grace/>"), 2);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 1);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 1);
+
+    let note_blocks = musicxml_note_blocks(&export.musicxml);
+    let grace_slurs = note_blocks
+        .iter()
+        .filter(|note| note.contains("<grace"))
+        .map(|note| {
+            (
+                element_text(note, "step").and_then(|text| text.chars().next()),
+                note.contains("<rest/>"),
+                note.contains("<slur type=\"start\""),
+                note.contains("<slur type=\"stop\""),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        grace_slurs,
+        vec![(Some('F'), false, true, true), (None, true, false, false)]
+    );
+    assert!(
+        note_blocks
+            .iter()
+            .filter(|note| !note.contains("<grace"))
+            .all(|note| !note.contains("<slur")),
+        "rest-adjacent grace slur should not leak to the main note"
+    );
+}
+
+#[test]
 fn chord_symbol_before_grace_group_emits_harmony() {
     // `"F"{AB}c4`: the chord symbol written before the grace group binds to
     // the main note `c` and exports as a <harmony>; before the fix the first
@@ -2831,6 +2982,26 @@ fn unclosed_chord_with_quoted_text_before_barline_preserves_measures() {
 
 fn count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
+}
+
+fn musicxml_note_blocks(xml: &str) -> Vec<&str> {
+    let mut notes = Vec::new();
+    let mut index = 0;
+    while let Some(offset) = xml[index..].find("<note") {
+        let start = index + offset;
+        let open_end = xml[start..]
+            .find('>')
+            .map(|end| start + end)
+            .expect("note start tag should terminate");
+        let end_tag = "</note>";
+        let end = xml[open_end..]
+            .find(end_tag)
+            .map(|end| open_end + end + end_tag.len())
+            .expect("note should have closing tag");
+        notes.push(&xml[start..end]);
+        index = end;
+    }
+    notes
 }
 
 #[derive(Debug)]
