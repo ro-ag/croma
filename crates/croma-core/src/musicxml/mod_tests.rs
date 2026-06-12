@@ -558,6 +558,33 @@ fn plus_decoration_emits_stopped_technical_not_words() {
 }
 
 #[test]
+fn fingering_arpeggio_and_slide_decorations_emit_notations_not_words() {
+    // ABC 2.1 §4.14 defines !0!-!5! as fingerings, !arpeggio! as a vertical
+    // squiggle, and !slide! as a slide up to a note. These are note-attached
+    // notations, not detached direction words.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n!3!C !arpeggio![CEG] !slide!D E|\n";
+    let export = export_musicxml(source).expect("decoration notations should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<fingering>3</fingering>"), 1);
+    assert_eq!(count(&export.musicxml, "<arpeggiate"), 1);
+    assert_eq!(count(&export.musicxml, "<scoop/>"), 1);
+    for text in ["3", "arpeggio", "slide"] {
+        assert!(
+            !export.musicxml.contains(&format!("<words>{text}</words>")),
+            "{text} decoration should not be emitted as words"
+        );
+    }
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported decorations should not produce unsupported-decoration diagnostics"
+    );
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).
