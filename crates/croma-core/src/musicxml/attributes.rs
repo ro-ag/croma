@@ -1,4 +1,4 @@
-use crate::model::{Part, StaffId};
+use crate::model::{ClefChangeModel, Part, StaffId};
 
 use super::{MusicXmlWriter, unsupported_transpose_warning};
 
@@ -75,6 +75,17 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.end("attributes");
     }
 
+    pub(crate) fn write_mid_tune_clef(
+        &mut self,
+        clef: &ClefChangeModel,
+        staff: StaffId,
+        part: &Part,
+    ) {
+        self.xml.start("attributes", &[]);
+        self.write_clef_element(Some(clef.clef.text.as_str()), staff, part.staves.len() > 1);
+        self.xml.end("attributes");
+    }
+
     pub(crate) fn write_multiple_rest_measure_style(&mut self, count: u32) {
         self.xml.start("attributes", &[]);
         self.xml.start("measure-style", &[]);
@@ -97,21 +108,25 @@ impl<'score> MusicXmlWriter<'score> {
                 .voices
                 .iter()
                 .find(|voice| voice.staff.value == staff.value)
-                .and_then(|voice| voice.properties.clef.as_ref())
+                .and_then(|voice| voice.initial_properties.clef.as_ref())
                 .map(|clef| clef.text.as_str());
-            let clef = clef_model(clef_text);
-            let number = staff.value.to_string();
-            let attrs = (part.staves.len() > 1).then_some([("number", number.as_str())]);
-            let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
-            self.xml.start("clef", attrs_slice);
-            self.xml.text_element("sign", clef.sign);
-            self.xml.text_element("line", clef.line);
-            if clef.octave_change != 0 {
-                self.xml
-                    .text_element("clef-octave-change", &clef.octave_change.to_string());
-            }
-            self.xml.end("clef");
+            self.write_clef_element(clef_text, staff, part.staves.len() > 1);
         }
+    }
+
+    fn write_clef_element(&mut self, clef_text: Option<&str>, staff: StaffId, numbered: bool) {
+        let clef = clef_model(clef_text);
+        let number = staff.value.to_string();
+        let attrs = numbered.then_some([("number", number.as_str())]);
+        let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
+        self.xml.start("clef", attrs_slice);
+        self.xml.text_element("sign", clef.sign);
+        self.xml.text_element("line", clef.line);
+        if clef.octave_change != 0 {
+            self.xml
+                .text_element("clef-octave-change", &clef.octave_change.to_string());
+        }
+        self.xml.end("clef");
     }
 
     fn write_transpose_if_available(&mut self, part: &Part) {

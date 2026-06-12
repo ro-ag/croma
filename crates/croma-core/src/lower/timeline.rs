@@ -26,6 +26,7 @@ pub(crate) fn build_voice_timeline(
     let measures = builder.finish(diagnostics);
     VoiceTimeline {
         id: voice.id,
+        initial_properties: voice.initial_properties,
         properties: voice.properties,
         measures,
         source_span: voice.source_span,
@@ -118,6 +119,22 @@ impl VoiceTimelineBuilder {
                     source_order: 0,
                     alignable: false,
                     kind: TimelineEventKind::MeterChange(meter),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                    attachments: EventAttachments::default(),
+                });
+            }
+            LoweredEvent::ClefChange(clef) => {
+                let onset = self.onset;
+                let span = clef.source_span;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::ClefChange(clef),
                     lyrics: Vec::new(),
                     symbols: Vec::new(),
                     attachments: EventAttachments::default(),
@@ -399,6 +416,7 @@ fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
                 event.kind,
                 TimelineEventKind::KeyChange(_)
                     | TimelineEventKind::MeterChange(_)
+                    | TimelineEventKind::ClefChange(_)
                     | TimelineEventKind::TempoChange(_)
             )
         })
@@ -423,6 +441,7 @@ fn is_barline_only_measure(measure: &VoiceMeasureTimeline) -> bool {
                 TimelineEventKind::Barline { .. }
                     | TimelineEventKind::KeyChange(_)
                     | TimelineEventKind::MeterChange(_)
+                    | TimelineEventKind::ClefChange(_)
             )
         })
 }

@@ -223,6 +223,7 @@ fn measure_sequences<'score>(part: &'score Part, id: MeasureId) -> Vec<MeasureSe
                         | TimedEventKind::Spacer
                         | TimedEventKind::KeyChange(_)
                         | TimedEventKind::MeterChange(_)
+                        | TimedEventKind::ClefChange(_)
                         | TimedEventKind::TempoChange(_)
                 )
             })

@@ -779,7 +779,7 @@ CASCADE-verdict files contribute 4,623 missing rows, ABC2XML_DROPS_TACET 435, AB
 
 ## octave
 
-### `octave-midtune-clef-octave-shift-dropped` — **OPEN** (croma_bug, repro=None)
+### `octave-midtune-clef-octave-shift-dropped` — **FIXED(37q)** (croma_bug, repro=True)
 
 *Share:* ~0.15% rows (8 rows, 1 file) — but the only genuine sounding-octave error in the category — *files:* tune_006650.abc
 
@@ -789,8 +789,10 @@ Minimal repro /tmp/octave-triage/clef_midtune.abc: `G,CEG|[K:treble-8]G,CEG|[K:t
 
 *Fix:* Lower layer: reorder guards in crates/croma-core/src/lower/mod.rs — apply_key_change (lines 316-330) and apply_inline_field 'K' arm (lines 408-420) must route K: values whose properties parse to recognized clef/octave/middle/transpose settings to the clef-only merge (apply_inline_key_clef_properties / merge_voice_properties) instead of letting key_is_invalid_for_lowering (line 1076) reject them; o
 
+37q: fixed with a zero-duration `ClefChange` timeline/semantic event for body and inline `K:` clef/octave modifiers, while keeping each voice's initial clef separate from its effective mid-tune properties. MusicXML now emits mid-tune `<attributes><clef>` and lowered pitches use the active clef octave shift. Regression `inline_clef_shorthand_key_field_emits_mid_tune_clef_and_shifts_notes` covers `[K:treble-8]` and `[K:treble+8]`. Target compare for `tune_006650` is now a structural match with 0 rows.
 
-### `octave-staves-order-ignored` — **OPEN** (croma_bug, repro=None)
+
+### `octave-staves-order-ignored` — **FIXED(37p)** (croma_bug, repro=True)
 
 *Share:* ~0.2% rows (1 file; octave subset of its 416 rows) — *files:* tune_013106.abc
 
@@ -799,6 +801,8 @@ tune_013106 declares voices in body order V:1, V:3, V:2 with explicit `%%staves 
 
 
 *Fix:* crates/croma-core/src/lower/mod.rs part_voice_groups (lines 837-897): drop or narrow the merge-only fallback at lines 890-895 — when the directive mentions all voices, honor its ordering even without parenthesis groups (unmentioned voices appended after, as today). Single-function change in the lower layer; build_score_model (line 899) consumes the groups unchanged.
+
+37p: fixed by honoring explicit `%%staves`/`%%score` voice ordering even when every group remains one voice per part. Regression `staves_bracket_group_orders_parts_by_directive` covers body declaration order `V:1`, `V:3`, `V:2` under `%%staves [1 2 3]`. Target compare for `tune_013106` is now a structural match with 0 rows.
 
 
 ### `octave-croma-unclosed-bracket-drops-notes` — **QUIRK** (reference_quirk, repro=None)
@@ -879,12 +883,14 @@ Malformed input. tune_009179 `e2 E E2 ][ f |`: minimal repro /tmp/bracketbar.abc
 *Fix:* Phase 37f keeps the existing `abc.music.unclosed_chord` diagnostic but recovers parsed members as ordinary notes when a top-level unclosed `[` is stopped by a barline, leaving that barline to be parsed by the main music loop. The target `e2 E E2 ][ f |` now exports the lost F pickup, and the quoted bracket runs in `tune_005224.abc` now export their eight note sequences instead of swallowing them. Recovery is gated to the top-level music-line chord path; grace-internal malformed chords keep the old no-leak behavior (`{[CDE | G} A|` only yields mainline A). Evidence: `cargo test -p croma-core unclosed_chord -- --nocapture` passes 8 focused tests, target `tune_009179.abc`/`tune_005224.abc` exports both succeed and compare to 1 structural match plus 5 residual rows in `tune_005224.abc` (separate text/barline artifacts), and full 10k compare vs phase 37e improves structural matches 8870->8873 and mismatch rows 164052->162483 (`missing_in_croma -859`, `extra_in_croma -312`, `pitch -95`, `duration -91`, `lyric -63`, plus smaller category improvements), with no harness or MusicXML import failures.
 
 
-### `pitch-staves-voice-order` — **EQUIV** (legitimate_difference, repro=True)
+### `pitch-staves-voice-order` — **SUPERSEDED(37p)** (formerly legitimate_difference, repro=False)
 
 *Share:* ~0.4% rows (54 rows, 1 file) — *files:* tune_013106.abc
 
 
 tune_013106 declares voices in source order V:1, V:3, V:2 under `%%staves [1 2 3]`. Both engines emit parts P1,P2,P3 (verified via grep of both XMLs), but croma's P2 holds the second-DECLARED voice (V:3) while abc2xml's P2 holds V:2 per the %%staves layout. The pitch sequences are identical as multisets — the diff is one 32-note block transposed (croma c[38:70] == ref r[74:106]). %%staves is an abcm2ps/abc2xml typesetting directive, not ABC 2.1 core (§11 stylesheet directives are optional); both part orders are valid MusicXML encodings of the same score. Croma could optionally honor %%staves ordering for layout fidelity (musicxml/score.rs part assembly), or the comparator could match parts by voice id instead of position.
+
+37p: superseded by the `octave-staves-order-ignored` fix. Croma now honors the explicit directive order for singleton bracket groups, so `tune_013106` structurally matches the reference and this pitch-order difference no longer appears.
 
 
 ### `pitch-abc2xml-swallows-line-after-legacy-linebreak` — **QUIRK** (reference_quirk, repro=True)
@@ -1058,7 +1064,7 @@ Minimal repro /tmp/tie-triage/r4_detached_tie.abc: 'F2 E4|\n-E2 G4|]'. croma emi
 
 ## tuplet
 
-### `tuplet-fabricated-time-modification-for-inexpressible-durations` — **OPEN** (croma_bug, repro=None)
+### `tuplet-fabricated-time-modification-for-inexpressible-durations` — **FIXED(37r)** (croma_bug, repro=True)
 
 *Share:* ~80/691 rows (~11.6%), 35 files — *files:* tune_000464.abc, tune_006760.abc, tune_006472.abc
 
@@ -1067,6 +1073,8 @@ Minimal repro /tmp/tuplet-probe/t4.abc (`M:none L:1/4 K:C` + `F16`): croma emits
 
 
 *Fix:* MusicXML export layer only: (1) add NoteTypeCandidate entries for "long" (4/1) and "maxima" (8/1) in note_type_candidates() in /Users/rodox/dev/rs/croma/crates/croma-core/src/musicxml/note.rs; (2) for rests spanning the full measure, emit `<rest measure="yes"/>` (note.rs line ~256, currently `self.xml.empty("rest", &[])`) and omit <type>, matching MusicXML semantics; (3) keep the time-modification
+
+37r: fixed the remaining narrowed repro by suppressing fabricated `<type>` and `<time-modification>` for full-measure rests whose display spelling would otherwise be invented. Regression `full_measure_rest_omits_fabricated_type_for_inexpressible_duration` covers a 5/4 `z5` measure rest. Target compare for `tune_006472` is now a structural match with 0 rows; earlier long-note tuplets were already stale under current note-type spelling.
 
 
 ### `tuplet-one-note-group-dangling-start` — **FIXED(36a)** (croma_bug, repro=True)
