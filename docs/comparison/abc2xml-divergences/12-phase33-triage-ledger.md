@@ -523,7 +523,7 @@ Minimal: `C C C C | z4 | D D D D |` + `w: one two three four||five six sev- en` 
 37m: fixed by tracking a concrete bar-marker cursor in lyric/symbol alignment and deriving each block's first music measure so rest-only bars count even when no alignable note refs exist. Focused tests cover leading rest-only pickup bars, later lyric blocks after rest-only gaps, ordinary boundary no-ops, and consecutive markers. Target compare for tune_013577 improved 40 lyric rows with 26 lyric-count diagnostics to 1 residual extra empty `<extend/>` row and 0 diagnostics; all missing/different lyric text rows from the rest-only bar lag are gone. The residual is unrelated extender serialization in Treble m8, not the rest-only bar-advance defect.
 
 
-### `lyric-liberal-barline-bracket-pair-note-drop` — **OPEN** (croma_bug, repro=None)
+### `lyric-liberal-barline-bracket-pair-note-drop` — **RE-VERDICT(37n)** (stale_croma_bug, repro=False)
 
 *Share:* ~45% rows (63/140), 4/9 files — *files:* tune_012835.abc, tune_009178.abc, tune_009179.abc, tune_012962.abc
 
@@ -532,6 +532,8 @@ Minimal: `X:1\nM:6/8\nL:1/8\nK:G\ne2 E E2 ][ f | g3 f3 |\nw: one-ly, Tam. They s
 
 
 *Fix:* Parse layer. crates/croma-core/src/parse/barline.rs parse_barline: the break-after-`]` rule (lines 33-37) should keep consuming a following `[` when it continues a barline shape (safe heuristic: `[` followed by whitespace/EOL/another barline char — i.e. not a digit (variant ending), not letter+`:` (inline field), not chord content), emitting one Liberal barline for the whole `][` run. Secondary ha
+
+37n: rechecked the original four-file target after the phase-37 parser/lowering fixes. Fresh target export/compare artifacts are under `docs/untracked/phase-37-ledger-burndown/target-lyric-barline-bracket-37n/`. `tune_009178.abc`, `tune_009179.abc`, and `tune_012835.abc` now structurally match reference; `tune_012962.abc` has 39 residual rows, but the first break is a reference-only zero-duration grace `E` before the disputed `][ B2` boundary. The claimed dropped note after `][` is no longer reproducible in current Croma, so this ledger target is stale/resolved for the original Croma bug. The remaining `tune_012962` rows belong to a separate grace/reference-alignment quirk, and the still-emitted `abc.music.unclosed_chord` warning on `][` is cosmetic for this target because structure is recovered.
 
 
 ### `lyric-voice-overlay-syllable-matching` — **OPEN** (croma_bug, repro=None)
