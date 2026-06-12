@@ -2312,6 +2312,23 @@ fn sequential_tuplets_reuse_musicxml_number_levels() {
 }
 
 #[test]
+fn one_note_tuplet_emits_balanced_start_and_stop() {
+    let source = "X:1\nT:One Note Tuplet\nL:1/8\nK:C\n(3:2:1G B|\n";
+    let export = export_musicxml(source).expect("one-note tuplet should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"stop\" number=\"1\"/>"),
+        1
+    );
+    assert!(!export.musicxml.contains("number=\"2\""));
+}
+
+#[test]
 fn reduced_duration_note_types_do_not_emit_spurious_tuplets() {
     let source = "X:1\nT:Long notes\nM:4/4\nL:1/4\nK:C\nC2 D4|\n";
     let export = export_musicxml(source).expect("long note types should export");
