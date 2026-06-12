@@ -89,9 +89,9 @@ pub(crate) struct LoweringState {
     /// or other flush trigger before their note was parsed (ABC 2.1 §4.20). The
     /// parser emits these as standalone `MusicItem::GraceGroup` items; we buffer
     /// them here and merge them into the next timed event's grace groups so the
-    /// grace still attaches to the note it precedes. Dropped at hard boundaries
-    /// (barline, voice switch, end of tune) when no timed note follows — a grace
-    /// with no following note is void.
+    /// grace still attaches to the note it precedes. If a hard boundary follows
+    /// and the current measure already has a previous timed note, the group is
+    /// instead resolved as an after-grace/trill termination on that note.
     pub(crate) pending_grace_groups: Vec<GraceGroupSyntax>,
     /// Quoted chord symbols flushed out of the parser's pending attachments by
     /// an intervening barline (`"F"| c`), line end, or other flush trigger
@@ -561,6 +561,28 @@ impl LoweringState {
         self.broken_left_available = false;
     }
 
+    pub(crate) fn attach_pending_grace_groups_to_previous_note(&mut self) -> bool {
+        if self.pending_grace_groups.is_empty() || !self.broken_left_available {
+            return false;
+        }
+        let Some(event_index) = self.previous_timed_note_event_index() else {
+            return false;
+        };
+        if !self.timed_event_has_trill(event_index) {
+            return false;
+        }
+        let graces: Vec<_> = self
+            .pending_grace_groups
+            .drain(..)
+            .map(|grace| grace_group_attachment_model(&grace))
+            .collect();
+        if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index) {
+            timed.attachments.after_grace_groups.extend(graces);
+            return true;
+        }
+        false
+    }
+
     fn attach_pending_slur_starts(&mut self, group: &[usize]) {
         if self.pending_slur_starts.is_empty() {
             return;
@@ -640,6 +662,33 @@ impl LoweringState {
             .find_map(|(index, event)| lowered_timed_note(Some(event)).map(|_| index))
     }
 
+    fn previous_timed_note_event_index(&self) -> Option<usize> {
+        for (index, event) in self.lowered.iter().enumerate().rev() {
+            match event {
+                LoweredEvent::Timed(timed) => {
+                    return matches!(
+                        &timed.event.kind,
+                        LoweredEventAtomKind::Note { chord: false, .. }
+                    )
+                    .then_some(index);
+                }
+                _ => continue,
+            }
+        }
+        None
+    }
+
+    fn timed_event_has_trill(&self, event_index: usize) -> bool {
+        let Some(LoweredEvent::Timed(timed)) = self.lowered.get(event_index) else {
+            return false;
+        };
+        timed
+            .attachments
+            .decorations
+            .iter()
+            .any(|decoration| decoration.name == "trill")
+    }
+
     fn attach_slur(
         &mut self,
         event_index: usize,
@@ -675,7 +724,9 @@ impl LoweringState {
             self.diagnostics
                 .push(dangling_quoted_text_warning(text.span));
         }
-        // Same for a grace group with no following note to decorate (§4.12).
+        self.attach_pending_grace_groups_to_previous_note();
+        // Same for a grace group with no following or previous note to decorate
+        // (§4.12).
         for grace in std::mem::take(&mut self.pending_grace_groups) {
             self.diagnostics
                 .push(dangling_grace_group_warning(grace.span));
@@ -743,6 +794,7 @@ fn attachment_bundle_model(bundle: &AttachmentBundle) -> EventAttachments {
             .iter()
             .map(grace_group_attachment_model)
             .collect(),
+        after_grace_groups: Vec::new(),
         chord_symbols: bundle
             .chord_symbols
             .iter()

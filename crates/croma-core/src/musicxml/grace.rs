@@ -16,7 +16,32 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
         tuplet_numbers: &TupletNumbers,
     ) {
-        for group in &attachments.grace_groups {
+        self.write_grace_group_list(&attachments.grace_groups, sequence, part, tuplet_numbers);
+    }
+
+    pub(crate) fn write_after_grace_groups(
+        &mut self,
+        attachments: &EventAttachments,
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+        tuplet_numbers: &TupletNumbers,
+    ) {
+        self.write_grace_group_list(
+            &attachments.after_grace_groups,
+            sequence,
+            part,
+            tuplet_numbers,
+        );
+    }
+
+    fn write_grace_group_list(
+        &mut self,
+        groups: &[GraceGroupAttachment],
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+        tuplet_numbers: &TupletNumbers,
+    ) {
+        for group in groups {
             if group.events.is_empty() && group.note_count > 0 {
                 self.diagnostics.push(unsupported_grace_warning(group.span));
                 continue;

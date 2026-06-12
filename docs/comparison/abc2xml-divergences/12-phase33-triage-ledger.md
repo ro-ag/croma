@@ -815,7 +815,7 @@ tune_009310 contains two `Z2 [|]` multi-measure rests; croma emits 54 measures, 
 **Verifier correction:** The mechanism (Zn measure-count shift causing alignment-artifact pitch rows) reproduces exactly, and comparator-side multirest expansion before alignment would indeed eliminate the rows. But the verdict 'legitimate_difference' rests on a false premise: croma does not emit a spec-valid compressed representation. MusicXML's <multiple-rest> is a measure-style display directive that still requires the n measures to be written out individually; croma emits neither that nor literal measures, but a sin
 
 
-### `pitch-trailing-grace-group-dropped` — **OPEN** (croma_bug, repro=True)
+### `pitch-trailing-grace-group-dropped` — **FIXED(37e)** (croma_bug, repro=True)
 
 *Share:* ~1% rows (<=211 rows, 1 corpus file; bounded above because tune_006695 also carries a phantom measure) — *files:* tune_006695.abc
 
@@ -823,7 +823,7 @@ tune_009310 contains two `Z2 [|]` multi-measure rests; croma emits 54 measures, 
 Minimal repro /tmp/trailgrace.abc: `Te6{de}|d2f f2f|`. abc2xml emits the principal E plus two `<grace/>` notes D,E after it; croma emits only the E — exit 0, zero bytes on stderr (verified). Corpus: tune_006695 (`Te6{de}` trill with termination) — reference pitch stream has (E5,D5) at index 268 that croma lacks. ABC 2.1 §4.12 allows grace groups and §4.20 orders them before a note; a group before a barline is spec-unspecified, but the notation is real musical content (a standard trill termination) and croma's own code documents the drop as deliberate: crates/croma-core/src/lower/voice.rs lines ~88-94 ('Dropped at hard boundaries (barline, voice switch, end of tune) when no timed note follows') and crates/croma-core/src/lower/mod.rs ~512-514 clears pending_grace_groups at barlines. This is silent source-information loss per the task's croma_bug definition. Related to parser-backlog item 4…
 
 
-*Fix:* Lower layer: crates/croma-core/src/lower/voice.rs (pending_grace_groups buffer + flush) and crates/croma-core/src/lower/mod.rs (barline arm ~line 512 that clears the buffer; MusicItem::GraceGroup arm ~530). Instead of clearing at a barline, attach the pending group to the PREVIOUS timed note as an after-grace attachment (model addition in croma-core/src/model.rs; export via existing crates/croma-c
+*Fix:* Phase 37e adds an `after_grace_groups` attachment slot and resolves a pending standalone grace group backward only for a standalone trill-decorated note immediately before a hard boundary. MusicXML now writes those groups after the owning note, and ABC dump preserves them as an event suffix. The target repro `Te6{de}|d2f f2f|` now exports the principal E followed by D/E grace notes in measure 1, matching abc2xml ordering; ordinary `{g}|d` cross-bar leading-grace behavior remains unchanged. A guard keeps chord-member trills from draining graces into member attachments that exporters do not emit. Evidence: focused lower/MusicXML/to_abc grace tests pass; target `tune_006695.abc` exports nine `<grace/>` notes, matching the reference count and placing the new D/E pair after the trill E; full 10k compare vs phase 37d improves structural matches 8869->8870 and mismatch rows 164188->164052 (`missing_in_croma -64`, `extra_in_croma -64`, `duration -3`, `measure_alignment -4`, `voice -4`, with small positional `accidental +2`/`pitch +1` in the same target file), with no harness or MusicXML import failures.
 
 
 ### `pitch-unclosed-chord-recovery-drops-notes` — **OPEN** (croma_bug, repro=True)

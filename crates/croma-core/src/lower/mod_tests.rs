@@ -1905,6 +1905,74 @@ fn chord_symbol_before_grace_group_binds_to_main_note() {
 }
 
 #[test]
+fn trailing_trill_grace_group_binds_as_after_grace_on_previous_note() {
+    let source = "X:1\nT:Trailing Grace\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert!(matches!(
+        &notes[0].kind,
+        TimedEventKind::Note(note) if note.pitch.step == 'E'
+    ));
+    assert_eq!(notes[0].measure.number, 1);
+    assert_eq!(notes[0].attachments.grace_groups.len(), 0);
+    assert_eq!(notes[0].attachments.after_grace_groups.len(), 1);
+    assert_eq!(notes[0].attachments.after_grace_groups[0].note_count, 2);
+
+    assert!(matches!(
+        &notes[1].kind,
+        TimedEventKind::Note(note) if note.pitch.step == 'D'
+    ));
+    assert_eq!(notes[1].measure.number, 2);
+    assert!(notes[1].attachments.grace_groups.is_empty());
+    assert!(notes[1].attachments.after_grace_groups.is_empty());
+}
+
+#[test]
+fn trailing_grace_after_chord_member_trill_does_not_drain_into_member() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n[CE!trill!G]2{de}|A2 A2|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let events = tune
+        .score
+        .parts
+        .iter()
+        .flat_map(|part| &part.voices)
+        .flat_map(|voice| &voice.events)
+        .collect::<Vec<_>>();
+    let first_chord = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some((event, chord)),
+            _ => None,
+        })
+        .expect("expected chord");
+    assert!(first_chord.0.attachments.after_grace_groups.is_empty());
+    assert!(
+        first_chord
+            .1
+            .members
+            .iter()
+            .all(|member| member.attachments.after_grace_groups.is_empty())
+    );
+
+    let following_a = events
+        .iter()
+        .find(|event| {
+            matches!(
+                &event.kind,
+                TimedEventKind::Note(note) if note.pitch.step == 'A'
+            )
+        })
+        .expect("expected following A");
+    assert_eq!(following_a.measure.number, 2);
+    assert_eq!(following_a.attachments.grace_groups.len(), 1);
+    assert_eq!(following_a.attachments.grace_groups[0].note_count, 2);
+}
+
+#[test]
 fn chord_symbol_before_slur_open_binds_to_first_slurred_note() {
     // `"G7"(DE)`: the chord symbol rides across the slur-open and binds to
     // `D`, which also carries the slur start; `E` carries the slur stop.

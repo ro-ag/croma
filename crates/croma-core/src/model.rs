@@ -271,6 +271,7 @@ pub struct AccidentalMark {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EventAttachments {
     pub grace_groups: Vec<GraceGroupAttachment>,
+    pub after_grace_groups: Vec<GraceGroupAttachment>,
     pub chord_symbols: Vec<TextAttachment>,
     pub annotations: Vec<TextAttachment>,
     pub decorations: Vec<DecorationAttachment>,
@@ -284,6 +285,7 @@ pub struct EventAttachments {
 impl EventAttachments {
     pub fn is_empty(&self) -> bool {
         self.grace_groups.is_empty()
+            && self.after_grace_groups.is_empty()
             && self.chord_symbols.is_empty()
             && self.annotations.is_empty()
             && self.decorations.is_empty()
@@ -296,6 +298,7 @@ impl EventAttachments {
 
     pub(crate) fn extend(&mut self, other: EventAttachments) {
         self.grace_groups.extend(other.grace_groups);
+        self.after_grace_groups.extend(other.after_grace_groups);
         self.chord_symbols.extend(other.chord_symbols);
         self.annotations.extend(other.annotations);
         self.decorations.extend(other.decorations);

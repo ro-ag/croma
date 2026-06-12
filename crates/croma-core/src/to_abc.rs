@@ -696,7 +696,7 @@ fn decoration_str(name: &str) -> String {
 }
 
 /// Attachments emitted AFTER a note/rest (length suffix already written): the
-/// tie marker, then one `)` per slur that stops on this event.
+/// tie marker, one `)` per slur stop, then any after-grace/trill termination.
 fn event_suffix(attachments: &crate::EventAttachments) -> String {
     use crate::model::SlurRole;
     let mut out = String::new();
@@ -707,6 +707,9 @@ fn event_suffix(attachments: &crate::EventAttachments) -> String {
         if slur.role == SlurRole::Stop {
             out.push(')');
         }
+    }
+    for grace in &attachments.after_grace_groups {
+        out.push_str(&grace_str(grace));
     }
     out
 }
@@ -1429,6 +1432,25 @@ mod tests {
             );
             assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
         }
+    }
+
+    #[test]
+    fn trailing_trill_grace_notes_roundtrip_after_principal_note() {
+        let src = "X:1\nT:Trailing Grace\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+
+        assert!(
+            abc.contains("!trill!e6{de}"),
+            "after-grace suffix missing from ABC: {abc:?}"
+        );
+        assert_eq!(
+            grace_pitches(&s1),
+            grace_pitches(&s2),
+            "grace for {src:?} -> {abc:?}"
+        );
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
     }
 
     #[test]
