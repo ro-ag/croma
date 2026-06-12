@@ -224,6 +224,49 @@ impl LoweringState {
         attachments
     }
 
+    pub(crate) fn flush_pending_barline_directions(
+        &mut self,
+        line_index: usize,
+        source_order: u32,
+        span: Span,
+    ) {
+        let mut attachments = EventAttachments::default();
+        if !self.pending_annotations.is_empty() {
+            attachments.annotations = self
+                .pending_annotations
+                .drain(..)
+                .map(|text| annotation_attachment_model(&text))
+                .collect();
+        }
+
+        let mut remaining_decorations = Vec::new();
+        for decoration in self.pending_decorations.drain(..) {
+            if decoration_binds_to_barline(decoration.name.as_str()) {
+                attachments
+                    .decorations
+                    .push(decoration_attachment_model(&decoration));
+            } else {
+                remaining_decorations.push(decoration);
+            }
+        }
+        self.pending_decorations = remaining_decorations;
+
+        if attachments.annotations.is_empty() && attachments.decorations.is_empty() {
+            return;
+        }
+
+        self.lowered.push(LoweredEvent::Timed(LoweredTimedEvent {
+            event: LoweredEventAtom {
+                kind: LoweredEventAtomKind::Spacer { span },
+                duration: Fraction::zero(),
+            },
+            line_index,
+            source_order,
+            alignable: false,
+            attachments,
+        }));
+    }
+
     pub(crate) fn push_note_group(
         &mut self,
         note: &NoteSyntax,
@@ -837,7 +880,7 @@ pub(crate) fn is_note_atom(event: LoweredEventAtom) -> bool {
 pub(crate) fn note_signature(kind: LoweredEventAtomKind) -> Option<(char, i8)> {
     match kind {
         LoweredEventAtomKind::Note { step, octave, .. } => Some((step, octave)),
-        LoweredEventAtomKind::Rest { .. } => None,
+        LoweredEventAtomKind::Rest { .. } | LoweredEventAtomKind::Spacer { .. } => None,
     }
 }
 
@@ -1036,6 +1079,45 @@ pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttach
             QuotedTextKind::ChordSymbol => None,
         },
     }
+}
+
+fn decoration_binds_to_barline(name: &str) -> bool {
+    !matches!(
+        name,
+        "." | "staccato"
+            | ">"
+            | "accent"
+            | "emphasis"
+            | "tenuto"
+            | "wedge"
+            | "marcato"
+            | "breath"
+            | "fermata"
+            | "invertedfermata"
+            | "trill"
+            | "mordent"
+            | "lowermordent"
+            | "uppermordent"
+            | "pralltriller"
+            | "turn"
+            | "invertedturn"
+            | "upbow"
+            | "downbow"
+            | "open"
+            | "thumb"
+            | "snap"
+            | "+"
+            | "plus"
+            | "0"
+            | "1"
+            | "2"
+            | "3"
+            | "4"
+            | "5"
+            | "arpeggio"
+            | "slide"
+            | "roll"
+    )
 }
 
 pub(crate) fn decoration_attachment_model(decoration: &DecorationSyntax) -> DecorationAttachment {
