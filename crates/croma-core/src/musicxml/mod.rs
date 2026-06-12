@@ -33,6 +33,13 @@ struct MusicXmlWriter<'score> {
     /// and only affects implicit grace spelling.)
     active_key: Option<crate::model::KeySignatureModel>,
     slur_numbers: SlurNumbers,
+    lyric_hyphen_open: Vec<OpenLyricHyphen>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenLyricHyphen {
+    voice_key: String,
+    verse: u32,
 }
 
 impl<'score> MusicXmlWriter<'score> {
@@ -42,6 +49,7 @@ impl<'score> MusicXmlWriter<'score> {
             xml: XmlWriter::new(),
             active_key: score.metadata.key.clone(),
             slur_numbers: SlurNumbers::default(),
+            lyric_hyphen_open: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -369,6 +377,65 @@ impl From<&TupletAttachment> for TimeModification {
     }
 }
 
+impl TimeModification {
+    pub(crate) fn composite(tuplets: &[TupletAttachment]) -> Result<Option<Self>, ()> {
+        let mut seen_pairs = Vec::new();
+        let mut actual_notes = 1u32;
+        let mut normal_notes = 1u32;
+        for tuplet in tuplets {
+            if seen_pairs.contains(&tuplet.pair_id) {
+                continue;
+            }
+            seen_pairs.push(tuplet.pair_id);
+            let Some(product) = checked_ratio_product(
+                actual_notes,
+                normal_notes,
+                tuplet.actual_notes,
+                tuplet.normal_notes,
+            ) else {
+                return Err(());
+            };
+            actual_notes = product.0;
+            normal_notes = product.1;
+        }
+        Ok((!seen_pairs.is_empty()).then_some(Self {
+            actual_notes,
+            normal_notes,
+        }))
+    }
+}
+
+fn checked_ratio_product(
+    actual: u32,
+    normal: u32,
+    factor_actual: u32,
+    factor_normal: u32,
+) -> Option<(u32, u32)> {
+    let actual = u64::from(actual) * u64::from(factor_actual);
+    let normal = u64::from(normal) * u64::from(factor_normal);
+    ratio_to_u32(actual, normal)
+}
+
+fn ratio_to_u32(actual: u64, normal: u64) -> Option<(u32, u32)> {
+    if actual <= u64::from(u32::MAX) && normal <= u64::from(u32::MAX) {
+        return Some((actual as u32, normal as u32));
+    }
+    let gcd = gcd_u64(actual, normal);
+    let actual = actual / gcd;
+    let normal = normal / gcd;
+    (actual <= u64::from(u32::MAX) && normal <= u64::from(u32::MAX))
+        .then_some((actual as u32, normal as u32))
+}
+
+fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BarlineLocation {
     Left,
@@ -501,6 +568,19 @@ fn unsupported_note_type_warning(span: Span, duration: Fraction) -> Diagnostic {
     .with_spec_reference(musicxml_reference("type"))
     .with_recovery_note(RecoveryNote::new(
         "A valid MusicXML duration was exported with a conservative quarter-note type.",
+    ))
+}
+
+fn unsupported_tuplet_time_modification_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.musicxml.tuplet.time_modification_overflow",
+        "Nested tuplet ratio product is too large for a supported MusicXML time-modification",
+        span,
+    )
+    .with_spec_reference(musicxml_reference("time-modification"))
+    .with_recovery_note(RecoveryNote::new(
+        "Tuplet notation was exported, but the oversized composite time-modification was omitted.",
     ))
 }
 

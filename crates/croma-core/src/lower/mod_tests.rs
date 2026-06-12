@@ -599,6 +599,52 @@ fn grace_group_internal_slur_can_span_chord_and_note() {
 }
 
 #[test]
+fn bare_grace_slur_closes_on_last_grace_note() {
+    let source = "X:1\nL:1/8\nK:C\n({Bc})D|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        diagnostics.is_empty(),
+        "bare grace slur should not warn: {diagnostics:?}"
+    );
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes.len(), 1);
+    assert!(
+        notes[0].attachments.slurs.is_empty(),
+        "slur should bind to the grace group, not the main note"
+    );
+    let grace = &notes[0].attachments.grace_groups[0];
+    assert_eq!(grace.events.len(), 2);
+    assert_eq!(grace.slurs.len(), 1);
+    assert_eq!(grace.slurs[0].role, SlurRole::Start);
+    assert_eq!(grace.events[1].slurs.len(), 1);
+    assert_eq!(grace.events[1].slurs[0].role, SlurRole::Stop);
+    assert_eq!(grace.slurs[0].pair_id, grace.events[1].slurs[0].pair_id);
+}
+
+#[test]
+fn bare_grace_slur_before_barline_resolves_as_after_grace() {
+    let source = "X:1\nL:1/8\nK:C\nA2({Bc})|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        diagnostics.is_empty(),
+        "bare grace before barline should not warn: {diagnostics:?}"
+    );
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0].attachments.slurs.is_empty());
+    assert!(notes[0].attachments.grace_groups.is_empty());
+    let grace = &notes[0].attachments.after_grace_groups[0];
+    assert_eq!(grace.events.len(), 2);
+    assert_eq!(grace.slurs.len(), 1);
+    assert_eq!(grace.slurs[0].role, SlurRole::Start);
+    assert_eq!(grace.events[1].slurs.len(), 1);
+    assert_eq!(grace.events[1].slurs[0].role, SlurRole::Stop);
+    assert_eq!(grace.slurs[0].pair_id, grace.events[1].slurs[0].pair_id);
+}
+
+#[test]
 fn parses_user_defined_and_legacy_decoration_symbols_from_dialect_state() {
     let user_symbol = parse_document("X:1\nU:W=!trill!\nK:C\nWC\n", ParseOptions::default());
     assert!(user_symbol.diagnostics.is_empty());
@@ -1483,6 +1529,27 @@ fn lyrics_controls_preserve_text_and_diagnose_excess_tokens() {
     assert_eq!(
         count_diagnostics(&report.diagnostics, "abc.lyric.syllable_count"),
         2
+    );
+}
+
+#[test]
+fn lyric_continuation_line_splits_on_inserted_space_not_newline() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F|\nw:a b\n+:c d\n";
+    let document = parse_document(source, ParseOptions::default()).value;
+    let report = parse_tune_report_from_document(&document);
+    let tune = report.value.expect("expected tune");
+    let lyrics = tune.voices[0].measures[0]
+        .events
+        .iter()
+        .flat_map(|event| &event.lyrics)
+        .filter(|lyric| lyric.control == LyricControl::Syllable)
+        .map(|lyric| lyric.text.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(lyrics, vec!["a", "b", "c", "d"]);
+    assert_eq!(
+        count_diagnostics(&report.diagnostics, "abc.lyric.syllable_count"),
+        0
     );
 }
 
@@ -2535,6 +2602,32 @@ fn one_note_tuplet_carries_start_and_stop_on_same_event() {
 }
 
 #[test]
+fn nested_tuplets_carry_outer_and_inner_roles() {
+    let source = "X:1\nM:C\nL:1/4\nK:C\n(7:8:8(3A/A/A/ A/A/A/A/A/|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let events: Vec<_> = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::Note(_)))
+        .collect();
+    assert_eq!(events.len(), 8);
+    assert!(events[0].attachments.tuplets.iter().any(|tuplet| {
+        tuplet.actual_notes == 7 && tuplet.normal_notes == 8 && tuplet.role == TupletRole::Start
+    }));
+    assert!(events[0].attachments.tuplets.iter().any(|tuplet| {
+        tuplet.actual_notes == 3 && tuplet.normal_notes == 2 && tuplet.role == TupletRole::Start
+    }));
+    assert!(events[2].attachments.tuplets.iter().any(|tuplet| {
+        tuplet.actual_notes == 3 && tuplet.normal_notes == 2 && tuplet.role == TupletRole::Stop
+    }));
+    assert!(events[7].attachments.tuplets.iter().any(|tuplet| {
+        tuplet.actual_notes == 7 && tuplet.normal_notes == 8 && tuplet.role == TupletRole::Stop
+    }));
+}
+
+#[test]
 fn rest_led_tuplet_keeps_prefix_attachments_on_the_rest() {
     // `(3"C"zBA`: the chord symbol rides across the tuplet marker and binds to
     // the leading rest, which still carries the Start role.
@@ -3171,6 +3264,72 @@ fn lyric_count_mismatches_attach_valid_syllables_only() {
         .collect::<Vec<_>>();
     assert_eq!(lyrics, vec!["one", "a", "two", "b", "c", "d"]);
     assert_eq!(semantic_note_events(&tune).len(), 4);
+}
+
+#[test]
+fn lyric_overflow_mid_hyphenated_word_drops_orphan_hyphen() {
+    let source = "X:1\nL:1/4\nK:C\nC|\nw: a-b\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        count_diagnostics(&diagnostics, "abc.lyric.syllable_count"),
+        1
+    );
+    let lyrics = semantic_note_events(&tune)[0]
+        .attachments
+        .lyrics
+        .iter()
+        .map(|lyric| (lyric.control, lyric.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(lyrics, vec![(LyricControl::Syllable, "a")]);
+
+    let source = "X:1\nL:1/4\nK:C\nC D|\nw: a-b\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert!(diagnostics.is_empty());
+    let lyrics = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| {
+            event
+                .attachments
+                .lyrics
+                .iter()
+                .map(|lyric| (lyric.control, lyric.text.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lyrics,
+        vec![
+            vec![(LyricControl::Syllable, "a"), (LyricControl::Hyphen, "-")],
+            vec![(LyricControl::Syllable, "b")]
+        ]
+    );
+}
+
+#[test]
+fn lyric_hyphen_can_continue_across_non_adjacent_blocks() {
+    let source = "X:1\nL:1/4\nK:C\nC|\nw: A-\nD|\nw: men\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let lyrics = semantic_note_events(&tune)
+        .into_iter()
+        .map(|event| {
+            event
+                .attachments
+                .lyrics
+                .iter()
+                .map(|lyric| (lyric.control, lyric.text.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lyrics,
+        vec![
+            vec![(LyricControl::Syllable, "A"), (LyricControl::Hyphen, "-")],
+            vec![(LyricControl::Syllable, "men")]
+        ]
+    );
 }
 
 #[test]
