@@ -11,9 +11,18 @@ use crate::lower::{
 #[derive(Debug, Clone, Copy)]
 struct AlignableRef {
     measure_index: usize,
-    event_index: usize,
+    event: AlignableEventRef,
     line_index: usize,
     source_order: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AlignableEventRef {
+    Main(usize),
+    Overlay {
+        overlay_index: usize,
+        event_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,10 +281,25 @@ fn alignable_refs(voice: &VoiceTimeline) -> Vec<AlignableRef> {
             if event.alignable {
                 refs.push(AlignableRef {
                     measure_index,
-                    event_index,
+                    event: AlignableEventRef::Main(event_index),
                     line_index: event.line_index,
                     source_order: event.source_order,
                 });
+            }
+        }
+        for (overlay_index, overlay) in measure.overlays.iter().enumerate() {
+            for (event_index, event) in overlay.events.iter().enumerate() {
+                if event.alignable {
+                    refs.push(AlignableRef {
+                        measure_index,
+                        event: AlignableEventRef::Overlay {
+                            overlay_index,
+                            event_index,
+                        },
+                        line_index: event.line_index,
+                        source_order: event.source_order,
+                    });
+                }
             }
         }
     }
@@ -349,23 +373,32 @@ fn advance_bar_marker(
 }
 
 fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, lyric: AlignedLyric) {
-    if let Some(event) = voice
-        .measures
-        .get_mut(reference.measure_index)
-        .and_then(|measure| measure.events.get_mut(reference.event_index))
-    {
+    if let Some(event) = alignable_event_mut(voice, reference) {
         event.attachments.lyrics.push(lyric.clone());
         event.lyrics.push(lyric);
     }
 }
 
 fn attach_symbol(voice: &mut VoiceTimeline, reference: AlignableRef, symbol: AlignedSymbol) {
-    if let Some(event) = voice
-        .measures
-        .get_mut(reference.measure_index)
-        .and_then(|measure| measure.events.get_mut(reference.event_index))
-    {
+    if let Some(event) = alignable_event_mut(voice, reference) {
         event.attachments.symbols.push(symbol.clone());
         event.symbols.push(symbol);
+    }
+}
+
+fn alignable_event_mut(
+    voice: &mut VoiceTimeline,
+    reference: AlignableRef,
+) -> Option<&mut crate::model::VoiceTimedEvent> {
+    let measure = voice.measures.get_mut(reference.measure_index)?;
+    match reference.event {
+        AlignableEventRef::Main(event_index) => measure.events.get_mut(event_index),
+        AlignableEventRef::Overlay {
+            overlay_index,
+            event_index,
+        } => measure
+            .overlays
+            .get_mut(overlay_index)
+            .and_then(|overlay| overlay.events.get_mut(event_index)),
     }
 }
