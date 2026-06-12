@@ -161,6 +161,19 @@ pub(crate) fn invalid_key_change_warning(span: Span) -> Diagnostic {
     ))
 }
 
+pub(crate) fn compact_key_accidentals_ignored_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.field.key.compact_accidentals_ignored",
+        "No-space K: global accidentals were ignored",
+        span,
+    )
+    .with_spec_reference(abc_field_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The valid base key was preserved; write global accidentals separated by spaces to apply them.",
+    ))
+}
+
 pub(crate) fn abc_barline_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.8 repeat/bar symbols")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")

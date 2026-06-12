@@ -2876,6 +2876,56 @@ fn mid_tune_key_and_meter_changes_reach_the_score() {
 }
 
 #[test]
+fn nospace_header_key_global_accidentals_preserve_base_key() {
+    let source = "X:1\nL:1/4\nK:D_B^g\nCDEF|\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.field.key.compact_accidentals_ignored")
+            .count(),
+        1,
+        "expected compact accidental warning for K:D_B^g: {diagnostics:?}"
+    );
+    let key = tune.score.metadata.key.as_ref().expect("header key");
+
+    assert_eq!(key.fifths, 2);
+    assert!(
+        key.explicit_accidentals.is_empty(),
+        "compact accidental tail is nonstandard and ignored"
+    );
+}
+
+#[test]
+fn nospace_inline_key_global_accidentals_preserve_base_key() {
+    let source = "X:1\nL:1/4\nK:C\nCDEF|[K:D_B^g]GABc|\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.field.key.compact_accidentals_ignored")
+            .count(),
+        1,
+        "expected compact accidental warning for [K:D_B^g]: {diagnostics:?}"
+    );
+    let key_changes = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::KeyChange(key) => Some(key),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(key_changes.len(), 1);
+    assert_eq!(key_changes[0].fifths, 2);
+    assert!(
+        key_changes[0].explicit_accidentals.is_empty(),
+        "compact accidental tail is nonstandard and ignored"
+    );
+}
+
+#[test]
 fn supported_body_additive_meter_change_does_not_warn() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
     let (tune, diagnostics) = tune_for(source);

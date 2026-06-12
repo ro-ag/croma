@@ -666,7 +666,7 @@ Minimal: `CDEF|Z3|GABc|` (/tmp/mr1.abc) — croma 3 measures, abc2xml 5. ABC 2.1
 **Verifier correction:** The factual root cause is correct, but the legitimate_difference verdict (and doc 03's "not a Croma bug" conclusion) conflates ABC-level equivalence with MusicXML-level validity. ABC 2.1 §4.5 does declare Zn and n single-bar rests musically equivalent, but that licenses either ABC input form — it says nothing about how MusicXML must encode the result. MusicXML's only encoding for an n-bar rest is n real measures (whole-measure rests), with <measure-style><multiple-rest>n</multiple-rest> as the o
 
 
-### `missing-nospace-key-global-accidentals-misparse` — **OPEN** (croma_bug, repro=True)
+### `missing-nospace-key-global-accidentals-misparse` — **FIXED(37d)** (croma_bug, repro=True)
 
 *Share:* <0.1% of this category's rows (cross-category: ~42 accidental/pitch rows in tune_003837 alone) — *files:* tune_003837.abc, key7.abc, key3.abc
 
@@ -675,6 +675,8 @@ Minimal: header `K:D_B^g` (/tmp/key7.abc) → croma emits <fifths>0</fifths> wit
 
 
 *Fix:* Parse layer: crates/croma-core/src/parse/field/key.rs — tokenize trailing global accidentals without requiring whitespace separators (each begins with __,_,=,^,^^ + note letter), or at minimum emit a warning + ignore only the accidental tail instead of silently degrading the whole key to fifths 0.
+
+**Phase 37d verification:** Implemented the conservative fallback: compact malformed key tokens such as `K:D_B^g` and `[K:D^f_B_e]` are split far enough to preserve the valid base tonic/mode (`D` -> fifths 2), emit `abc.field.key.compact_accidentals_ignored`, and ignore the nonstandard no-space accidental tail instead of degrading the entire key to fifths 0. A first attempt that applied the compact tail as real global accidentals fixed some F/C key-signature rows but added more B/G/E accidental mismatches; it was rejected by targeted and full-corpus evidence. Regression coverage: `parses_nospace_key_global_accidentals_after_tonic`, `parses_nospace_key_global_accidentals_with_sharp_first_as_base_key`, `nospace_header_key_global_accidentals_preserve_base_key`, `nospace_inline_key_global_accidentals_preserve_base_key`, and `nospace_key_global_accidentals_export_base_key`. Targeted compare for `tune_003837.abc` + `tune_004610.abc`: structural matches 0 -> 1, mismatch rows 3088 -> 3086, accidental rows 69 -> 67. Full 10k phase-36 -> phase-37d aggregate: structural matches 8861 -> 8869, mismatch rows 164265 -> 164188, accidental rows 3883 -> 3856, with no harness/import failures. Verification: `cargo fmt --all -- --check`, `cargo test -p croma-core nospace -- --nocapture`, `cargo test -p croma-core`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, `uv run pytest`, full 10k export + report-only comparison, targeted compare, and ABC round-trip proof (99.25 pct in-scope, 0 structural diffs).
 
 
 ### `missing-pending-text-dynamics-before-barline-or-eol` — **FIXED(33a)** (croma_bug, repro=True)

@@ -2220,6 +2220,16 @@ fn inline_clef_only_key_field_does_not_reset_the_signature() {
 }
 
 #[test]
+fn nospace_key_global_accidentals_export_base_key() {
+    let export = export_musicxml("X:1\nL:1/4\nK:D_B^g\nF B G|\n").expect("score should export");
+    assert_balanced_xml(&export.musicxml);
+
+    assert!(export.musicxml.contains("<fifths>2</fifths>"));
+    assert_eq!(count(&export.musicxml, "<key-step>"), 0);
+    assert_eq!(count(&export.musicxml, "<key-accidental>"), 0);
+}
+
+#[test]
 fn escaped_literal_underscore_in_lyrics_still_exports_as_text() {
     let source = "X:1\nT:Literal Underscore Lyrics\nM:2/4\nL:1/4\nK:C\nC D|\nw: \\_hold end\n";
     let export = export_musicxml(source).expect("literal underscore lyric score should export");

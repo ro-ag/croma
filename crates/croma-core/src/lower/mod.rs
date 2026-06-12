@@ -220,6 +220,11 @@ impl MultiVoiceLowering {
         // merge its modifiers into the initial (current) voice here. In a
         // single-voice tune that is the whole tune; abc2xml does the same.
         if let Some(key) = field_state.key.as_ref() {
+            if key.value.compact_accidentals_ignored {
+                lowering
+                    .diagnostics
+                    .push(compact_key_accidentals_ignored_warning(key.span));
+            }
             let key_props = key_clef_properties_model(&key.value.properties);
             if key_props != VoicePropertiesModel::default() {
                 merge_voice_properties(&mut lowering.current_state().properties, key_props);
@@ -339,6 +344,7 @@ impl MultiVoiceLowering {
             self.diagnostics.push(invalid_key_change_warning(key.span));
             return;
         }
+        self.warn_if_compact_key_accidentals_ignored(key);
         // A clef-only K: line (`K: clef=treble`) changes no key signature —
         // mirror the inline `[K:..]` guard: merge its clef properties into the
         // current voice but leave the key (and the recorded events) untouched.
@@ -387,6 +393,7 @@ impl MultiVoiceLowering {
             self.diagnostics.push(invalid_key_change_warning(key.span));
             return;
         }
+        self.warn_if_compact_key_accidentals_ignored(key);
         self.current_state().set_key(Some(&key.value));
         let model = key_signature_model(key);
         let header = self.header_key_display.clone();
@@ -407,6 +414,13 @@ impl MultiVoiceLowering {
         let key_props = key_clef_properties_model(&key.properties);
         if key_props != VoicePropertiesModel::default() {
             merge_voice_properties(&mut self.current_state().properties, key_props);
+        }
+    }
+
+    fn warn_if_compact_key_accidentals_ignored(&mut self, key: &Spanned<KeySignature>) {
+        if key.value.compact_accidentals_ignored {
+            self.diagnostics
+                .push(compact_key_accidentals_ignored_warning(key.span));
         }
     }
 

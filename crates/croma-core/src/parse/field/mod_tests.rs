@@ -72,6 +72,48 @@ fn parses_key_modes_and_explicit_accidentals() {
 }
 
 #[test]
+fn parses_nospace_key_global_accidentals_after_tonic() {
+    let report = parse_document("X:1\nK:D_B^g\nC\n", ParseOptions::default());
+    let tune = report.value.fields.tune(0).expect("expected tune fields");
+    let key = tune.header.key.as_ref().expect("expected key");
+
+    assert_eq!(
+        key.value.tonic,
+        Some(KeyTonic {
+            step: 'D',
+            accidental: None
+        })
+    );
+    assert_eq!(key.value.mode, KeyMode::Major);
+    assert!(
+        key.value.accidentals.is_empty(),
+        "compact accidental tail is nonstandard and ignored"
+    );
+    assert!(key.value.compact_accidentals_ignored);
+}
+
+#[test]
+fn parses_nospace_key_global_accidentals_with_sharp_first_as_base_key() {
+    let report = parse_document("X:1\nK:D^f_B_e\nC\n", ParseOptions::default());
+    let tune = report.value.fields.tune(0).expect("expected tune fields");
+    let key = tune.header.key.as_ref().expect("expected key");
+
+    assert_eq!(
+        key.value.tonic,
+        Some(KeyTonic {
+            step: 'D',
+            accidental: None
+        })
+    );
+    assert_eq!(key.value.mode, KeyMode::Major);
+    assert!(
+        key.value.accidentals.is_empty(),
+        "compact accidental tail is nonstandard and ignored"
+    );
+    assert!(key.value.compact_accidentals_ignored);
+}
+
+#[test]
 fn key_field_captures_octave_property() {
     let report = parse_document("X:1\nK: Dm octave=1\nC\n", ParseOptions::default());
     let tune = report.value.fields.tune(0).expect("expected tune fields");
