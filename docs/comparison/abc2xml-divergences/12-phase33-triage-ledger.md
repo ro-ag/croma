@@ -58,7 +58,7 @@ MusicXML import failures.
 
 ## accidental
 
-### `accidental-grace-ledger-isolation` — **OPEN** (croma_bug, repro=None)
+### `accidental-grace-ledger-isolation` — **FIXED(37k)** (croma_bug, repro=True)
 
 *Share:* ~0.4% rows (17/3876), 9 files; 15% of genuine solo rows — *files:* tune_013736.abc, tune_011097.abc, tune_012949.abc, tune_009036.abc
 
@@ -68,8 +68,10 @@ Minimal repros, K:C. `{^f}f2 f2 f4`: croma gives the main f's NO alter (natural)
 
 *Fix:* Lowering layer: route grace-note alter resolution through the same MeasureAccidental ledger used for main notes — crates/croma-core/src/lower/voice.rs (grace_note_event_model / grace_event_model, ~lines 700-748, currently context-free pure functions) plus crates/croma-core/src/lower/accidental.rs (ledger read for inherited alters, ledger write for written grace accidentals). Check crates/croma-cor
 
+37k: fixed by lowering grace notes through the voice's measure accidental ledger before the host note/chord member resolves. Written grace accidentals now seed later same-pitch notes in the bar, and unwritten grace notes inherit prior same-pitch measure accidentals/key alters. Focused tests cover `{^f}f2 f2 f4`, `^c2 {dc}d2 c4`, shifted voice-octave identity, pending/direct grace order, and chord-member ordering. Target compare for tune_013736/tune_011097/tune_012949/tune_009036: 4 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
-### `accidental-late-voice-key-seed` — **OPEN** (croma_bug, repro=None)
+
+### `accidental-late-voice-key-seed` — **FIXED(37l)** (croma_bug, repro=True)
 
 *Share:* ~0.5% rows (21/3876), 2 files; 19% of genuine solo rows — *files:* tune_010949.abc, tune_012206.abc
 
@@ -79,8 +81,10 @@ Minimal repro (V:1 body, then standalone K:Dm, then V:2 body — the Village Mus
 
 *Fix:* Lowering layer: crates/croma-core/src/lower/mod.rs, MultiVoiceLowering (fields ~lines 142-155, seeding block ~lines 580-615). Scope standalone body K:/M: changes to the voice that is current when they appear; seed a voice whose body starts later from the HEADER key/meter (header_key_display/header_meter_display already exist as the dedupe baseline). Keep the changed-state seed only for voices that
 
+37l: fixed by making standalone body `K:`/`M:` changes current-voice timeline events, sharing the same scoping as inline `[K:]`/`[M:]`, and removing global changed-key/meter seeding for voices whose streams have not reached the body field. Focused tests cover late body voices, header-predeclared late voices, standalone body meter scoping, MusicXML key attributes, and ABC writer idempotency. Target compare for tune_010949/tune_012206: 2 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
-### `accidental-tie-carry-pollutes-next-bar` — **OPEN** (croma_bug, repro=None)
+
+### `accidental-tie-carry-pollutes-next-bar` — **FIXED(37k)** (croma_bug, repro=True)
 
 *Share:* ~0.1% rows (4/3876), 2 files — *files:* tune_006821.abc, tune_005543.abc
 
@@ -89,6 +93,8 @@ Minimal repro `K:C\n^a4- | a2 b2 a4 |]`: croma gives A#, A#(tied), B, A# — the
 
 
 *Fix:* Lowering layer: crates/croma-core/src/lower/accidental.rs — preserve_for_open_ties (~lines 149-192) seeds the next bar's ledger with from_pending_tie entries; instead of confirm_pending_tie_carry (~line 256) leaving the entry live for the rest of the measure, the carried entry must be consumed when the tie's stop note resolves (or marked stop-note-only so other same-pitch notes resolve against the
+
+37k: fixed by consuming synthetic from-pending-tie ledger entries after the matched stop note resolves; freshly rewritten accidentals on the stop note still propagate normally within the bar. Focused tests cover stop-note-only tie carry, rewritten stop-note carry, dropped ties, and chord partial drops. Target compare for tune_005543/tune_006821: 2 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
 
 ### `accidental-cascade-from-structural-misalignment` — **QUIRK** (reference_quirk, repro=None)
@@ -126,7 +132,7 @@ Minimal repro `K:D\n=c4- | =c2 B2 c4 |]` — the natural glyph is literally re-w
 
 ## barline
 
-### `barline-final-dropped-on-empty-voice-measure` — **OPEN** (croma_bug, repro=True)
+### `barline-final-dropped-on-empty-voice-measure` — **FIXED(37b)** (croma_bug, repro=True)
 
 *Share:* <1% rows (a handful of multi-voice files) — *files:* tune_010088.abc
 
@@ -135,6 +141,8 @@ Minimal: two-voice tune where V:2's last music line is just `|]` (its final meas
 
 
 *Fix:* lower layer: crates/croma-core/src/lower/timeline.rs — when finishing a voice, preserve the Final/Double barline kind on the last (possibly empty) measure instead of losing it with the coalesced/empty measure; export already handles Final on empty measures (P2 m2 exists, just lacks the barline).
+
+**Phase 37b verification:** `crates/croma-core/src/lower/timeline.rs` now preserves the source span of a non-first empty measure closed by `|]`, allowing MusicXML export to classify the explicit empty-voice final as a right `light-heavy` barline. The fix is deliberately limited to `BarlineKind::Final`: a regression test keeps the phase-36/reference shape for tune_006306-style section-leading `||` after a suppressed line break, where an empty measure is retained but must not gain a right double barline. Targeted comparison for `tune_010088.abc` and `tune_006306.abc`: 2 structural matches, 0 mismatches. Verification: `cargo fmt --all -- --check`, focused final/double-barline tests, `cargo test -p croma-core barline`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, full 10k report-only comparison, and ABC round-trip proof. Phase-36 -> phase-37b aggregate corpus delta (including 37a): structural matches 8861 -> 8868, mismatch rows 164265 -> 164215, `barline` 3545 -> 3540, `direction` 463 -> 459, `extra_in_croma` 47606 -> 47565, no harness/import failures. ABC round-trip remains total=10000, in_scope=9925, structural_diffs=0, errors=0.
 
 
 ### `barline-liberal-run-glyph-dropped` — **FIXED(33b)** (croma_bug, repro=True)
@@ -344,7 +352,7 @@ tune_001029 (M:C|, L:1/2, %%MIDI nobarlines, opens 'z4' = 8 ql): RAW reference X
 
 ## extra_in_croma
 
-### `extra-abc2xml-drops-text-and-second-staff-dynamics` — **OPEN** (croma_bug, repro=True)
+### `extra-abc2xml-drops-text-and-second-staff-dynamics` — **QUIRK** (reference_quirk/stale_cascade, repro=True)
 
 *Share:* ~0.3% rows (~120) — *files:* tune_015359.abc, tune_012129.abc, tune_008744.abc, tune_008746.abc
 
@@ -352,10 +360,23 @@ tune_001029 (M:C|, L:1/2, %%MIDI nobarlines, opens 'z4' = 8 ql): RAW reference X
 (a) tune_015359 'Q:”Slow”' (Unicode curly quotes; SS3.1.8 requires ASCII double quotes, so malformed input): croma emits <words>”Slow”</words> preserving the text; abc2xml emits nothing (minimal repro confirmed: croma <words>, abc2xml no words/metronome/sound at all). Recovery-choice difference on illegal input - note 'malformed input'. (b) tune_008744 ('V: 1 staves=2' two-staff part): croma keeps V:2's !p!/!f! dynamics (extra Dynamic rows at measures 3/11/15/20/24 match V:2's marks exactly); abc2xml drops dynamics from the second merged staff. A bare '!p!' on a single voice round-trips identically in both tools (minimal repro), isolating the staves-merge as abc2xml's loss. All 25 Dynamic-kind extra rows in the corpus fit this pattern. Croma preserves source information in both sub-cases; abc2xml silently loses it.
 
 
-**Verifier correction:** The cause bundles two unrelated phenomena and should be split. (a) Curly-quoted Q: text (tune_015359, tune_012129, 2 TextExpression rows): verified, correctly reference_quirk — abc2xml's Q: regex requires ASCII quotes (ABC 2.1 SS3.1.8) and silently drops the malformed field; croma preserves the text. (b) All 25 Dynamic-kind extra rows: the triage mechanism ('abc2xml drops !p!/!f! on second staff of staves=2 merged part') is factually wrong — abc2xml drops nothing and neither tool merges the part
+**Verifier correction:** The cause bundles two unrelated phenomena and should be split. (a) Curly-quoted Q: text (tune_015359, tune_012129, 2 TextExpression rows): verified, correctly reference_quirk — abc2xml's Q: regex requires ASCII quotes (ABC 2.1 SS3.1.8) and silently drops the malformed field; croma preserves the text. (b) All 25 Dynamic-kind extra rows: the triage mechanism ('abc2xml drops !p!/!f! on second staff of staves=2 merged part') is factually wrong — abc2xml drops nothing and neither tool merges the part.
+
+*Re-verdicted in 37i:* Current four-file target export/compare confirms no
+Croma code change is warranted. The only remaining rows are two
+`extra_in_croma` direction/TextExpression rows for malformed curly-quoted `Q:`
+fields: `tune_015359.abc` (`Q:”Slow”`) and `tune_012129.abc`
+(`Q:”Slow & sad”`). Croma preserves the source text as MusicXML words; abc2xml
+silently drops it because its Q-text regex accepts only ASCII quotes. The
+alleged second-staff dynamics rows in `tune_008744.abc` and `tune_008746.abc`
+are stale cascade artifacts from older direction alignment: current Croma and
+reference XML both contain the same ten dynamics across P1/P2, and both files
+compare as structural matches. Targeted compare after 37i: 4 exports, 2
+structural matches, 2 mismatch rows, `extra_in_croma` 2, no import, harness,
+or worker failures.
 
 
-### `extra-decoration-words-fallback` — **OPEN** (croma_bug, repro=True)
+### `extra-decoration-words-fallback` — **FIXED(37a)** (croma_bug, repro=True)
 
 *Share:* ~0.6% rows (~300; spread over ~80 files) — *files:* tune_003450.abc, tune_008364.abc, tune_012804.abc, tune_003269.abc
 
@@ -364,6 +385,8 @@ Minimal repro '!+!C4 !3!D4 | !diminuendo(!E2F2 !diminuendo)!G4 |': croma emits <
 
 
 *Fix:* MusicXML export layer only (parse already carries the decoration name). crates/croma-core/src/musicxml/notation.rs: decoration_notation() (line 160) lacks arms for "0"..="5" (needs a NotationKind variant carrying fingering text -> <technical><fingering>), "+"/"plus" -> Technical("stopped"), "arpeggio" -> new arpeggiate notation, "slide" -> <slide>/scoop. Wedges are spanners, so "diminuendo("/")", 
+
+**Phase 37a verification:** `crates/croma-core/src/musicxml/notation.rs` now maps the remaining supported decoration fallbacks to MusicXML note-attached notations: `!0!`-`!5!` -> `<technical><fingering>`, `!arpeggio!` -> `<arpeggiate/>`, and `!slide!` -> `<articulations><scoop/>`, matching an abc2xml 268 probe for the minimal repro shape. Regression test `fingering_arpeggio_and_slide_decorations_emit_notations_not_words` fails on main for the missing fingering and passes after the fix. Verification: `cargo fmt --all -- --check`, `cargo test -p croma-core musicxml::tests::`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, and full 10k report-only comparison. Phase-36 -> phase-37a aggregate corpus delta: structural matches 8861 -> 8865, mismatch rows 164265 -> 164220, `direction` 463 -> 459, `extra_in_croma` 47606 -> 47565, no harness/import failures.
 
 
 ### `extra-multirest-collapsed-vs-expanded` — **FIXED(35a)** (croma_bug, repro=True)
@@ -423,7 +446,7 @@ Minimal repro /tmp/harmony-probe/t2_chord_before_plusdeco.abc: `"F"+>+a4 gfed | 
 *Fix:* Parse layer: crates/croma-core/src/parse/decoration.rs:69 (and sibling flush sites in that file) — stash/restore the pending bundle around `+...+` parsing exactly like the fixed parse_grace_group/parse_slur/parse_tuplet cases (backlog item 9), so the quoted text rides through to the following note.
 
 
-### `harmony-quoted-in-unterminated-bracket` — **OPEN** (croma_bug, repro=True)
+### `harmony-quoted-in-unterminated-bracket` — **FIXED(37j)** (croma_bug, repro=True)
 
 *Share:* ~0.2% rows (6/2428), 1 file — *files:* tune_005224.abc
 
@@ -431,7 +454,22 @@ Minimal repro /tmp/harmony-probe/t2_chord_before_plusdeco.abc: `"F"+>+a4 gfed | 
 Malformed input. Minimal repro /tmp/harmony-probe/t5_bracket_quoted.abc: `"G"B2A2 G2F2 |["cont" "Am7"F2G2 A2B2 | ...` — croma emits G, D7, G (drops Am7 and the 'cont' annotation); abc2xml emits G, Am7, D7, G. The source violates ABC 2.1 §4.20 (chord delimiters [ ] should enclose note sequences with chord symbols OUTSIDE the bracket) and the bracket is never closed — illegal input, so the recovery-choice difference is not a croma bug per triage policy. Note: croma's recovery does silently lose a well-formed chord symbol, and the cause-1 fix (carrying pending quoted text to the next timed event) would likely rescue this case for free. Single corpus file: tune_005224 (manifest verdict PHANTOM_MEASURE; harmony-sequence diff shows croma 20 vs ref 23 items, missing Am7 x2 + D:dominant).
 
 
-**Verifier correction:** The claimed difference reproduces, but the verdict reference_quirk rests on a false premise. `|["cont"` is not an unterminated chord bracket with illegally-placed chord symbols: abc2xml parses `[` + quoted string as a quoted-text volta (variant ending label) via an explicit grammar production (abc2xml.py line 420 `volta_text = Suppress(Literal('[')) + pas(r'"[^"]+"')`, emitted as <ending>cont</ending> at lines 1927-1930). This is the well-known abcm2ps/abc2svg/abcjs text repeat-bracket extension
+**Verifier correction:** The claimed difference reproduces, but the verdict reference_quirk rests on a false premise. `|["cont"` is not an unterminated chord bracket with illegally-placed chord symbols: abc2xml parses `[` + quoted string as a quoted-text volta (variant ending label) via an explicit grammar production (abc2xml.py line 420 `volta_text = Suppress(Literal('[')) + pas(r'"[^"]+"')`, emitted as <ending>cont</ending> at lines 1927-1930). This is the well-known abcm2ps/abc2svg/abcjs text repeat-bracket extension.
+
+*Fixed in 37j:* Parser now recognizes `[` followed immediately by quoted text
+as the de-facto text repeat-bracket extension when no unquoted `]` closes the
+bracket before the next barline. The first quoted string becomes a repeat
+ending label, following quoted chord symbols still bind to the next note, and
+actual unclosed chord groups such as `[C"x"DEF |` keep the existing recovery
+and diagnostics. MusicXML writes text labels as `<ending number="33"
+type="start">label</ending>` and empty stop elements, matching abc2xml's
+numeric ending-number convention while preserving valid MusicXML reader import.
+Target `tune_005224.abc` changed from 0 structural matches / 5 mismatch rows
+(`barline` 2, `extra_in_croma` 2, `missing_in_croma` 1) to 1 structural match
+with 0 mismatch rows and no diagnostics. Full 10k report-only compare after
+37j: structural matches 8875->8878 vs 37h, mismatch rows 162473->162455,
+`barline` 3536->3533, `direction` 460->459, `extra_in_croma` 47189->47182,
+`missing_in_croma` 55760->55753; no import, harness, or worker failures.
 
 
 ### `harmony-quoted-symbol-dropped-at-boundary` — **FIXED(33a)** (croma_bug, repro=True)
@@ -472,7 +510,7 @@ Minimal repro /tmp/harmony-probe/t3_lowercase_bass.abc: `"C"edB "G/b"gBB` — cr
 
 ## lyric
 
-### `lyric-bar-advance-blind-to-rest-only-measures` — **OPEN** (croma_bug, repro=None)
+### `lyric-bar-advance-blind-to-rest-only-measures` — **FIXED(37m)** (croma_bug, repro=True)
 
 *Share:* ~4% rows (5/140), 1/9 files — *files:* tune_013577.abc
 
@@ -482,8 +520,10 @@ Minimal: `C C C C | z4 | D D D D |` + `w: one two three four||five six sev- en` 
 
 *Fix:* Lower layer. crates/croma-core/src/lower/align.rs: replace the refs-gap heuristic in advance_bar_marker with an explicit bar cursor over the voice's measure list (current measure number; each `|` increments it by exactly one, then position jumps to the first alignable ref with measure_number >= cursor). Also consider upgrading the end-of-line syllable spill (line 138-145) so dropped syllables are 
 
+37m: fixed by tracking a concrete bar-marker cursor in lyric/symbol alignment and deriving each block's first music measure so rest-only bars count even when no alignable note refs exist. Focused tests cover leading rest-only pickup bars, later lyric blocks after rest-only gaps, ordinary boundary no-ops, and consecutive markers. Target compare for tune_013577 improved 40 lyric rows with 26 lyric-count diagnostics to 1 residual extra empty `<extend/>` row and 0 diagnostics; all missing/different lyric text rows from the rest-only bar lag are gone. The residual is unrelated extender serialization in Treble m8, not the rest-only bar-advance defect.
 
-### `lyric-liberal-barline-bracket-pair-note-drop` — **OPEN** (croma_bug, repro=None)
+
+### `lyric-liberal-barline-bracket-pair-note-drop` — **RE-VERDICT(37n)** (stale_croma_bug, repro=False)
 
 *Share:* ~45% rows (63/140), 4/9 files — *files:* tune_012835.abc, tune_009178.abc, tune_009179.abc, tune_012962.abc
 
@@ -493,8 +533,10 @@ Minimal: `X:1\nM:6/8\nL:1/8\nK:G\ne2 E E2 ][ f | g3 f3 |\nw: one-ly, Tam. They s
 
 *Fix:* Parse layer. crates/croma-core/src/parse/barline.rs parse_barline: the break-after-`]` rule (lines 33-37) should keep consuming a following `[` when it continues a barline shape (safe heuristic: `[` followed by whitespace/EOL/another barline char — i.e. not a digit (variant ending), not letter+`:` (inline field), not chord content), emitting one Liberal barline for the whole `][` run. Secondary ha
 
+37n: rechecked the original four-file target after the phase-37 parser/lowering fixes. Fresh target export/compare artifacts are under `docs/untracked/phase-37-ledger-burndown/target-lyric-barline-bracket-37n/`. `tune_009178.abc`, `tune_009179.abc`, and `tune_012835.abc` now structurally match reference; `tune_012962.abc` has 39 residual rows, but the first break is a reference-only zero-duration grace `E` before the disputed `][ B2` boundary. The claimed dropped note after `][` is no longer reproducible in current Croma, so this ledger target is stale/resolved for the original Croma bug. The remaining `tune_012962` rows belong to a separate grace/reference-alignment quirk, and the still-emitted `abc.music.unclosed_chord` warning on `][` is cosmetic for this target because structure is recovered.
 
-### `lyric-voice-overlay-syllable-matching` — **OPEN** (croma_bug, repro=None)
+
+### `lyric-voice-overlay-syllable-matching` — **FIXED(37o)** (croma_bug, repro=True)
 
 *Share:* ~4% rows (5/140), 1/9 files — *files:* tune_006565.abc
 
@@ -503,6 +545,8 @@ Minimal: `C D E F & G, A, B, C, |` + `w: one two three four five six sev- en` �
 
 
 *Fix:* Lower layer. Overlay events are lowered into a separate `{voice}.overlayN` timeline (crates/croma-core/src/lower/timeline.rs, OverlayBuilder around lines 142-151), so crates/croma-core/src/lower/align.rs `alignable_refs` never sees them. Fix: when building alignment refs for a voice, merge in its overlay timelines' alignable events ordered by source_order (AlignableRef already sorts on source_orde
+
+37o: fixed by making lyric/symbol alignment refs address either main voice events or overlay events, then attaching through that event path. Regression `lyrics_align_to_overlay_notes_in_source_order` covers the `tune_006565` overlay phrase and asserts `down`/`by` attach to overlay notes, not later main-voice notes. Target compare for `tune_006565` improved from 11 rows (`lyric`: 5, `missing_in_croma`: 2, `extra_in_croma`: 2, `measure_alignment`: 2) to 2 residual `measure_alignment` measure-number rows; there are no lyric rows after 37o.
 
 
 ### `lyric-malformed-header-field-parsed-as-music` — **QUIRK** (reference_quirk, repro=None)
@@ -524,7 +568,7 @@ tune_006403 ('Al Hanisim', sections `\"A\"\\`, `\"B\"\\`, `\"Bridge\"`): ordered
 
 ## measure_alignment
 
-### `measure-alignment-complex-meter-time-dropped` — **OPEN** (croma_bug, repro=True)
+### `measure-alignment-complex-meter-time-dropped` — **FIXED(37c)** (croma_bug, repro=True)
 
 *Share:* ~0.5% rows (34 rows in tune_011528 + a few '?' bar_duration files like tune_003733/tune_003808) — *files:* tune_011528.abc, mod.rs, attributes.rs
 
@@ -532,7 +576,9 @@ tune_006403 ('Al Hanisim', sections `\"A\"\\`, `\"B\"\\`, `\"Bridge\"`): ordered
 Minimal repros: header `M:(2+3+2)/8` (/tmp/ma_complex.abc) — explicitly legal per ABC 2.1 SS3.1.6 line 539 ('It is also possible to specify a complex meter, e.g. M:(2+3+2)/8') — croma emits NO <time> element and NO diagnostic; abc2xml emits <beats>(2+3+2)</beats><beat-type>8</beat-type>. Header `M:3/4+2/4` (/tmp/ma_additive.abc, extension syntax, tune_011528): croma again silent + no <time>; abc2xml fabricates 4/4 (also wrong — its 34 bar_duration rows compare croma's free-meter fallback against that fabrication). Mechanism: crates/croma-core/src/lower/mod.rs:1195 meter_duration() returns None for MeterKind::Complex -> meter_model() sets free_meter=true (line 1015) -> write_time_element() early-returns (crates/croma-core/src/musicxml/attributes.rs:43-48). The mid-tune path warns abc.music.meter.unsupported_complex (lower/mod.rs:302-306) but the header path is silent — spec-legal meter in…
 
 
-*Fix:* Lower + export. crates/croma-core/src/lower/mod.rs meter_duration (line 1187): compute the additive sum for Complex meters so measures validate and free_meter is false; crates/croma-core/src/musicxml/attributes.rs meter_parts (line ~125, naive split_once('/')): emit beats '2+3+2' (strip parentheses; MusicXML beats permits '+'-separated values) and, for the 'a/b+c/d' extension form, a composite <ti
+*Fix:* Lower + export. `crates/croma-core/src/lower/mod.rs` `meter_duration`: compute the additive sum for `MeterKind::Complex` so measures validate and `free_meter` is false. `crates/croma-core/src/musicxml/attributes.rs` `meter_parts`: emit beats `2+3+2` for grouped complex meter and, for the `a/b+c/d` extension form, emit a composite MusicXML `<time>` with repeated `<beats>/<beat-type>` pairs.
+
+**Phase 37c verification:** `crates/croma-core/src/lower/mod.rs` now computes additive durations for supported complex meters (`M:(2+3+2)/8` -> 7/8, `M:3/4+2/4` -> 5/4 / composite parts) instead of treating them as free meter, and `crates/croma-core/src/musicxml/attributes.rs` now emits `<time>` for both the grouped ABC 2.1 form and the additive extension form. Regression coverage: `complex_header_meter_uses_additive_duration`, `additive_extension_header_meter_uses_summed_duration`, `supported_body_additive_meter_change_does_not_warn`, `complex_header_meter_exports_additive_time`, and `additive_extension_header_meter_exports_composite_time`. Minimal before/after XML probes under `docs/untracked/phase-37-ledger-burndown/probes/` show both repros changed from `NO_TIME` to explicit `<time>` elements (`2+3+2/8` and composite `3/4 + 2/4`). Target corpus compare for `tune_011528.abc`, `tune_003733.abc`, and `tune_003808.abc` remains mismatch-count neutral because the comparator does not score this time-signature surface directly and abc2xml fabricates the additive extension differently. Verification: `cargo fmt --all -- --check`, `cargo test -p croma-core`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, full 10k export + report-only comparison, targeted compare, and ABC round-trip proof. Full 10k aggregate remains at structural matches 8868 / mismatch rows 164215 with no harness/import failures; ABC round-trip remains 99.25 pct in-scope with 0 structural diffs.
 
 
 ### `measure-alignment-multirest-encoding` — **FIXED(35a)** (croma_bug, repro=True)
@@ -660,7 +706,7 @@ Minimal: `CDEF|Z3|GABc|` (/tmp/mr1.abc) — croma 3 measures, abc2xml 5. ABC 2.1
 **Verifier correction:** The factual root cause is correct, but the legitimate_difference verdict (and doc 03's "not a Croma bug" conclusion) conflates ABC-level equivalence with MusicXML-level validity. ABC 2.1 §4.5 does declare Zn and n single-bar rests musically equivalent, but that licenses either ABC input form — it says nothing about how MusicXML must encode the result. MusicXML's only encoding for an n-bar rest is n real measures (whole-measure rests), with <measure-style><multiple-rest>n</multiple-rest> as the o
 
 
-### `missing-nospace-key-global-accidentals-misparse` — **OPEN** (croma_bug, repro=True)
+### `missing-nospace-key-global-accidentals-misparse` — **FIXED(37d)** (croma_bug, repro=True)
 
 *Share:* <0.1% of this category's rows (cross-category: ~42 accidental/pitch rows in tune_003837 alone) — *files:* tune_003837.abc, key7.abc, key3.abc
 
@@ -669,6 +715,8 @@ Minimal: header `K:D_B^g` (/tmp/key7.abc) → croma emits <fifths>0</fifths> wit
 
 
 *Fix:* Parse layer: crates/croma-core/src/parse/field/key.rs — tokenize trailing global accidentals without requiring whitespace separators (each begins with __,_,=,^,^^ + note letter), or at minimum emit a warning + ignore only the accidental tail instead of silently degrading the whole key to fifths 0.
+
+**Phase 37d verification:** Implemented the conservative fallback: compact malformed key tokens such as `K:D_B^g` and `[K:D^f_B_e]` are split far enough to preserve the valid base tonic/mode (`D` -> fifths 2), emit `abc.field.key.compact_accidentals_ignored`, and ignore the nonstandard no-space accidental tail instead of degrading the entire key to fifths 0. A first attempt that applied the compact tail as real global accidentals fixed some F/C key-signature rows but added more B/G/E accidental mismatches; it was rejected by targeted and full-corpus evidence. Regression coverage: `parses_nospace_key_global_accidentals_after_tonic`, `parses_nospace_key_global_accidentals_with_sharp_first_as_base_key`, `nospace_header_key_global_accidentals_preserve_base_key`, `nospace_inline_key_global_accidentals_preserve_base_key`, and `nospace_key_global_accidentals_export_base_key`. Targeted compare for `tune_003837.abc` + `tune_004610.abc`: structural matches 0 -> 1, mismatch rows 3088 -> 3086, accidental rows 69 -> 67. Full 10k phase-36 -> phase-37d aggregate: structural matches 8861 -> 8869, mismatch rows 164265 -> 164188, accidental rows 3883 -> 3856, with no harness/import failures. Verification: `cargo fmt --all -- --check`, `cargo test -p croma-core nospace -- --nocapture`, `cargo test -p croma-core`, `cargo test --workspace`, `cargo run -p croma-cli -- xml examples/basic.abc`, `uv run pytest`, full 10k export + report-only comparison, targeted compare, and ABC round-trip proof (99.25 pct in-scope, 0 structural diffs).
 
 
 ### `missing-pending-text-dynamics-before-barline-or-eol` — **FIXED(33a)** (croma_bug, repro=True)
@@ -731,7 +779,7 @@ CASCADE-verdict files contribute 4,623 missing rows, ABC2XML_DROPS_TACET 435, AB
 
 ## octave
 
-### `octave-midtune-clef-octave-shift-dropped` — **OPEN** (croma_bug, repro=None)
+### `octave-midtune-clef-octave-shift-dropped` — **FIXED(37q)** (croma_bug, repro=True)
 
 *Share:* ~0.15% rows (8 rows, 1 file) — but the only genuine sounding-octave error in the category — *files:* tune_006650.abc
 
@@ -741,8 +789,10 @@ Minimal repro /tmp/octave-triage/clef_midtune.abc: `G,CEG|[K:treble-8]G,CEG|[K:t
 
 *Fix:* Lower layer: reorder guards in crates/croma-core/src/lower/mod.rs — apply_key_change (lines 316-330) and apply_inline_field 'K' arm (lines 408-420) must route K: values whose properties parse to recognized clef/octave/middle/transpose settings to the clef-only merge (apply_inline_key_clef_properties / merge_voice_properties) instead of letting key_is_invalid_for_lowering (line 1076) reject them; o
 
+37q: fixed with a zero-duration `ClefChange` timeline/semantic event for body and inline `K:` clef/octave modifiers, while keeping each voice's initial clef separate from its effective mid-tune properties. MusicXML now emits mid-tune `<attributes><clef>` and lowered pitches use the active clef octave shift. Regression `inline_clef_shorthand_key_field_emits_mid_tune_clef_and_shifts_notes` covers `[K:treble-8]` and `[K:treble+8]`. Target compare for `tune_006650` is now a structural match with 0 rows.
 
-### `octave-staves-order-ignored` — **OPEN** (croma_bug, repro=None)
+
+### `octave-staves-order-ignored` — **FIXED(37p)** (croma_bug, repro=True)
 
 *Share:* ~0.2% rows (1 file; octave subset of its 416 rows) — *files:* tune_013106.abc
 
@@ -751,6 +801,8 @@ tune_013106 declares voices in body order V:1, V:3, V:2 with explicit `%%staves 
 
 
 *Fix:* crates/croma-core/src/lower/mod.rs part_voice_groups (lines 837-897): drop or narrow the merge-only fallback at lines 890-895 — when the directive mentions all voices, honor its ordering even without parenthesis groups (unmentioned voices appended after, as today). Single-function change in the lower layer; build_score_model (line 899) consumes the groups unchanged.
+
+37p: fixed by honoring explicit `%%staves`/`%%score` voice ordering even when every group remains one voice per part. Regression `staves_bracket_group_orders_parts_by_directive` covers body declaration order `V:1`, `V:3`, `V:2` under `%%staves [1 2 3]`. Target compare for `tune_013106` is now a structural match with 0 rows.
 
 
 ### `octave-croma-unclosed-bracket-drops-notes` — **QUIRK** (reference_quirk, repro=None)
@@ -807,7 +859,7 @@ tune_009310 contains two `Z2 [|]` multi-measure rests; croma emits 54 measures, 
 **Verifier correction:** The mechanism (Zn measure-count shift causing alignment-artifact pitch rows) reproduces exactly, and comparator-side multirest expansion before alignment would indeed eliminate the rows. But the verdict 'legitimate_difference' rests on a false premise: croma does not emit a spec-valid compressed representation. MusicXML's <multiple-rest> is a measure-style display directive that still requires the n measures to be written out individually; croma emits neither that nor literal measures, but a sin
 
 
-### `pitch-trailing-grace-group-dropped` — **OPEN** (croma_bug, repro=True)
+### `pitch-trailing-grace-group-dropped` — **FIXED(37e)** (croma_bug, repro=True)
 
 *Share:* ~1% rows (<=211 rows, 1 corpus file; bounded above because tune_006695 also carries a phantom measure) — *files:* tune_006695.abc
 
@@ -815,10 +867,10 @@ tune_009310 contains two `Z2 [|]` multi-measure rests; croma emits 54 measures, 
 Minimal repro /tmp/trailgrace.abc: `Te6{de}|d2f f2f|`. abc2xml emits the principal E plus two `<grace/>` notes D,E after it; croma emits only the E — exit 0, zero bytes on stderr (verified). Corpus: tune_006695 (`Te6{de}` trill with termination) — reference pitch stream has (E5,D5) at index 268 that croma lacks. ABC 2.1 §4.12 allows grace groups and §4.20 orders them before a note; a group before a barline is spec-unspecified, but the notation is real musical content (a standard trill termination) and croma's own code documents the drop as deliberate: crates/croma-core/src/lower/voice.rs lines ~88-94 ('Dropped at hard boundaries (barline, voice switch, end of tune) when no timed note follows') and crates/croma-core/src/lower/mod.rs ~512-514 clears pending_grace_groups at barlines. This is silent source-information loss per the task's croma_bug definition. Related to parser-backlog item 4…
 
 
-*Fix:* Lower layer: crates/croma-core/src/lower/voice.rs (pending_grace_groups buffer + flush) and crates/croma-core/src/lower/mod.rs (barline arm ~line 512 that clears the buffer; MusicItem::GraceGroup arm ~530). Instead of clearing at a barline, attach the pending group to the PREVIOUS timed note as an after-grace attachment (model addition in croma-core/src/model.rs; export via existing crates/croma-c
+*Fix:* Phase 37e adds an `after_grace_groups` attachment slot and resolves a pending standalone grace group backward only for a standalone trill-decorated note immediately before a hard boundary. MusicXML now writes those groups after the owning note, and ABC dump preserves them as an event suffix. The target repro `Te6{de}|d2f f2f|` now exports the principal E followed by D/E grace notes in measure 1, matching abc2xml ordering; ordinary `{g}|d` cross-bar leading-grace behavior remains unchanged. A guard keeps chord-member trills from draining graces into member attachments that exporters do not emit. Evidence: focused lower/MusicXML/to_abc grace tests pass; target `tune_006695.abc` exports nine `<grace/>` notes, matching the reference count and placing the new D/E pair after the trill E; full 10k compare vs phase 37d improves structural matches 8869->8870 and mismatch rows 164188->164052 (`missing_in_croma -64`, `extra_in_croma -64`, `duration -3`, `measure_alignment -4`, `voice -4`, with small positional `accidental +2`/`pitch +1` in the same target file), with no harness or MusicXML import failures.
 
 
-### `pitch-unclosed-chord-recovery-drops-notes` — **OPEN** (croma_bug, repro=True)
+### `pitch-unclosed-chord-recovery-drops-notes` — **FIXED(37f)** (croma_bug, repro=True)
 
 *Share:* ~0.3% rows (37 rows, 2 files) — *files:* tune_009179.abc, tune_005224.abc
 
@@ -828,13 +880,17 @@ Malformed input. tune_009179 `e2 E E2 ][ f |`: minimal repro /tmp/bracketbar.abc
 
 **Verifier correction:** The factual claim is fully accurate (mechanism, code location note.rs:244-252, both corpus examples, exact pitch counts 83v84 and 115v131, cascade shape). Only the verdict label is wrong. Triage's spec basis — "][ not among §4.8 barline tokens, so illegal ABC" — misses §4.8's liberal-barline paragraph (abc_standard_v2.1.full.md line 961): "bar lines may have any shape, using a sequence of | (thin), [ or ] (thick), and : (dots), e.g. |[| or [|:::" and "Abc parsers should be quite liberal in recog
 
+*Fix:* Phase 37f keeps the existing `abc.music.unclosed_chord` diagnostic but recovers parsed members as ordinary notes when a top-level unclosed `[` is stopped by a barline, leaving that barline to be parsed by the main music loop. The target `e2 E E2 ][ f |` now exports the lost F pickup, and the quoted bracket runs in `tune_005224.abc` now export their eight note sequences instead of swallowing them. Recovery is gated to the top-level music-line chord path; grace-internal malformed chords keep the old no-leak behavior (`{[CDE | G} A|` only yields mainline A). Evidence: `cargo test -p croma-core unclosed_chord -- --nocapture` passes 8 focused tests, target `tune_009179.abc`/`tune_005224.abc` exports both succeed and compare to 1 structural match plus 5 residual rows in `tune_005224.abc` (separate text/barline artifacts), and full 10k compare vs phase 37e improves structural matches 8870->8873 and mismatch rows 164052->162483 (`missing_in_croma -859`, `extra_in_croma -312`, `pitch -95`, `duration -91`, `lyric -63`, plus smaller category improvements), with no harness or MusicXML import failures.
 
-### `pitch-staves-voice-order` — **EQUIV** (legitimate_difference, repro=True)
+
+### `pitch-staves-voice-order` — **SUPERSEDED(37p)** (formerly legitimate_difference, repro=False)
 
 *Share:* ~0.4% rows (54 rows, 1 file) — *files:* tune_013106.abc
 
 
 tune_013106 declares voices in source order V:1, V:3, V:2 under `%%staves [1 2 3]`. Both engines emit parts P1,P2,P3 (verified via grep of both XMLs), but croma's P2 holds the second-DECLARED voice (V:3) while abc2xml's P2 holds V:2 per the %%staves layout. The pitch sequences are identical as multisets — the diff is one 32-note block transposed (croma c[38:70] == ref r[74:106]). %%staves is an abcm2ps/abc2xml typesetting directive, not ABC 2.1 core (§11 stylesheet directives are optional); both part orders are valid MusicXML encodings of the same score. Croma could optionally honor %%staves ordering for layout fidelity (musicxml/score.rs part assembly), or the comparator could match parts by voice id instead of position.
+
+37p: superseded by the `octave-staves-order-ignored` fix. Croma now honors the explicit directive order for singleton bracket groups, so `tune_013106` structurally matches the reference and this pitch-order difference no longer appears.
 
 
 ### `pitch-abc2xml-swallows-line-after-legacy-linebreak` — **QUIRK** (reference_quirk, repro=True)
@@ -875,7 +931,7 @@ Minimal: `[(C2(E2] [C)E)] z2|]` -> croma emits ZERO <slur> elements and warns `a
 *Fix:* Parse layer: crates/croma-core/src/parse/note.rs ~line 230-240 (the `abc.music.unknown_chord_token` branch) skips `(`/`)` inside chord brackets instead of producing slur tokens. Accept member-level slur open/close inside `[...]` and route them through crates/croma-core/src/lower/voice.rs `apply_slur` (line 424), attaching to the chord event (hoisting to chord-level start/stop is sufficient for Mus
 
 
-### `slur-grace-group-slurs-dropped` — **OPEN** (croma_bug, repro=True)
+### `slur-grace-group-slurs-dropped` — **FIXED(37g)** (croma_bug, repro=True)
 
 *Share:* ~1.5% rows (2/129) — *files:* tune_006367.abc
 
@@ -885,8 +941,19 @@ Minimal: `{(fg)}a2 {(ef)}g2|]` -> croma emits no slurs and warns `abc.music.unkn
 
 *Fix:* Parse layer: crates/croma-core/src/parse/note.rs ~line 374 (`abc.music.unknown_grace_token` branch) — tokenize `(`/`)` inside grace braces as slur markers scoped to the grace group; lower via the existing grace slur path (crates/croma-core/src/musicxml/grace.rs handles grace slur emission already for `({g}a)` shapes).
 
+*Fixed in 37g:* Parser now tokenizes `(`/`)` inside grace groups as
+grace-scoped slurs instead of `abc.music.unknown_grace_token`; lowering pairs
+them onto grace note/chord events, diagnoses malformed grace-internal slurs with
+the existing `abc.music.unclosed_slur` / `abc.music.unmatched_slur` policy, and
+the MusicXML/ABC writers preserve the scoped slur markers without leaking them
+to the main note. Target `tune_006367.abc` now compares as 1 structural match
+with 0 mismatch rows and no harness/import failures. Full 10k report-only
+compare after 37g: structural matches 8873->8874 vs 37f, mismatch rows
+162483->162475, `missing_in_croma` 55766->55760, `slur` 104->102; no import,
+harness, or worker failures.
 
-### `slur-number-collision-shared-part` — **OPEN** (croma_bug, repro=True)
+
+### `slur-number-collision-shared-part` — **FIXED(37h)** (croma_bug, repro=True)
 
 *Share:* ~2% rows (3/129: 010662=2, 013200=1 — 013200's count=3 row shows abc2xml's own number=1 reuse colliding too) — *files:* tune_010662.abc, tune_013200.abc
 
@@ -895,6 +962,20 @@ Minimal: two voices on one staff (`%%staves (1 2)`), `V:1 (e2 e|e) z z` / `V:2 (
 
 
 *Fix:* Export layer: crates/croma-core/src/musicxml/notation.rs:43-58 — stop emitting raw `slur.pair_id` as the number; allocate per-part live numbers the way tuplets already do (`tuplet_numbers.number_for(pair_id)`, notation.rs:68): pick the lowest number not currently open in the part at the start event, free it at the stop. Alternative: allocate `next_slur_id` per part instead of per voice in crates/c
+
+*Fixed in 37h:* MusicXML export now keeps a per-part live slur-number
+allocator, keyed by semantic source voice plus lowered slur pair id, so
+simultaneous slurs from voices merged into one part receive distinct MusicXML
+`number` values while overlay continuation events still stop the number opened
+by their source voice. The allocator preserves raw pair ids unless another slur
+with that number is already active in the same part, which avoids regressing
+files that already use high slur numbers. Target `tune_010662.abc` now compares
+as a structural match; the two-file target changed from 0 structural matches /
+19 mismatch rows / 3 slur rows to 1 structural match / 17 mismatch rows / 1 slur
+row, leaving only the known residual `tune_013200.abc` abc2xml numbering
+behavior. Full 10k report-only compare after 37h: structural matches
+8874->8875 vs 37g, mismatch rows 162475->162473, `slur` 102->100; no import,
+harness, or worker failures.
 
 
 ### `slur-single-target-count-encoding` — **EQUIV** (legitimate_difference, repro=None)
@@ -983,7 +1064,7 @@ Minimal repro /tmp/tie-triage/r4_detached_tie.abc: 'F2 E4|\n-E2 G4|]'. croma emi
 
 ## tuplet
 
-### `tuplet-fabricated-time-modification-for-inexpressible-durations` — **OPEN** (croma_bug, repro=None)
+### `tuplet-fabricated-time-modification-for-inexpressible-durations` — **FIXED(37r)** (croma_bug, repro=True)
 
 *Share:* ~80/691 rows (~11.6%), 35 files — *files:* tune_000464.abc, tune_006760.abc, tune_006472.abc
 
@@ -992,6 +1073,8 @@ Minimal repro /tmp/tuplet-probe/t4.abc (`M:none L:1/4 K:C` + `F16`): croma emits
 
 
 *Fix:* MusicXML export layer only: (1) add NoteTypeCandidate entries for "long" (4/1) and "maxima" (8/1) in note_type_candidates() in /Users/rodox/dev/rs/croma/crates/croma-core/src/musicxml/note.rs; (2) for rests spanning the full measure, emit `<rest measure="yes"/>` (note.rs line ~256, currently `self.xml.empty("rest", &[])`) and omit <type>, matching MusicXML semantics; (3) keep the time-modification
+
+37r: fixed the remaining narrowed repro by suppressing fabricated `<type>` and `<time-modification>` for full-measure rests whose display spelling would otherwise be invented. Regression `full_measure_rest_omits_fabricated_type_for_inexpressible_duration` covers a 5/4 `z5` measure rest. Target compare for `tune_006472` is now a structural match with 0 rows; earlier long-note tuplets were already stale under current note-type spelling.
 
 
 ### `tuplet-one-note-group-dangling-start` — **FIXED(36a)** (croma_bug, repro=True)
@@ -1019,12 +1102,14 @@ Those residual rows are a reference/comparator artifact, not an open
 dangling-start Croma bug.
 
 
-### `tuplet-nested-tuplets` — **REVIEW** (needs_deeper_look, repro=None)
+### `tuplet-nested-tuplets` — **RE-VERDICT(37s)** (known_backlog_model_gap, repro=True)
 
 *Share:* 1 direct row + ~5 rows folded into the cascade bucket (<1%), 1 file — *files:* tune_003732.abc
 
 
-tune_003732 m5: comparator reads croma as [(3,2,start),(3,2,start),(2,3,null)] vs ref [(3,2,start)] — croma's nested-tuplet output yields multiple/odd music21 tuplet components (also the source of the (3,2)+(7,12) croma-vs-none rows folded into the cascade bucket: 7:12 x 3:2 = 7:8, the outer ratio). Already cataloged: docs/parser-backlog.md item 3 ('Nested tuplets', 1 corpus tune, harness gate _NESTED_TUPLET_RE) — the model/writer does not represent nesting; which side's MusicXML is more faithful needs the dedicated nested-tuplet work promised there. Not re-derived here since it is a known, gated, single-tune item.
+tune_003732 m5: comparator reads croma as [(3,2,start),(3,2,start),(2,3,null)] vs ref [(3,2,start)] — croma's nested-tuplet output yields multiple/odd music21 tuplet components (also the source of the (3,2)+(7,12) croma-vs-none rows folded into the cascade bucket: 7:12 x 3:2 = 7:8, the outer ratio). Already cataloged: docs/parser-backlog.md item 3 ('Nested tuplets', 1 corpus tune, harness gate _NESTED_TUPLET_RE) — the model/writer does not represent nesting; which side's MusicXML is more faithful needs the dedicated nested-tuplet work promised there.
+
+37s: fresh current-code target compare for `tune_003732` remains a mismatch with 61 rows: `tuplet` 6, `duration` 11, `measure_alignment` 11, `direction` 17, `extra_in_croma` 13, `missing_in_croma` 1, and malformed microtonal `accidental` 2. The tuplet rows are still concentrated on the nested tuplet in measure 5, while the surrounding rows are the same cascade/malformed-feature clutter in this abcm2ps showcase tune. This is not a narrow phase-37 cleanup; keep it as the dedicated nested-tuplet model/export backlog item.
 
 
 ### `tuplet-barline-truncated-group` — **QUIRK** (reference_quirk, repro=True)

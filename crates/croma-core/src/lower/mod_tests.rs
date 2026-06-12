@@ -524,6 +524,81 @@ fn quoted_text_before_grace_group_stays_in_main_note_bundle() {
 }
 
 #[test]
+fn grace_group_internal_slur_tokens_do_not_warn() {
+    let source = "X:1\nL:1/8\nK:C\n{(fg)}a2 {(ef)}g2|]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        count_diagnostics(&diagnostics, "abc.music.unknown_grace_token"),
+        0,
+        "grace-internal slur markers should not warn: {diagnostics:?}"
+    );
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes[0].attachments.grace_groups.len(), 1);
+    assert_eq!(notes[1].attachments.grace_groups.len(), 1);
+    for group in [
+        &notes[0].attachments.grace_groups[0],
+        &notes[1].attachments.grace_groups[0],
+    ] {
+        assert_eq!(group.events.len(), 2);
+        assert_eq!(group.events[0].slurs.len(), 1);
+        assert_eq!(group.events[0].slurs[0].role, SlurRole::Start);
+        assert_eq!(group.events[1].slurs.len(), 1);
+        assert_eq!(group.events[1].slurs[0].role, SlurRole::Stop);
+        assert_eq!(
+            group.events[0].slurs[0].pair_id,
+            group.events[1].slurs[0].pair_id
+        );
+    }
+    assert_ne!(
+        notes[0].attachments.grace_groups[0].events[0].slurs[0].pair_id,
+        notes[1].attachments.grace_groups[0].events[0].slurs[0].pair_id
+    );
+}
+
+#[test]
+fn malformed_grace_group_internal_slurs_warn_and_skip_attachments() {
+    for (source, code) in [
+        ("X:1\nL:1/8\nK:C\n{(fg}a|]\n", "abc.music.unclosed_slur"),
+        ("X:1\nL:1/8\nK:C\n{fg)}a|]\n", "abc.music.unmatched_slur"),
+    ] {
+        let (tune, diagnostics) = tune_for(source);
+
+        assert_eq!(
+            count_diagnostics(&diagnostics, code),
+            1,
+            "expected {code} for {source:?}: {diagnostics:?}"
+        );
+        let notes = semantic_note_events(&tune);
+        let grace = &notes[0].attachments.grace_groups[0];
+        assert_eq!(grace.events.len(), 2);
+        assert!(
+            grace.events.iter().all(|event| event.slurs.is_empty()),
+            "malformed grace-internal slur markers should be skipped: {grace:?}"
+        );
+    }
+}
+
+#[test]
+fn grace_group_internal_slur_can_span_chord_and_note() {
+    let source = "X:1\nL:1/8\nK:C\n{([fg]a)}c|]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    let grace = &notes[0].attachments.grace_groups[0];
+    assert_eq!(grace.events.len(), 2);
+    assert_eq!(grace.events[0].slurs.len(), 1);
+    assert_eq!(grace.events[0].slurs[0].role, SlurRole::Start);
+    assert_eq!(grace.events[1].slurs.len(), 1);
+    assert_eq!(grace.events[1].slurs[0].role, SlurRole::Stop);
+    assert_eq!(
+        grace.events[0].slurs[0].pair_id,
+        grace.events[1].slurs[0].pair_id
+    );
+}
+
+#[test]
 fn parses_user_defined_and_legacy_decoration_symbols_from_dialect_state() {
     let user_symbol = parse_document("X:1\nU:W=!trill!\nK:C\nWC\n", ParseOptions::default());
     assert!(user_symbol.diagnostics.is_empty());
@@ -672,6 +747,153 @@ fn unclosed_chord_scan_stops_at_barline() {
         note_letters,
         vec!['C', 'D', 'E', 'F', 'G', 'A', 'B', 'c'],
         "all notes after the unclosed bracket must survive"
+    );
+}
+
+#[test]
+fn unclosed_chord_member_before_barline_recovers_as_note() {
+    let source = "X:1\nL:1/8\nK:C\ne2 E E2 ][ f |\n";
+    let document_report = parse_document(source, ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the unclosed bracket should yield exactly one unclosed-chord diagnostic"
+    );
+    let diagnostic = document_report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "abc.music.unclosed_chord")
+        .expect("expected unclosed-chord diagnostic");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "[ f ",
+        "the diagnostic span should stay on the malformed bracket run before the barline"
+    );
+
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['e', 'E', 'E', 'f'],
+        "the note inside the unclosed bracket should recover as an ordinary note"
+    );
+    let recovered_note_index = tune_music.lines[0]
+        .items
+        .iter()
+        .position(|item| matches!(item, MusicItem::Note(note) if note.pitch.step == 'f'))
+        .expect("expected recovered f note");
+    assert!(
+        tune_music.lines[0].items[recovered_note_index + 1..]
+            .iter()
+            .any(|item| matches!(item, MusicItem::Barline(_))),
+        "the barline that stopped the malformed chord scan must still be parsed"
+    );
+    let malformed = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Malformed(item) if item.kind == MalformedSyntaxKind::UnclosedChord => {
+                Some(item)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(malformed.len(), 1);
+    assert_eq!(
+        &source[malformed[0].span.start..malformed[0].span.end],
+        "[ f ",
+        "the malformed syntax span should stay on the malformed bracket run"
+    );
+}
+
+#[test]
+fn unclosed_chord_quoted_run_before_barline_recovers_members_as_notes() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|[F\"cont\" \"Am7\"GAB cAFA |\n";
+    let document_report = parse_document(source, ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the unclosed bracket should yield exactly one unclosed-chord diagnostic"
+    );
+    let diagnostic = document_report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "abc.music.unclosed_chord")
+        .expect("expected unclosed-chord diagnostic");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "[F\"cont\" \"Am7\"GAB cAFA ",
+        "the diagnostic span should stay on the malformed quoted bracket run before the barline"
+    );
+
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['F', 'G', 'A', 'B', 'c', 'A', 'F', 'A'],
+        "all notes inside the unclosed bracket should recover in source order"
+    );
+}
+
+#[test]
+fn unclosed_chord_inside_grace_group_does_not_recover_members_as_main_notes() {
+    let source = "X:1\nL:1/8\nK:C\n{[CDE | G} A|\n";
+    let document_report = parse_document(source, ParseOptions::default());
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.unclosed_chord"),
+        1,
+        "the grace-internal unclosed bracket should still diagnose once"
+    );
+    let diagnostic = document_report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "abc.music.unclosed_chord")
+        .expect("expected unclosed-chord diagnostic");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "[CDE ",
+        "the diagnostic span should stay on the malformed grace-internal bracket run"
+    );
+
+    let tune_music = document_report
+        .value
+        .music
+        .tune(0)
+        .expect("expected parsed tune music");
+    let note_letters = tune_music.lines[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            MusicItem::Note(note) => Some(note.pitch.step),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        note_letters,
+        vec!['A'],
+        "grace-internal malformed chord members must not leak as mainline notes"
     );
 }
 
@@ -1111,6 +1333,48 @@ fn overlay_rewinds_to_previous_barline_and_warns_when_incomplete() {
 }
 
 #[test]
+fn lyrics_align_to_overlay_notes_in_source_order() {
+    let document = parse_document(
+        "X:1\nM:C\nL:1/8\nK:G\nG2|A Ac2B BG2|ABc2B4|A3B c2B> A|(A2G2) E2F2|\nw:|||All a-lone and so lone-*ly\nG2F2 E2DC|D2D2 D2\"^*\"D> D&x6C> D|E2F E D2D2|E4 HA2||\nw:|***And tis down by the green-wood side-oh!\n",
+        ParseOptions::default(),
+    )
+    .value;
+    let report = parse_tune_report_from_document(&document);
+    let tune = report.value.expect("expected tune");
+    let voice = &tune.voices[0];
+    let overlay = voice
+        .measures
+        .iter()
+        .flat_map(|measure| &measure.overlays)
+        .next()
+        .expect("expected overlay segment");
+    let overlay_lyrics = overlay
+        .events
+        .iter()
+        .filter(|event| event.alignable)
+        .map(|event| {
+            event
+                .lyrics
+                .iter()
+                .find(|lyric| lyric.control == LyricControl::Syllable)
+                .map(|lyric| lyric.text.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(overlay_lyrics, vec![Some("down"), Some("by")]);
+
+    let main_lyrics = voice
+        .measures
+        .iter()
+        .flat_map(|measure| &measure.events)
+        .flat_map(|event| &event.lyrics)
+        .filter(|lyric| lyric.control == LyricControl::Syllable)
+        .map(|lyric| lyric.text.as_str())
+        .collect::<Vec<_>>();
+    assert!(!main_lyrics.contains(&"down"));
+    assert!(!main_lyrics.contains(&"by"));
+}
+
+#[test]
 fn symbol_lines_align_to_notes_and_preserve_symbol_kinds() {
     let document = parse_document(
         "X:1\nK:C\nC z D E F|\ns: \"C\" * !>! \"^slow\"\n",
@@ -1287,6 +1551,26 @@ fn leading_bar_marker_advances_past_a_filled_first_measure() {
     let per_measure = syllables_per_measure("X:1\nL:1/4\nK:C\nG z|c d|e f|\nw: |Oh well\n");
     assert_eq!(per_measure[0], vec!["".to_owned()]);
     assert_eq!(per_measure[1], vec!["Oh".to_owned(), "well".to_owned()]);
+}
+
+#[test]
+fn lyric_bar_marker_advances_across_rest_only_measure() {
+    let per_measure = syllables_per_measure("X:1\nL:1/4\nK:C\nz2|C D|E F|\nw: |one two\n");
+
+    assert!(per_measure[0].is_empty());
+    assert_eq!(per_measure[1], vec!["one".to_owned(), "two".to_owned()]);
+    assert_eq!(per_measure[2], vec!["".to_owned(), "".to_owned()]);
+}
+
+#[test]
+fn lyric_bar_markers_after_rest_only_gap_start_from_previous_block() {
+    let per_measure = syllables_per_measure("X:1\nL:1/4\nK:C\nC|\nw: old\nz|z|D|E|\nw: ||new\n");
+
+    assert_eq!(per_measure[0], vec!["old".to_owned()]);
+    assert!(per_measure[1].is_empty());
+    assert!(per_measure[2].is_empty());
+    assert_eq!(per_measure[3], vec!["new".to_owned()]);
+    assert_eq!(per_measure[4], vec!["".to_owned()]);
 }
 
 #[test]
@@ -1677,6 +1961,58 @@ fn semantic_note_alters(tune: &crate::model::Tune) -> Vec<i8> {
         .collect()
 }
 
+fn semantic_chord_member_alters(tune: &crate::model::Tune) -> Vec<Vec<i8>> {
+    tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some(
+                chord
+                    .members
+                    .iter()
+                    .map(|member| member.pitch.alter)
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn leading_grace_note_alters(tune: &crate::model::Tune) -> Vec<i8> {
+    semantic_note_events(tune)
+        .into_iter()
+        .flat_map(|event| grace_note_alters_in_attachments(&event.attachments))
+        .chain(
+            tune.score.parts[0].voices[0]
+                .events
+                .iter()
+                .flat_map(|event| match &event.kind {
+                    TimedEventKind::Chord(chord) => chord
+                        .members
+                        .iter()
+                        .flat_map(|member| grace_note_alters_in_attachments(&member.attachments))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                }),
+        )
+        .collect()
+}
+
+fn grace_note_alters_in_attachments(attachments: &crate::model::EventAttachments) -> Vec<i8> {
+    attachments
+        .grace_groups
+        .iter()
+        .flat_map(|group| group.events.iter())
+        .flat_map(|event| match &event.kind {
+            crate::model::GraceEventKind::Note(note) => vec![note.pitch.alter],
+            crate::model::GraceEventKind::Chord(notes) => {
+                notes.iter().map(|note| note.pitch.alter).collect()
+            }
+            crate::model::GraceEventKind::Rest(_) => Vec::new(),
+        })
+        .collect()
+}
+
 #[test]
 fn semantic_score_marks_pickup_and_keeps_fixed_measure_numbers() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC|D E F G|A B c d|\n";
@@ -1696,6 +2032,36 @@ fn semantic_score_marks_pickup_and_keeps_fixed_measure_numbers() {
     );
     assert_eq!(measures[1].actual_duration, Fraction::new(4, 4));
     assert!(measures[1].complete);
+}
+
+#[test]
+fn complex_header_meter_uses_additive_duration() {
+    let source = "X:1\nM:(2+3+2)/8\nL:1/8\nK:C\nCDEFGAB|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let meter = tune.score.metadata.meter.as_ref().expect("header meter");
+    assert_eq!(meter.duration, Some(Fraction::new(7, 8)));
+    assert!(!meter.free_meter);
+    let measures = &tune.score.parts[0].voices[0].measures;
+    assert_eq!(measures[0].expected_duration, Some(Fraction::new(7, 8)));
+    assert_eq!(measures[0].actual_duration, Fraction::new(7, 8));
+    assert!(measures[0].complete);
+}
+
+#[test]
+fn additive_extension_header_meter_uses_summed_duration() {
+    let source = "X:1\nM:3/4+2/4\nL:1/4\nK:C\nCDEFG|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    let meter = tune.score.metadata.meter.as_ref().expect("header meter");
+    assert_eq!(meter.duration, Some(Fraction::new(5, 4)));
+    assert!(!meter.free_meter);
+    let measure = &tune.score.parts[0].voices[0].measures[0];
+    assert_eq!(measure.expected_duration, Some(Fraction::new(5, 4)));
+    assert_eq!(measure.actual_duration, Fraction::new(5, 4));
+    assert!(measure.complete);
 }
 
 #[test]
@@ -1746,6 +2112,56 @@ fn semantic_accidentals_propagate_within_measure_and_reset_at_barline() {
     assert!(diagnostics.is_empty());
     assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0]);
     assert!(tune.score.accidental_policy.reset_at_barlines);
+}
+
+#[test]
+fn written_grace_accidental_propagates_to_main_notes_in_measure() {
+    let source = "X:1\nL:1/8\nK:C\n{^f}f2 f2 f4 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn grace_notes_inherit_measure_accidentals_from_main_notes() {
+    let source = "X:1\nL:1/8\nK:C\n^c2 {dc}d2 c4 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 1]);
+    assert_eq!(leading_grace_note_alters(&tune), vec![0, 1]);
+}
+
+#[test]
+fn grace_accidental_ledger_uses_voice_octave_shift() {
+    let source = "X:1\nL:1/8\nK:C octave=1\n{^f}f2 f2 f4 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn flushed_grace_accidentals_precede_direct_graces_on_same_note() {
+    let source = "X:1\nL:1/8\nK:C\n{^f}[M:3/4]{=f}f2 f2 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1, 0]);
+    assert_eq!(semantic_note_alters(&tune), vec![0, 0]);
+}
+
+#[test]
+fn chord_member_grace_accidentals_do_not_affect_earlier_members() {
+    let source = "X:1\nL:1/8\nK:C\n[f{^f}f]2 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1]);
+    assert_eq!(semantic_chord_member_alters(&tune), vec![vec![0, 1]]);
 }
 
 #[test]
@@ -1872,6 +2288,74 @@ fn chord_symbol_before_grace_group_binds_to_main_note() {
     assert_eq!(first.attachments.grace_groups.len(), 1);
     assert_eq!(first.attachments.grace_groups[0].note_count, 2);
     assert!(notes[1].attachments.chord_symbols.is_empty());
+}
+
+#[test]
+fn trailing_trill_grace_group_binds_as_after_grace_on_previous_note() {
+    let source = "X:1\nT:Trailing Grace\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert!(matches!(
+        &notes[0].kind,
+        TimedEventKind::Note(note) if note.pitch.step == 'E'
+    ));
+    assert_eq!(notes[0].measure.number, 1);
+    assert_eq!(notes[0].attachments.grace_groups.len(), 0);
+    assert_eq!(notes[0].attachments.after_grace_groups.len(), 1);
+    assert_eq!(notes[0].attachments.after_grace_groups[0].note_count, 2);
+
+    assert!(matches!(
+        &notes[1].kind,
+        TimedEventKind::Note(note) if note.pitch.step == 'D'
+    ));
+    assert_eq!(notes[1].measure.number, 2);
+    assert!(notes[1].attachments.grace_groups.is_empty());
+    assert!(notes[1].attachments.after_grace_groups.is_empty());
+}
+
+#[test]
+fn trailing_grace_after_chord_member_trill_does_not_drain_into_member() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n[CE!trill!G]2{de}|A2 A2|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let events = tune
+        .score
+        .parts
+        .iter()
+        .flat_map(|part| &part.voices)
+        .flat_map(|voice| &voice.events)
+        .collect::<Vec<_>>();
+    let first_chord = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some((event, chord)),
+            _ => None,
+        })
+        .expect("expected chord");
+    assert!(first_chord.0.attachments.after_grace_groups.is_empty());
+    assert!(
+        first_chord
+            .1
+            .members
+            .iter()
+            .all(|member| member.attachments.after_grace_groups.is_empty())
+    );
+
+    let following_a = events
+        .iter()
+        .find(|event| {
+            matches!(
+                &event.kind,
+                TimedEventKind::Note(note) if note.pitch.step == 'A'
+            )
+        })
+        .expect("expected following A");
+    assert_eq!(following_a.measure.number, 2);
+    assert_eq!(following_a.attachments.grace_groups.len(), 1);
+    assert_eq!(following_a.attachments.grace_groups[0].note_count, 2);
 }
 
 #[test]
@@ -2539,10 +3023,11 @@ fn same_measure_dropped_tie_keeps_written_accidental_carry() {
 }
 
 #[test]
-fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
-    // A matched cross-bar tie carries the sharp onto the stop note, and the
-    // carried accidental persists for the rest of the stop note's measure.
-    let source = "X:1\nL:1/8\nK:C\n^a- | a a\n";
+fn matched_tie_stop_accidental_is_stop_note_only() {
+    // A matched cross-bar tie carries the sharp onto the stop note only. The
+    // barline resets the ordinary measure ledger, so a later untied same-pitch
+    // note in the stop note's measure resolves against the key again.
+    let source = "X:1\nL:1/8\nK:C\n^a- | a b a\n";
     let (tune, diagnostics) = tune_for(source);
 
     assert!(
@@ -2550,7 +3035,7 @@ fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
             .iter()
             .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
     );
-    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0, 0]);
 }
 
 #[test]
@@ -2846,25 +3331,249 @@ fn mid_tune_key_and_meter_changes_reach_the_score() {
 }
 
 #[test]
-fn standalone_body_key_line_broadcasts_to_all_voices() {
-    let source = "X:1\nL:1/4\nK:C\nV:1\nCDEF|\nK:D\nV:1\nFGAF|\nV:2\nCDEF|\nFGAF|\n";
+fn nospace_header_key_global_accidentals_preserve_base_key() {
+    let source = "X:1\nL:1/4\nK:D_B^g\nCDEF|\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.field.key.compact_accidentals_ignored")
+            .count(),
+        1,
+        "expected compact accidental warning for K:D_B^g: {diagnostics:?}"
+    );
+    let key = tune.score.metadata.key.as_ref().expect("header key");
+
+    assert_eq!(key.fifths, 2);
+    assert!(
+        key.explicit_accidentals.is_empty(),
+        "compact accidental tail is nonstandard and ignored"
+    );
+}
+
+#[test]
+fn nospace_inline_key_global_accidentals_preserve_base_key() {
+    let source = "X:1\nL:1/4\nK:C\nCDEF|[K:D_B^g]GABc|\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "abc.field.key.compact_accidentals_ignored")
+            .count(),
+        1,
+        "expected compact accidental warning for [K:D_B^g]: {diagnostics:?}"
+    );
+    let key_changes = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::KeyChange(key) => Some(key),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(key_changes.len(), 1);
+    assert_eq!(key_changes[0].fifths, 2);
+    assert!(
+        key_changes[0].explicit_accidentals.is_empty(),
+        "compact accidental tail is nonstandard and ignored"
+    );
+}
+
+#[test]
+fn supported_body_additive_meter_change_does_not_warn() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != "abc.music.meter.unsupported_complex"),
+        "supported additive meter should not warn: {diagnostics:?}"
+    );
+    let meter_changes = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::MeterChange(meter) => Some(meter),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(meter_changes.len(), 1);
+    assert_eq!(meter_changes[0].display, "3/4+4/4");
+    assert_eq!(meter_changes[0].duration, Some(Fraction::new(7, 4)));
+    assert!(!meter_changes[0].free_meter);
+
+    assert_eq!(
+        tune.score.parts[0].voices[0].measures[1].actual_duration,
+        Fraction::new(7, 4)
+    );
+}
+
+fn part_note_steps_and_alters(score: &crate::model::Score, part_index: usize) -> Vec<(char, i8)> {
+    score.parts[part_index].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::Note(note) => Some((note.pitch.step, note.pitch.alter)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn part_key_change_fifths(score: &crate::model::Score, part_index: usize) -> Vec<i8> {
+    score.parts[part_index].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::KeyChange(key) => Some(key.fifths),
+            _ => None,
+        })
+        .collect()
+}
+
+fn part_meter_change_displays(score: &crate::model::Score, part_index: usize) -> Vec<&str> {
+    score.parts[part_index].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::MeterChange(meter) => Some(meter.display.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn notes_before_first_key_change(score: &crate::model::Score, part_index: usize) -> usize {
+    let events = &score.parts[part_index].voices[0].events;
+    let key_index = events
+        .iter()
+        .position(|event| matches!(event.kind, TimedEventKind::KeyChange(_)))
+        .expect("key change");
+    events[..key_index]
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::Note(_)))
+        .count()
+}
+
+fn notes_before_first_meter_change(score: &crate::model::Score, part_index: usize) -> usize {
+    let events = &score.parts[part_index].voices[0].events;
+    let meter_index = events
+        .iter()
+        .position(|event| matches!(event.kind, TimedEventKind::MeterChange(_)))
+        .expect("meter change");
+    events[..meter_index]
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::Note(_)))
+        .count()
+}
+
+#[test]
+fn standalone_body_key_line_scopes_to_current_voice_timeline() {
+    let late_body_voice = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:D\n",
+        "V:1\n",
+        "B B B B|\n",
+        "K:Dm\n",
+        "B B B B|\n",
+        "V:2\n",
+        "F C B F|\n",
+        "K:Dm\n",
+        "F C B F|\n",
+    );
+    let header_predeclared_late_voice = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "V:1\n",
+        "V:2\n",
+        "K:D\n",
+        "V:1\n",
+        "B B B B|\n",
+        "K:Dm\n",
+        "B B B B|\n",
+        "V:2\n",
+        "F C B F|\n",
+        "K:Dm\n",
+        "F C B F|\n",
+    );
+
+    for (label, source) in [
+        ("late body voice", late_body_voice),
+        (
+            "header-predeclared late voice",
+            header_predeclared_late_voice,
+        ),
+    ] {
+        let doc = crate::parse_document(source, crate::ParseOptions::default());
+        let score = crate::lower_score(&doc.value, crate::LowerOptions)
+            .value
+            .expect("score");
+
+        assert_eq!(score.parts.len(), 2, "{label}: expected two parts");
+        assert_eq!(
+            part_key_change_fifths(&score, 0),
+            vec![-1],
+            "{label}: V1 records only its Dm change"
+        );
+        assert_eq!(
+            part_key_change_fifths(&score, 1),
+            vec![-1],
+            "{label}: V2 records only its own Dm change"
+        );
+        assert_eq!(
+            notes_before_first_key_change(&score, 1),
+            4,
+            "{label}: V2 must stay in the header key until its own K:Dm"
+        );
+        assert_eq!(
+            part_note_steps_and_alters(&score, 1),
+            vec![
+                ('F', 1),
+                ('C', 1),
+                ('B', 0),
+                ('F', 1),
+                ('F', 0),
+                ('C', 0),
+                ('B', -1),
+                ('F', 0),
+            ],
+            "{label}: V2 first bar stays in D major, second bar changes to D minor"
+        );
+    }
+}
+
+#[test]
+fn standalone_body_meter_line_scopes_to_current_voice_timeline() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "V:1\n",
+        "V:2\n",
+        "K:C\n",
+        "V:1\n",
+        "C D E F|\n",
+        "M:3/4\n",
+        "G A B|\n",
+        "V:2\n",
+        "C D E F|\n",
+        "M:3/4\n",
+        "G A B|\n",
+    );
     let doc = crate::parse_document(source, crate::ParseOptions::default());
     let score = crate::lower_score(&doc.value, crate::LowerOptions)
         .value
         .expect("score");
-    let key_changes_per_voice: Vec<usize> = score
-        .parts
-        .iter()
-        .flat_map(|p| &p.voices)
-        .map(|v| {
-            v.events
-                .iter()
-                .filter(|e| matches!(e.kind, crate::TimedEventKind::KeyChange(_)))
-                .count()
-        })
-        .collect();
-    assert!(
-        key_changes_per_voice.iter().all(|&n| n == 1),
-        "every voice records the broadcast key change: {key_changes_per_voice:?}"
+
+    assert_eq!(score.parts.len(), 2, "expected two parts");
+    assert_eq!(part_meter_change_displays(&score, 0), vec!["3/4"]);
+    assert_eq!(part_meter_change_displays(&score, 1), vec!["3/4"]);
+    assert_eq!(
+        notes_before_first_meter_change(&score, 1),
+        4,
+        "V2 must stay in the header meter until its own M:3/4"
     );
 }

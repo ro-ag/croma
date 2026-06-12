@@ -275,6 +275,7 @@ pub enum GraceElementSyntax {
     Note(NoteSyntax),
     Chord(ChordSyntax),
     Rest(RestSyntax),
+    Slur(SlurSyntax),
     Malformed(MalformedSyntax),
 }
 
@@ -381,12 +382,16 @@ pub struct VariantEndingSyntax {
     pub endings: Vec<VariantEndingPart>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantEndingPart {
     Single(SpannedNumber),
     Range {
         start: SpannedNumber,
         end: SpannedNumber,
+        span: Span,
+    },
+    Text {
+        text: String,
         span: Span,
     },
 }

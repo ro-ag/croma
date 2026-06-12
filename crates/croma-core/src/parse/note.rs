@@ -147,7 +147,7 @@ impl<'line> MusicLineParser<'line> {
             }));
     }
 
-    pub(super) fn parse_chord(&mut self) {
+    pub(super) fn parse_chord(&mut self, recover_barline_members_as_notes: bool) {
         let attachments = self.take_pending_attachments();
         let start = attachments
             .span_start()
@@ -158,6 +158,7 @@ impl<'line> MusicLineParser<'line> {
         let open_span = self.span(open_start, self.index);
         let mut members = Vec::new();
         let mut closed = false;
+        let mut stopped_at_barline = false;
         // Per-member slurs (`[(C(E] [C)E)]`, ABC 2.1 §4.11: "Both ties and
         // slurs may be used into, out of and between chords"). A `(` inside
         // the bracket opens a slur that binds forward to this chord; a `)`
@@ -182,6 +183,7 @@ impl<'line> MusicLineParser<'line> {
                     // loop re-reads it as a bar line. `closed` stays false, so
                     // the unclosed-chord recovery below preserves the partial
                     // `[...` run actually consumed.
+                    stopped_at_barline = true;
                     break;
                 }
                 '^' | '_' | '=' => {
@@ -272,6 +274,14 @@ impl<'line> MusicLineParser<'line> {
                 "abc.music.unclosed_chord",
                 "Chord group was preserved and skipped",
             );
+            if recover_barline_members_as_notes && stopped_at_barline {
+                for member in members {
+                    self.items.push(MusicItem::Note(member.note));
+                    if let Some(tie) = member.tie {
+                        self.items.push(MusicItem::Tie(tie));
+                    }
+                }
+            }
             return;
         }
 
@@ -373,8 +383,16 @@ impl<'line> MusicLineParser<'line> {
                     let rest = self.parse_rest_syntax(RestVisibility::Invisible);
                     elements.push(GraceElementSyntax::Rest(rest));
                 }
+                '(' => {
+                    let slur = self.parse_grace_slur(SlurDirection::Start);
+                    elements.push(GraceElementSyntax::Slur(slur));
+                }
+                ')' => {
+                    let slur = self.parse_grace_slur(SlurDirection::End);
+                    elements.push(GraceElementSyntax::Slur(slur));
+                }
                 '[' => {
-                    self.parse_chord();
+                    self.parse_chord(false);
                     if let Some(MusicItem::Chord(chord)) = self.items.pop() {
                         elements.push(GraceElementSyntax::Chord(chord));
                     }
@@ -429,6 +447,18 @@ impl<'line> MusicLineParser<'line> {
                 "abc.music.unclosed_grace",
                 "Grace group was preserved and skipped",
             );
+        }
+    }
+
+    fn parse_grace_slur(&mut self, direction: SlurDirection) -> SlurSyntax {
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Slur, span);
+        SlurSyntax {
+            span,
+            dotted: false,
+            direction,
         }
     }
 

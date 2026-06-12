@@ -14,6 +14,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
             mode: KeyMode::None,
             accidentals: Vec::new(),
             explicit: false,
+            compact_accidentals_ignored: false,
             properties: VoiceProperties::default(),
         };
     }
@@ -29,11 +30,12 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
             },
             accidentals: Vec::new(),
             explicit: false,
+            compact_accidentals_ignored: false,
             properties: VoiceProperties::default(),
         };
     }
 
-    let tokens = tokens_with_spans(trimmed, value_span.start);
+    let (tokens, compact_accidentals_ignored) = key_tokens_with_spans(trimmed, value_span.start);
     let mut tonic = None;
     let mut mode = KeyMode::Major;
     let mut explicit = false;
@@ -85,8 +87,71 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
         mode,
         accidentals,
         explicit,
+        compact_accidentals_ignored,
         properties,
     }
+}
+
+fn key_tokens_with_spans(value: &str, offset: usize) -> (Vec<Spanned<String>>, bool) {
+    let tokens = tokens_with_spans(value, offset);
+    let Some(first) = tokens.first() else {
+        return (tokens, false);
+    };
+    let Some(mut expanded_first) = split_compact_key_accidentals(first) else {
+        return (tokens, false);
+    };
+
+    let mut expanded = Vec::with_capacity(expanded_first.len() + tokens.len().saturating_sub(1));
+    expanded.append(&mut expanded_first);
+    expanded.extend(tokens.into_iter().skip(1));
+    (expanded, true)
+}
+
+fn split_compact_key_accidentals(token: &Spanned<String>) -> Option<Vec<Spanned<String>>> {
+    let value = token.value.as_str();
+    for (tail_start, _) in value.char_indices().skip(1) {
+        if compact_key_accidental_len(&value[tail_start..]).is_none() {
+            continue;
+        }
+        let tonic = &value[..tail_start];
+        if parse_tonic_token(tonic).is_none() {
+            continue;
+        }
+        if !is_compact_key_accidental_tail(&value[tail_start..]) {
+            continue;
+        }
+        return Some(vec![Spanned::new(
+            tonic.to_owned(),
+            Span::new(token.span.start, token.span.start + tail_start),
+        )]);
+    }
+    None
+}
+
+fn is_compact_key_accidental_tail(value: &str) -> bool {
+    let mut start = 0;
+    while start < value.len() {
+        let Some(token_len) = compact_key_accidental_len(&value[start..]) else {
+            return false;
+        };
+        start += token_len;
+    }
+    true
+}
+
+fn compact_key_accidental_len(value: &str) -> Option<usize> {
+    let sign_len = if value.starts_with("__") || value.starts_with("^^") {
+        2
+    } else if value.starts_with('_') || value.starts_with('^') || value.starts_with('=') {
+        1
+    } else {
+        return None;
+    };
+    let note = value[sign_len..].chars().next()?;
+    if !matches!(note.to_ascii_uppercase(), 'A'..='G') {
+        return None;
+    }
+    Some(sign_len + note.len_utf8())
 }
 
 fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {

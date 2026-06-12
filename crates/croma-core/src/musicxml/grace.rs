@@ -1,6 +1,5 @@
 use crate::model::{
-    AccidentalMark, EventAttachments, Fraction, GraceEventKind, GraceGroupAttachment,
-    KeySignatureModel, Part, Pitch,
+    EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment, Part,
 };
 
 use super::{
@@ -16,7 +15,32 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
         tuplet_numbers: &TupletNumbers,
     ) {
-        for group in &attachments.grace_groups {
+        self.write_grace_group_list(&attachments.grace_groups, sequence, part, tuplet_numbers);
+    }
+
+    pub(crate) fn write_after_grace_groups(
+        &mut self,
+        attachments: &EventAttachments,
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+        tuplet_numbers: &TupletNumbers,
+    ) {
+        self.write_grace_group_list(
+            &attachments.after_grace_groups,
+            sequence,
+            part,
+            tuplet_numbers,
+        );
+    }
+
+    fn write_grace_group_list(
+        &mut self,
+        groups: &[GraceGroupAttachment],
+        sequence: &MeasureSequence<'score>,
+        part: &Part,
+        tuplet_numbers: &TupletNumbers,
+    ) {
+        for group in groups {
             if group.events.is_empty() && group.note_count > 0 {
                 self.diagnostics.push(unsupported_grace_warning(group.span));
                 continue;
@@ -32,24 +56,15 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
         tuplet_numbers: &TupletNumbers,
     ) {
-        // Slurs that opened before the grace `{` (`({grace}note)`) bind to the
-        // FIRST grace note of the group; carry them as notations on that note
-        // only. Subsequent grace notes and the main note are unaffected.
-        let first_note_attachments = EventAttachments {
-            slurs: group.slurs.clone(),
-            ..EventAttachments::default()
-        };
-        let empty_attachments = EventAttachments::default();
+        // Slurs that opened before the grace `{` (`({grace}note)`) still bind
+        // to the FIRST grace note. Slurs written inside the braces bind to the
+        // individual grace events that lowering paired from source order.
         let mut first_note = true;
         let mut first_chord_member = true;
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
-                    let attachments = if first_note {
-                        &first_note_attachments
-                    } else {
-                        &empty_attachments
-                    };
+                    let attachments = grace_note_attachments(group, event, first_note);
                     self.write_grace_note(
                         GraceNoteWrite {
                             note,
@@ -61,7 +76,7 @@ impl<'score> MusicXmlWriter<'score> {
                                 note.length_multiplier,
                             ),
                         },
-                        attachments,
+                        &attachments,
                         sequence,
                         part,
                         tuplet_numbers,
@@ -70,11 +85,7 @@ impl<'score> MusicXmlWriter<'score> {
                     first_chord_member = false;
                 }
                 GraceEventKind::Rest(rest) => {
-                    let attachments = if first_note {
-                        &first_note_attachments
-                    } else {
-                        &empty_attachments
-                    };
+                    let attachments = grace_note_attachments(group, event, first_note);
                     self.write_note(
                         NoteWrite {
                             pitch: None,
@@ -82,7 +93,7 @@ impl<'score> MusicXmlWriter<'score> {
                             duration: grace_base_unit(group.note_count),
                             source: event.source_span,
                             written_accidental: None,
-                            attachments,
+                            attachments: &attachments,
                             chord_member: false,
                             measure_rest: false,
                             grace: true,
@@ -96,11 +107,12 @@ impl<'score> MusicXmlWriter<'score> {
                     first_chord_member = false;
                 }
                 GraceEventKind::Chord(notes) => {
+                    let mut event_first_note = true;
                     for note in notes {
-                        let attachments = if first_note {
-                            &first_note_attachments
+                        let attachments = if event_first_note {
+                            grace_note_attachments(group, event, first_note)
                         } else {
-                            &empty_attachments
+                            EventAttachments::default()
                         };
                         self.write_grace_note(
                             GraceNoteWrite {
@@ -113,13 +125,14 @@ impl<'score> MusicXmlWriter<'score> {
                                     note.length_multiplier,
                                 ),
                             },
-                            attachments,
+                            &attachments,
                             sequence,
                             part,
                             tuplet_numbers,
                         );
                         first_note = false;
                         first_chord_member = false;
+                        event_first_note = false;
                     }
                 }
             }
@@ -154,6 +167,22 @@ impl<'score> MusicXmlWriter<'score> {
     }
 }
 
+fn grace_note_attachments(
+    group: &GraceGroupAttachment,
+    event: &GraceEvent,
+    first_note: bool,
+) -> EventAttachments {
+    let mut slurs = Vec::new();
+    if first_note {
+        slurs.extend(group.slurs.iter().copied());
+    }
+    slurs.extend(event.slurs.iter().copied());
+    EventAttachments {
+        slurs,
+        ..EventAttachments::default()
+    }
+}
+
 /// Count-based grace base unit, matching abc2xml: 1/8 for a single grace note in
 /// the group, 1/16 otherwise. The grace note's written length modifier is
 /// applied on top of this (see [`grace_display_duration`]).
@@ -177,55 +206,4 @@ fn grace_base_unit(note_count: u32) -> Fraction {
 /// carry no `<duration>` element.
 fn grace_display_duration(note_count: u32, length_multiplier: Fraction) -> Fraction {
     grace_base_unit(note_count).checked_mul(length_multiplier)
-}
-
-pub(crate) fn grace_export_pitch(
-    pitch: &Pitch,
-    written_accidental: Option<&AccidentalMark>,
-    key: Option<&KeySignatureModel>,
-) -> Pitch {
-    if written_accidental.is_some() {
-        return *pitch;
-    }
-    let Some(key) = key else {
-        return *pitch;
-    };
-    let alter = key_signature_alter(key, pitch.step);
-    if alter == pitch.alter {
-        return *pitch;
-    }
-    Pitch { alter, ..*pitch }
-}
-
-fn key_signature_alter(key: &KeySignatureModel, step: char) -> i8 {
-    let step = step.to_ascii_uppercase();
-    if let Some(accidental) = key
-        .explicit_accidentals
-        .iter()
-        .find(|accidental| accidental.step == step)
-    {
-        return accidental.accidental.alter();
-    }
-
-    if key.fifths > 0 {
-        sharp_key_steps(key.fifths).contains(&step).then_some(1)
-    } else if key.fifths < 0 {
-        flat_key_steps(key.fifths).contains(&step).then_some(-1)
-    } else {
-        None
-    }
-    .unwrap_or(0)
-}
-
-const SHARP_KEY_STEPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
-const FLAT_KEY_STEPS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
-
-fn sharp_key_steps(fifths: i8) -> &'static [char] {
-    let count = fifths.clamp(0, 7) as usize;
-    &SHARP_KEY_STEPS[..count]
-}
-
-fn flat_key_steps(fifths: i8) -> &'static [char] {
-    let count = fifths.saturating_abs().clamp(0, 7) as usize;
-    &FLAT_KEY_STEPS[..count]
 }

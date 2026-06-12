@@ -3,7 +3,6 @@ use crate::model::{
     TieRole, TimedEventKind, TimelineEventKind, TupletRole,
 };
 
-use super::grace::grace_export_pitch;
 use super::{
     FractionExt, MeasureSequence, MusicXmlWriter, NoteWrite, SequenceEvent, TimeModification,
     TupletNumbers, unsupported_note_type_warning, variable_chord_duration_export_warning,
@@ -109,6 +108,9 @@ impl<'score> MusicXmlWriter<'score> {
                     self.write_mid_tune_key(key);
                 }
                 TimedEventKind::MeterChange(meter) => self.write_mid_tune_meter(meter),
+                TimedEventKind::ClefChange(clef) => {
+                    self.write_mid_tune_clef(clef, sequence.staff, part)
+                }
                 TimedEventKind::TempoChange(tempo) => self.write_tempo_direction(tempo),
             },
             SequenceEvent::Overlay(timed) => match &timed.kind {
@@ -180,12 +182,14 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 TimelineEventKind::KeyChange(_)
                 | TimelineEventKind::MeterChange(_)
+                | TimelineEventKind::ClefChange(_)
                 | TimelineEventKind::TempoChange(_) => {}
                 TimelineEventKind::Spacer
                 | TimelineEventKind::Barline { .. }
                 | TimelineEventKind::VariantEnding { .. } => {}
             },
         }
+        self.write_after_grace_groups(attachments, sequence, part, tuplet_numbers);
     }
 
     fn write_chord(
@@ -262,12 +266,7 @@ impl<'score> MusicXmlWriter<'score> {
             }
         }
         if let Some(pitch) = note.pitch {
-            let pitch = if note.grace {
-                grace_export_pitch(pitch, note.written_accidental, self.active_key.as_ref())
-            } else {
-                *pitch
-            };
-            self.write_pitch(&pitch);
+            self.write_pitch(pitch);
         } else if note.measure_rest {
             self.xml.empty("rest", &[("measure", "yes")]);
         } else {
@@ -276,7 +275,10 @@ impl<'score> MusicXmlWriter<'score> {
         let explicit_time_modification =
             note.attachments.tuplets.first().map(TimeModification::from);
         let spelling = note_spelling(note.duration, explicit_time_modification);
-        if spelling.unsupported {
+        let omit_inexpressible_measure_rest_spelling = note.measure_rest
+            && explicit_time_modification.is_none()
+            && (spelling.unsupported || spelling.time_modification.is_some());
+        if spelling.unsupported && !omit_inexpressible_measure_rest_spelling {
             self.diagnostics
                 .push(unsupported_note_type_warning(note.source, note.duration));
         }
@@ -286,9 +288,11 @@ impl<'score> MusicXmlWriter<'score> {
         }
         self.write_ties(&note.attachments.ties);
         self.xml.text_element("voice", &sequence.voice_number);
-        self.xml.text_element("type", spelling.note_type);
-        for _ in 0..spelling.dots {
-            self.xml.empty("dot", &[]);
+        if !omit_inexpressible_measure_rest_spelling {
+            self.xml.text_element("type", spelling.note_type);
+            for _ in 0..spelling.dots {
+                self.xml.empty("dot", &[]);
+            }
         }
         if let Some(accidental) = note.written_accidental
             && accidental.explicit
@@ -297,7 +301,11 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml
                 .text_element("accidental", accidental.kind.musicxml_name());
         }
-        let time_modification = explicit_time_modification.or(spelling.time_modification);
+        let time_modification = if omit_inexpressible_measure_rest_spelling {
+            None
+        } else {
+            explicit_time_modification.or(spelling.time_modification)
+        };
         if let Some(time_modification) = time_modification {
             self.write_time_modification(time_modification);
         }
@@ -305,7 +313,12 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml
                 .text_element("staff", &sequence.staff.value.to_string());
         }
-        self.write_notations(note.attachments, time_modification, tuplet_numbers);
+        self.write_notations(
+            note.attachments,
+            time_modification,
+            tuplet_numbers,
+            &sequence.slur_voice_key,
+        );
         self.write_lyrics(&note.attachments.lyrics);
         self.xml.end("note");
     }

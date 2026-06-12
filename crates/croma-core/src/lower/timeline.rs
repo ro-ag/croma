@@ -26,6 +26,7 @@ pub(crate) fn build_voice_timeline(
     let measures = builder.finish(diagnostics);
     VoiceTimeline {
         id: voice.id,
+        initial_properties: voice.initial_properties,
         properties: voice.properties,
         measures,
         source_span: voice.source_span,
@@ -123,6 +124,22 @@ impl VoiceTimelineBuilder {
                     attachments: EventAttachments::default(),
                 });
             }
+            LoweredEvent::ClefChange(clef) => {
+                let onset = self.onset;
+                let span = clef.source_span;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::ClefChange(clef),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                    attachments: EventAttachments::default(),
+                });
+            }
             LoweredEvent::TempoChange(tempo) => {
                 let onset = self.onset;
                 let span = tempo.source_span;
@@ -203,7 +220,9 @@ impl VoiceTimelineBuilder {
 
     fn push_barline(&mut self, kind: BarlineKind, span: Span) {
         let onset = self.onset;
+        let measure_index = self.measure_index;
         let measure = self.current_measure_mut();
+        let measure_span = measure.span;
         measure.events.push(VoiceTimedEvent {
             onset,
             duration: Fraction::zero(),
@@ -216,7 +235,12 @@ impl VoiceTimelineBuilder {
             symbols: Vec::new(),
             attachments: EventAttachments::default(),
         });
-        measure.span = extend_span(measure.span, span);
+        measure.span =
+            if measure_index > 0 && measure_span.is_empty() && closes_empty_measure_barline(kind) {
+                Span::new(measure_span.start, span.end)
+            } else {
+                extend_span(measure_span, span)
+            };
     }
 
     fn is_empty_measure_start(&self) -> bool {
@@ -392,6 +416,7 @@ fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
                 event.kind,
                 TimelineEventKind::KeyChange(_)
                     | TimelineEventKind::MeterChange(_)
+                    | TimelineEventKind::ClefChange(_)
                     | TimelineEventKind::TempoChange(_)
             )
         })
@@ -416,6 +441,7 @@ fn is_barline_only_measure(measure: &VoiceMeasureTimeline) -> bool {
                 TimelineEventKind::Barline { .. }
                     | TimelineEventKind::KeyChange(_)
                     | TimelineEventKind::MeterChange(_)
+                    | TimelineEventKind::ClefChange(_)
             )
         })
 }
@@ -432,6 +458,10 @@ fn starts_first_body_measure_barline(kind: BarlineKind) -> bool {
         kind,
         BarlineKind::Double | BarlineKind::Final | BarlineKind::Liberal
     )
+}
+
+fn closes_empty_measure_barline(kind: BarlineKind) -> bool {
+    kind == BarlineKind::Final
 }
 
 struct OverlayBuilder {
@@ -483,12 +513,13 @@ fn timeline_event_kind(kind: LoweredEventAtomKind) -> TimelineEventKind {
 fn repeat_ending_parts_model(parts: &[VariantEndingPart]) -> Vec<RepeatEndingPartModel> {
     parts
         .iter()
-        .map(|part| match *part {
+        .map(|part| match part {
             VariantEndingPart::Single(number) => RepeatEndingPartModel::Single(number.value),
             VariantEndingPart::Range { start, end, .. } => RepeatEndingPartModel::Range {
                 start: start.value,
                 end: end.value,
             },
+            VariantEndingPart::Text { text, .. } => RepeatEndingPartModel::Text(text.clone()),
         })
         .collect()
 }

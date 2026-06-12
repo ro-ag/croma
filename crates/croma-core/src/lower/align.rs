@@ -11,10 +11,24 @@ use crate::lower::{
 #[derive(Debug, Clone, Copy)]
 struct AlignableRef {
     measure_index: usize,
-    event_index: usize,
+    event: AlignableEventRef,
     line_index: usize,
     source_order: u32,
-    measure_number: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AlignableEventRef {
+    Main(usize),
+    Overlay {
+        overlay_index: usize,
+        event_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BarMarkerCursor {
+    position: usize,
+    measure_index: usize,
 }
 
 pub(crate) fn align_lyrics(
@@ -76,7 +90,8 @@ fn align_lyric_line(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut position = start;
-    let mut last_bar_consume: Option<usize> = None;
+    let mut last_bar_consume: Option<BarMarkerCursor> = None;
+    let block_measure = block_start_measure(refs, start, end);
     for token in &line.tokens {
         match token.kind {
             LyricTokenKind::Syllable => {
@@ -131,7 +146,14 @@ fn align_lyric_line(
                 position = position.saturating_add(1).min(end);
             }
             LyricTokenKind::Bar => {
-                position = advance_bar_marker(refs, start, end, position, &mut last_bar_consume);
+                position = advance_bar_marker(
+                    refs,
+                    start,
+                    end,
+                    position,
+                    block_measure,
+                    &mut last_bar_consume,
+                );
             }
         }
     }
@@ -203,14 +225,22 @@ fn align_symbol_line(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut position = start;
-    let mut last_bar_consume: Option<usize> = None;
+    let mut last_bar_consume: Option<BarMarkerCursor> = None;
+    let block_measure = block_start_measure(refs, start, end);
     for token in &line.tokens {
         match token.kind {
             SymbolTokenKind::Skip => {
                 position = position.saturating_add(1).min(end);
             }
             SymbolTokenKind::Bar => {
-                position = advance_bar_marker(refs, start, end, position, &mut last_bar_consume);
+                position = advance_bar_marker(
+                    refs,
+                    start,
+                    end,
+                    position,
+                    block_measure,
+                    &mut last_bar_consume,
+                );
             }
             SymbolTokenKind::Decoration
             | SymbolTokenKind::ChordSymbol
@@ -251,11 +281,25 @@ fn alignable_refs(voice: &VoiceTimeline) -> Vec<AlignableRef> {
             if event.alignable {
                 refs.push(AlignableRef {
                     measure_index,
-                    event_index,
+                    event: AlignableEventRef::Main(event_index),
                     line_index: event.line_index,
                     source_order: event.source_order,
-                    measure_number: measure.index,
                 });
+            }
+        }
+        for (overlay_index, overlay) in measure.overlays.iter().enumerate() {
+            for (event_index, event) in overlay.events.iter().enumerate() {
+                if event.alignable {
+                    refs.push(AlignableRef {
+                        measure_index,
+                        event: AlignableEventRef::Overlay {
+                            overlay_index,
+                            event_index,
+                        },
+                        line_index: event.line_index,
+                        source_order: event.source_order,
+                    });
+                }
             }
         }
     }
@@ -263,68 +307,98 @@ fn alignable_refs(voice: &VoiceTimeline) -> Vec<AlignableRef> {
     refs
 }
 
+fn block_start_measure(refs: &[AlignableRef], start: usize, end: usize) -> usize {
+    if start == 0 {
+        return 0;
+    }
+    let after_previous = refs
+        .get(start - 1)
+        .map(|reference| reference.measure_index.saturating_add(1))
+        .unwrap_or(0);
+    let first_visible = refs
+        .get(start)
+        .filter(|_| start < end)
+        .map(|reference| reference.measure_index)
+        .unwrap_or(after_previous);
+    after_previous.min(first_visible)
+}
+
 /// Resolve a `|` bar marker inside a `w:`/`s:` alignment line per ABC 2.1
 /// section 5.1: a bar marker "advances to the next bar", i.e. any remaining
 /// notes of the current measure are skipped (they receive blank syllables).
-/// The marker is ignored only when the current measure has already been filled
-/// — that is, the cursor sits exactly at a real barline that has not yet been
-/// absorbed by an earlier marker on this line.
+/// Rest-only measures still count as bars even though they have no alignable
+/// refs, so the cursor tracks the concrete measure reached by prior markers
+/// instead of inferring all movement from gaps between note refs.
 ///
 /// `start` is the first alignable index of the current verse/layer block and
-/// `last_consume` records where the previous marker on this line was absorbed,
-/// so consecutive markers (e.g. a leading `||`) each advance one further bar
-/// instead of collapsing into a single no-op.
+/// `last_consume` records which measure the previous marker reached at a given
+/// alignable position, so consecutive markers (e.g. a leading `||`) each
+/// advance one further bar instead of collapsing into a single no-op.
 fn advance_bar_marker(
     refs: &[AlignableRef],
     start: usize,
     end: usize,
     position: usize,
-    last_consume: &mut Option<usize>,
+    block_measure: usize,
+    last_consume: &mut Option<BarMarkerCursor>,
 ) -> usize {
-    let at_unconsumed_barline = position > start
-        && position < end
-        && refs[position - 1].measure_number != refs[position].measure_number
-        && *last_consume != Some(position);
-    if at_unconsumed_barline {
-        // The measure is already full and a real barline lines up here, so the
-        // marker is a no-op; remember it so a following marker advances past it.
-        *last_consume = Some(position);
-        return position;
-    }
-    let Some(current) = refs.get(position).copied().filter(|_| position < end) else {
+    if refs.is_empty() || start >= end {
         return position;
     };
-    let measure = current.measure_number;
-    let mut next = position;
-    while next < end
-        && refs
-            .get(next)
-            .is_some_and(|reference| reference.measure_number == measure)
-    {
+
+    let current_measure =
+        if let Some(cursor) = last_consume.filter(|cursor| cursor.position == position) {
+            cursor.measure_index
+        } else if position > start {
+            refs.get(position - 1)
+                .map(|reference| reference.measure_index)
+                .unwrap_or(0)
+        } else if position == start {
+            block_measure
+        } else {
+            refs.get(start)
+                .map(|reference| reference.measure_index.saturating_sub(1))
+                .unwrap_or(0)
+        };
+    let target_measure = current_measure.saturating_add(1);
+    let mut next = position.min(end);
+    while next < end && refs[next].measure_index < target_measure {
         next += 1;
     }
-    *last_consume = Some(next);
+    *last_consume = Some(BarMarkerCursor {
+        position: next,
+        measure_index: target_measure,
+    });
     next
 }
 
 fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, lyric: AlignedLyric) {
-    if let Some(event) = voice
-        .measures
-        .get_mut(reference.measure_index)
-        .and_then(|measure| measure.events.get_mut(reference.event_index))
-    {
+    if let Some(event) = alignable_event_mut(voice, reference) {
         event.attachments.lyrics.push(lyric.clone());
         event.lyrics.push(lyric);
     }
 }
 
 fn attach_symbol(voice: &mut VoiceTimeline, reference: AlignableRef, symbol: AlignedSymbol) {
-    if let Some(event) = voice
-        .measures
-        .get_mut(reference.measure_index)
-        .and_then(|measure| measure.events.get_mut(reference.event_index))
-    {
+    if let Some(event) = alignable_event_mut(voice, reference) {
         event.attachments.symbols.push(symbol.clone());
         event.symbols.push(symbol);
+    }
+}
+
+fn alignable_event_mut(
+    voice: &mut VoiceTimeline,
+    reference: AlignableRef,
+) -> Option<&mut crate::model::VoiceTimedEvent> {
+    let measure = voice.measures.get_mut(reference.measure_index)?;
+    match reference.event {
+        AlignableEventRef::Main(event_index) => measure.events.get_mut(event_index),
+        AlignableEventRef::Overlay {
+            overlay_index,
+            event_index,
+        } => measure
+            .overlays
+            .get_mut(overlay_index)
+            .and_then(|overlay| overlay.events.get_mut(event_index)),
     }
 }

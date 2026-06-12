@@ -1,4 +1,4 @@
-use crate::model::{Part, StaffId};
+use crate::model::{ClefChangeModel, Part, StaffId};
 
 use super::{MusicXmlWriter, unsupported_transpose_warning};
 
@@ -44,14 +44,16 @@ impl<'score> MusicXmlWriter<'score> {
         if meter.free_meter {
             return;
         }
-        let Some((beats, beat_type, symbol)) = meter_parts(&meter.display) else {
+        let Some(parts) = meter_parts(&meter.display) else {
             return;
         };
-        let attrs = symbol.map(|symbol| [("symbol", symbol)]);
+        let attrs = parts.symbol.map(|symbol| [("symbol", symbol)]);
         let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
         self.xml.start("time", attrs_slice);
-        self.xml.text_element("beats", beats);
-        self.xml.text_element("beat-type", beat_type);
+        for part in parts.parts {
+            self.xml.text_element("beats", &part.beats);
+            self.xml.text_element("beat-type", &part.beat_type);
+        }
         self.xml.end("time");
     }
 
@@ -70,6 +72,17 @@ impl<'score> MusicXmlWriter<'score> {
         }
         self.xml.start("attributes", &[]);
         self.write_time_element(meter);
+        self.xml.end("attributes");
+    }
+
+    pub(crate) fn write_mid_tune_clef(
+        &mut self,
+        clef: &ClefChangeModel,
+        staff: StaffId,
+        part: &Part,
+    ) {
+        self.xml.start("attributes", &[]);
+        self.write_clef_element(Some(clef.clef.text.as_str()), staff, part.staves.len() > 1);
         self.xml.end("attributes");
     }
 
@@ -95,21 +108,25 @@ impl<'score> MusicXmlWriter<'score> {
                 .voices
                 .iter()
                 .find(|voice| voice.staff.value == staff.value)
-                .and_then(|voice| voice.properties.clef.as_ref())
+                .and_then(|voice| voice.initial_properties.clef.as_ref())
                 .map(|clef| clef.text.as_str());
-            let clef = clef_model(clef_text);
-            let number = staff.value.to_string();
-            let attrs = (part.staves.len() > 1).then_some([("number", number.as_str())]);
-            let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
-            self.xml.start("clef", attrs_slice);
-            self.xml.text_element("sign", clef.sign);
-            self.xml.text_element("line", clef.line);
-            if clef.octave_change != 0 {
-                self.xml
-                    .text_element("clef-octave-change", &clef.octave_change.to_string());
-            }
-            self.xml.end("clef");
+            self.write_clef_element(clef_text, staff, part.staves.len() > 1);
         }
+    }
+
+    fn write_clef_element(&mut self, clef_text: Option<&str>, staff: StaffId, numbered: bool) {
+        let clef = clef_model(clef_text);
+        let number = staff.value.to_string();
+        let attrs = numbered.then_some([("number", number.as_str())]);
+        let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
+        self.xml.start("clef", attrs_slice);
+        self.xml.text_element("sign", clef.sign);
+        self.xml.text_element("line", clef.line);
+        if clef.octave_change != 0 {
+            self.xml
+                .text_element("clef-octave-change", &clef.octave_change.to_string());
+        }
+        self.xml.end("clef");
     }
 
     fn write_transpose_if_available(&mut self, part: &Part) {
@@ -130,16 +147,69 @@ impl<'score> MusicXmlWriter<'score> {
     }
 }
 
-fn meter_parts(display: &str) -> Option<(&str, &str, Option<&'static str>)> {
+struct MeterParts {
+    parts: Vec<MeterPart>,
+    symbol: Option<&'static str>,
+}
+
+struct MeterPart {
+    beats: String,
+    beat_type: String,
+}
+
+fn meter_parts(display: &str) -> Option<MeterParts> {
     match display.trim() {
-        "C" => Some(("4", "4", Some("common"))),
-        "C|" => Some(("2", "2", Some("cut"))),
+        "C" => Some(meter_parts_with_symbol("4", "4", Some("common"))),
+        "C|" => Some(meter_parts_with_symbol("2", "2", Some("cut"))),
         "none" | "M:none" => None,
         value => {
-            let (beats, beat_type) = value.split_once('/')?;
-            Some((beats.trim(), beat_type.trim(), None))
+            let parts = if value.contains('+') && !value.trim_start().starts_with('(') {
+                value
+                    .split('+')
+                    .map(|part| {
+                        let (beats, beat_type) = part.trim().split_once('/')?;
+                        Some(MeterPart {
+                            beats: beats.trim().to_owned(),
+                            beat_type: beat_type.trim().to_owned(),
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            } else {
+                let (beats, beat_type) = value.split_once('/')?;
+                vec![MeterPart {
+                    beats: strip_grouping_parentheses(beats).to_owned(),
+                    beat_type: beat_type.trim().to_owned(),
+                }]
+            };
+            (!parts.is_empty()).then_some(MeterParts {
+                parts,
+                symbol: None,
+            })
         }
     }
+}
+
+fn meter_parts_with_symbol(
+    beats: &str,
+    beat_type: &str,
+    symbol: Option<&'static str>,
+) -> MeterParts {
+    MeterParts {
+        parts: vec![MeterPart {
+            beats: beats.to_owned(),
+            beat_type: beat_type.to_owned(),
+        }],
+        symbol,
+    }
+}
+
+fn strip_grouping_parentheses(value: &str) -> &str {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(trimmed)
+        .trim()
 }
 
 struct ClefModel {

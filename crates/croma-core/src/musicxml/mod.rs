@@ -1,8 +1,8 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::model::{
     AccidentalMark, DecorationAttachment, EventAttachments, Fraction, GraceNoteEvent, Pitch,
-    RestEvent, RestVisibility, Score, StaffId, TimedEvent, TimedEventKind, TimelineEventKind,
-    TupletAttachment, VoiceTimedEvent,
+    RestEvent, RestVisibility, Score, SlurRole, StaffId, TimedEvent, TimedEventKind,
+    TimelineEventKind, TupletAttachment, VoiceTimedEvent,
 };
 use crate::parse::ParseReport;
 
@@ -32,6 +32,7 @@ struct MusicXmlWriter<'score> {
     /// (Voices within a part share this; per-voice inline divergence is rare
     /// and only affects implicit grace spelling.)
     active_key: Option<crate::model::KeySignatureModel>,
+    slur_numbers: SlurNumbers,
 }
 
 impl<'score> MusicXmlWriter<'score> {
@@ -40,6 +41,7 @@ impl<'score> MusicXmlWriter<'score> {
             score,
             xml: XmlWriter::new(),
             active_key: score.metadata.key.clone(),
+            slur_numbers: SlurNumbers::default(),
             diagnostics: Vec::new(),
         }
     }
@@ -113,6 +115,7 @@ struct GraceNoteWrite<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct MeasureSequence<'score> {
     voice_number: String,
+    slur_voice_key: String,
     staff: StaffId,
     expected_duration: Option<Fraction>,
     actual_duration: Fraction,
@@ -203,6 +206,72 @@ impl TupletNumbers {
             .find_map(|(pair, number)| (*pair == pair_id).then_some(*number))
             .unwrap_or(1)
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SlurNumbers {
+    active: Vec<ActiveSlurNumber>,
+}
+
+impl SlurNumbers {
+    pub(crate) fn number_for(&mut self, slur_voice_key: &str, pair_id: u32, role: SlurRole) -> u32 {
+        match role {
+            SlurRole::Start => self.start(slur_voice_key, pair_id),
+            SlurRole::Stop => self.stop(slur_voice_key, pair_id),
+        }
+    }
+
+    fn start(&mut self, slur_voice_key: &str, pair_id: u32) -> u32 {
+        if let Some(active) = self
+            .active
+            .iter()
+            .find(|active| active.slur_voice_key == slur_voice_key && active.pair_id == pair_id)
+        {
+            return active.number;
+        }
+
+        let preferred = pair_id.max(1);
+        let number = if self.number_is_active(preferred) {
+            self.lowest_available_number()
+        } else {
+            preferred
+        };
+        self.active.push(ActiveSlurNumber {
+            slur_voice_key: slur_voice_key.to_owned(),
+            pair_id,
+            number,
+        });
+        number
+    }
+
+    fn stop(&mut self, slur_voice_key: &str, pair_id: u32) -> u32 {
+        let Some(index) = self.active.iter().position(|active| {
+            active.slur_voice_key == slur_voice_key && active.pair_id == pair_id
+        }) else {
+            return 1;
+        };
+        self.active.remove(index).number
+    }
+
+    fn lowest_available_number(&self) -> u32 {
+        for number in 1..=u32::MAX {
+            if !self.number_is_active(number) {
+                return number;
+            }
+        }
+        u32::MAX
+    }
+
+    fn number_is_active(&self, number: u32) -> bool {
+        self.active.iter().any(|active| active.number == number)
+    }
+}
+
+#[derive(Debug)]
+struct ActiveSlurNumber {
+    slur_voice_key: String,
+    pair_id: u32,
+    number: u32,
 }
 
 struct XmlWriter {
