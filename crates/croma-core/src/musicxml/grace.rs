@@ -1,6 +1,5 @@
 use crate::model::{
-    AccidentalMark, EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment,
-    KeySignatureModel, Part, Pitch,
+    EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment, Part,
 };
 
 use super::{
@@ -207,55 +206,4 @@ fn grace_base_unit(note_count: u32) -> Fraction {
 /// carry no `<duration>` element.
 fn grace_display_duration(note_count: u32, length_multiplier: Fraction) -> Fraction {
     grace_base_unit(note_count).checked_mul(length_multiplier)
-}
-
-pub(crate) fn grace_export_pitch(
-    pitch: &Pitch,
-    written_accidental: Option<&AccidentalMark>,
-    key: Option<&KeySignatureModel>,
-) -> Pitch {
-    if written_accidental.is_some() {
-        return *pitch;
-    }
-    let Some(key) = key else {
-        return *pitch;
-    };
-    let alter = key_signature_alter(key, pitch.step);
-    if alter == pitch.alter {
-        return *pitch;
-    }
-    Pitch { alter, ..*pitch }
-}
-
-fn key_signature_alter(key: &KeySignatureModel, step: char) -> i8 {
-    let step = step.to_ascii_uppercase();
-    if let Some(accidental) = key
-        .explicit_accidentals
-        .iter()
-        .find(|accidental| accidental.step == step)
-    {
-        return accidental.accidental.alter();
-    }
-
-    if key.fifths > 0 {
-        sharp_key_steps(key.fifths).contains(&step).then_some(1)
-    } else if key.fifths < 0 {
-        flat_key_steps(key.fifths).contains(&step).then_some(-1)
-    } else {
-        None
-    }
-    .unwrap_or(0)
-}
-
-const SHARP_KEY_STEPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
-const FLAT_KEY_STEPS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
-
-fn sharp_key_steps(fifths: i8) -> &'static [char] {
-    let count = fifths.clamp(0, 7) as usize;
-    &SHARP_KEY_STEPS[..count]
-}
-
-fn flat_key_steps(fifths: i8) -> &'static [char] {
-    let count = fifths.saturating_abs().clamp(0, 7) as usize;
-    &FLAT_KEY_STEPS[..count]
 }

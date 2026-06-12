@@ -1899,6 +1899,58 @@ fn semantic_note_alters(tune: &crate::model::Tune) -> Vec<i8> {
         .collect()
 }
 
+fn semantic_chord_member_alters(tune: &crate::model::Tune) -> Vec<Vec<i8>> {
+    tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some(
+                chord
+                    .members
+                    .iter()
+                    .map(|member| member.pitch.alter)
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn leading_grace_note_alters(tune: &crate::model::Tune) -> Vec<i8> {
+    semantic_note_events(tune)
+        .into_iter()
+        .flat_map(|event| grace_note_alters_in_attachments(&event.attachments))
+        .chain(
+            tune.score.parts[0].voices[0]
+                .events
+                .iter()
+                .flat_map(|event| match &event.kind {
+                    TimedEventKind::Chord(chord) => chord
+                        .members
+                        .iter()
+                        .flat_map(|member| grace_note_alters_in_attachments(&member.attachments))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                }),
+        )
+        .collect()
+}
+
+fn grace_note_alters_in_attachments(attachments: &crate::model::EventAttachments) -> Vec<i8> {
+    attachments
+        .grace_groups
+        .iter()
+        .flat_map(|group| group.events.iter())
+        .flat_map(|event| match &event.kind {
+            crate::model::GraceEventKind::Note(note) => vec![note.pitch.alter],
+            crate::model::GraceEventKind::Chord(notes) => {
+                notes.iter().map(|note| note.pitch.alter).collect()
+            }
+            crate::model::GraceEventKind::Rest(_) => Vec::new(),
+        })
+        .collect()
+}
+
 #[test]
 fn semantic_score_marks_pickup_and_keeps_fixed_measure_numbers() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC|D E F G|A B c d|\n";
@@ -1998,6 +2050,56 @@ fn semantic_accidentals_propagate_within_measure_and_reset_at_barline() {
     assert!(diagnostics.is_empty());
     assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0]);
     assert!(tune.score.accidental_policy.reset_at_barlines);
+}
+
+#[test]
+fn written_grace_accidental_propagates_to_main_notes_in_measure() {
+    let source = "X:1\nL:1/8\nK:C\n{^f}f2 f2 f4 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn grace_notes_inherit_measure_accidentals_from_main_notes() {
+    let source = "X:1\nL:1/8\nK:C\n^c2 {dc}d2 c4 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(semantic_note_alters(&tune), vec![1, 0, 1]);
+    assert_eq!(leading_grace_note_alters(&tune), vec![0, 1]);
+}
+
+#[test]
+fn grace_accidental_ledger_uses_voice_octave_shift() {
+    let source = "X:1\nL:1/8\nK:C octave=1\n{^f}f2 f2 f4 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+}
+
+#[test]
+fn flushed_grace_accidentals_precede_direct_graces_on_same_note() {
+    let source = "X:1\nL:1/8\nK:C\n{^f}[M:3/4]{=f}f2 f2 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1, 0]);
+    assert_eq!(semantic_note_alters(&tune), vec![0, 0]);
+}
+
+#[test]
+fn chord_member_grace_accidentals_do_not_affect_earlier_members() {
+    let source = "X:1\nL:1/8\nK:C\n[f{^f}f]2 |]\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty());
+    assert_eq!(leading_grace_note_alters(&tune), vec![1]);
+    assert_eq!(semantic_chord_member_alters(&tune), vec![vec![0, 1]]);
 }
 
 #[test]
@@ -2859,10 +2961,11 @@ fn same_measure_dropped_tie_keeps_written_accidental_carry() {
 }
 
 #[test]
-fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
-    // A matched cross-bar tie carries the sharp onto the stop note, and the
-    // carried accidental persists for the rest of the stop note's measure.
-    let source = "X:1\nL:1/8\nK:C\n^a- | a a\n";
+fn matched_tie_stop_accidental_is_stop_note_only() {
+    // A matched cross-bar tie carries the sharp onto the stop note only. The
+    // barline resets the ordinary measure ledger, so a later untied same-pitch
+    // note in the stop note's measure resolves against the key again.
+    let source = "X:1\nL:1/8\nK:C\n^a- | a b a\n";
     let (tune, diagnostics) = tune_for(source);
 
     assert!(
@@ -2870,7 +2973,7 @@ fn matched_tie_stop_accidental_persists_for_rest_of_measure() {
             .iter()
             .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
     );
-    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1]);
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0, 0]);
 }
 
 #[test]

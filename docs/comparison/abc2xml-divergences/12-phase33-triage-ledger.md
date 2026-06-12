@@ -58,7 +58,7 @@ MusicXML import failures.
 
 ## accidental
 
-### `accidental-grace-ledger-isolation` — **OPEN** (croma_bug, repro=None)
+### `accidental-grace-ledger-isolation` — **FIXED(37k)** (croma_bug, repro=True)
 
 *Share:* ~0.4% rows (17/3876), 9 files; 15% of genuine solo rows — *files:* tune_013736.abc, tune_011097.abc, tune_012949.abc, tune_009036.abc
 
@@ -67,6 +67,8 @@ Minimal repros, K:C. `{^f}f2 f2 f4`: croma gives the main f's NO alter (natural)
 
 
 *Fix:* Lowering layer: route grace-note alter resolution through the same MeasureAccidental ledger used for main notes — crates/croma-core/src/lower/voice.rs (grace_note_event_model / grace_event_model, ~lines 700-748, currently context-free pure functions) plus crates/croma-core/src/lower/accidental.rs (ledger read for inherited alters, ledger write for written grace accidentals). Check crates/croma-cor
+
+37k: fixed by lowering grace notes through the voice's measure accidental ledger before the host note/chord member resolves. Written grace accidentals now seed later same-pitch notes in the bar, and unwritten grace notes inherit prior same-pitch measure accidentals/key alters. Focused tests cover `{^f}f2 f2 f4`, `^c2 {dc}d2 c4`, shifted voice-octave identity, pending/direct grace order, and chord-member ordering. Target compare for tune_013736/tune_011097/tune_012949/tune_009036: 4 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
 
 ### `accidental-late-voice-key-seed` — **OPEN** (croma_bug, repro=None)
@@ -80,7 +82,7 @@ Minimal repro (V:1 body, then standalone K:Dm, then V:2 body — the Village Mus
 *Fix:* Lowering layer: crates/croma-core/src/lower/mod.rs, MultiVoiceLowering (fields ~lines 142-155, seeding block ~lines 580-615). Scope standalone body K:/M: changes to the voice that is current when they appear; seed a voice whose body starts later from the HEADER key/meter (header_key_display/header_meter_display already exist as the dedupe baseline). Keep the changed-state seed only for voices that
 
 
-### `accidental-tie-carry-pollutes-next-bar` — **OPEN** (croma_bug, repro=None)
+### `accidental-tie-carry-pollutes-next-bar` — **FIXED(37k)** (croma_bug, repro=True)
 
 *Share:* ~0.1% rows (4/3876), 2 files — *files:* tune_006821.abc, tune_005543.abc
 
@@ -89,6 +91,8 @@ Minimal repro `K:C\n^a4- | a2 b2 a4 |]`: croma gives A#, A#(tied), B, A# — the
 
 
 *Fix:* Lowering layer: crates/croma-core/src/lower/accidental.rs — preserve_for_open_ties (~lines 149-192) seeds the next bar's ledger with from_pending_tie entries; instead of confirm_pending_tie_carry (~line 256) leaving the entry live for the rest of the measure, the carried entry must be consumed when the tie's stop note resolves (or marked stop-note-only so other same-pitch notes resolve against the
+
+37k: fixed by consuming synthetic from-pending-tie ledger entries after the matched stop note resolves; freshly rewritten accidentals on the stop note still propagate normally within the bar. Focused tests cover stop-note-only tie carry, rewritten stop-note carry, dropped ties, and chord partial drops. Target compare for tune_005543/tune_006821: 2 structural matches, 0 mismatch rows, 0 import/harness/worker failures.
 
 
 ### `accidental-cascade-from-structural-misalignment` — **QUIRK** (reference_quirk, repro=None)

@@ -2712,6 +2712,18 @@ fn grace_notes_apply_implicit_key_signature_alter() {
 }
 
 #[test]
+fn grace_notes_export_inherited_measure_accidentals() {
+    let source = "X:1\nL:1/8\nK:C\n^c2 {dc}d2 c4 |]\n";
+    let export = export_musicxml(source).expect("grace accidental should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        note_steps_and_alters(&export.musicxml),
+        vec![('C', 1), ('D', 0), ('C', 1), ('D', 0), ('C', 1)]
+    );
+}
+
+#[test]
 fn sequential_tuplets_reuse_musicxml_number_levels() {
     let source = concat!(
         "X:1\n",

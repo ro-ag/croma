@@ -20,8 +20,7 @@ pub(crate) struct MeasureAccidental {
     /// `reset_measure_accidentals_at_barline` solely on behalf of a pending
     /// tie. If that tie is later dropped without finding a stop note, the
     /// entry is removed again (see `drop_pending_tie_carry`); a matched tie
-    /// clears the flag so the carried accidental persists for the rest of the
-    /// stop note's measure.
+    /// consumes the entry after the stop note has resolved.
     pub(crate) from_pending_tie: bool,
 }
 
@@ -244,26 +243,23 @@ impl LoweringState {
     /// stop note. Entries that come from a written accidental in the current
     /// measure (`from_pending_tie == false`) are left untouched.
     pub(crate) fn drop_pending_tie_carry(&mut self, signature: (char, i8)) {
-        // Comparing `entry.step == signature.0` raw (here and in
-        // `confirm_pending_tie_carry`) is sound: note signatures are always
-        // uppercase (`LoweredEventAtomKind::Note` constructors uppercase the
-        // step), as are `MeasureAccidental` entries.
+        // Comparing `entry.step == signature.0` raw is sound: note signatures
+        // are always uppercase (`LoweredEventAtomKind::Note` constructors
+        // uppercase the step), as are `MeasureAccidental` entries.
         self.accidental_state.retain(|entry| {
             !(entry.from_pending_tie && entry.step == signature.0 && entry.octave == signature.1)
         });
     }
 
-    /// Mark a tie-preserved accidental carry as consumed by a matched tie so
-    /// it survives a later same-signature sibling drop (e.g. two chord-member
-    /// ties with a single stop note) and persists for the rest of the stop
-    /// note's measure.
-    pub(crate) fn confirm_pending_tie_carry(&mut self, signature: (char, i8)) {
-        for entry in self
-            .accidental_state
-            .iter_mut()
-            .filter(|entry| entry.step == signature.0 && entry.octave == signature.1)
-        {
-            entry.from_pending_tie = false;
-        }
+    /// Consume the synthetic carry for a matched cross-bar tie. The carry is
+    /// needed before matching so the stop note resolves to the tied pitch, but
+    /// it must not become an ordinary measure accidental for later same-pitch
+    /// notes in the stop note's bar. A freshly written accidental on the stop
+    /// note has already re-legitimized the entry (`from_pending_tie == false`)
+    /// and is intentionally preserved.
+    pub(crate) fn consume_pending_tie_carry(&mut self, signature: (char, i8)) {
+        self.accidental_state.retain(|entry| {
+            !(entry.from_pending_tie && entry.step == signature.0 && entry.octave == signature.1)
+        });
     }
 }
