@@ -373,14 +373,22 @@ fn trailing_left_repeat_pending(measures: &[&Measure]) -> bool {
 /// closes at that measure's right barline. A bracket opened by `[N` (ABC 2.1
 /// §4.9: "The Nth ending starts with [N and ends with one of ||, :| |] or
 /// [|") closes at the first stopping right barline; a new `[M` while one is
-/// open force-closes it at the previous measure, and a bracket still open at
-/// the part end closes on the last measure — an `<ending type="start">` must
-/// never dangle.
+/// open force-closes it at the previous measure. A bracket still open at part
+/// end stays open so we do not synthesize a closing barline absent from the
+/// source.
 fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Vec<EndingDisplay>>> {
     let mut stops: Vec<Option<Vec<EndingDisplay>>> = vec![None; measure_ids.len()];
     let mut open: Option<Vec<EndingDisplay>> = None;
     for (position, measure_id) in measure_ids.iter().enumerate() {
         let measure_refs = part_measure_refs(part, *measure_id);
+        if position > 0
+            && open.is_some()
+            && unique_barlines(&measure_refs, true)
+                .iter()
+                .any(|barline| barline.kind == BarlineKind::RepeatStart)
+        {
+            stops[position - 1] = open.take();
+        }
         let starts = unique_endings(&measure_refs);
         if !starts.is_empty() {
             if let Some(open_endings) = open.take()
@@ -391,9 +399,10 @@ fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Ve
             open = Some(starts);
         }
         if open.is_some()
-            && unique_barlines(&measure_refs, false)
+            && (unique_barlines(&measure_refs, false)
                 .iter()
                 .any(|barline| stops_repeat_ending_barline(barline.kind))
+                || trailing_left_repeat_pending(&measure_refs))
         {
             stops[position] = open.take();
         }

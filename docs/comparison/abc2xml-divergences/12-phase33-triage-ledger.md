@@ -31,6 +31,15 @@ note types (8c76fc8). Their headings below are updated to fixed. Later phases
 `known_backlog_model_gap` rows; any surviving mismatch families below are not
 active Croma parser/export bugs unless a later entry explicitly reopens them.
 
+2026-06-12 phase-39 fresh mismatch burn-down: repeat-start/repeat-end
+MusicXML barlines now emit explicit `heavy-light` / `light-heavy` bar styles,
+and open repeat endings close before a trailing or next leading repeat start.
+Final full 10k compare: matches 8,898 -> 9,187, mismatch rows 161,725 ->
+160,504, barline rows 3,533 -> 2,313, with no import/harness/worker failures.
+The remaining dominant barline residual is still
+`barline-spaced-and-newline-split-coalesced`, re-affirmed as
+reference/comparator policy; see `docs/progress/phase-39-corpus-mismatch-burndown.md`.
+
 2026-06-12 phase-35 multirest fix: decision was to expand ABC `Zn`/`Xn` in
 lowering when the current voice has a known meter, producing `n` real
 full-measure rest measures in the Score model. MusicXML writes
