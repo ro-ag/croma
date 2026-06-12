@@ -22,7 +22,7 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
         out.push_str(&format!("T:{}\n", title.text.trim()));
     }
     // `M:` is optional in ABC; a tune without one must not gain a synthetic
-    // meter (it would add a phantom <time> element on re-export).
+    // meter.
     if let Some(meter) = &meta.meter {
         out.push_str(&format!("M:{}\n", meter.display));
     }

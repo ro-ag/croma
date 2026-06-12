@@ -1033,6 +1033,24 @@ fn repeat_ending_closes_before_next_leading_repeat_start() {
 }
 
 #[test]
+fn mid_measure_repeat_ending_starts_a_pickup_measure() {
+    let source = "X:1\nM:4/4\nL:1/8\nK:C\n|: A2 A2 A2[1 B2 | C8 :|\n[2 D2 | E8 |]\n";
+    let export = export_musicxml(source).expect("mid-measure repeat ending should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4", "5"]);
+    assert_eq!(note_steps(&measures[0]), vec!['A', 'A', 'A']);
+    assert_eq!(note_steps(&measures[1]), vec!['B']);
+    assert!(has_ending(&measures[1], "left", "1", "start"));
+    assert!(!has_ending(&measures[0], "left", "1", "start"));
+    assert!(has_ending(&measures[2], "right", "1", "stop"));
+    assert_eq!(note_steps(&measures[3]), vec!['D']);
+    assert!(has_ending(&measures[3], "left", "2", "start"));
+    assert!(has_ending(&measures[4], "right", "2", "stop"));
+}
+
+#[test]
 fn leading_double_and_final_barlines_do_not_create_empty_measure() {
     for prefix in ["||", "|]"] {
         let source = format!("X:1\nM:4/4\nL:1/4\nK:C\n{prefix} C D E F |]\n");
@@ -4374,6 +4392,21 @@ fn free_meter_change_emits_no_empty_attributes() {
         !export.musicxml.contains("<attributes></attributes>")
             && !export.musicxml.contains("<attributes/>"),
         "no empty attributes wrapper"
+    );
+}
+
+#[test]
+fn missing_header_meter_stays_free_until_body_meter_change() {
+    let source = "X:1\nL:1/8\nK:C\nG4 E4 C4 D4\n[M:3/8]\n| GEA |\n";
+    let export = export_musicxml(source).expect("score should export");
+    let xml = export.musicxml;
+
+    assert_balanced_xml(&xml);
+    assert_eq!(count(&xml, "<time>"), 1);
+    assert!(!xml.contains("<beats>4</beats>"));
+    assert!(
+        xml.contains("<beats>3</beats>\n          <beat-type>8</beat-type>"),
+        "body meter change should still export 3/8: {xml}"
     );
 }
 
