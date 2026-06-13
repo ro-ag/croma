@@ -28,3 +28,16 @@ issue.
 Mixed: **ABC2XML_ARTIFACT** (drops annotation text — `tune_007910`) /
 **MALFORMED_INPUT** (`tune_006535`) / **default-tempo difference** (neither wrong
 — `tune_003833`). No genuine Croma direction bug.
+
+## Phase 43 comparator status
+
+Phase 43 stopped counting the default-tempo sub-cause as a structural mismatch
+by normalizing music21 `MetronomeMark` facts whose text is explicitly marked
+`(playback only)`. This removes the 26 residual playback-only BPM rows from the
+phase-42 full 10k table without changing Croma MusicXML export behavior.
+
+After that comparison-policy change, the full residual table has 408
+direction-component rows across 126 files, with 258 rows categorized as
+`direction`. Remaining rows still need case-by-case triage against malformed
+input recovery, source-text preservation, harmony/chord-symbol placement policy,
+and positional cascades.
