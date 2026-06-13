@@ -38,3 +38,18 @@ note lengths down to a 128th note." (And `F////` = 1/128 — four halvings.)
 (a) **ABC2XML_DEVIATION** — abc2xml violates the §4.6 default-length rule; Croma
 is correct. (b) **ABC2XML_ARTIFACT** — grid rounding; Croma is exact. Both are
 reference artifacts, not Croma bugs.
+
+## Phase 45 comparator status
+
+Phase 45 removed the full-measure-rest subset from the residual duration table.
+The affected rows were not Croma export changes: abc2xml's raw MusicXML duration
+for the leading rest still spans a breve, but music21 rewrites the reference rest
+to a whole-note full-measure rest while leaving the next event offset at the
+longer breve position. The comparator now uses that next-event offset span for
+rest facts only when music21's full-measure-rest rewrite shortened the reported
+duration.
+
+This resolved the eight remaining duration-only files in that family and removed
+16 rows from the full 10k residual table. Remaining duration rows are not this
+full-measure-rest extraction artifact and need separate evidence before any
+comparator or exporter change.

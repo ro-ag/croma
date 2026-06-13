@@ -153,21 +153,21 @@ def extract_facts(path: Path, label: str) -> dict[str, Any]:
             if voices:
                 for voice_index, voice in enumerate(voices):
                     voice_id = str(getattr(voice, "id", voice_index))
-                    voice_events = [
-                        event_facts(element, voice_id, event_index, note, chord)
-                        for event_index, element in enumerate(
-                            musical_event_elements(voice.notesAndRests, harmony)
-                        )
-                    ]
+                    voice_events = event_facts_for_elements(
+                        musical_event_elements(voice.notesAndRests, harmony),
+                        voice_id,
+                        note,
+                        chord,
+                    )
                     voice_facts.append({"id": voice_id, "events": voice_events})
                     events.extend(voice_events)
             else:
-                events = [
-                    event_facts(element, None, event_index, note, chord)
-                    for event_index, element in enumerate(
-                        musical_event_elements(measure.notesAndRests, harmony)
-                    )
-                ]
+                events = event_facts_for_elements(
+                    musical_event_elements(measure.notesAndRests, harmony),
+                    None,
+                    note,
+                    chord,
+                )
                 voice_facts.append({"id": None, "events": events})
 
             measures.append(
@@ -222,18 +222,43 @@ def musical_event_elements(elements: Any, harmony_module: Any) -> list[Any]:
     return [element for element in elements if not isinstance(element, excluded)]
 
 
+def event_facts_for_elements(
+    elements: list[Any],
+    voice_id: str | None,
+    note_module: Any,
+    chord_module: Any,
+) -> list[dict[str, Any]]:
+    return [
+        event_facts(
+            element,
+            voice_id,
+            event_index,
+            note_module,
+            chord_module,
+            next_element=elements[event_index + 1] if event_index + 1 < len(elements) else None,
+        )
+        for event_index, element in enumerate(elements)
+    ]
+
+
 def event_facts(
     element: Any,
     voice_id: str | None,
     event_index: int,
     note_module: Any,
     chord_module: Any,
+    *,
+    next_element: Any | None = None,
 ) -> dict[str, Any]:
+    is_rest = isinstance(element, note_module.Rest)
     base = {
         "index": event_index,
         "offset": rational_string(getattr(element, "offset", None)),
         "voice": voice_id,
-        "duration": duration_facts(element),
+        "duration": duration_facts(
+            element,
+            offset_span=rest_offset_span(element, next_element) if is_rest else None,
+        ),
         "lyrics": lyric_facts(element),
     }
     if isinstance(element, note_module.Note):
@@ -252,7 +277,7 @@ def event_facts(
                 "tie": tie_facts(element),
             }
         )
-    elif isinstance(element, note_module.Rest):
+    elif is_rest:
         base.update({"kind": "rest"})
     else:
         base.update({"kind": element.__class__.__name__})
@@ -275,12 +300,34 @@ def accidental_name(accidental: Any) -> str | None:
     return None if accidental is None else accidental.name
 
 
-def duration_facts(element: Any) -> dict[str, Any]:
+def rest_offset_span(element: Any, next_element: Any | None) -> Any | None:
+    if next_element is None or getattr(element, "fullMeasure", None) is not True:
+        return None
+    offset = getattr(element, "offset", None)
+    next_offset = getattr(next_element, "offset", None)
+    if offset is None or next_offset is None:
+        return None
+    try:
+        span = next_offset - offset
+        if span > element.duration.quarterLength:
+            return span
+    except Exception:  # noqa: BLE001 - offset types are controlled by music21.
+        return None
+    return None
+
+
+def duration_facts(element: Any, *, offset_span: Any | None = None) -> dict[str, Any]:
     duration = element.duration
+    quarter_length = duration.quarterLength
+    duration_type = duration.type
+    dots = duration.dots
+    if offset_span is not None:
+        quarter_length = offset_span
+        duration_type, dots = duration_type_from_quarter_length(offset_span, duration_type, dots)
     return {
-        "quarter_length": rational_string(duration.quarterLength),
-        "type": duration.type,
-        "dots": duration.dots,
+        "quarter_length": rational_string(quarter_length),
+        "type": duration_type,
+        "dots": dots,
         "tuplets": [
             {
                 "actual": tuplet.numberNotesActual,
@@ -290,6 +337,31 @@ def duration_facts(element: Any) -> dict[str, Any]:
             for tuplet in duration.tuplets
         ],
     }
+
+
+def duration_type_from_quarter_length(
+    quarter_length: Any,
+    fallback_type: str | None,
+    fallback_dots: int,
+) -> tuple[str | None, int]:
+    simple_types = {
+        16.0: "long",
+        8.0: "breve",
+        4.0: "whole",
+        2.0: "half",
+        1.0: "quarter",
+        0.5: "eighth",
+        0.25: "16th",
+        0.125: "32nd",
+        0.0625: "64th",
+    }
+    try:
+        mapped_type = simple_types.get(float(quarter_length))
+    except (TypeError, ValueError):
+        mapped_type = None
+    if mapped_type is None:
+        return fallback_type, fallback_dots
+    return mapped_type, 0
 
 
 def tie_facts(element: Any) -> str | None:

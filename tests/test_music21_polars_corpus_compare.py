@@ -229,6 +229,30 @@ def test_tuplet_bracket_marker_difference_is_equivalent(tmp_path: Path) -> None:
     assert report["structural_matches"] == 1
 
 
+def test_full_measure_rest_reinterpretation_uses_event_offset_span(tmp_path: Path) -> None:
+    # music21 rewrites a MusicXML rest marked measure="yes" to a whole rest
+    # even when the raw duration and following event offset prove a longer
+    # breve span. The comparator should compare the structural event span.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["full_measure_rest"])
+    write_musicxml(
+        paths.croma_xml("full_measure_rest"),
+        [rest(duration=32, type_="breve"), note(duration=16, type_="whole")],
+    )
+    write_musicxml(
+        paths.reference_xml("full_measure_rest"),
+        [
+            rest(duration=32, type_="breve", measure="yes"),
+            note(duration=16, type_="whole"),
+        ],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="full-measure-rest")
+
+    assert report["mismatch_category_counts"] == {}
+    assert report["structural_matches"] == 1
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -830,6 +854,22 @@ def note(
         <duration>{duration}</duration>
         <type>{type_}</type>
         {lyric_body}
+      </note>
+"""
+
+
+def rest(
+    *,
+    duration: int = 4,
+    type_: str = "quarter",
+    measure: str | None = None,
+) -> str:
+    measure_attr = f' measure="{measure}"' if measure is not None else ""
+    return f"""
+      <note>
+        <rest{measure_attr}/>
+        <duration>{duration}</duration>
+        <type>{type_}</type>
       </note>
 """
 
