@@ -214,6 +214,21 @@ def test_text_only_tempo_playback_bpm_difference_is_equivalent(tmp_path: Path) -
     assert report["structural_matches"] == 1
 
 
+def test_tuplet_bracket_marker_difference_is_equivalent(tmp_path: Path) -> None:
+    # The structural timing lives in actual/normal notes. music21's tuplet
+    # `type` reports a visible bracket start/stop marker, which abc2xml and
+    # Croma do not place identically on otherwise equivalent tuplets.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tuplet_marker"])
+    write_musicxml(paths.croma_xml("tuplet_marker"), [tuplet_note(tuplet_type="start")])
+    write_musicxml(paths.reference_xml("tuplet_marker"), [tuplet_note(tuplet_type=None)])
+
+    report = run_compare(paths, jobs=1, output_name="tuplet-marker")
+
+    assert report["mismatch_category_counts"] == {}
+    assert report["structural_matches"] == 1
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -815,5 +830,25 @@ def note(
         <duration>{duration}</duration>
         <type>{type_}</type>
         {lyric_body}
+      </note>
+"""
+
+
+def tuplet_note(*, tuplet_type: str | None) -> str:
+    tuplet_xml = (
+        f"<notations><tuplet type=\"{tuplet_type}\"/></notations>"
+        if tuplet_type is not None
+        else ""
+    )
+    return f"""
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>2</duration>
+        <type>eighth</type>
+        <time-modification>
+          <actual-notes>3</actual-notes>
+          <normal-notes>2</normal-notes>
+        </time-modification>
+        {tuplet_xml}
       </note>
 """
