@@ -113,10 +113,16 @@ What agents should know up front about `tools/music21_polars_corpus_compare.py`:
   `whitelist.csv` (raw matches; the regression baseline) and `dropped.csv`
   (adjudicated non-croma-bugs), both under
   [`docs/comparison/abc2xml-divergences/`](docs/comparison/abc2xml-divergences/README.md);
-  the worklist (mismatches) is triaged one file at a time via the
-  **`divergence-triage`** skill and the **`abc-divergence-investigator`** subagent.
-  Pass `--whitelist-csv` to emit the whitelist and `--dropped-csv` to exclude
-  dropped files (the report shows `whitelist_files` / `dropped_files`).
+  the worklist (mismatches) is triaged **one file at a time** by an **investigator
+  agent** (reads the ABC, runs croma/abc2xml/music21, consults the ABC 2.1 spec KB,
+  returns a structured verdict) driven by a **triage process** that decides
+  fix-croma / fix-comparator / drop. Protocol and verdict schema are runner-neutral
+  — start from
+  [`docs/comparison/abc2xml-divergences/TRIAGE.md`](docs/comparison/abc2xml-divergences/TRIAGE.md);
+  the Claude Code binding is `.claude/agents/abc-divergence-investigator.md` +
+  `.claude/skills/divergence-triage/`. Pass `--whitelist-csv` to emit the whitelist
+  and `--dropped-csv` to exclude dropped files (the report shows
+  `whitelist_files` / `dropped_files`).
 - **It is cheap to re-run.** A content-addressed SQLite cache
   (`docs/untracked/cache/compare-cache.sqlite`, git-ignored, disposable)
   makes a full 10k rerun ~0.7 s when nothing changed, ~2-3 s after a parser

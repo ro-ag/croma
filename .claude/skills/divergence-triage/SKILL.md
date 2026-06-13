@@ -5,6 +5,11 @@ description: Triage the raw-comparator worklist (croma-vs-abc2xml structural mis
 
 # Divergence triage
 
+This skill is the Claude Code binding of the runner-neutral process in
+[`docs/comparison/abc2xml-divergences/TRIAGE.md`](../../../docs/comparison/abc2xml-divergences/TRIAGE.md)
+— the canonical kickoff (state, file-selection guidance, loop, verdict schema). Keep
+the two in sync.
+
 The corpus comparator is now **raw** — it forces no matches. Every mismatched
 file (the *worklist*) is either a real croma bug or an artifact/equivalence to
 quarantine. This skill works the worklist down, file by file, with evidence.

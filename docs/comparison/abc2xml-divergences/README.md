@@ -29,14 +29,26 @@ The current methodology is a **raw comparator + evidence-based triage**:
    — **8,583 matches / 1,352 mismatches** on the 10k corpus.
 2. **Whitelist** — [`whitelist.csv`](whitelist.csv): the raw-match files, and the
    **regression baseline** (a croma change that breaks one is a regression).
-3. **Worklist** — the mismatched files, triaged **one file at a time** by the
-   `abc-divergence-investigator` subagent (armed with the ABC 2.1 spec KB) via the
-   `divergence-triage` skill. Each file gets a reasoned, spec-cited verdict: a real
-   croma bug → fix it; an abc2xml / music21 / comparator artifact or equivalence →
-   [`dropped.csv`](dropped.csv) with a subcategory.
+3. **Worklist** — the mismatched files, triaged **one file at a time**. An
+   **investigator agent** reads the ABC source, runs croma + abc2xml + music21,
+   consults the ABC 2.1 spec KB, and returns a **structured verdict** naming which
+   of the four fallible instruments — croma, abc2xml, music21, or the comparator
+   itself — diverges from the spec-correct output. A **triage process** then decides
+   per file: a real croma bug → fix it; an abc2xml / music21 / comparator artifact
+   or equivalence → [`dropped.csv`](dropped.csv) with a subcategory. The agent is
+   **evidence-only and keep-biased** — on doubt it returns `undetermined`, because
+   wrongly dropping a file hides a croma bug.
 4. **Drops are explicit and auditable** — every excluded file carries a reason; the
    denominator is never silently shrunk. A file that gets a croma fix **graduates
    into the whitelist**; the whitelist only grows, the worklist only shrinks.
+
+> **Provider/model-agnostic.** The investigator protocol and the verdict schema are
+> tool-neutral — bind them to any agent runner or model. The reference (Claude Code)
+> binding is `.claude/agents/abc-divergence-investigator.md` (the investigator) and
+> `.claude/skills/divergence-triage/` (the triage process); the canonical, runner-
+> independent kickoff is [`TRIAGE.md`](TRIAGE.md). The verdict is a fixed
+> `=== VERDICT ===` block (`at_fault`, `confidence`, `subcategory`, `spec_cite`, …)
+> any orchestrator can parse.
 
 The per-class docs below ([01](01-export-failures.md)–[12](12-phase33-triage-ledger.md))
 remain the **subcategory taxonomy** the triage uses.
