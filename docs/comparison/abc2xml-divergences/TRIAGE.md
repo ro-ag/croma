@@ -9,14 +9,16 @@ tool-neutral version of what they do. Background: [`README.md`](README.md).
 ## Copy-paste start prompt
 
 > Read `docs/comparison/abc2xml-divergences/TRIAGE.md` and triage the croma-vs-abc2xml
-> worklist. Do **not** default to the biggest files — select per "How to pick files"
-> (the comparator-fix leads first, then one content category, single-category files
-> first). For each file: investigate it (four fallible instruments — croma, abc2xml,
-> music21, and the comparator itself — reasoning from the ABC 2.1 spec KB), produce a
-> `=== VERDICT ===` block, then decide — real croma bug → fix it; abc2xml / music21 /
-> comparator artifact or equivalence → append a reasoned row to `dropped.csv`; any
-> doubt → keep. After a batch, re-run the comparison and report matches / worklist /
-> dropped counts. Never re-add a comparator normalization to recover the match rate.
+> worklist. **Investigate every file with its own fresh investigator-subagent run —
+> never reason inline, never bulk-drop a whole category on a heuristic.** Do **not**
+> default to the biggest files (those are abc2xml cascades) — select per "How to pick
+> files". For each file the subagent treats croma, abc2xml, music21, and the comparator
+> as all fallible (reasoning from the ABC 2.1 spec KB) and returns one `=== VERDICT ===`
+> block; then you decide — real croma bug → fix it; abc2xml / music21 / comparator
+> artifact or equivalence → append a reasoned `dropped.csv` row; any doubt → keep. After
+> a batch, **re-export croma** (`tools/corpus_harness.py --mode xml`, ~6 s) if you fixed
+> the parser, re-run the comparison, and report matches / worklist / dropped counts.
+> Never re-add a comparator normalization to recover the match rate.
 
 ## State
 
@@ -24,9 +26,10 @@ tool-neutral version of what they do. Background: [`README.md`](README.md).
   structural differences and forces no matches. **Never re-add a normalization to
   recover the match rate**; fix croma (files graduate into the whitelist) or drop with
   a reasoned record.
-- **`whitelist.csv`** — ~8,583 raw matches; the regression baseline (breaking one is a regression).
-- **`dropped.csv`** — adjudicated non-croma-bugs, excluded via `--dropped-csv`.
-- **worklist** — ~1,352 mismatched files. This is the work.
+- **`whitelist.csv`** — ~9,259 raw matches (8,583 at the original baseline; grew as
+  croma fixes landed); the regression baseline (breaking one is a regression).
+- **`dropped.csv`** — adjudicated non-croma-bugs (76 so far), excluded via `--dropped-csv`.
+- **worklist** — ~600 mismatched files (down from 1,352). This is the remaining work.
 - Numbers / reproduce: [`RAW-BASELINE.md`](RAW-BASELINE.md). Spec authority: `docs/reference/abc-spec-kb/`.
 
 ## Reproduce the worklist
@@ -50,21 +53,24 @@ The largest files by mismatch-rows are mostly **abc2xml cascades** (phantom meas
 dropped music) — huge row counts, low croma-bug yield. "Worst first" burns effort on
 abc2xml's own bugs. Pick in this order instead:
 
-1. **Comparator-fix leads (do these first).** Validation showed two of the stripped
-   normalizations removed *correct* handling — re-add them as principled comparisons
-   (compare the real musical value, never force a match), each clearing a whole class:
-   - **sounding-pitch** — a display-only courtesy natural (`alter` 0 on both sides) is
-     scored as an `accidental` mismatch. Compare the sounding `pitch.alter`, not the
-     display accidental name. (A large share of the ~4,160 `accidental` rows.)
-   - **full-measure-rest** — music21 collapses an explicit breve rest to a whole note
-     when abc2xml tags the *next* rest `measure="yes"` (`fullMeasure`). Compare the
-     structural event span so equivalent rests match.
-2. **Content categories** — `accidental`, `octave`, `pitch`, `duration`, `tie`,
-   `lyric`. These skew toward *real croma faults*. **Avoid leading** with the
-   structural categories (`missing_in_croma`, `extra_in_croma`, `measure_alignment`):
-   they skew toward abc2xml artifacts (cascades), not croma bugs.
-3. **Single-category, fewest-rows files first** — cleanest to adjudicate; build
-   confidence before the multi-category cascades.
+1. **Remaining content categories** — `octave`, `pitch`, `duration`, `lyric`, `voice`
+   (`accidental` and `tie` are already triaged). These still skew toward *real croma
+   faults*, the highest-value work.
+2. **Structural cascades** — `missing_in_croma`, `extra_in_croma`, `measure_alignment`.
+   ~245–306 remain, overwhelmingly `abc2xml-phantom-measure`. They are the bulk of the
+   worklist but skew toward abc2xml artifacts, so do them **last** and **never
+   bulk-drop**: the *phantom-stuffed-m1* trap looks like croma dropping music but is
+   abc2xml cramming a corrupt measure 1 (signature `missing_in_croma >> extra`).
+   Ground-truth check the per-file subagent must do: croma's note count should equal
+   the ABC source note-letter count. Each cascade still needs **its own verdict**.
+3. **Single-category, fewest-rows files first** — cleanest; build confidence first.
+
+> **Resolved — do not re-pick.** The two comparator-fix leads — *sounding-pitch* (now a
+> comparator fix) and *full-measure-rest* (now `music21-reinterpretation` drops) — plus
+> three croma parser bugs (`^/c`, `K:exp` list, post-barline tie) landed in **PR #86**.
+> Open: the cascades above, and two deferred *policy* calls in
+> [`croma-fix-candidates.md`](croma-fix-candidates.md) (empty-bar collapse;
+> whitespace-surrounded `:`) — these need an explicit human decision, not a drive-by fix.
 
 List candidates for a category (single-category, fewest rows first):
 
@@ -74,21 +80,30 @@ import polars as pl
 mm = pl.read_ndjson("docs/untracked/raw-baseline/mismatches.jsonl", infer_schema_length=None)
 per = mm.group_by("filename").agg(
     pl.col("mismatch_category").unique().alias("cats"), pl.len().alias("rows"))
-CAT = "accidental"   # <- choose a content category
+CAT = "octave"   # <- a remaining content category (accidental/tie are done)
 cand = per.filter(pl.col("cats").list.contains(CAT) & (pl.col("cats").list.len() == 1)).sort("rows")
 print(cand.select(["filename", "rows"]).head(20).to_dicts())
 PY
 ```
 
-## Investigate (one file at a time)
+## Investigate — ONE investigator subagent PER FILE (no exceptions)
 
-Treat **croma, abc2xml, music21, and the comparator** as all fallible; trust none,
-reason from the ABC source and the ABC 2.1 spec KB. The full protocol and the runnable
-commands live in `.claude/agents/abc-divergence-investigator.md` (its body is
+> **This is the rule the last run broke.** Dispatch a **fresh investigator subagent for
+> every candidate file** and let its verdict drive the decision. Do **not** reason
+> inline, and do **not** bulk-drop a whole category on the `missing_in_croma`/`extra`
+> heuristic. Per-file investigation is the safeguard: it is the only thing that catches
+> *phantom-stuffed-m1* cascades (which look croma-suspect but are abc2xml's fault) and a
+> real croma bug hiding inside an otherwise-artifact cascade. You may run a batch of
+> subagents in parallel, but **every dropped file must have its own verdict** — never a
+> shared, heuristic one.
+
+The subagent treats **croma, abc2xml, music21, and the comparator** as all fallible;
+trusts none; reasons from the ABC source and the ABC 2.1 spec KB. Its full protocol and
+runnable commands live in `.claude/agents/abc-divergence-investigator.md` (the body is
 tool-neutral — read it in any runner). Four passes: (1) identify the score; (2) locate
 the category, derive the spec-correct output and cite the section; (3) read all four
-instruments; (4) adjudicate **keep-biased** — clearing croma needs strong evidence,
-any doubt → `undetermined`. Wrongly clearing a file permanently hides a croma bug.
+instruments; (4) adjudicate **keep-biased** — clearing croma needs strong evidence, any
+doubt → `undetermined`. Wrongly clearing a file permanently hides a croma bug.
 
 The deliverable is exactly one verdict block:
 
