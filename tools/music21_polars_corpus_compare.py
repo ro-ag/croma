@@ -1296,9 +1296,35 @@ def normalized_fact_rows(
     for index, harmony in enumerate(facts.get("harmony", [])):
         builder.add_global("harmony", "item", harmony, alignment_index=index)
     for index, direction in enumerate(facts.get("directions", [])):
-        builder.add_global("direction", "item", direction, alignment_index=index)
+        builder.add_global(
+            "direction",
+            "item",
+            comparable_direction_fact(direction),
+            alignment_index=index,
+        )
 
     return builder.rows
+
+
+def comparable_direction_fact(direction: Any) -> Any:
+    if not isinstance(direction, dict) or direction.get("kind") != "MetronomeMark":
+        return direction
+
+    text = direction.get("text")
+    if not is_playback_only_metronome_text(text):
+        return direction
+
+    normalized = dict(direction)
+    normalized["text"] = "<music21.tempo.MetronomeMark playback-only>"
+    return normalized
+
+
+def is_playback_only_metronome_text(text: Any) -> bool:
+    return (
+        isinstance(text, str)
+        and text.startswith("<music21.tempo.MetronomeMark ")
+        and text.endswith(" (playback only)>")
+    )
 
 
 def add_event_rows(
@@ -2221,26 +2247,35 @@ def load_mismatch_file_counts(path: Path | None) -> Counter[str]:
         return Counter()
     if path.stat().st_size == 0:
         return Counter()
-    pl = import_polars()
     if path.suffix == ".parquet":
+        pl = import_polars()
         frame = pl.read_parquet(path)
-    else:
-        frame = pl.read_ndjson(path)
-    columns = set(frame.columns)
-    if "filename" in columns:
-        filename_column = "filename"
-    elif "file_name" in columns:
-        filename_column = "file_name"
-    elif "relative_path" in columns:
-        filename_column = "relative_path"
-    else:
-        return Counter()
-    return Counter(
-        {
-            str(filename): int(count)
-            for filename, count in frame.group_by(filename_column).len().iter_rows()
-        }
-    )
+        columns = set(frame.columns)
+        if "filename" in columns:
+            filename_column = "filename"
+        elif "file_name" in columns:
+            filename_column = "file_name"
+        elif "relative_path" in columns:
+            filename_column = "relative_path"
+        else:
+            return Counter()
+        return Counter(
+            {
+                str(filename): int(count)
+                for filename, count in frame.group_by(filename_column).len().iter_rows()
+            }
+        )
+
+    counts: Counter[str] = Counter()
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            filename = row.get("filename") or row.get("file_name") or row.get("relative_path")
+            if filename is not None:
+                counts[str(filename)] += 1
+    return counts
 
 
 def write_candidate_outputs(

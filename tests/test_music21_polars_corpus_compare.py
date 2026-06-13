@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,28 @@ def test_sounding_alteration_difference_is_still_flagged(tmp_path: Path) -> None
     assert alter_rows[0]["reference_value_float"] == 1.0
 
 
+def test_text_only_tempo_playback_bpm_difference_is_equivalent(tmp_path: Path) -> None:
+    # ABC string-only Q: fields have no mandated playback BPM. Croma and
+    # abc2xml can choose different <sound tempo> defaults while preserving the
+    # same visible words, so the comparator should not count the playback-only
+    # MetronomeMark value as a structural mismatch.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["tempo_text"])
+    write_musicxml(
+        paths.croma_xml("tempo_text"),
+        [tempo_words_with_sound("Allegretto", "120.00"), note()],
+    )
+    write_musicxml(
+        paths.reference_xml("tempo_text"),
+        [tempo_words_with_sound("Allegretto", "112.00"), note()],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="tempo-text")
+
+    assert report["mismatch_category_counts"] == {}
+    assert report["structural_matches"] == 1
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -370,6 +393,19 @@ def test_baseline_delta_classification(tmp_path: Path) -> None:
     assert improved["delta.abc"] == "improved"
     assert improved["resolved.abc"] == "resolved"
     assert regressed["new.abc"] == "new_regression"
+
+
+def test_baseline_mismatch_loader_handles_sparse_jsonl_columns(tmp_path: Path) -> None:
+    from music21_polars_corpus_compare import load_mismatch_file_counts
+
+    baseline = tmp_path / "baseline-mismatches.jsonl"
+    rows = [{"filename": "early.abc", "late_value": None} for _ in range(100)]
+    rows.append({"filename": "late.abc", "late_value": 1})
+    write_jsonl(baseline, rows)
+
+    assert load_mismatch_file_counts(baseline) == Counter(
+        {"early.abc": 100, "late.abc": 1}
+    )
 
 
 def test_cache_warm_report_only_run_replays_pair_results(tmp_path: Path) -> None:
@@ -720,6 +756,15 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def write_malformed(path: Path) -> None:
     path.write_text("<score-partwise><part>", encoding="utf-8")
+
+
+def tempo_words_with_sound(text: str, tempo: str) -> str:
+    return f"""
+      <direction placement="above">
+        <direction-type><words>{text}</words></direction-type>
+        <sound tempo="{tempo}"/>
+      </direction>
+"""
 
 
 def write_musicxml(path: Path, notes: list[str]) -> None:
