@@ -698,6 +698,9 @@ pub(crate) enum LoweredEventAtomKind {
         multiple_rest: Option<u32>,
         span: Span,
     },
+    Spacer {
+        span: Span,
+    },
 }
 
 impl LoweredEventAtom {
@@ -727,6 +730,7 @@ impl LoweredEventAtom {
                 duration,
                 span,
             },
+            LoweredEventAtomKind::Spacer { span } => Event::Spacer { span },
         }
     }
 }

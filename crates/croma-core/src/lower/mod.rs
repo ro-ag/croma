@@ -573,6 +573,12 @@ impl MultiVoiceLowering {
                         .push(LoweredEvent::VariantEnding(ending.clone()));
                 }
                 MusicItem::Barline(barline) => {
+                    let source_order = self.next_source_order();
+                    self.current_state().flush_pending_barline_directions(
+                        line.line_index,
+                        source_order,
+                        barline.span,
+                    );
                     if matches!(barline.kind, BarlineKind::Dotted | BarlineKind::Invisible) {
                         self.current_state()
                             .diagnostics

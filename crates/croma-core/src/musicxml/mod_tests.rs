@@ -515,15 +515,64 @@ fn ending_precedes_repeat_inside_barline_element() {
 }
 
 #[test]
-fn dynamic_decoration_before_barline_or_line_end_is_kept() {
-    // `!f!` at the end of a line with its note across the barline/line break
-    // (tune_004792 family): ABC 2.1 §4.14 binds a decoration to the following
-    // decorated symbol; the boundary does not void it.
+fn dynamic_decoration_before_barline_binds_to_barline_position() {
+    // `!f!|` decorates the following bar line (ABC 2.1 §4.14: decorations may
+    // apply to bar lines), so the MusicXML direction must land at the end of
+    // the current measure rather than on the first note after the boundary.
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F !f!|\nG A B c|\n";
     let export = export_musicxml(source).expect("dynamic at barline should export");
 
     assert_balanced_xml(&export.musicxml);
     assert_eq!(count(&export.musicxml, "<f/>"), 1);
+    let measure1 = measure_body(&export.musicxml, "1");
+    let measure2 = measure_body(&export.musicxml, "2");
+    assert!(measure1.contains("<f/>"));
+    assert!(!measure2.contains("<f/>"));
+    assert!(
+        measure1.rfind("<note>").expect("measure 1 has notes")
+            < measure1
+                .find("<direction")
+                .expect("measure 1 has direction"),
+        "barline-bound dynamic should be written after the measure's notes: {measure1}"
+    );
+}
+
+#[test]
+fn annotation_before_barline_binds_to_barline_position() {
+    // ABC 2.1 §4.19 explicitly allows annotations to attach to the following
+    // bar line. Keep the words at the boundary instead of shifting them to the
+    // next measure's first note.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F \"_Fine\"|\nG A B c|\n";
+    let export = export_musicxml(source).expect("annotation at barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<words>Fine</words>"), 1);
+    let measure1 = measure_body(&export.musicxml, "1");
+    let measure2 = measure_body(&export.musicxml, "2");
+    assert!(measure1.contains("<words>Fine</words>"));
+    assert!(!measure2.contains("<words>Fine</words>"));
+    assert!(
+        measure1.rfind("<note>").expect("measure 1 has notes")
+            < measure1
+                .find("<direction")
+                .expect("measure 1 has direction"),
+        "barline-bound annotation should be written after the measure's notes: {measure1}"
+    );
+}
+
+#[test]
+fn dynamic_decoration_at_line_end_without_barline_binds_to_next_note() {
+    // A code line break is not a musical object; without a barline, the
+    // decoration still applies to the next note.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |\n!f!\nG A B c|\n";
+    let export = export_musicxml(source).expect("line-end dynamic should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<f/>"), 1);
+    let measure1 = measure_body(&export.musicxml, "1");
+    let measure2 = measure_body(&export.musicxml, "2");
+    assert!(!measure1.contains("<f/>"));
+    assert!(measure2.contains("<f/>"));
 }
 
 #[test]
@@ -3936,6 +3985,16 @@ fn musicxml_measures(xml: &str) -> Vec<XmlMeasure> {
         index = end + end_tag.len();
     }
     measures
+}
+
+fn measure_body<'a>(xml: &'a str, number: &str) -> &'a str {
+    let start_tag = format!("<measure number=\"{number}\">");
+    let start = xml.find(&start_tag).expect("measure should exist") + start_tag.len();
+    let end = xml[start..]
+        .find("</measure>")
+        .map(|end| start + end)
+        .expect("measure should close");
+    &xml[start..end]
 }
 
 fn musicxml_notes(xml: &str) -> Vec<XmlNote> {
