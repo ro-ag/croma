@@ -42,3 +42,16 @@ yields one `light-light`; only the additional `|\`+`|` line-split is declined.
 bar; Croma's reading is spec-defensible. (A coalescing fix was attempted and
 abandoned — it regressed the barline category by introducing the artifact into
 many files; see `docs/progress/` phase notes.)
+
+## Phase 46 comparator status
+
+Phase 46 stopped counting visual-only barline style differences as structural
+mismatches. The comparator now reduces barline facts to repeat semantics:
+`direction` and `times` are preserved, while plain visual styles such as
+`regular`, `double`, `final`, `dotted`, and `none` normalize away when no repeat
+semantics are present.
+
+This keeps repeat-start/repeat-end differences and repeat-ending spans visible,
+but removes the documented abc2xml rendering policy rows for spaced or
+line-split plain bars. The full 10k residual table dropped from 1,460 to 831
+barline rows, resolving 108 files with no baseline-delta regressions.

@@ -253,6 +253,44 @@ def test_full_measure_rest_reinterpretation_uses_event_offset_span(tmp_path: Pat
     assert report["structural_matches"] == 1
 
 
+def test_visual_only_barline_style_difference_is_equivalent(tmp_path: Path) -> None:
+    # Plain barline style is visual typesetting. Repeat direction/times and
+    # repeat-ending spans remain structural, but regular/double/final/dotted
+    # style differences alone should not count as corpus mismatches.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["barline_style"])
+    write_musicxml(
+        paths.croma_xml("barline_style"),
+        [note(), barline(type_="regular")],
+    )
+    write_musicxml(
+        paths.reference_xml("barline_style"),
+        [note(), barline(type_="light-light")],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="barline-style")
+
+    assert report["mismatch_category_counts"] == {}
+    assert report["structural_matches"] == 1
+
+
+def test_repeat_barline_direction_difference_is_still_flagged(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["repeat_barline"])
+    write_musicxml(
+        paths.croma_xml("repeat_barline"),
+        [note(), barline(type_="regular")],
+    )
+    write_musicxml(
+        paths.reference_xml("repeat_barline"),
+        [note(), barline(type_="heavy-light", repeat_direction="forward")],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="repeat-barline")
+
+    assert report["mismatch_category_counts"].get("barline") == 1
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -871,6 +909,20 @@ def rest(
         <duration>{duration}</duration>
         <type>{type_}</type>
       </note>
+"""
+
+
+def barline(*, type_: str, repeat_direction: str | None = None) -> str:
+    repeat_xml = (
+        f'<repeat direction="{repeat_direction}"/>'
+        if repeat_direction is not None
+        else ""
+    )
+    return f"""
+      <barline location="right">
+        <bar-style>{type_}</bar-style>
+        {repeat_xml}
+      </barline>
 """
 
 
