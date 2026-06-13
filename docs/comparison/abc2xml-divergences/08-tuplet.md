@@ -29,3 +29,16 @@ agrees, so there is no timing error.
 
 **ABC2XML_ARTIFACT / typesetting edge.** Tuplet ratios and note durations agree;
 only bracket-marker placement differs. No genuine timing bug in Croma.
+
+## Phase 44 comparator status
+
+Phase 44 stopped counting bracket-marker-only tuplet rows as structural
+mismatches by normalizing tuplet fact dictionaries to compare their timing
+ratio (`actual`/`normal`) while ignoring music21's visible bracket `type`.
+This cleared 41 rows from the phase-43 full 10k residual table without changing
+Croma MusicXML export behavior.
+
+After the comparison-policy change, the full residual table has 277 rows
+categorized as `tuplet` across 26 files. Remaining tuplet rows are not the
+same type-only family and need separate evidence before any comparator or
+exporter change.

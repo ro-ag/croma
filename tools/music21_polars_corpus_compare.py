@@ -1352,7 +1352,7 @@ def add_event_rows(
     builder.add("duration", "quarter_length", duration.get("quarter_length"), **event_base)
     builder.add("duration", "type", duration.get("type"), **event_base)
     builder.add("duration", "dots", duration.get("dots"), **event_base)
-    builder.add("tuplet", "tuplets", duration.get("tuplets", []), **event_base)
+    builder.add("tuplet", "tuplets", comparable_tuplets(duration.get("tuplets", [])), **event_base)
     builder.add("tie", "type", event.get("tie"), **event_base)
 
     for lyric_index, lyric in enumerate(event.get("lyrics", [])):
@@ -1412,6 +1412,22 @@ def add_pitch_rows(
     builder.add("pitch", "step", pitch.get("step"), **pitch_kwargs)
     builder.add("pitch", "alter", alter, raw_value=accidental, **pitch_kwargs)
     builder.add("pitch", "octave", pitch.get("octave"), **pitch_kwargs)
+
+
+def comparable_tuplets(tuplets: Any) -> Any:
+    if not isinstance(tuplets, list):
+        return tuplets
+
+    normalized = []
+    changed = False
+    for tuplet in tuplets:
+        if isinstance(tuplet, dict) and ("actual" in tuplet or "normal" in tuplet):
+            item = {key: value for key, value in tuplet.items() if key != "type"}
+            normalized.append(item)
+            changed = changed or item != tuplet
+        else:
+            normalized.append(tuplet)
+    return normalized if changed else tuplets
 
 
 class FactBuilder:
