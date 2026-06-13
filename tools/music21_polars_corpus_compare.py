@@ -34,7 +34,6 @@ from music21_compare import (
     encode_fact_value,
     extract_facts,
     import_polars,
-    musicxml_measure_summaries,
 )
 
 
@@ -940,9 +939,6 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
     reference_xml = (
         Path(task["reference_xml"]) if task.get("reference_xml") is not None else None
     )
-    task["drop_reference_leading_harmony_measure_parts"] = (
-        reference_leading_harmony_measure_drop_parts(croma_xml, reference_xml)
-    )
 
     cache = task_cache(task, counters)
     side_hashes = {
@@ -973,9 +969,6 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
             {
                 "component_filter": task.get("component_filter"),
                 "sample_per_category": int(task["sample_per_category"]),
-                "drop_reference_leading_harmony_measure_parts": task.get(
-                    "drop_reference_leading_harmony_measure_parts"
-                ),
             },
         )
         try:
@@ -1085,41 +1078,6 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def reference_leading_harmony_measure_drop_parts(
-    croma_xml: Path | None,
-    reference_xml: Path | None,
-) -> list[int]:
-    if croma_xml is None or reference_xml is None:
-        return []
-    try:
-        croma_parts = musicxml_measure_summaries(croma_xml)
-        reference_parts = musicxml_measure_summaries(reference_xml)
-    except Exception:  # noqa: BLE001 - XML issues are reported during normal extraction.
-        return []
-
-    drop_parts = []
-    for part_index, reference_measures in enumerate(reference_parts):
-        if part_index >= len(croma_parts) or not reference_measures or not croma_parts[part_index]:
-            continue
-        reference_first = reference_measures[0]
-        croma_first = croma_parts[part_index][0]
-        if (
-            reference_first["note_count"] == 0
-            and reference_first["has_harmony"]
-            and croma_first["note_count"] > 0
-        ):
-            drop_parts.append(part_index)
-    return drop_parts
-
-
-def side_facts_cache_version(task: dict[str, Any], side: str, drop_parts: set[int]) -> str | None:
-    base_version = task.get("facts_cache_version")
-    if not base_version:
-        return None
-    drop_key = ",".join(str(part_index) for part_index in sorted(drop_parts))
-    return f"{base_version}:{side}:drop-leading-harmony={drop_key}"
-
-
 def extract_side(
     *,
     task: dict[str, Any],
@@ -1151,12 +1109,7 @@ def extract_side(
         }
 
     counters[f"{side}_musicxml_import_attempts"] += 1
-    drop_parts = (
-        set(task.get("drop_reference_leading_harmony_measure_parts") or [])
-        if side == "reference"
-        else set()
-    )
-    facts_version = side_facts_cache_version(task, side, drop_parts)
+    facts_version = task.get("facts_cache_version")
     cached_facts = None
     if cache is not None and content_hash is not None and facts_version:
         try:
@@ -1182,11 +1135,7 @@ def extract_side(
             "diagnostic": None,
         }
     try:
-        facts = extract_facts(
-            xml_path,
-            side,
-            drop_leading_harmony_measure_parts=drop_parts,
-        )
+        facts = extract_facts(xml_path, side)
     except Music21Unavailable as error:
         counters[f"{side}_musicxml_import_failures"] += 1
         diagnostic = failure_diagnostic(
@@ -1333,7 +1282,7 @@ def normalized_fact_rows(
                 builder.add(
                     "barline",
                     side_name,
-                    comparable_barline(barline),
+                    barline,
                     **measure_base,
                     alignment_index=0 if side_name == "left" else 1,
                 )
@@ -1347,49 +1296,9 @@ def normalized_fact_rows(
     for index, harmony in enumerate(facts.get("harmony", [])):
         builder.add_global("harmony", "item", harmony, alignment_index=index)
     for index, direction in enumerate(facts.get("directions", [])):
-        builder.add_global(
-            "direction",
-            "item",
-            comparable_direction_fact(direction),
-            alignment_index=index,
-        )
+        builder.add_global("direction", "item", direction, alignment_index=index)
 
     return builder.rows
-
-
-def comparable_direction_fact(direction: Any) -> Any:
-    if not isinstance(direction, dict) or direction.get("kind") != "MetronomeMark":
-        return direction
-
-    text = direction.get("text")
-    if not is_playback_only_metronome_text(text):
-        return direction
-
-    normalized = dict(direction)
-    normalized["text"] = "<music21.tempo.MetronomeMark playback-only>"
-    return normalized
-
-
-def is_playback_only_metronome_text(text: Any) -> bool:
-    return (
-        isinstance(text, str)
-        and text.startswith("<music21.tempo.MetronomeMark ")
-        and text.endswith(" (playback only)>")
-    )
-
-
-def comparable_barline(barline: Any) -> Any:
-    if not isinstance(barline, dict):
-        return barline
-
-    direction = barline.get("direction")
-    times = barline.get("times")
-    if direction is None and times is None:
-        return None
-    return {
-        "direction": direction,
-        "times": times,
-    }
 
 
 def add_event_rows(
@@ -1417,7 +1326,7 @@ def add_event_rows(
     builder.add("duration", "quarter_length", duration.get("quarter_length"), **event_base)
     builder.add("duration", "type", duration.get("type"), **event_base)
     builder.add("duration", "dots", duration.get("dots"), **event_base)
-    builder.add("tuplet", "tuplets", comparable_tuplets(duration.get("tuplets", [])), **event_base)
+    builder.add("tuplet", "tuplets", duration.get("tuplets", []), **event_base)
     builder.add("tie", "type", event.get("tie"), **event_base)
 
     for lyric_index, lyric in enumerate(event.get("lyrics", [])):
@@ -1428,18 +1337,8 @@ def add_event_rows(
         else:
             lyric_text = lyric
             lyric_syllabic = None
-        builder.add(
-            "lyric",
-            "text",
-            lyric_text,
-            **lyric_base,
-        )
-        builder.add(
-            "lyric",
-            "syllabic",
-            lyric_syllabic,
-            **lyric_base,
-        )
+        builder.add("lyric", "text", lyric_text, **lyric_base)
+        builder.add("lyric", "syllabic", lyric_syllabic, **lyric_base)
 
     if "pitch" in event:
         add_pitch_rows(builder, event.get("pitch") or {}, event_base, 0)
@@ -1457,42 +1356,16 @@ def add_pitch_rows(
     pitch_index: int,
 ) -> None:
     accidental = pitch.get("accidental")
-    # The compared alteration is the SOUNDING one (music21 pitch.alter):
-    # MusicXML defaults an absent <alter> to 0, so a redundant <alter>0</alter>
-    # must not surface as an "accidental" mismatch. Facts extracted before the
-    # sounding value existed carry only the display-accidental name; derive
-    # the equivalent alter from it then.
-    alter = pitch.get("alter")
-    if alter is None:
-        alter = accidental_to_alter(accidental)
-        if alter is None and pitch.get("step") is not None:
-            alter = 0.0
     pitch_kwargs = {
         **event_base,
         "alignment_index": pitch_index,
         "pitch_step": optional_string(pitch.get("step")),
-        "pitch_alter": alter,
+        "pitch_alter": accidental_to_alter(accidental),
         "pitch_octave": optional_int(pitch.get("octave")),
     }
     builder.add("pitch", "step", pitch.get("step"), **pitch_kwargs)
-    builder.add("pitch", "alter", alter, raw_value=accidental, **pitch_kwargs)
+    builder.add("pitch", "alter", accidental_to_alter(accidental), raw_value=accidental, **pitch_kwargs)
     builder.add("pitch", "octave", pitch.get("octave"), **pitch_kwargs)
-
-
-def comparable_tuplets(tuplets: Any) -> Any:
-    if not isinstance(tuplets, list):
-        return tuplets
-
-    normalized = []
-    changed = False
-    for tuplet in tuplets:
-        if isinstance(tuplet, dict) and ("actual" in tuplet or "normal" in tuplet):
-            item = {key: value for key, value in tuplet.items() if key != "type"}
-            normalized.append(item)
-            changed = changed or item != tuplet
-        else:
-            normalized.append(tuplet)
-    return normalized if changed else tuplets
 
 
 class FactBuilder:
