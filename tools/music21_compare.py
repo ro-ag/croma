@@ -264,6 +264,14 @@ def pitch_facts(pitch: Any) -> dict[str, Any]:
         "step": pitch.step,
         "octave": pitch.octave,
         "accidental": accidental_name(pitch.accidental),
+        # Sounding alteration in semitones (0.0 for a natural, including a note
+        # with no accidental). This is the structural pitch value the comparison
+        # keys on; `accidental` is retained only as a display/raw label. Comparing
+        # the sounding alter rather than the display-accidental name means a
+        # courtesy natural and a self-contradictory glyph (e.g. abc2xml's
+        # <alter>1</alter> + <accidental>natural</accidental>) are not false
+        # pitch mismatches, while a genuine alteration difference still diverges.
+        "alter": float(pitch.alter),
     }
 
 
@@ -526,11 +534,11 @@ def add_pitch_facts(
     event_path: str,
     event: dict[str, Any],
 ) -> None:
-    # Sounding pitch, not display: a missing accidental and an explicit "natural"
-    # are the same alteration (alter 0); normalize the absent case to "natural" so
-    # a display-only courtesy natural is not a false accidental mismatch. Keeps the
-    # polars engine consistent with compare_pitch and the corpus comparator's
-    # accidental_to_alter. See docs/comparison/abc2xml-divergences/TRIAGE.md.
+    # Compare the sounding alteration (pitch.alter), not the display-accidental
+    # name, so a courtesy natural or a self-contradictory display glyph is not a
+    # false accidental mismatch; a genuine alteration difference still diverges.
+    # Keeps the polars engine consistent with compare_pitch and the corpus
+    # comparator. See docs/comparison/abc2xml-divergences/TRIAGE.md (sounding-pitch).
     if "pitch" in event:
         pitch = event.get("pitch") or {}
         add_fact(rows, side, "pitches", f"{event_path}.pitch.step", pitch.get("step"))
@@ -540,7 +548,7 @@ def add_pitch_facts(
             side,
             "accidentals",
             f"{event_path}.pitch.accidental",
-            pitch.get("accidental") or "natural",
+            pitch.get("alter"),
         )
     if "pitches" in event:
         pitches = event.get("pitches", [])
@@ -554,7 +562,7 @@ def add_pitch_facts(
                 side,
                 "accidentals",
                 f"{pitch_path}.accidental",
-                pitch.get("accidental") or "natural",
+                pitch.get("alter"),
             )
 
 
@@ -975,21 +983,18 @@ def compare_pitch(
         return
     compare_scalar(builder, "pitches", f"{path}.step", croma_pitch, reference_pitch, "step")
     compare_scalar(builder, "octaves", f"{path}.octave", croma_pitch, reference_pitch, "octave")
-    # Sounding pitch, not display: a missing accidental and an explicit "natural"
-    # are the same alteration (alter 0). A courtesy/cautionary natural is a
-    # display choice, so normalize the absent case to "natural" before comparing.
-    # This keeps the single-file tool consistent with the corpus comparator's
-    # accidental_to_alter (absent == natural == alter 0); a real alteration
-    # difference (sharp/flat vs natural) still diverges. See
-    # docs/comparison/abc2xml-divergences/TRIAGE.md (sounding-pitch lead).
-    croma_accidental = croma_pitch.get("accidental") or "natural"
-    reference_accidental = reference_pitch.get("accidental") or "natural"
-    if croma_accidental != reference_accidental:
+    # Compare the sounding alteration (pitch.alter), not the display-accidental
+    # name, so a courtesy/cautionary natural or a self-contradictory display glyph
+    # is not a false pitch mismatch; a genuine alteration difference still
+    # diverges. See docs/comparison/abc2xml-divergences/TRIAGE.md (sounding-pitch).
+    croma_alter = croma_pitch.get("alter")
+    reference_alter = reference_pitch.get("alter")
+    if croma_alter != reference_alter:
         builder.add(
             "accidentals",
             f"{path}.accidental",
-            croma_pitch.get("accidental"),
-            reference_pitch.get("accidental"),
+            croma_alter,
+            reference_alter,
         )
 
 

@@ -1416,15 +1416,25 @@ def add_pitch_rows(
     pitch_index: int,
 ) -> None:
     accidental = pitch.get("accidental")
+    # Compare the sounding alteration (music21 pitch.alter), not the display
+    # accidental name: a courtesy natural and a self-contradictory glyph (abc2xml's
+    # <alter>1> + <accidental>natural>) carry the right sounding pitch, so keying on
+    # the name produced false accidental mismatches. A genuine alteration
+    # difference still diverges. `alter` is absent only for facts extracted by an
+    # older tool revision (cache self-invalidates on source change); fall back to
+    # the display-accidental mapping there. raw_value keeps the display name.
+    alter = pitch.get("alter")
+    if alter is None:
+        alter = accidental_to_alter(accidental)
     pitch_kwargs = {
         **event_base,
         "alignment_index": pitch_index,
         "pitch_step": optional_string(pitch.get("step")),
-        "pitch_alter": accidental_to_alter(accidental),
+        "pitch_alter": alter,
         "pitch_octave": optional_int(pitch.get("octave")),
     }
     builder.add("pitch", "step", pitch.get("step"), **pitch_kwargs)
-    builder.add("pitch", "alter", accidental_to_alter(accidental), raw_value=accidental, **pitch_kwargs)
+    builder.add("pitch", "alter", alter, raw_value=accidental, **pitch_kwargs)
     builder.add("pitch", "octave", pitch.get("octave"), **pitch_kwargs)
 
 
