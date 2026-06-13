@@ -43,3 +43,18 @@ music; Croma's folded output is the more correct MusicXML. Justify, do not fix.
 > Related but separate: in `tune_000289` Croma also does not apply the inline
 > `[K:G]` key change at that boundary (keeps `fifths=2`). That is a distinct
 > key-change-handling item, not the phantom-measure artifact.
+
+## Phase 47 comparator status
+
+Phase 47 normalized the confirmed abc2xml harmony-leading phantom-measure
+artifact. When the reference MusicXML starts a part with a zero-note measure
+that carries harmony, and Croma's corresponding first measure already contains
+musical notes, the comparator drops the reference phantom before extracting
+structural facts. Retained measures are numbered canonically, and harmony,
+direction, and repeat-ending context measure values are remapped to the retained
+measure numbers.
+
+This is deliberately pair-aware. A leading Croma direction-only measure, or a
+case where both sides start with an empty measure, is not dropped. The full 10k
+residual table dropped from 7,232 to 6,433 `measure_alignment` rows and from
+1,211 to 901 `harmony` rows, resolving 28 files with no file-level regressions.

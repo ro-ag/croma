@@ -34,6 +34,7 @@ from music21_compare import (
     encode_fact_value,
     extract_facts,
     import_polars,
+    musicxml_measure_summaries,
 )
 
 
@@ -939,6 +940,9 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
     reference_xml = (
         Path(task["reference_xml"]) if task.get("reference_xml") is not None else None
     )
+    task["drop_reference_leading_harmony_measure_parts"] = (
+        reference_leading_harmony_measure_drop_parts(croma_xml, reference_xml)
+    )
 
     cache = task_cache(task, counters)
     side_hashes = {
@@ -969,6 +973,9 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
             {
                 "component_filter": task.get("component_filter"),
                 "sample_per_category": int(task["sample_per_category"]),
+                "drop_reference_leading_harmony_measure_parts": task.get(
+                    "drop_reference_leading_harmony_measure_parts"
+                ),
             },
         )
         try:
@@ -1078,6 +1085,41 @@ def run_comparison_task_inner(task: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def reference_leading_harmony_measure_drop_parts(
+    croma_xml: Path | None,
+    reference_xml: Path | None,
+) -> list[int]:
+    if croma_xml is None or reference_xml is None:
+        return []
+    try:
+        croma_parts = musicxml_measure_summaries(croma_xml)
+        reference_parts = musicxml_measure_summaries(reference_xml)
+    except Exception:  # noqa: BLE001 - XML issues are reported during normal extraction.
+        return []
+
+    drop_parts = []
+    for part_index, reference_measures in enumerate(reference_parts):
+        if part_index >= len(croma_parts) or not reference_measures or not croma_parts[part_index]:
+            continue
+        reference_first = reference_measures[0]
+        croma_first = croma_parts[part_index][0]
+        if (
+            reference_first["note_count"] == 0
+            and reference_first["has_harmony"]
+            and croma_first["note_count"] > 0
+        ):
+            drop_parts.append(part_index)
+    return drop_parts
+
+
+def side_facts_cache_version(task: dict[str, Any], side: str, drop_parts: set[int]) -> str | None:
+    base_version = task.get("facts_cache_version")
+    if not base_version:
+        return None
+    drop_key = ",".join(str(part_index) for part_index in sorted(drop_parts))
+    return f"{base_version}:{side}:drop-leading-harmony={drop_key}"
+
+
 def extract_side(
     *,
     task: dict[str, Any],
@@ -1109,7 +1151,12 @@ def extract_side(
         }
 
     counters[f"{side}_musicxml_import_attempts"] += 1
-    facts_version = task.get("facts_cache_version")
+    drop_parts = (
+        set(task.get("drop_reference_leading_harmony_measure_parts") or [])
+        if side == "reference"
+        else set()
+    )
+    facts_version = side_facts_cache_version(task, side, drop_parts)
     cached_facts = None
     if cache is not None and content_hash is not None and facts_version:
         try:
@@ -1135,7 +1182,11 @@ def extract_side(
             "diagnostic": None,
         }
     try:
-        facts = extract_facts(xml_path, side)
+        facts = extract_facts(
+            xml_path,
+            side,
+            drop_leading_harmony_measure_parts=drop_parts,
+        )
     except Music21Unavailable as error:
         counters[f"{side}_musicxml_import_failures"] += 1
         diagnostic = failure_diagnostic(

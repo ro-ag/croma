@@ -291,6 +291,35 @@ def test_repeat_barline_direction_difference_is_still_flagged(tmp_path: Path) ->
     assert report["mismatch_category_counts"].get("barline") == 1
 
 
+def test_reference_empty_leading_measure_is_normalized_with_harmony(tmp_path: Path) -> None:
+    # abc2xml can insert an empty leading measure around malformed/liberal input
+    # while stranding harmony in that phantom measure. The comparator should
+    # align the real note-bearing measures and remap that harmony to the first
+    # retained measure instead of reporting a positional cascade.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["phantom_lead"])
+    write_musicxml_measures(
+        paths.croma_xml("phantom_lead"),
+        [
+            measure([harmony("A"), note(step="C")], number="1"),
+            measure([harmony("C#m"), note(step="D")], number="2"),
+        ],
+    )
+    write_musicxml_measures(
+        paths.reference_xml("phantom_lead"),
+        [
+            measure([harmony("A")], number="1"),
+            measure([note(step="C")], number="2"),
+            measure([harmony("C#m"), note(step="D")], number="3"),
+        ],
+    )
+
+    report = run_compare(paths, jobs=1, output_name="phantom-lead")
+
+    assert report["mismatch_category_counts"] == {}
+    assert report["structural_matches"] == 1
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -844,7 +873,11 @@ def tempo_words_with_sound(text: str, tempo: str) -> str:
 """
 
 
-def write_musicxml(path: Path, notes: list[str]) -> None:
+def write_musicxml(path: Path, notes: list[str], *, measure_number: str = "1") -> None:
+    write_musicxml_measures(path, [measure(notes, number=measure_number)])
+
+
+def write_musicxml_measures(path: Path, measures: list[str]) -> None:
     path.write_text(
         f"""<?xml version="1.0" encoding="UTF-8"?>
 <score-partwise version="4.0">
@@ -854,20 +887,57 @@ def write_musicxml(path: Path, notes: list[str]) -> None:
     </score-part>
   </part-list>
   <part id="P1">
-    <measure number="1">
+    {''.join(measures)}
+  </part>
+</score-partwise>
+""",
+        encoding="utf-8",
+    )
+
+
+def measure(
+    contents: list[str],
+    *,
+    number: str,
+    attributes: bool = True,
+) -> str:
+    attributes_xml = (
+        """
       <attributes>
         <divisions>4</divisions>
         <key><fifths>0</fifths></key>
         <time><beats>4</beats><beat-type>4</beat-type></time>
         <clef><sign>G</sign><line>2</line></clef>
       </attributes>
-      {''.join(notes)}
-    </measure>
-  </part>
-</score-partwise>
-""",
-        encoding="utf-8",
+"""
+        if attributes
+        else ""
     )
+    return f"""
+    <measure number="{number}">
+      {attributes_xml}
+      {''.join(contents)}
+    </measure>
+"""
+
+
+def harmony(figure: str) -> str:
+    root_step = figure[0].upper()
+    suffix = figure[1:]
+    alter_xml = ""
+    if suffix.startswith("#"):
+        alter_xml = "<root-alter>1</root-alter>"
+        suffix = suffix[1:]
+    elif suffix.startswith("b"):
+        alter_xml = "<root-alter>-1</root-alter>"
+        suffix = suffix[1:]
+    kind = "minor" if suffix == "m" else "major"
+    return f"""
+      <harmony>
+        <root><root-step>{root_step}</root-step>{alter_xml}</root>
+        <kind>{kind}</kind>
+      </harmony>
+"""
 
 
 def note(
