@@ -104,6 +104,22 @@ to carry barline-adjacency into the timeline.
 
 ## Open
 
-None actionable. All clean croma bugs from the 2026-06-13 accidental/tie passes are
-fixed; the cascade pass is ~97% abc2xml phantom-measure (dropped) with this one
-spec-ambiguous multi-voice case flagged above.
+### Bug 5 — standalone `:` barline glyph rejected (measures not segmented)
+
+croma rejects a standalone `:` used as a (dotted/repeat) barline — it emits
+`warning[abc.music.invalid_barline]` ("A repeat dot must be part of a barline
+spelling") and does **not** split the measure there. In `tune_005539.abc` the
+body uses lone `:` as bar dividers (`... d3/2e/ : d/B/c/d/ ... :|`); croma drops
+the three interior `:` and collapses 4 bars into **one 32-quarter measure** (4× the
+`M:8/4` meter), while abc2xml correctly segments into 4 measures.
+
+- **Spec:** ABC 2.1 §4.8 (KB raw line 1001) — "abc parsers should be quite liberal
+  in recognizing bar lines ... using a sequence of `|` ... and `:` (dots)"; line
+  988 `:|` = end of repeated section.
+- **Clean fix, would graduate:** unlike Bug 4 (empty-bar collapse), abc2xml is
+  spec-correct here and croma's output is unambiguously wrong (a 4×-overfull
+  measure). Recognizing a standalone `:` (or `:`-run) as a barline so the measure
+  segments would make croma match abc2xml.
+- **Fix direction:** in barline recognition (`parse/` barline path), accept a
+  lone `:` / dot-run as a (dotted) barline boundary rather than rejecting it.
+- **Surfaced by:** `tune_005539.abc` (`at_fault: croma`, high; kept in worklist).
