@@ -73,24 +73,37 @@ cross-bar form is `a-|a` (`-` before the bar); `abc|-cba` (`-` after the bar) is
 - **Graduated:** `tune_008162`, `tune_008163`, `tune_008166`, `tune_008168`,
   `tune_011106`, `tune_014796`.
 
+## Undetermined / co-fault (kept in worklist, flagged for human — NOT a clean fix)
+
+### empty-bar collapse in multi-voice — spec-ambiguous, do not "fix" lightly
+
+croma collapses runs of consecutive **bare** empty bars (`... | | | | ...`):
+`tune_011865.abc` lower voices come out 10 measures vs the upper voice's 17, a
+real multi-voice misalignment. **But this is not a clean croma bug** and a fix was
+deliberately deferred (root-caused 2026-06-13):
+
+- The collapse is **intentional and §4.8-grounded**: a *run of bar lines*
+  (`||`, `|]`, `]|`, split barlines) is **one boundary**, not multiple measures.
+  croma's `is_empty_measure`/barline coalescing (`crates/croma-core/src/lower/timeline.rs`)
+  implements exactly this and has tests for `||`/`|]`/pickup measures. The bare
+  `| | | |` runs are literally consecutive barlines → §4.8 = one boundary.
+- The **source is internally inconsistent**: the upper voice fills empty bars with
+  `z` rests (→ kept, 17 measures) while the lower voices use bare `| |` (→ collapsed).
+  ABC 2.1 §7's silent-voice-alignment example uses **explicit `x` rests**
+  (`[V:B2] x8 | x8`), not bare barlines — so the lower voices are non-standard.
+- A gate fix (skip coalescing in multi-voice) would **break legitimate `||`/`|]`
+  handling**; distinguishing `||` (adjacent = one boundary) from `| |` (intended
+  empty measure) needs source-adjacency info the timeline no longer carries.
+- It **won't graduate the file**: abc2xml drops the empty bars to 6 measures, so
+  even croma→17 stays a mismatch.
+
+Disposition: `tune_011865` kept in the worklist (not dropped, not fixed),
+flagged `undetermined`. If revisited, a real fix must preserve §4.8 barline-run
+coalescing while distinguishing intended empty measures — likely needs the parser
+to carry barline-adjacency into the timeline.
+
 ## Open
 
-### Bug 4 — consecutive empty bars collapsed into one measure (multi-voice)
-
-In a voice with a run of empty bars (`... | | | | ...`, e.g. a silent lower voice
-or rests-only stretch), croma collapses the whole run into a **single** empty
-measure instead of emitting one measure per bar-segment. This desyncs that voice
-from the others (bar-alignment lost) and cascades.
-
-- **Reproduced minimally** (no abc2xml involved): `A2A | | | | b2b` yields **3**
-  croma measures, should be **5**; `G2G | | | g2g` yields 3, should be 4.
-- **Spec:** ABC 2.1 §7 (multi-voice) — KB raw line 1612/1618 — a silent voice
-  keeps one full-duration measure per bar (`[V:B2] x8 | x8 | ...`) so
-  "corresponding notes on different voices [are] vertically aligned".
-- **Fix direction:** in the lowering/timeline, do not coalesce consecutive
-  barlines / empty bar-segments into one measure — emit an (empty/whole-rest)
-  measure per segment, keeping voices bar-aligned.
-- **Surfaced by:** `tune_011865.abc` (`at_fault: croma`, medium — abc2xml *also*
-  mishandles it by dropping all empty bars, so the file will not fully graduate
-  until both are correct; kept in the worklist, NOT dropped). Likely affects other
-  multi-voice cascades with empty lower-voice bars.
+None actionable. All clean croma bugs from the 2026-06-13 accidental/tie passes are
+fixed; the cascade pass is ~97% abc2xml phantom-measure (dropped) with this one
+spec-ambiguous multi-voice case flagged above.
