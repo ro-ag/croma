@@ -31,10 +31,14 @@ doubt is **keep**.
 
 ## The loop (per file)
 
-1. **Investigate.** Dispatch the `abc-divergence-investigator` subagent (Agent
-   tool, `subagent_type: "abc-divergence-investigator"`) with the `filename` and
-   the `category`. Do **not** investigate inline — use the subagent so the
-   reasoning is isolated and the spec-KB context is fresh.
+1. **Investigate — one subagent PER FILE (no exceptions).** Dispatch a fresh
+   `abc-divergence-investigator` subagent (Agent tool,
+   `subagent_type: "abc-divergence-investigator"`) for **every** candidate file,
+   with its `filename` and `category`. Do **not** investigate inline, and do **not**
+   bulk-drop a whole category on the `missing_in_croma`/`extra` heuristic — that is
+   the deviation a prior run made, and it mislabels *phantom-stuffed-m1* cascades
+   (which look croma-suspect but are abc2xml's fault). You may run a batch of
+   subagents in parallel, but **every dropped file must have its own verdict**.
 
    It returns **exactly one delimited verdict block** — parse it mechanically:
 
