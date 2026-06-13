@@ -1582,8 +1582,18 @@ def fast_encode_fact_value(value: Any) -> str | None:
 
 
 def accidental_to_alter(accidental: Any) -> float | None:
+    # Sounding alteration of a display accidental. A *missing* accidental and an
+    # explicit "natural" denote the same sounding pitch (alter 0); the only
+    # difference is whether a courtesy/cautionary natural glyph is drawn. Mapping
+    # the absent case to 0.0 (not None) keys the comparison on the sounding
+    # pitch.alter rather than the display-accidental name, so a display-only
+    # courtesy natural (alter 0 on both sides) is not reported as a false
+    # accidental mismatch. A genuinely different alteration (sharp vs natural,
+    # flat vs natural, etc.) still diverges, so real pitch differences are never
+    # forced to match. See docs/comparison/abc2xml-divergences/TRIAGE.md
+    # (comparator-fix lead: sounding-pitch).
     if accidental is None:
-        return None
+        return 0.0
     text = str(accidental)
     mapping = {
         "natural": 0.0,

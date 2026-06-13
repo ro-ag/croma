@@ -526,6 +526,11 @@ def add_pitch_facts(
     event_path: str,
     event: dict[str, Any],
 ) -> None:
+    # Sounding pitch, not display: a missing accidental and an explicit "natural"
+    # are the same alteration (alter 0); normalize the absent case to "natural" so
+    # a display-only courtesy natural is not a false accidental mismatch. Keeps the
+    # polars engine consistent with compare_pitch and the corpus comparator's
+    # accidental_to_alter. See docs/comparison/abc2xml-divergences/TRIAGE.md.
     if "pitch" in event:
         pitch = event.get("pitch") or {}
         add_fact(rows, side, "pitches", f"{event_path}.pitch.step", pitch.get("step"))
@@ -535,7 +540,7 @@ def add_pitch_facts(
             side,
             "accidentals",
             f"{event_path}.pitch.accidental",
-            pitch.get("accidental"),
+            pitch.get("accidental") or "natural",
         )
     if "pitches" in event:
         pitches = event.get("pitches", [])
@@ -544,7 +549,13 @@ def add_pitch_facts(
             pitch_path = f"{event_path}.pitches[{pitch_index}]"
             add_fact(rows, side, "pitches", f"{pitch_path}.step", pitch.get("step"))
             add_fact(rows, side, "octaves", f"{pitch_path}.octave", pitch.get("octave"))
-            add_fact(rows, side, "accidentals", f"{pitch_path}.accidental", pitch.get("accidental"))
+            add_fact(
+                rows,
+                side,
+                "accidentals",
+                f"{pitch_path}.accidental",
+                pitch.get("accidental") or "natural",
+            )
 
 
 def add_indexed_list_facts(
@@ -964,14 +975,22 @@ def compare_pitch(
         return
     compare_scalar(builder, "pitches", f"{path}.step", croma_pitch, reference_pitch, "step")
     compare_scalar(builder, "octaves", f"{path}.octave", croma_pitch, reference_pitch, "octave")
-    compare_scalar(
-        builder,
-        "accidentals",
-        f"{path}.accidental",
-        croma_pitch,
-        reference_pitch,
-        "accidental",
-    )
+    # Sounding pitch, not display: a missing accidental and an explicit "natural"
+    # are the same alteration (alter 0). A courtesy/cautionary natural is a
+    # display choice, so normalize the absent case to "natural" before comparing.
+    # This keeps the single-file tool consistent with the corpus comparator's
+    # accidental_to_alter (absent == natural == alter 0); a real alteration
+    # difference (sharp/flat vs natural) still diverges. See
+    # docs/comparison/abc2xml-divergences/TRIAGE.md (sounding-pitch lead).
+    croma_accidental = croma_pitch.get("accidental") or "natural"
+    reference_accidental = reference_pitch.get("accidental") or "natural"
+    if croma_accidental != reference_accidental:
+        builder.add(
+            "accidentals",
+            f"{path}.accidental",
+            croma_pitch.get("accidental"),
+            reference_pitch.get("accidental"),
+        )
 
 
 def compare_scalar(
