@@ -107,6 +107,16 @@ uv run pytest                 # Python tooling tests, if present
 Full recipe: [`docs/testing/corpus-reproducibility.md`](docs/testing/corpus-reproducibility.md).
 What agents should know up front about `tools/music21_polars_corpus_compare.py`:
 
+- **The comparator is RAW (2026-06).** The six match-forcing normalizations were
+  stripped — it reports raw structural differences and forces no matches. **Do not
+  re-add normalizations to "recover" the match rate.** Files are partitioned into
+  `whitelist.csv` (raw matches; the regression baseline) and `dropped.csv`
+  (adjudicated non-croma-bugs), both under
+  [`docs/comparison/abc2xml-divergences/`](docs/comparison/abc2xml-divergences/README.md);
+  the worklist (mismatches) is triaged one file at a time via the
+  **`divergence-triage`** skill and the **`abc-divergence-investigator`** subagent.
+  Pass `--whitelist-csv` to emit the whitelist and `--dropped-csv` to exclude
+  dropped files (the report shows `whitelist_files` / `dropped_files`).
 - **It is cheap to re-run.** A content-addressed SQLite cache
   (`docs/untracked/cache/compare-cache.sqlite`, git-ignored, disposable)
   makes a full 10k rerun ~0.7 s when nothing changed, ~2-3 s after a parser

@@ -10,6 +10,37 @@ spec, its output is a *reference artifact* and Croma is correct.
 > write it) → `abc2xml` / other parsers (orientation only, never the oracle).
 > Spec citations below reference the ABC 2.1 standard text by section and line.
 
+## Methodology (2026-06 — supersedes the mechanical headline below)
+
+The "Headline numbers" and [`00-SUMMARY.md`](00-SUMMARY.md) /
+[`per-file-manifest.csv`](per-file-manifest.csv) were produced by a **mechanical**
+prover (`tools/prove_divergences.py`). Its headline — *"0 genuine croma issues"* —
+was **refuted** by the phase-33 triage ledger
+([doc 12](12-phase33-triage-ledger.md)): real croma bugs hid inside the
+POSITIONAL_CASCADE / BARLINE_STYLE classes. A mechanical signature cannot tell
+whether croma's output is musically *correct*. Treat those counts as a prior pass,
+not the current verdict.
+
+The current methodology is a **raw comparator + evidence-based triage**:
+
+1. **Raw comparator.** The six match-forcing normalizations were stripped from
+   `tools/music21_polars_corpus_compare.py`; it now reports raw structural
+   differences and forces no matches. Baseline: [`RAW-BASELINE.md`](RAW-BASELINE.md)
+   — **8,583 matches / 1,352 mismatches** on the 10k corpus.
+2. **Whitelist** — [`whitelist.csv`](whitelist.csv): the raw-match files, and the
+   **regression baseline** (a croma change that breaks one is a regression).
+3. **Worklist** — the mismatched files, triaged **one file at a time** by the
+   `abc-divergence-investigator` subagent (armed with the ABC 2.1 spec KB) via the
+   `divergence-triage` skill. Each file gets a reasoned, spec-cited verdict: a real
+   croma bug → fix it; an abc2xml / music21 / comparator artifact or equivalence →
+   [`dropped.csv`](dropped.csv) with a subcategory.
+4. **Drops are explicit and auditable** — every excluded file carries a reason; the
+   denominator is never silently shrunk. A file that gets a croma fix **graduates
+   into the whitelist**; the whitelist only grows, the worklist only shrinks.
+
+The per-class docs below ([01](01-export-failures.md)–[12](12-phase33-triage-ledger.md))
+remain the **subcategory taxonomy** the triage uses.
+
 ## Start here
 
 - **[`00-SUMMARY.md`](00-SUMMARY.md)** — the authoritative per-file verdict
