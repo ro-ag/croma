@@ -62,7 +62,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
 
     let accidentals = tokens[token_start..]
         .iter()
-        .filter_map(parse_key_accidental)
+        .flat_map(parse_key_accidentals)
         .collect();
 
     // ABC 2.1 §4.6: a K: field may also carry clef/octave/middle/transpose
@@ -224,32 +224,45 @@ fn parse_key_mode(value: &str) -> Option<KeyMode> {
     }
 }
 
-fn parse_key_accidental(token: &Spanned<String>) -> Option<KeyAccidental> {
+/// Parse every accidental in a key token. The `exp`/global accidental list may be
+/// written space-less (`_B^g`, `^f_B_e`), in which case it arrives as a single
+/// token; each `<sign><note>` pair must be captured (ABC 2.1 §3.1.14), not just
+/// the first — dropping the rest left those pitches un-altered. Tokens that are
+/// not accidentals (clef/property tokens) yield an empty vec.
+fn parse_key_accidentals(token: &Spanned<String>) -> Vec<KeyAccidental> {
     let value = token.value.as_str();
-    let (sign, sign_len) = if value.starts_with("__") {
-        (AccidentalSign::DoubleFlat, 2)
-    } else if value.starts_with("^^") {
-        (AccidentalSign::DoubleSharp, 2)
-    } else if value.starts_with('_') {
-        (AccidentalSign::Flat, 1)
-    } else if value.starts_with('^') {
-        (AccidentalSign::Sharp, 1)
-    } else if value.starts_with('=') {
-        (AccidentalSign::Natural, 1)
-    } else {
-        return None;
-    };
-    let note = value[sign_len..].chars().next()?;
-    if !matches!(note.to_ascii_uppercase(), 'A'..='G') {
-        return None;
+    let mut accidentals = Vec::new();
+    let mut pos = 0;
+    while pos < value.len() {
+        let rest = &value[pos..];
+        let (sign, sign_len) = if rest.starts_with("__") {
+            (AccidentalSign::DoubleFlat, 2)
+        } else if rest.starts_with("^^") {
+            (AccidentalSign::DoubleSharp, 2)
+        } else if rest.starts_with('_') {
+            (AccidentalSign::Flat, 1)
+        } else if rest.starts_with('^') {
+            (AccidentalSign::Sharp, 1)
+        } else if rest.starts_with('=') {
+            (AccidentalSign::Natural, 1)
+        } else {
+            break;
+        };
+        let Some(note) = rest[sign_len..].chars().next() else {
+            break;
+        };
+        if !matches!(note.to_ascii_uppercase(), 'A'..='G') {
+            break;
+        }
+        let sign_start = token.span.start + pos;
+        let note_start = sign_start + sign_len;
+        let note_span = Span::new(note_start, note_start + note.len_utf8());
+        accidentals.push(KeyAccidental {
+            sign,
+            note: Spanned::new(note, note_span),
+            span: Span::new(sign_start, note_span.end),
+        });
+        pos += sign_len + note.len_utf8();
     }
-    let note_span = Span::new(
-        token.span.start + sign_len,
-        token.span.start + sign_len + note.len_utf8(),
-    );
-    Some(KeyAccidental {
-        sign,
-        note: Spanned::new(note, note_span),
-        span: Span::new(token.span.start, note_span.end),
-    })
+    accidentals
 }
