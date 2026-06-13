@@ -2,7 +2,7 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::accidental::{KeyAccidentalPolicy, MeasureAccidental, key_accidental_policy};
 use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference};
 use crate::model::{
-    Accidental, AccidentalMark, AnnotationPlacementModel, DecorationAttachment,
+    Accidental, AccidentalMark, AnnotationPlacementModel, BarlineKind, DecorationAttachment,
     DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent, GraceEventKind,
     GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind, Pitch, RestEvent,
     SlurAttachment, SlurRole, TextAttachment, VoiceId, VoicePropertiesModel,
@@ -229,6 +229,7 @@ impl LoweringState {
         line_index: usize,
         source_order: u32,
         span: Span,
+        kind: BarlineKind,
     ) {
         let mut attachments = EventAttachments::default();
         if !self.pending_annotations.is_empty() {
@@ -238,6 +239,20 @@ impl LoweringState {
                 .map(|text| annotation_attachment_model(&text))
                 .collect();
         }
+
+        let mut remaining_symbols = Vec::new();
+        for text in self.pending_chord_symbols.drain(..) {
+            // A final barline still has no following symbol; keep the pending
+            // text for the end-of-voice dangling diagnostic path.
+            if kind == BarlineKind::Final || quoted_text_may_be_harmony(text.text.as_str()) {
+                remaining_symbols.push(text);
+            } else {
+                attachments
+                    .annotations
+                    .push(chord_symbol_attachment_model(&text));
+            }
+        }
+        self.pending_chord_symbols = remaining_symbols;
 
         let mut remaining_decorations = Vec::new();
         for decoration in self.pending_decorations.drain(..) {
@@ -1079,6 +1094,10 @@ pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttach
             QuotedTextKind::ChordSymbol => None,
         },
     }
+}
+
+fn quoted_text_may_be_harmony(text: &str) -> bool {
+    matches!(text.trim_start().chars().next(), Some('A'..='G'))
 }
 
 fn decoration_binds_to_barline(name: &str) -> bool {

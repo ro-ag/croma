@@ -67,7 +67,7 @@ in-scope with 0 structural diffs, and must not regress the proven set.
 ## Resolved: silent data loss
 
 4. ~~**Quoted text before a barline is silently dropped.**~~ **FIXED
-   (phase-33a, 2026-06-11; refined phase-41, 2026-06-12):** pending chord
+   (phase-33a, 2026-06-11; refined phase-41/42, 2026-06-12):** pending chord
    symbols, annotations, decorations AND grace groups flushed at a barline /
    line end / multirest / malformed token now buffer in `LoweringState` instead
    of being dropped (ABC 2.1 §§4.12/4.14/4.18/4.19); leftovers at the end of a
@@ -75,12 +75,17 @@ in-scope with 0 structural diffs, and must not regress the proven set.
    Phase 41 refined the barline case so annotations and direction-style
    decorations written immediately before a barline attach at the current
    measure's barline position, while chord symbols, graces, and note-attached
-   decorations keep the next-event behavior. The same phase-33 batch closed
-   multi-measure volta brackets (`<ending type="stop">` carried across measures
-   per §4.9 — 905 affected files), fixed `<ending>`-before-`<repeat>` order,
-   and mapped `!crescendo(!`-family to `<wedge>` and `!+!` to
-   `<technical><stopped/>`. Corpus matches 8,118 → 8,734, 0 regressions; the
-   phase-41 placement refinement moved full-corpus matches 9,206 → 9,223.
+   decorations keep the next-event behavior. Phase 42 extended that placement
+   rule to unprefixed quoted text that is not likely harmony immediately before
+   non-final barlines; valid chord-like text still binds across the barline,
+   and quoted text before a final barline still reaches the dangling diagnostic
+   path. The same phase-33 batch closed multi-measure volta brackets (`<ending
+   type="stop">` carried across measures per §4.9 — 905 affected files), fixed
+   `<ending>`-before-`<repeat>` order, and mapped `!crescendo(!`-family to
+   `<wedge>` and `!+!` to `<technical><stopped/>`. Corpus matches 8,118 →
+   8,734, 0 regressions; the phase-41 placement refinement moved full-corpus
+   matches 9,206 → 9,223, and the phase-42 refinement moved them 9,223 →
+   9,237.
 
 ## Resolved: phase-33 triage ledger (2026-06-11)
 
