@@ -126,6 +126,48 @@ fn recovers_dangling_accidentals_without_leaking_into_later_notes() {
 }
 
 #[test]
+fn recovers_accidental_separated_from_note_by_misplaced_length() {
+    // `^/c` is malformed: the `/` length operator sits between the accidental and
+    // its note. The sharp's intent is unambiguous (cf. the abc2xml baseline and
+    // parallel well-formed `^c` bars), so croma must still apply the sharp to the
+    // following note rather than dropping it. The misplaced `/` is still flagged
+    // as a length error and is NOT applied to the note's duration.
+    let document_report = parse_document("X:1\nL:1/4\nK:C\n^/c c\n", ParseOptions::default());
+
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.malformed_length"),
+        1
+    );
+    assert_eq!(
+        count_diagnostics(
+            &document_report.diagnostics,
+            "abc.music.malformed_accidental"
+        ),
+        0
+    );
+
+    let tune_report = parse_tune_report_from_document(&document_report.value);
+    let events = tune_report.value.expect("expected tune").events;
+    assert!(matches!(
+        events.as_slice(),
+        [
+            Event::Note {
+                step: 'C',
+                accidental: Some(Accidental::Sharp),
+                duration: sharp_duration,
+                ..
+            },
+            Event::Note {
+                step: 'C',
+                accidental: None,
+                duration: plain_duration,
+                ..
+            },
+        ] if sharp_duration == plain_duration
+    ));
+}
+
+#[test]
 fn lowers_fractional_lengths_and_slash_shorthand() {
     let document = parse_document(
         "X:1\nL:1/8\nK:C\nA2 A/ A// A3/2 A/4\n",
@@ -2937,6 +2979,26 @@ fn unmatched_tie_preserves_unmerged_note_events() {
             Fraction::new(1, 8),
             Fraction::new(1, 8)
         ]
+    );
+}
+
+#[test]
+fn post_barline_tie_marker_does_not_bind_across_the_bar() {
+    // `C |- C` places the tie `-` AFTER the barline — the illegal `abc|-cba`
+    // form (ABC 2.1 §4.11; the legal cross-bar tie is `a-|a` with `-` before the
+    // bar). croma must not bind it backward across the barline: it emits no tie
+    // and warns, rather than fabricating a cross-bar tie.
+    let source = "X:1\nM:2/4\nL:1/4\nK:C\nC |- C D |\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    let notes = semantic_note_events(&tune);
+    assert!(
+        notes.iter().all(|event| event.attachments.ties.is_empty()),
+        "a post-barline tie marker must not produce any tie attachment"
     );
 }
 

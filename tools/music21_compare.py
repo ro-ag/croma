@@ -264,6 +264,14 @@ def pitch_facts(pitch: Any) -> dict[str, Any]:
         "step": pitch.step,
         "octave": pitch.octave,
         "accidental": accidental_name(pitch.accidental),
+        # Sounding alteration in semitones (0.0 for a natural, including a note
+        # with no accidental). This is the structural pitch value the comparison
+        # keys on; `accidental` is retained only as a display/raw label. Comparing
+        # the sounding alter rather than the display-accidental name means a
+        # courtesy natural and a self-contradictory glyph (e.g. abc2xml's
+        # <alter>1</alter> + <accidental>natural</accidental>) are not false
+        # pitch mismatches, while a genuine alteration difference still diverges.
+        "alter": float(pitch.alter),
     }
 
 
@@ -526,6 +534,11 @@ def add_pitch_facts(
     event_path: str,
     event: dict[str, Any],
 ) -> None:
+    # Compare the sounding alteration (pitch.alter), not the display-accidental
+    # name, so a courtesy natural or a self-contradictory display glyph is not a
+    # false accidental mismatch; a genuine alteration difference still diverges.
+    # Keeps the polars engine consistent with compare_pitch and the corpus
+    # comparator. See docs/comparison/abc2xml-divergences/TRIAGE.md (sounding-pitch).
     if "pitch" in event:
         pitch = event.get("pitch") or {}
         add_fact(rows, side, "pitches", f"{event_path}.pitch.step", pitch.get("step"))
@@ -535,7 +548,7 @@ def add_pitch_facts(
             side,
             "accidentals",
             f"{event_path}.pitch.accidental",
-            pitch.get("accidental"),
+            pitch.get("alter"),
         )
     if "pitches" in event:
         pitches = event.get("pitches", [])
@@ -544,7 +557,13 @@ def add_pitch_facts(
             pitch_path = f"{event_path}.pitches[{pitch_index}]"
             add_fact(rows, side, "pitches", f"{pitch_path}.step", pitch.get("step"))
             add_fact(rows, side, "octaves", f"{pitch_path}.octave", pitch.get("octave"))
-            add_fact(rows, side, "accidentals", f"{pitch_path}.accidental", pitch.get("accidental"))
+            add_fact(
+                rows,
+                side,
+                "accidentals",
+                f"{pitch_path}.accidental",
+                pitch.get("alter"),
+            )
 
 
 def add_indexed_list_facts(
@@ -964,14 +983,19 @@ def compare_pitch(
         return
     compare_scalar(builder, "pitches", f"{path}.step", croma_pitch, reference_pitch, "step")
     compare_scalar(builder, "octaves", f"{path}.octave", croma_pitch, reference_pitch, "octave")
-    compare_scalar(
-        builder,
-        "accidentals",
-        f"{path}.accidental",
-        croma_pitch,
-        reference_pitch,
-        "accidental",
-    )
+    # Compare the sounding alteration (pitch.alter), not the display-accidental
+    # name, so a courtesy/cautionary natural or a self-contradictory display glyph
+    # is not a false pitch mismatch; a genuine alteration difference still
+    # diverges. See docs/comparison/abc2xml-divergences/TRIAGE.md (sounding-pitch).
+    croma_alter = croma_pitch.get("alter")
+    reference_alter = reference_pitch.get("alter")
+    if croma_alter != reference_alter:
+        builder.add(
+            "accidentals",
+            f"{path}.accidental",
+            croma_alter,
+            reference_alter,
+        )
 
 
 def compare_scalar(

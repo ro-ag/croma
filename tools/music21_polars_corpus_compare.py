@@ -1416,15 +1416,25 @@ def add_pitch_rows(
     pitch_index: int,
 ) -> None:
     accidental = pitch.get("accidental")
+    # Compare the sounding alteration (music21 pitch.alter), not the display
+    # accidental name: a courtesy natural and a self-contradictory glyph (abc2xml's
+    # <alter>1> + <accidental>natural>) carry the right sounding pitch, so keying on
+    # the name produced false accidental mismatches. A genuine alteration
+    # difference still diverges. `alter` is absent only for facts extracted by an
+    # older tool revision (cache self-invalidates on source change); fall back to
+    # the display-accidental mapping there. raw_value keeps the display name.
+    alter = pitch.get("alter")
+    if alter is None:
+        alter = accidental_to_alter(accidental)
     pitch_kwargs = {
         **event_base,
         "alignment_index": pitch_index,
         "pitch_step": optional_string(pitch.get("step")),
-        "pitch_alter": accidental_to_alter(accidental),
+        "pitch_alter": alter,
         "pitch_octave": optional_int(pitch.get("octave")),
     }
     builder.add("pitch", "step", pitch.get("step"), **pitch_kwargs)
-    builder.add("pitch", "alter", accidental_to_alter(accidental), raw_value=accidental, **pitch_kwargs)
+    builder.add("pitch", "alter", alter, raw_value=accidental, **pitch_kwargs)
     builder.add("pitch", "octave", pitch.get("octave"), **pitch_kwargs)
 
 
@@ -1582,8 +1592,18 @@ def fast_encode_fact_value(value: Any) -> str | None:
 
 
 def accidental_to_alter(accidental: Any) -> float | None:
+    # Sounding alteration of a display accidental. A *missing* accidental and an
+    # explicit "natural" denote the same sounding pitch (alter 0); the only
+    # difference is whether a courtesy/cautionary natural glyph is drawn. Mapping
+    # the absent case to 0.0 (not None) keys the comparison on the sounding
+    # pitch.alter rather than the display-accidental name, so a display-only
+    # courtesy natural (alter 0 on both sides) is not reported as a false
+    # accidental mismatch. A genuinely different alteration (sharp vs natural,
+    # flat vs natural, etc.) still diverges, so real pitch differences are never
+    # forced to match. See docs/comparison/abc2xml-divergences/TRIAGE.md
+    # (comparator-fix lead: sounding-pitch).
     if accidental is None:
-        return None
+        return 0.0
     text = str(accidental)
     mapping = {
         "natural": 0.0,

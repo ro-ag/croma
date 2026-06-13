@@ -72,6 +72,27 @@ fn parses_key_modes_and_explicit_accidentals() {
 }
 
 #[test]
+fn parses_explicit_accidental_list_written_without_spaces() {
+    // `K:D exp _B^g` — the explicit (exp) accidental list is written space-less,
+    // so it arrives as a single token. Every accidental in the token must be
+    // parsed (ABC 2.1 §3.1.14), not just the first; dropping `^g` left G natural.
+    let report = parse_document("X:1\nK:D exp _B^g\nC\n", ParseOptions::default());
+    let key = report
+        .value
+        .fields
+        .tune(0)
+        .and_then(|tune| tune.header.key.as_ref())
+        .expect("expected explicit key");
+    assert_eq!(key.value.mode, KeyMode::Explicit);
+    assert!(key.value.explicit);
+    assert_eq!(key.value.accidentals.len(), 2);
+    assert_eq!(key.value.accidentals[0].sign, AccidentalSign::Flat);
+    assert_eq!(key.value.accidentals[0].note.value, 'B');
+    assert_eq!(key.value.accidentals[1].sign, AccidentalSign::Sharp);
+    assert_eq!(key.value.accidentals[1].note.value, 'g');
+}
+
+#[test]
 fn parses_nospace_key_global_accidentals_after_tonic() {
     let report = parse_document("X:1\nK:D_B^g\nC\n", ParseOptions::default());
     let tune = report.value.fields.tune(0).expect("expected tune fields");

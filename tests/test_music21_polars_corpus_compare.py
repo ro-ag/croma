@@ -209,6 +209,53 @@ def test_whitelist_csv_lists_only_raw_matches(tmp_path: Path) -> None:
     assert report["whitelist_files"] == 1
 
 
+def test_courtesy_natural_matches_absent_accidental_but_real_alter_still_flagged(
+    tmp_path: Path,
+) -> None:
+    # Sounding-pitch comparator-fix lead (TRIAGE.md): the comparison keys on the
+    # sounding pitch.alter, not the display-accidental name. Three cases:
+    #  - courtesy_natural: a missing accidental and an explicit "natural" are both
+    #    alter 0 -> must match.
+    #  - contradictory_glyph: abc2xml's self-contradictory <alter>1>+natural glyph
+    #    sounds alter 1, same as croma's honest sharp -> must match (this is what a
+    #    name-based comparison gets wrong).
+    #  - real_sharp: a genuine alteration (alter 1 vs 0) -> must still be flagged,
+    #    proving the fix never forces a real pitch difference to match.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["courtesy_natural", "contradictory_glyph", "real_sharp"])
+    # croma omits the accidental; abc2xml prints a (cautionary) natural glyph.
+    # Both sound C-natural (alter 0).
+    write_musicxml(paths.croma_xml("courtesy_natural"), [note(step="C")])
+    write_musicxml(
+        paths.reference_xml("courtesy_natural"), [note(step="C", accidental="natural")]
+    )
+    # croma spells an honest sharp; abc2xml emits a self-contradictory note
+    # (alter 1 with a natural glyph). Both SOUND C-sharp (alter 1).
+    write_musicxml(
+        paths.croma_xml("contradictory_glyph"), [note(step="C", alter=1, accidental="sharp")]
+    )
+    write_musicxml(
+        paths.reference_xml("contradictory_glyph"),
+        [note(step="C", alter=1, accidental="natural")],
+    )
+    # croma sounds C-sharp (alter 1); abc2xml sounds C-natural (no accidental).
+    write_musicxml(paths.croma_xml("real_sharp"), [note(step="C", alter=1)])
+    write_musicxml(paths.reference_xml("real_sharp"), [note(step="C")])
+    whitelist = paths.output / "whitelist.csv"
+
+    report = run_compare(
+        paths, jobs=1, output_name="acc", extra=["--whitelist-csv", str(whitelist)]
+    )
+
+    # Only the genuine alter difference survives as an accidental mismatch.
+    assert report["mismatch_category_counts"].get("accidental", 0) == 1
+    assert report["structural_mismatches"] == 1
+    names = {row["filename"] for row in read_csv(whitelist)}
+    assert "courtesy_natural.abc" in names  # graduates into the whitelist
+    assert "contradictory_glyph.abc" in names  # sounding alter matches
+    assert "real_sharp.abc" not in names
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -836,8 +883,12 @@ def note(
     type_: str = "quarter",
     lyric: str | None = None,
     lyric_xml: str | None = None,
+    accidental: str | None = None,
 ) -> str:
     alter_xml = f"<alter>{alter}</alter>" if alter is not None else ""
+    accidental_xml = (
+        f"<accidental>{accidental}</accidental>" if accidental is not None else ""
+    )
     lyric_body = lyric_xml if lyric_xml is not None else (
         f"<lyric><syllabic>single</syllabic><text>{lyric}</text></lyric>"
         if lyric is not None
@@ -848,6 +899,7 @@ def note(
         <pitch><step>{step}</step>{alter_xml}<octave>{octave}</octave></pitch>
         <duration>{duration}</duration>
         <type>{type_}</type>
+        {accidental_xml}
         {lyric_body}
       </note>
 """
