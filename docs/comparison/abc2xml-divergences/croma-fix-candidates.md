@@ -102,24 +102,33 @@ flagged `undetermined`. If revisited, a real fix must preserve §4.8 barline-run
 coalescing while distinguishing intended empty measures — likely needs the parser
 to carry barline-adjacency into the timeline.
 
+### Bug 5 — whitespace-surrounded lone `:` treated as malformed, not a barline (DEBATABLE — deliberate behavior)
+
+croma rejects a `:` with **whitespace on both sides** as a barline: `parse_colon`
+(`crates/croma-core/src/parse/barline.rs`) already accepts a `:` *adjacent* to
+notes as a Liberal barline (case 4, fixed 71 files), but a free-floating `: `
+deliberately becomes an `invalid_barline` malformed stray dot. In
+`tune_005539.abc` (`... d3/2e/ : d/B/c/d/ ... :|`) croma drops the three
+space-surrounded `:` and collapses 4 bars into one 32-quarter measure (4× the
+`M:8/4` meter); abc2xml segments into 4.
+
+- **Not a clean fix — deliberate & tested:** the case-5 behavior is asserted by
+  `recovers_invalid_barline_fragments_as_skipped_malformed_items` (`C : D` →
+  `invalid_barline` + `InvalidBarline`). "Fixing" it = relaxing case 5 so a
+  whitespace-surrounded `:` becomes a Liberal barline, **reversing a tested
+  decision**.
+- **Spec-debatable:** §4.8 line 1001 ("liberal ... sequence of `|` and `:`") and
+  abc2xml favour treating it as a barline; croma's stance is that a free-floating
+  `:` is an ambiguous stray dot. The investigator rated croma at-fault high (the
+  4×-overfull measure is clearly bad output), but croma's choice is defensible.
+- **Disposition:** kept in worklist, flagged `undetermined`. A real fix is a
+  one-site change (case 5 → `parse_barline`) but must be regression-tested across
+  the corpus and the `C : D` test updated; it's a deliberate policy reversal, so
+  it needs an explicit decision, not a drive-by fix.
+
 ## Open
 
-### Bug 5 — standalone `:` barline glyph rejected (measures not segmented)
-
-croma rejects a standalone `:` used as a (dotted/repeat) barline — it emits
-`warning[abc.music.invalid_barline]` ("A repeat dot must be part of a barline
-spelling") and does **not** split the measure there. In `tune_005539.abc` the
-body uses lone `:` as bar dividers (`... d3/2e/ : d/B/c/d/ ... :|`); croma drops
-the three interior `:` and collapses 4 bars into **one 32-quarter measure** (4× the
-`M:8/4` meter), while abc2xml correctly segments into 4 measures.
-
-- **Spec:** ABC 2.1 §4.8 (KB raw line 1001) — "abc parsers should be quite liberal
-  in recognizing bar lines ... using a sequence of `|` ... and `:` (dots)"; line
-  988 `:|` = end of repeated section.
-- **Clean fix, would graduate:** unlike Bug 4 (empty-bar collapse), abc2xml is
-  spec-correct here and croma's output is unambiguously wrong (a 4×-overfull
-  measure). Recognizing a standalone `:` (or `:`-run) as a barline so the measure
-  segments would make croma match abc2xml.
-- **Fix direction:** in barline recognition (`parse/` barline path), accept a
-  lone `:` / dot-run as a (dotted) barline boundary rather than rejecting it.
-- **Surfaced by:** `tune_005539.abc` (`at_fault: croma`, high; kept in worklist).
+None clean. The two cascade-surfaced "croma" candidates (Bug 4 empty-bar collapse,
+Bug 5 free-floating `:`) are both **deliberate, tested behaviors on non-standard
+input** — spec-debatable policy calls, not clear defects. All clear croma bugs
+(`^/c`, `K:exp`, post-barline tie) were in the content categories and are fixed.
