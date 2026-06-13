@@ -75,6 +75,22 @@ cross-bar form is `a-|a` (`-` before the bar); `abc|-cba` (`-` after the bar) is
 
 ## Open
 
-None from the 2026-06-13 accidental + tie triage — all three surfaced croma bugs
-(`^/c`, `K:exp`, post-barline tie) are fixed. Continue with the next content
-category (duration) to surface more.
+### Bug 4 — consecutive empty bars collapsed into one measure (multi-voice)
+
+In a voice with a run of empty bars (`... | | | | ...`, e.g. a silent lower voice
+or rests-only stretch), croma collapses the whole run into a **single** empty
+measure instead of emitting one measure per bar-segment. This desyncs that voice
+from the others (bar-alignment lost) and cascades.
+
+- **Reproduced minimally** (no abc2xml involved): `A2A | | | | b2b` yields **3**
+  croma measures, should be **5**; `G2G | | | g2g` yields 3, should be 4.
+- **Spec:** ABC 2.1 §7 (multi-voice) — KB raw line 1612/1618 — a silent voice
+  keeps one full-duration measure per bar (`[V:B2] x8 | x8 | ...`) so
+  "corresponding notes on different voices [are] vertically aligned".
+- **Fix direction:** in the lowering/timeline, do not coalesce consecutive
+  barlines / empty bar-segments into one measure — emit an (empty/whole-rest)
+  measure per segment, keeping voices bar-aligned.
+- **Surfaced by:** `tune_011865.abc` (`at_fault: croma`, medium — abc2xml *also*
+  mishandles it by dropping all empty bars, so the file will not fully graduate
+  until both are correct; kept in the worklist, NOT dropped). Likely affects other
+  multi-voice cascades with empty lower-voice bars.
