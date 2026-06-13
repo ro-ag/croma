@@ -578,6 +578,7 @@ impl MultiVoiceLowering {
                         line.line_index,
                         source_order,
                         barline.span,
+                        barline.kind,
                     );
                     if matches!(barline.kind, BarlineKind::Dotted | BarlineKind::Invisible) {
                         self.current_state()

@@ -118,6 +118,24 @@ fn chord_symbol_before_barline_binds_to_next_note() {
 }
 
 #[test]
+fn non_harmony_quoted_text_before_barline_binds_to_barline_position() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E \"I\"| F G A B|\n";
+    let export = export_musicxml(source).expect("barline words should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measure1 = measure_body(&export.musicxml, "1");
+    let measure2 = measure_body(&export.musicxml, "2");
+    assert!(
+        measure1.contains("<words>I</words>"),
+        "barline-bound words should stay in measure 1: {measure1}"
+    );
+    assert!(
+        !measure2.contains("<words>I</words>"),
+        "barline-bound words must not move to measure 2: {measure2}"
+    );
+}
+
+#[test]
 fn chord_symbol_at_line_end_binds_to_note_on_next_line() {
     // A code line break is not a musical boundary (§6.1.1): `"Em7"` at the end
     // of one music line binds to the first note of the next line.
