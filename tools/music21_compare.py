@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -119,12 +118,7 @@ class Music21ParseFailure(RuntimeError):
         super().__init__(f"music21 failed to parse {label} MusicXML `{path}`: {error}")
 
 
-def extract_facts(
-    path: Path,
-    label: str,
-    *,
-    drop_leading_harmony_measure_parts: set[int] | None = None,
-) -> dict[str, Any]:
+def extract_facts(path: Path, label: str) -> dict[str, Any]:
     try:
         from music21 import (
             chord,
@@ -147,38 +141,11 @@ def extract_facts(
     except Exception as error:  # noqa: BLE001 - parse failures are data, not harness crashes.
         raise Music21ParseFailure(label, path, error) from error
 
-    measure_summaries = musicxml_measure_summaries(path)
     parts = []
-    measure_number_remap: dict[int, str] = {}
-    drop_parts = drop_leading_harmony_measure_parts or set()
     score_parts = list(score.parts)
     for part_index, part in enumerate(score_parts):
         measures = []
-        raw_measures = list(part.getElementsByClass(stream.Measure))
-        retained_measures = (
-            retained_part_measures(
-                raw_measures,
-                harmony,
-                measure_summaries[part_index] if part_index < len(measure_summaries) else None,
-            )
-            if part_index in drop_parts
-            else raw_measures
-        )
-        first_retained_offset = (
-            getattr(retained_measures[0], "offset", None)
-            if retained_measures
-            else None
-        )
-        if retained_measures:
-            first_retained = retained_measures[0]
-            for dropped_measure in raw_measures:
-                if dropped_measure is first_retained:
-                    break
-                measure_number_remap[id(dropped_measure)] = "1"
-
-        for measure_index, measure in enumerate(retained_measures):
-            normalized_number = str(measure_index + 1)
-            measure_number_remap[id(measure)] = normalized_number
+        for measure_index, measure in enumerate(part.getElementsByClass(stream.Measure)):
             voices = list(measure.getElementsByClass(stream.Voice))
             voice_facts = []
             events = []
@@ -186,30 +153,28 @@ def extract_facts(
             if voices:
                 for voice_index, voice in enumerate(voices):
                     voice_id = str(getattr(voice, "id", voice_index))
-                    voice_events = event_facts_for_elements(
-                        musical_event_elements(voice.notesAndRests, harmony),
-                        voice_id,
-                        note,
-                        chord,
-                    )
+                    voice_events = [
+                        event_facts(element, voice_id, event_index, note, chord)
+                        for event_index, element in enumerate(
+                            musical_event_elements(voice.notesAndRests, harmony)
+                        )
+                    ]
                     voice_facts.append({"id": voice_id, "events": voice_events})
                     events.extend(voice_events)
             else:
-                events = event_facts_for_elements(
-                    musical_event_elements(measure.notesAndRests, harmony),
-                    None,
-                    note,
-                    chord,
-                )
+                events = [
+                    event_facts(element, None, event_index, note, chord)
+                    for event_index, element in enumerate(
+                        musical_event_elements(measure.notesAndRests, harmony)
+                    )
+                ]
                 voice_facts.append({"id": None, "events": events})
 
             measures.append(
                 {
                     "index": measure_index,
-                    "number": normalized_number,
-                    "offset": rational_string(
-                        normalized_measure_offset(measure, first_retained_offset)
-                    ),
+                    "number": str(measure.number),
+                    "offset": rational_string(getattr(measure, "offset", None)),
                     "duration": rational_string(getattr(measure.duration, "quarterLength", None)),
                     "bar_duration": rational_string(
                         getattr(getattr(measure, "barDuration", None), "quarterLength", None)
@@ -237,94 +202,10 @@ def extract_facts(
         "parts": parts,
         "part_count": len(parts),
         "slurs": slur_facts(score, spanner),
-        "repeat_endings": repeat_ending_facts(score, spanner, measure_number_remap),
-        "harmony": harmony_facts(score, harmony, stream, measure_number_remap),
-        "directions": direction_facts(
-            score,
-            dynamics,
-            expressions,
-            tempo,
-            stream,
-            measure_number_remap,
-        ),
+        "repeat_endings": repeat_ending_facts(score, spanner),
+        "harmony": harmony_facts(score, harmony, stream),
+        "directions": direction_facts(score, dynamics, expressions, tempo, stream),
     }
-
-
-def retained_part_measures(
-    raw_measures: list[Any],
-    harmony_module: Any,
-    measure_summaries: list[dict[str, Any]] | None,
-) -> list[Any]:
-    first_real_index = next(
-        (
-            index
-            for index, measure in enumerate(raw_measures)
-            if measure_has_musical_events(measure, harmony_module, measure_summaries, index)
-        ),
-        None,
-    )
-    if first_real_index is None:
-        return raw_measures
-    return raw_measures[first_real_index:]
-
-
-def measure_has_musical_events(
-    measure: Any,
-    harmony_module: Any,
-    measure_summaries: list[dict[str, Any]] | None,
-    measure_index: int,
-) -> bool:
-    if measure_summaries is not None and measure_index < len(measure_summaries):
-        summary = measure_summaries[measure_index]
-        if summary["note_count"] == 0 and summary["has_harmony"]:
-            return False
-        return True
-
-    voices = list(measure.getElementsByClass("Voice"))
-    if voices:
-        return any(
-            musical_event_elements(voice.notesAndRests, harmony_module)
-            for voice in voices
-        )
-    return bool(musical_event_elements(measure.notesAndRests, harmony_module))
-
-
-def normalized_measure_offset(measure: Any, first_retained_offset: Any) -> Any:
-    offset = getattr(measure, "offset", None)
-    if offset is None or first_retained_offset is None:
-        return offset
-    try:
-        return offset - first_retained_offset
-    except TypeError:
-        return offset
-
-
-def musicxml_measure_summaries(path: Path) -> list[list[dict[str, Any]]]:
-    root = ET.parse(path).getroot()
-    parts: list[list[dict[str, Any]]] = []
-    for child in root:
-        if local_name(child.tag) != "part":
-            continue
-        part_summaries = []
-        for measure in child:
-            if local_name(measure.tag) != "measure":
-                continue
-            part_summaries.append(
-                {
-                    "note_count": sum(
-                        1 for element in measure if local_name(element.tag) == "note"
-                    ),
-                    "has_harmony": any(
-                        local_name(element.tag) == "harmony" for element in measure
-                    ),
-                }
-            )
-        parts.append(part_summaries)
-    return parts
-
-
-def local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
 
 
 def musical_event_elements(elements: Any, harmony_module: Any) -> list[Any]:
@@ -341,43 +222,18 @@ def musical_event_elements(elements: Any, harmony_module: Any) -> list[Any]:
     return [element for element in elements if not isinstance(element, excluded)]
 
 
-def event_facts_for_elements(
-    elements: list[Any],
-    voice_id: str | None,
-    note_module: Any,
-    chord_module: Any,
-) -> list[dict[str, Any]]:
-    return [
-        event_facts(
-            element,
-            voice_id,
-            event_index,
-            note_module,
-            chord_module,
-            next_element=elements[event_index + 1] if event_index + 1 < len(elements) else None,
-        )
-        for event_index, element in enumerate(elements)
-    ]
-
-
 def event_facts(
     element: Any,
     voice_id: str | None,
     event_index: int,
     note_module: Any,
     chord_module: Any,
-    *,
-    next_element: Any | None = None,
 ) -> dict[str, Any]:
-    is_rest = isinstance(element, note_module.Rest)
     base = {
         "index": event_index,
         "offset": rational_string(getattr(element, "offset", None)),
         "voice": voice_id,
-        "duration": duration_facts(
-            element,
-            offset_span=rest_offset_span(element, next_element) if is_rest else None,
-        ),
+        "duration": duration_facts(element),
         "lyrics": lyric_facts(element),
     }
     if isinstance(element, note_module.Note):
@@ -396,7 +252,7 @@ def event_facts(
                 "tie": tie_facts(element),
             }
         )
-    elif is_rest:
+    elif isinstance(element, note_module.Rest):
         base.update({"kind": "rest"})
     else:
         base.update({"kind": element.__class__.__name__})
@@ -408,10 +264,6 @@ def pitch_facts(pitch: Any) -> dict[str, Any]:
         "step": pitch.step,
         "octave": pitch.octave,
         "accidental": accidental_name(pitch.accidental),
-        # Sounding chromatic alteration. MusicXML defaults an absent <alter>
-        # to 0, so this is comparable across serializations that differ only
-        # in whether a redundant <alter>0</alter> is written.
-        "alter": float(pitch.alter) if pitch.alter is not None else None,
     }
 
 
@@ -419,34 +271,12 @@ def accidental_name(accidental: Any) -> str | None:
     return None if accidental is None else accidental.name
 
 
-def rest_offset_span(element: Any, next_element: Any | None) -> Any | None:
-    if next_element is None or getattr(element, "fullMeasure", None) is not True:
-        return None
-    offset = getattr(element, "offset", None)
-    next_offset = getattr(next_element, "offset", None)
-    if offset is None or next_offset is None:
-        return None
-    try:
-        span = next_offset - offset
-        if span > element.duration.quarterLength:
-            return span
-    except Exception:  # noqa: BLE001 - offset types are controlled by music21.
-        return None
-    return None
-
-
-def duration_facts(element: Any, *, offset_span: Any | None = None) -> dict[str, Any]:
+def duration_facts(element: Any) -> dict[str, Any]:
     duration = element.duration
-    quarter_length = duration.quarterLength
-    duration_type = duration.type
-    dots = duration.dots
-    if offset_span is not None:
-        quarter_length = offset_span
-        duration_type, dots = duration_type_from_quarter_length(offset_span, duration_type, dots)
     return {
-        "quarter_length": rational_string(quarter_length),
-        "type": duration_type,
-        "dots": dots,
+        "quarter_length": rational_string(duration.quarterLength),
+        "type": duration.type,
+        "dots": duration.dots,
         "tuplets": [
             {
                 "actual": tuplet.numberNotesActual,
@@ -456,31 +286,6 @@ def duration_facts(element: Any, *, offset_span: Any | None = None) -> dict[str,
             for tuplet in duration.tuplets
         ],
     }
-
-
-def duration_type_from_quarter_length(
-    quarter_length: Any,
-    fallback_type: str | None,
-    fallback_dots: int,
-) -> tuple[str | None, int]:
-    simple_types = {
-        16.0: "long",
-        8.0: "breve",
-        4.0: "whole",
-        2.0: "half",
-        1.0: "quarter",
-        0.5: "eighth",
-        0.25: "16th",
-        0.125: "32nd",
-        0.0625: "64th",
-    }
-    try:
-        mapped_type = simple_types.get(float(quarter_length))
-    except (TypeError, ValueError):
-        mapped_type = None
-    if mapped_type is None:
-        return fallback_type, fallback_dots
-    return mapped_type, 0
 
 
 def tie_facts(element: Any) -> str | None:
@@ -530,18 +335,14 @@ def slur_facts(score: Any, spanner_module: Any) -> list[dict[str, Any]]:
     return facts
 
 
-def repeat_ending_facts(
-    score: Any,
-    spanner_module: Any,
-    measure_number_remap: dict[int, str],
-) -> list[dict[str, Any]]:
+def repeat_ending_facts(score: Any, spanner_module: Any) -> list[dict[str, Any]]:
     repeat_bracket = getattr(spanner_module, "RepeatBracket", None)
     if repeat_bracket is None:
         return []
     facts = []
     for index, ending in enumerate(score.recurse().getElementsByClass(repeat_bracket)):
         measures = [
-            normalized_measure_number(measure, measure_number_remap)
+            str(getattr(measure, "number", ""))
             for measure in ending.getSpannedElements()
         ]
         facts.append(
@@ -554,18 +355,13 @@ def repeat_ending_facts(
     return facts
 
 
-def harmony_facts(
-    score: Any,
-    harmony_module: Any,
-    stream_module: Any,
-    measure_number_remap: dict[int, str],
-) -> list[dict[str, Any]]:
+def harmony_facts(score: Any, harmony_module: Any, stream_module: Any) -> list[dict[str, Any]]:
     facts = []
     for item in score.recurse().getElementsByClass(harmony_module.ChordSymbol):
         facts.append(
             {
                 "figure": str(item.figure),
-                "measure": context_measure_number(item, stream_module, measure_number_remap),
+                "measure": context_measure_number(item, stream_module),
                 "offset": rational_string(getattr(item, "offset", None)),
             }
         )
@@ -578,7 +374,6 @@ def direction_facts(
     expressions_module: Any,
     tempo_module: Any,
     stream_module: Any,
-    measure_number_remap: dict[int, str],
 ) -> list[dict[str, Any]]:
     direction_types = [
         dynamics_module.Dynamic,
@@ -595,30 +390,18 @@ def direction_facts(
                 {
                     "kind": item.__class__.__name__,
                     "text": direction_text(item),
-                    "measure": context_measure_number(
-                        item,
-                        stream_module,
-                        measure_number_remap,
-                    ),
+                    "measure": context_measure_number(item, stream_module),
                     "offset": rational_string(getattr(item, "offset", None)),
                 }
             )
     return facts
 
 
-def context_measure_number(
-    item: Any,
-    stream_module: Any,
-    measure_number_remap: dict[int, str],
-) -> str | None:
+def context_measure_number(item: Any, stream_module: Any) -> str | None:
     measure = item.getContextByClass(stream_module.Measure)
     if measure is None:
         return None
-    return normalized_measure_number(measure, measure_number_remap)
-
-
-def normalized_measure_number(measure: Any, measure_number_remap: dict[int, str]) -> str:
-    return measure_number_remap.get(id(measure), str(getattr(measure, "number", "")))
+    return str(measure.number)
 
 
 def direction_text(item: Any) -> str:

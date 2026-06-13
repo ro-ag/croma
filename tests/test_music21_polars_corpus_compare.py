@@ -144,134 +144,9 @@ def test_v3_typed_value_columns_and_explicit_raw_values(tmp_path: Path) -> None:
     tuplets = facts[("tuplet", "tuplets")]
     assert tuplets["value_kind"] == "json"
     assert tuplets["value_json"] == "[]"
-    alter = facts[("pitch", "alter")]
-    # The alter fact is the sounding alteration; an unaltered note is 0.0
-    # (MusicXML defaults an absent <alter> to 0), not a null fact.
-    assert alter["value_kind"] == "float"
-    assert alter["value_float"] == 0.0
     # raw_value is populated only when a distinct raw value was captured.
     assert dots["raw_value"] is None
     assert facts[("note", "kind")]["raw_value"] is not None
-
-
-def test_redundant_alter_zero_is_not_a_mismatch(tmp_path: Path) -> None:
-    # MusicXML defines an absent <alter> as 0; a redundant <alter>0</alter>
-    # (abc2xml's serialization for carried naturals) is the same sounding
-    # pitch. The alter fact compares the sounding alteration, so this pair
-    # must be a structural match, not an "accidental" row.
-    paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["tune"])
-    write_musicxml(paths.croma_xml("tune"), [note(step="D", octave=5)])
-    write_musicxml(paths.reference_xml("tune"), [note(step="D", octave=5, alter=0)])
-
-    report = run_compare(paths, jobs=1, output_name="alter-eq")
-
-    assert report["mismatch_category_counts"] == {}
-    assert report["structural_matches"] == 1
-
-
-def test_sounding_alteration_difference_is_still_flagged(tmp_path: Path) -> None:
-    # D vs D-sharp is a real chromatic difference; normalizing redundant
-    # alter-0 serialization must not swallow genuine alteration mismatches.
-    paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["tune"])
-    write_musicxml(paths.croma_xml("tune"), [note(step="D", octave=5)])
-    write_musicxml(paths.reference_xml("tune"), [note(step="D", octave=5, alter=1)])
-
-    report = run_compare(paths, jobs=1, output_name="alter-diff")
-
-    assert report["mismatch_category_counts"].get("accidental") == 1
-    mismatches = read_jsonl(paths.output / "alter-diff-mismatches.jsonl")
-    alter_rows = [
-        row
-        for row in mismatches
-        if row["component"] == "pitch" and row["field_name"] == "alter"
-    ]
-    assert len(alter_rows) == 1
-    assert alter_rows[0]["croma_value_float"] == 0.0
-    assert alter_rows[0]["reference_value_float"] == 1.0
-
-
-def test_text_only_tempo_playback_bpm_difference_is_equivalent(tmp_path: Path) -> None:
-    # ABC string-only Q: fields have no mandated playback BPM. Croma and
-    # abc2xml can choose different <sound tempo> defaults while preserving the
-    # same visible words, so the comparator should not count the playback-only
-    # MetronomeMark value as a structural mismatch.
-    paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["tempo_text"])
-    write_musicxml(
-        paths.croma_xml("tempo_text"),
-        [tempo_words_with_sound("Allegretto", "120.00"), note()],
-    )
-    write_musicxml(
-        paths.reference_xml("tempo_text"),
-        [tempo_words_with_sound("Allegretto", "112.00"), note()],
-    )
-
-    report = run_compare(paths, jobs=1, output_name="tempo-text")
-
-    assert report["mismatch_category_counts"] == {}
-    assert report["structural_matches"] == 1
-
-
-def test_tuplet_bracket_marker_difference_is_equivalent(tmp_path: Path) -> None:
-    # The structural timing lives in actual/normal notes. music21's tuplet
-    # `type` reports a visible bracket start/stop marker, which abc2xml and
-    # Croma do not place identically on otherwise equivalent tuplets.
-    paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["tuplet_marker"])
-    write_musicxml(paths.croma_xml("tuplet_marker"), [tuplet_note(tuplet_type="start")])
-    write_musicxml(paths.reference_xml("tuplet_marker"), [tuplet_note(tuplet_type=None)])
-
-    report = run_compare(paths, jobs=1, output_name="tuplet-marker")
-
-    assert report["mismatch_category_counts"] == {}
-    assert report["structural_matches"] == 1
-
-
-def test_full_measure_rest_reinterpretation_uses_event_offset_span(tmp_path: Path) -> None:
-    # music21 rewrites a MusicXML rest marked measure="yes" to a whole rest
-    # even when the raw duration and following event offset prove a longer
-    # breve span. The comparator should compare the structural event span.
-    paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["full_measure_rest"])
-    write_musicxml(
-        paths.croma_xml("full_measure_rest"),
-        [rest(duration=32, type_="breve"), note(duration=16, type_="whole")],
-    )
-    write_musicxml(
-        paths.reference_xml("full_measure_rest"),
-        [
-            rest(duration=32, type_="breve", measure="yes"),
-            note(duration=16, type_="whole"),
-        ],
-    )
-
-    report = run_compare(paths, jobs=1, output_name="full-measure-rest")
-
-    assert report["mismatch_category_counts"] == {}
-    assert report["structural_matches"] == 1
-
-
-def test_visual_only_barline_style_difference_is_equivalent(tmp_path: Path) -> None:
-    # Plain barline style is visual typesetting. Repeat direction/times and
-    # repeat-ending spans remain structural, but regular/double/final/dotted
-    # style differences alone should not count as corpus mismatches.
-    paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["barline_style"])
-    write_musicxml(
-        paths.croma_xml("barline_style"),
-        [note(), barline(type_="regular")],
-    )
-    write_musicxml(
-        paths.reference_xml("barline_style"),
-        [note(), barline(type_="light-light")],
-    )
-
-    report = run_compare(paths, jobs=1, output_name="barline-style")
-
-    assert report["mismatch_category_counts"] == {}
-    assert report["structural_matches"] == 1
 
 
 def test_repeat_barline_direction_difference_is_still_flagged(tmp_path: Path) -> None:
@@ -291,33 +166,47 @@ def test_repeat_barline_direction_difference_is_still_flagged(tmp_path: Path) ->
     assert report["mismatch_category_counts"].get("barline") == 1
 
 
-def test_reference_empty_leading_measure_is_normalized_with_harmony(tmp_path: Path) -> None:
-    # abc2xml can insert an empty leading measure around malformed/liberal input
-    # while stranding harmony in that phantom measure. The comparator should
-    # align the real note-bearing measures and remap that harmony to the first
-    # retained measure instead of reporting a positional cascade.
+def test_dropped_csv_files_are_excluded_and_counted(tmp_path: Path) -> None:
+    # Files adjudicated as non-croma-bugs are listed in dropped.csv and removed
+    # from the comparison entirely, with the count reported so the denominator is
+    # never silently shrunk.
     paths = FixturePaths.create(tmp_path)
-    write_result_set(paths, ["phantom_lead"])
-    write_musicxml_measures(
-        paths.croma_xml("phantom_lead"),
-        [
-            measure([harmony("A"), note(step="C")], number="1"),
-            measure([harmony("C#m"), note(step="D")], number="2"),
-        ],
-    )
-    write_musicxml_measures(
-        paths.reference_xml("phantom_lead"),
-        [
-            measure([harmony("A")], number="1"),
-            measure([note(step="C")], number="2"),
-            measure([harmony("C#m"), note(step="D")], number="3"),
-        ],
+    write_result_set(paths, ["keep_me", "drop_me"])
+    write_musicxml(paths.croma_xml("keep_me"), [note(step="C")])
+    write_musicxml(paths.reference_xml("keep_me"), [note(step="C")])
+    write_musicxml(paths.croma_xml("drop_me"), [note(step="C")])
+    write_musicxml(paths.reference_xml("drop_me"), [note(step="D")])
+    dropped = paths.output / "dropped.csv"
+    dropped.write_text("filename,subcategory\ndrop_me.abc,equivalence\n", encoding="utf-8")
+
+    report = run_compare(
+        paths, jobs=1, output_name="excl", extra=["--dropped-csv", str(dropped)]
     )
 
-    report = run_compare(paths, jobs=1, output_name="phantom-lead")
+    assert report["dropped_files"] == 1
+    assert report["files_selected"] == 1
+    assert report["structural_mismatches"] == 0
 
-    assert report["mismatch_category_counts"] == {}
-    assert report["structural_matches"] == 1
+
+def test_whitelist_csv_lists_only_raw_matches(tmp_path: Path) -> None:
+    # The whitelist is every file whose raw structure matches the reference with
+    # no normalization. It is the regression baseline and needs no investigation.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["good", "bad"])
+    write_musicxml(paths.croma_xml("good"), [note(step="C")])
+    write_musicxml(paths.reference_xml("good"), [note(step="C")])
+    write_musicxml(paths.croma_xml("bad"), [note(step="C")])
+    write_musicxml(paths.reference_xml("bad"), [note(step="D")])
+    whitelist = paths.output / "whitelist.csv"
+
+    report = run_compare(
+        paths, jobs=1, output_name="wl", extra=["--whitelist-csv", str(whitelist)]
+    )
+
+    names = {row["filename"] for row in read_csv(whitelist)}
+    assert names == {"good.abc"}
+    assert "bad.abc" not in names
+    assert report["whitelist_files"] == 1
 
 
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
@@ -860,17 +749,15 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     ]
 
 
+def read_csv(path: Path) -> list[dict[str, str]]:
+    import csv
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
 def write_malformed(path: Path) -> None:
     path.write_text("<score-partwise><part>", encoding="utf-8")
-
-
-def tempo_words_with_sound(text: str, tempo: str) -> str:
-    return f"""
-      <direction placement="above">
-        <direction-type><words>{text}</words></direction-type>
-        <sound tempo="{tempo}"/>
-      </direction>
-"""
 
 
 def write_musicxml(path: Path, notes: list[str], *, measure_number: str = "1") -> None:
@@ -966,22 +853,6 @@ def note(
 """
 
 
-def rest(
-    *,
-    duration: int = 4,
-    type_: str = "quarter",
-    measure: str | None = None,
-) -> str:
-    measure_attr = f' measure="{measure}"' if measure is not None else ""
-    return f"""
-      <note>
-        <rest{measure_attr}/>
-        <duration>{duration}</duration>
-        <type>{type_}</type>
-      </note>
-"""
-
-
 def barline(*, type_: str, repeat_direction: str | None = None) -> str:
     repeat_xml = (
         f'<repeat direction="{repeat_direction}"/>'
@@ -996,21 +867,3 @@ def barline(*, type_: str, repeat_direction: str | None = None) -> str:
 """
 
 
-def tuplet_note(*, tuplet_type: str | None) -> str:
-    tuplet_xml = (
-        f"<notations><tuplet type=\"{tuplet_type}\"/></notations>"
-        if tuplet_type is not None
-        else ""
-    )
-    return f"""
-      <note>
-        <pitch><step>C</step><octave>4</octave></pitch>
-        <duration>2</duration>
-        <type>eighth</type>
-        <time-modification>
-          <actual-notes>3</actual-notes>
-          <normal-notes>2</normal-notes>
-        </time-modification>
-        {tuplet_xml}
-      </note>
-"""
