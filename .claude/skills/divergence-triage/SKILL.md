@@ -28,18 +28,35 @@ doubt is **keep**.
 
 1. **Investigate.** Dispatch the `abc-divergence-investigator` subagent (Agent
    tool, `subagent_type: "abc-divergence-investigator"`) with the `filename` and
-   the `category`. It returns the structured "real figures" verdict. Do **not**
-   investigate inline — use the subagent so the reasoning is isolated and the
-   spec-KB context is fresh.
+   the `category`. Do **not** investigate inline — use the subagent so the
+   reasoning is isolated and the spec-KB context is fresh.
 
-2. **Decide from the verdict's `AT FAULT` + `CONFIDENCE`:**
+   It returns **exactly one delimited verdict block** — parse it mechanically:
 
-   | Verdict | Action |
-   |---|---|
-   | **croma** | Real croma bug. **Keep** the file in the comparison. Record it as a fix candidate (filename, the construct, the spec cite). Do not drop. |
-   | **comparator** | The comparator reported false figures. That is a real bug — fix the comparator (distinct from the normalizations we removed). Add a no-happy-path test. |
-   | **abc2xml / music21 / none (equivalence)**, confidence high/medium | Append to `dropped.csv` with the subcategory + justification + spec cite. |
-   | **undetermined**, or confidence **low** | **Keep** + flag for a human look. Never drop on doubt. |
+   ```
+   === VERDICT ===
+   file: ...
+   category: ...
+   at_fault: croma | abc2xml | music21 | comparator | equivalence | undetermined
+   confidence: high | medium | low
+   subcategory: <drop-class token, or - when at_fault is croma>
+   construct: ...
+   spec_correct: ...
+   spec_cite: ...
+   croma: ... / abc2xml: ... / music21: ... / comparator: ...
+   reasoning: ...
+   === END VERDICT ===
+   ```
+
+2. **Decide from `at_fault` + `confidence`:**
+
+   | `at_fault` | `confidence` | Action |
+   |---|---|---|
+   | **croma** | any | Real croma bug. **Keep** in the comparison. Record a fix candidate: `file`, `construct`, `spec_cite`. Do not drop. |
+   | **comparator** | any | The comparator reported false figures — a real bug. Fix the comparator + add a no-happy-path test. **Keep** the file. |
+   | **abc2xml** / **music21** / **equivalence** | high or medium | Append to `dropped.csv` using the block's `subcategory`, `spec_cite`, and a one-line `justification`. |
+   | any | **low** | **Keep** + flag for a human. Never drop on doubt. |
+   | **undetermined** | any | **Keep** + flag for a human. |
 
 3. **Adversarial check before any drop** (cheap insurance against false drops):
    for a file about to be dropped, dispatch a *second* investigator framed to
@@ -49,17 +66,28 @@ doubt is **keep**.
 
 ## Recording a drop
 
-Append one row to `docs/comparison/abc2xml-divergences/dropped.csv`:
+Append one row to `docs/comparison/abc2xml-divergences/dropped.csv`, filling each
+column straight from the verdict block:
 
 ```
 filename,category,subcategory,instrument_at_fault,justification,spec_cite,confidence,investigated_at
 ```
 
-`subcategory` mirrors the divergence catalog classes (e.g.
-`abc2xml-phantom-measure`, `abc2xml-drops-music`, `music21-reinterpretation`,
-`equivalence`, `comparator-false-positive`). `justification` is a one-line,
-spec-cited reason. Stamp `investigated_at` with today's date (passed in — do not
-invent timestamps).
+| Column | From the verdict block |
+|---|---|
+| `filename` | `file` |
+| `category` | `category` |
+| `subcategory` | `subcategory` |
+| `instrument_at_fault` | `at_fault` |
+| `justification` | `reasoning`, condensed to one line |
+| `spec_cite` | `spec_cite` |
+| `confidence` | `confidence` |
+| `investigated_at` | today's date (passed in — do not invent timestamps) |
+
+Quote any field containing a comma. `subcategory` mirrors the divergence-catalog
+classes (`abc2xml-phantom-measure`, `abc2xml-drops-music`, `abc2xml-barline-style`,
+`abc2xml-multirest`, `music21-reinterpretation`, `equivalence`,
+`comparator-false-positive`).
 
 ## After a batch — transparency, never silent
 
