@@ -657,6 +657,27 @@ impl<'line> MusicLineParser<'line> {
             return;
         }
 
+        // Error recovery: a misplaced length run (`/` and/or digits) can sit
+        // between an accidental and its note (e.g. `^/c`) — malformed, but the
+        // accidental's intent is unambiguous (cf. parallel well-formed `^c` bars).
+        // Flag the misplaced length and keep it out of the note's duration (it is
+        // not applied as a length), but still attach the accidental to the
+        // following note instead of dropping it. Pending attachments are left
+        // intact so `parse_note` can claim them.
+        if let Some(run_end) = self.misplaced_length_run_before_note() {
+            let span = self.span(self.index, run_end);
+            self.index = run_end;
+            self.push_token(MusicTokenKind::Malformed, span);
+            self.push_malformed(
+                span,
+                MalformedSyntaxKind::StandaloneLength,
+                "abc.music.malformed_length",
+                "Length suffixes must follow a note or rest",
+            );
+            self.parse_note(Some(accidental));
+            return;
+        }
+
         self.flush_pending_attachments();
         self.push_malformed(
             accidental.span,
@@ -664,6 +685,25 @@ impl<'line> MusicLineParser<'line> {
             "abc.music.malformed_accidental",
             "Accidentals must appear immediately before a note",
         );
+    }
+
+    /// If the characters immediately after the cursor form a non-empty run of
+    /// length-suffix characters (`/` and digits) that is then followed by a note
+    /// letter, return the end index of that run. Used to recover an accidental
+    /// whose note is separated from it by a misplaced length (e.g. `^/c`).
+    /// Peek-only; does not advance the cursor.
+    fn misplaced_length_run_before_note(&self) -> Option<usize> {
+        let mut index = self.index;
+        for ch in self.text[self.index..].chars() {
+            match ch {
+                '/' | '0'..='9' => index += ch.len_utf8(),
+                ch if is_note_letter(ch) => {
+                    return (index > self.index).then_some(index);
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     pub(super) fn parse_spacer(&mut self) {
