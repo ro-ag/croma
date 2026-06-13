@@ -273,6 +273,7 @@ def main() -> int:
     per_file_summary_rows_written = 0
     completed_inputs = 0
     tasks = []
+    whitelist_filenames: list[str] = []
 
     with (
         optional_jsonl_handle(facts_jsonl) as facts_handle,
@@ -360,6 +361,8 @@ def main() -> int:
             mismatch_rows = int(task_result["mismatch_rows"])
             if mismatch_rows:
                 file_mismatch_counts[filename] += mismatch_rows
+            else:
+                whitelist_filenames.append(filename)
             for category in task_result["file_mismatch_categories"]:
                 affected_file_counts[str(category)] += 1
                 file_categories[filename].add(str(category))
@@ -380,6 +383,8 @@ def main() -> int:
 
             completed_inputs += 1
             print_progress(args, completed_inputs, len(selected_results))
+
+    write_whitelist(args.whitelist_csv, whitelist_filenames)
 
     per_component_summary_rows = build_per_component_summary_rows(
         component_category_counts,
@@ -430,6 +435,8 @@ def main() -> int:
         "polars_threads_per_worker": polars_threads_per_worker,
         "files_discovered": len(all_results),
         "files_selected": len(selected_results),
+        "dropped_files": getattr(args, "_dropped_files", 0),
+        "whitelist_files": len(whitelist_filenames),
         "files_attempted": counters["files_attempted"],
         "croma_export_successes": counters["croma_export_successes"],
         "croma_export_failures": counters["croma_export_failures"],
@@ -550,6 +557,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-file-summary-parquet", type=Path)
     parser.add_argument("--per-component-summary-jsonl", type=Path)
     parser.add_argument("--per-component-summary-parquet", type=Path)
+    parser.add_argument(
+        "--dropped-csv",
+        type=Path,
+        default=None,
+        help=(
+            "CSV of files adjudicated as non-croma-bugs (a `filename` column). "
+            "Listed files are excluded from the comparison."
+        ),
+    )
+    parser.add_argument(
+        "--whitelist-csv",
+        type=Path,
+        default=None,
+        help="Write the raw-match filenames (the whitelist / regression baseline) here.",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--limit-files", type=int)
     parser.add_argument(
@@ -690,6 +712,33 @@ def load_results(path: Path) -> list[dict[str, Any]]:
     return results
 
 
+def load_dropped_filenames(path: Path | None) -> set[str]:
+    if path is None or not path.exists():
+        return set()
+    import csv
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        return {
+            row["filename"].strip()
+            for row in csv.DictReader(handle)
+            if (row.get("filename") or "").strip()
+        }
+
+
+def write_whitelist(path: Path | None, filenames: list[str]) -> int:
+    if path is None:
+        return 0
+    import csv
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["filename"])
+        for filename in sorted(filenames):
+            writer.writerow([filename])
+    return len(filenames)
+
+
 def select_results(results: list[dict[str, Any]], args: argparse.Namespace) -> list[dict[str, Any]]:
     selected = results
     only_files = load_only_files(args.only_files)
@@ -699,6 +748,17 @@ def select_results(results: list[dict[str, Any]], args: argparse.Namespace) -> l
             for item in selected
             if result_matches_only_files(item, only_files)
         ]
+    dropped = load_dropped_filenames(getattr(args, "dropped_csv", None))
+    if dropped:
+        before = len(selected)
+        selected = [
+            item
+            for item in selected
+            if Path(relative_path_for(item) or "").name not in dropped
+        ]
+        args._dropped_files = before - len(selected)
+    else:
+        args._dropped_files = 0
     if args.limit_files is not None:
         if args.limit_files < 0:
             raise SystemExit("--limit-files must be non-negative")

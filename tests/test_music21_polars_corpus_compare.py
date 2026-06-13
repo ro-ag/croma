@@ -166,6 +166,49 @@ def test_repeat_barline_direction_difference_is_still_flagged(tmp_path: Path) ->
     assert report["mismatch_category_counts"].get("barline") == 1
 
 
+def test_dropped_csv_files_are_excluded_and_counted(tmp_path: Path) -> None:
+    # Files adjudicated as non-croma-bugs are listed in dropped.csv and removed
+    # from the comparison entirely, with the count reported so the denominator is
+    # never silently shrunk.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["keep_me", "drop_me"])
+    write_musicxml(paths.croma_xml("keep_me"), [note(step="C")])
+    write_musicxml(paths.reference_xml("keep_me"), [note(step="C")])
+    write_musicxml(paths.croma_xml("drop_me"), [note(step="C")])
+    write_musicxml(paths.reference_xml("drop_me"), [note(step="D")])
+    dropped = paths.output / "dropped.csv"
+    dropped.write_text("filename,subcategory\ndrop_me.abc,equivalence\n", encoding="utf-8")
+
+    report = run_compare(
+        paths, jobs=1, output_name="excl", extra=["--dropped-csv", str(dropped)]
+    )
+
+    assert report["dropped_files"] == 1
+    assert report["files_selected"] == 1
+    assert report["structural_mismatches"] == 0
+
+
+def test_whitelist_csv_lists_only_raw_matches(tmp_path: Path) -> None:
+    # The whitelist is every file whose raw structure matches the reference with
+    # no normalization. It is the regression baseline and needs no investigation.
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["good", "bad"])
+    write_musicxml(paths.croma_xml("good"), [note(step="C")])
+    write_musicxml(paths.reference_xml("good"), [note(step="C")])
+    write_musicxml(paths.croma_xml("bad"), [note(step="C")])
+    write_musicxml(paths.reference_xml("bad"), [note(step="D")])
+    whitelist = paths.output / "whitelist.csv"
+
+    report = run_compare(
+        paths, jobs=1, output_name="wl", extra=["--whitelist-csv", str(whitelist)]
+    )
+
+    names = {row["filename"] for row in read_csv(whitelist)}
+    assert names == {"good.abc"}
+    assert "bad.abc" not in names
+    assert report["whitelist_files"] == 1
+
+
 def test_failure_paths_and_missing_files_are_reported(tmp_path: Path) -> None:
     paths = FixturePaths.create(tmp_path)
     write_result_set(paths, ["bad_croma", "bad_reference", "missing_croma"])
@@ -704,6 +747,13 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    import csv
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def write_malformed(path: Path) -> None:
