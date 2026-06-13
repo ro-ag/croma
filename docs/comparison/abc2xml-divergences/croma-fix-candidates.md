@@ -54,7 +54,27 @@ correct — the bug was purely the parser dropping accidentals.)
   top of the explicit list; per §3.1.14 those bare F/C are natural, so croma is
   correct and the files are dropped as `abc2xml-accidental` (residual abc2xml bug).
 
+### Bug 3 — illegal post-barline tie `a|-a` — FIXED 2026-06-13
+
+A tie `-` placed immediately **after** a barline (`d4|-{c}d2`) was bound backward
+across the barline to the pre-barline note, fabricating an illegal cross-bar tie.
+ABC 2.1 §4.11: a tie must be adjacent to the **first** note of the pair — the legal
+cross-bar form is `a-|a` (`-` before the bar); `abc|-cba` (`-` after the bar) is
+"not legal".
+
+- **Spec:** ABC 2.1 §4.11 (KB raw line 1048) — "The tie symbol must always be
+  adjacent to the first note of the pair ... `abc|-cba` ... not legal".
+- **Fix:** `apply_tie` (in `crates/croma-core/src/lower/tie.rs`) now rejects a tie
+  marker when no timed note exists in the current measure
+  (`broken_left_available` is false — the same §4.4 anti-cross-bar state used for
+  broken rhythm, reset at every barline but surviving line breaks), emitting
+  `unmatched_tie` instead of binding backward. Legal `a-|a` cross-bar and
+  cross-line ties are unaffected. Test in `crates/croma-core/src/lower/mod_tests.rs`.
+- **Graduated:** `tune_008162`, `tune_008163`, `tune_008166`, `tune_008168`,
+  `tune_011106`, `tune_014796`.
+
 ## Open
 
-None from the 2026-06-13 accidental-category triage — both surfaced croma bugs are
-fixed. Continue with the next content category (tie / duration) to surface more.
+None from the 2026-06-13 accidental + tie triage — all three surfaced croma bugs
+(`^/c`, `K:exp`, post-barline tie) are fixed. Continue with the next content
+category (duration) to surface more.

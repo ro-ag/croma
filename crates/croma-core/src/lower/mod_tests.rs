@@ -2983,6 +2983,26 @@ fn unmatched_tie_preserves_unmerged_note_events() {
 }
 
 #[test]
+fn post_barline_tie_marker_does_not_bind_across_the_bar() {
+    // `C |- C` places the tie `-` AFTER the barline — the illegal `abc|-cba`
+    // form (ABC 2.1 §4.11; the legal cross-bar tie is `a-|a` with `-` before the
+    // bar). croma must not bind it backward across the barline: it emits no tie
+    // and warns, rather than fabricating a cross-bar tie.
+    let source = "X:1\nM:2/4\nL:1/4\nK:C\nC |- C D |\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert_eq!(
+        diagnostic_span(source, &diagnostics, "abc.music.unmatched_tie"),
+        "-"
+    );
+    let notes = semantic_note_events(&tune);
+    assert!(
+        notes.iter().all(|event| event.attachments.ties.is_empty()),
+        "a post-barline tie marker must not produce any tie attachment"
+    );
+}
+
+#[test]
 fn ties_resolve_across_barlines_without_changing_measure_timing() {
     let source = "X:1\nM:2/4\nL:1/4\nK:C\nC- | C D |\n";
     let (tune, diagnostics) = tune_for(source);

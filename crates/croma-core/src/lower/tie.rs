@@ -17,6 +17,18 @@ impl LoweringState {
             self.diagnostics.push(unmatched_tie_warning(tie.span));
             return;
         };
+        // A tie `-` must be adjacent to the FIRST note of the pair (ABC 2.1
+        // §4.11): the legal cross-bar form is `a-|a`, whereas `a|-a` (a `-`
+        // immediately after a barline) is "not legal". `broken_left_available`
+        // is true only while a timed note exists in the *current* measure — it
+        // is reset at every barline (like the broken-rhythm left operand, §4.4)
+        // but survives line breaks — so when it is false the most recent note
+        // lies across a barline and binding the tie to it would be the illegal
+        // post-barline form. Reject it (no backward cross-bar tie) instead.
+        if !self.broken_left_available {
+            self.diagnostics.push(unmatched_tie_warning(tie.span));
+            return;
+        }
         let indices: Vec<usize> = group
             .iter()
             .copied()
