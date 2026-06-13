@@ -126,6 +126,48 @@ fn recovers_dangling_accidentals_without_leaking_into_later_notes() {
 }
 
 #[test]
+fn recovers_accidental_separated_from_note_by_misplaced_length() {
+    // `^/c` is malformed: the `/` length operator sits between the accidental and
+    // its note. The sharp's intent is unambiguous (cf. the abc2xml baseline and
+    // parallel well-formed `^c` bars), so croma must still apply the sharp to the
+    // following note rather than dropping it. The misplaced `/` is still flagged
+    // as a length error and is NOT applied to the note's duration.
+    let document_report = parse_document("X:1\nL:1/4\nK:C\n^/c c\n", ParseOptions::default());
+
+    assert_eq!(
+        count_diagnostics(&document_report.diagnostics, "abc.music.malformed_length"),
+        1
+    );
+    assert_eq!(
+        count_diagnostics(
+            &document_report.diagnostics,
+            "abc.music.malformed_accidental"
+        ),
+        0
+    );
+
+    let tune_report = parse_tune_report_from_document(&document_report.value);
+    let events = tune_report.value.expect("expected tune").events;
+    assert!(matches!(
+        events.as_slice(),
+        [
+            Event::Note {
+                step: 'C',
+                accidental: Some(Accidental::Sharp),
+                duration: sharp_duration,
+                ..
+            },
+            Event::Note {
+                step: 'C',
+                accidental: None,
+                duration: plain_duration,
+                ..
+            },
+        ] if sharp_duration == plain_duration
+    ));
+}
+
+#[test]
 fn lowers_fractional_lengths_and_slash_shorthand() {
     let document = parse_document(
         "X:1\nL:1/8\nK:C\nA2 A/ A// A3/2 A/4\n",
