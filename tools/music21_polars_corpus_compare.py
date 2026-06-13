@@ -1282,7 +1282,7 @@ def normalized_fact_rows(
                 builder.add(
                     "barline",
                     side_name,
-                    barline,
+                    comparable_barline(barline),
                     **measure_base,
                     alignment_index=0 if side_name == "left" else 1,
                 )
@@ -1325,6 +1325,20 @@ def is_playback_only_metronome_text(text: Any) -> bool:
         and text.startswith("<music21.tempo.MetronomeMark ")
         and text.endswith(" (playback only)>")
     )
+
+
+def comparable_barline(barline: Any) -> Any:
+    if not isinstance(barline, dict):
+        return barline
+
+    direction = barline.get("direction")
+    times = barline.get("times")
+    if direction is None and times is None:
+        return None
+    return {
+        "direction": direction,
+        "times": times,
+    }
 
 
 def add_event_rows(
