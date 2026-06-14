@@ -261,6 +261,13 @@ pub struct ChordMemberSyntax {
     /// A tie marker (`-`) attached directly to this chord member, e.g. the `A`
     /// in `[DA-]`. ABC 2.1 §4.11 allows ties into, out of, and between chords.
     pub tie: Option<TieSyntax>,
+    /// Slur-open markers written immediately before this member inside the chord
+    /// (`[(C(E]` → `(` on C and on E). ABC 2.1 §4.11: slurs may be used into, out
+    /// of and between chords, so each binds to its own member, not the chord head.
+    pub slur_starts: Vec<SlurSyntax>,
+    /// Slur-close markers written immediately after this member inside the chord
+    /// (`[C)E)]` → `)` on C and on E).
+    pub slur_ends: Vec<SlurSyntax>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

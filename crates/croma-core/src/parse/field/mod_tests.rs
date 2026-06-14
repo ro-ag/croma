@@ -72,6 +72,26 @@ fn parses_key_modes_and_explicit_accidentals() {
 }
 
 #[test]
+fn key_tonic_recovers_from_trailing_comma_junk() {
+    // `K:Bb, F` — a stray comma directly after a valid tonic must not reject the
+    // whole field. The leading tonic Bb (2 flats) is recovered and the trailing
+    // `, F` ignored (ABC 2.1 §3.1.14); `K:Bb F` already parses, so the attached
+    // comma is the only trigger. (tune_004340 mid-tune key change)
+    let report = parse_document("X:1\nK:Bb, F\nC\n", ParseOptions::default());
+    let tune = report.value.fields.tune(0).expect("expected tune fields");
+    let key = tune.header.key.as_ref().expect("expected key");
+
+    assert_eq!(
+        key.value.tonic,
+        Some(KeyTonic {
+            step: 'B',
+            accidental: Some(KeyTonicAccidental::Flat),
+        })
+    );
+    assert_eq!(key.value.mode, KeyMode::Major);
+}
+
+#[test]
 fn parses_explicit_accidental_list_written_without_spaces() {
     // `K:D exp _B^g` — the explicit (exp) accidental list is written space-less,
     // so it arrives as a single token. Every accidental in the token must be

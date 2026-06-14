@@ -621,6 +621,68 @@ fn grace_group_internal_slur_tokens_do_not_warn() {
 }
 
 #[test]
+fn chord_internal_slurs_bind_to_their_own_member() {
+    // ABC 2.1 §4.11: slurs may be used "into, out of and between chords". In
+    // `[(C(E] [C)E)]` each chord-internal `(`/`)` binds to the member it is
+    // adjacent to — starts on C and E of chord 1, stops on C and E of chord 2.
+    // croma collapsed all starts onto the chord head and all stops onto the tail
+    // (tune_007779, tune_011866).
+    let (tune, _diagnostics) = tune_for("X:1\nL:1/4\nK:C\n[(C(E] [C)E)]\n");
+    let chords: Vec<&crate::model::ChordEvent> = tune.score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some(chord),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(chords.len(), 2, "two chords");
+    let role_of = |chord: &crate::model::ChordEvent, member: usize| {
+        let slurs = &chord.members[member].attachments.slurs;
+        assert_eq!(slurs.len(), 1, "each chord member carries exactly one slur");
+        slurs[0].role
+    };
+    assert_eq!(role_of(chords[0], 0), SlurRole::Start, "chord1 C start");
+    assert_eq!(role_of(chords[0], 1), SlurRole::Start, "chord1 E start");
+    assert_eq!(role_of(chords[1], 0), SlurRole::Stop, "chord2 C stop");
+    assert_eq!(role_of(chords[1], 1), SlurRole::Stop, "chord2 E stop");
+}
+
+#[test]
+fn slur_start_anchors_on_a_following_rest() {
+    // `(z2 G2)` — the slur `(` immediately precedes the rest `z2`, so per ABC 2.1
+    // §4.11/§4.20 the slur starts ON the rest, not the next note. croma was
+    // relocating the start onto the following pitched note (tune_008749).
+    let (tune, diagnostics) = tune_for("X:1\nL:1/8\nK:C\n(z2 G2)\n");
+    assert_eq!(
+        count_diagnostics(&diagnostics, "abc.music.unmatched_slur"),
+        0,
+        "balanced slur over a rest should not warn: {diagnostics:?}"
+    );
+    let events = &tune.score.parts[0].voices[0].events;
+    let rest = events
+        .iter()
+        .find(|event| matches!(event.kind, TimedEventKind::Rest(_)))
+        .expect("expected a rest event");
+    assert_eq!(
+        rest.attachments.slurs.len(),
+        1,
+        "slur start should bind to the rest, not skip to the next note"
+    );
+    assert_eq!(rest.attachments.slurs[0].role, SlurRole::Start);
+    let note = events
+        .iter()
+        .find(|event| matches!(event.kind, TimedEventKind::Note(_)))
+        .expect("expected a note event");
+    assert_eq!(note.attachments.slurs.len(), 1);
+    assert_eq!(note.attachments.slurs[0].role, SlurRole::Stop);
+    assert_eq!(
+        rest.attachments.slurs[0].pair_id,
+        note.attachments.slurs[0].pair_id
+    );
+}
+
+#[test]
 fn malformed_grace_group_internal_slurs_warn_and_skip_attachments() {
     for (source, code) in [
         ("X:1\nL:1/8\nK:C\n{(fg}a|]\n", "abc.music.unclosed_slur"),
