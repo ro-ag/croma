@@ -555,3 +555,133 @@ is absorbed, leaving m10 right = `regular`; `tune_004475` — the `|:` forward-r
 late (m11 left instead of m10 left). 53=53 / 66=66 notes, no music dropped. Real croma bug, but the
 fix means re-splitting a fused barline run (touching `barline_kind` tokenization + repeat/ending
 attachment) → **barline cluster**, deferred to the focused TDD+regression session with Bugs 7/8/13/14/19/22.
+
+## Open — barline triage round 2 (2026-06-14): more deferred-cluster croma bugs (NOT fixed)
+
+Second per-file investigator sweep of the single-category `barline` worklist (all verdicts
+high confidence; ground-truth note counts matched on every file → no music dropped). Every
+croma fault below falls into the **already-deferred barline cluster** (fused-run tokenization /
+repeat placement / `| |` whitespace / note-less-measure emission gate), so all are **kept,
+recorded, not drive-by-fixed** per the cluster's TDD+regression requirement. abc2xml-at-fault
+files were dropped (`abc2xml-barline-style`).
+
+### Bug 25 — fused `|]:` run drops the `|]` thin-thick closer (6 files) — DEFERRED (Bug 24 family)
+
+`|]:` (a `|]` thin-thick double bar fused with a following `:` repeat-start — the classic
+tune-A→tune-B transition `... |]:[K:...]`) is mis-tokenized exactly like Bug 24's `]||:`:
+`barline_kind` (`parse/barline.rs:245`, `raw.contains(']') && has_repeat_start(raw)`) classifies
+the whole run as one `RepeatStart`, emitting only the forward repeat on the next measure's left and
+**dropping the `|]` light-heavy right closer** entirely (croma right=null). Isolation probes confirm
+`|]` alone → `light-heavy` correctly, only `|]:` drops it; no warning. abc2xml is spec-correct
+(`|]`→light-heavy, no reversal).
+
+- **Spec:** §4.8 KB raw line 984 (`|]` thin-thick double bar) + liberal recognition line 1001.
+- **Files (kept):** `tune_009754`, `tune_009394`, `tune_009381`, `tune_012513`, `tune_012511`,
+  `tune_009392`. High graduation value — one `barline_kind` re-split clears all six.
+- **Fix:** same as Bug 24 — split the fused run so `|]` closes the current measure before the
+  repeat-start opens the next. Belongs in the focused barline session.
+
+### Bug 26 — `|:` forward-repeat placed one measure late after a line/inline-field seam — DEFERRED (Bug 24 family)
+
+When `|:` opens a body line that follows a line ending in a closing/thick bar (`]|`) or a standalone
+inline-field line (`[K:Em]`, `K:Ddor`), croma leaves the first real measure barline-less and defers
+the `heavy-light` forward repeat to the **next** measure (one too late, no compensating barline) —
+the same symptom as Bug 24's `tune_004475`.
+
+- **Spec:** §4.8 KB raw line 987 (`|:` start of repeated section — opens the measure it precedes).
+- **Files (kept):** `tune_007014` (`]||:` split across a plain line break), `tune_009389` (`|:`
+  after a `[K:Em]` line), `tune_004928` (`|:` after `...A4]|` + `K:Ddor` line). 50–173 notes, all
+  1:1 measure-aligned, no music dropped.
+
+### Bug 27 — `| |` same-line whitespace double bar dropped — DEFERRED (Bug 9/18 family)
+
+Bug 18 fixed the `\`-continuation seam (`...|\` + `|` → `light-light`) but the merge in
+`parse/music.rs:180-219` is **gated to the backslash seam**, so a same-line `| |` (bar–space–bar)
+still falls through and croma emits no right barline. abc2xml renders `light-light` (matching croma's
+own Bug-18 convention that `| |` ≡ `||`).
+
+- **Spec:** §4.8 KB raw line 985 (`||` thin-thin double) + §4.9 (spaces around bar tokens tolerated).
+- **Files (kept):** `tune_014544`, `tune_014545`. Same whitespace-significance root as Bug 9; extend
+  the Bug-18 merge to the same-line case (regression-test the `| [1` / empty-measure cases).
+
+### Bug 28 — `[|]` invisible bar dropped on a note-less EMPTY measure (multi-voice) — DEFERRED (Bug 7 family)
+
+Bug 7 was resolved for *annotation-only* measures, but a note-less **empty** measure in a multi-voice
+tune (`[V:1]  [|]`) still drops the `[|]` invisible bar: croma emits an empty `<measure>` with no
+`<barline>` despite logging `barline_policy: exported as none` — the emission gate still requires a
+real note event. (abc2xml is also wrong here, rendering `[|]` as `light-heavy`/final, but that does
+not clear croma.)
+
+- **Spec:** §4.8 KB raw line 999 (`[|]` invisible bar line → MusicXML `bar-style none`).
+- **File (kept):** `tune_006759` (429=429 notes, 29=29 measures). Same emission-gate root as Bug 7/13.
+
+### Bug 29 — bare `:` / `:[2` repeat-end mis-tokenized (direction inversion or drop) — DEFERRED (barline-tokenization cluster)
+
+croma classifies a bare `:` repeat-end (no leading `|`) as a forward `RepeatStart`, or drops it, instead
+of a backward repeat-end:
+
+- `tune_013149` (`:[2` first-ending terminator): the `:` before `[2` is tokenized `kind: RepeatStart`
+  (tree dump), emitting heavy-light+forward where §4.9 line 1021 / §4.8 line 988 require a **backward**
+  repeat — producing a structurally impossible 4-forward / 0-backward tune. **Spec-unambiguous and clean,
+  but** (a) same `parse_colon`/`barline_kind` subsystem the cluster defers to the focused TDD+regression
+  session, and (b) abc2xml is also wrong here (renders `:` as `dotted`), so a croma fix does **not**
+  graduate the file (it would flip to abc2xml-at-fault and drop) — zero match-rate gain against real
+  whitelist-regression risk, hence deferred not drive-by-fixed.
+- `tune_003603` (two mid-line bare `:` dots): croma promotes the first to a forward repeat and drops the
+  second's style, handling identical tokens inconsistently; abc2xml renders both as `dotted` (spec-correct
+  per §4.8 line 997/1001).
+
+Same `parse_colon`/`barline_kind` subsystem as Bug 14 (`:]`, fixed) and Bugs 24/25 (fused runs) → focused session.
+
+### Wave-3 additions to the round-2 bugs
+
+- **Bug 25** (`|]:` fused-run) now **7 files**: + `tune_009382`.
+- **Bug 26** (`|:`/`:|` misplaced/dropped at a line/inline-field seam) + `tune_010091`, `tune_011411`
+  (the latter: a bare `:|` repeat-end dropped on a note-less `K:D` key-change measure, with the 2nd ending
+  left unterminated — runs m34→m43).
+- **Bug 27** (`| |` same-line whitespace double bar) + `tune_014559`.
+
+### Undetermined `| |` (spec genuinely silent) — KEEP, flag for human
+
+`tune_013523`, `tune_006454`: recurring space-separated `| |` where abc2xml emits `light-light` and croma a
+plain bar. §4.8/§4.9 define **no** style for space-separated `| |` (only contiguous sequences), so neither
+side provably violates the spec; investigators returned `undetermined`/low (note counts and alignment
+intact: 210=210, 430=430). Same family as Bug 27 but not clearable either way — an explicit human policy
+call (should croma treat `| |` ≡ `||`?). Kept, not dropped.
+
+### Wave-4 additions to the round-2 bugs
+
+- **Bug 27** (`| |` same-line whitespace double bar) + `tune_002876` (high), `tune_002874` (medium — the
+  `| |`≡`||` merge rests on §4.8's "be liberal in recognizing bar lines" clause + idiom, not an explicit rule).
+- **Bug 26 / Bug 7 root** + `tune_000205`: a `:|2` repeat-end split across a line break lands on an empty seam
+  measure; croma's `is_leading_barline` flags it (`source_span.start == barline.span.start`) and `unique_barlines`
+  filters it from BOTH edges → the backward repeat is dropped. This is the **Bug 7 `unique_barlines`
+  leading-barline-filter** root surfacing at a line seam. (abc2xml also wrong — emits forward instead of backward —
+  so the file won't graduate; it flips to abc2xml on a croma fix.)
+
+### Bug 28 expanded — `[|]` on note-less measures: investigators split, KEEP on doubt
+
+The `[|]` (invisible barline, §4.8 KB line 999 → `bar-style none`) on a **note-less / empty** measure produced
+**contradictory investigator verdicts** across files of the identical construct:
+
+- croma-at-fault / high: `tune_006755`, `tune_006759` (croma omits the required `<bar-style>none</bar-style>`).
+- abc2xml-at-fault: `tune_006758` / `tune_006750` (high, "phantom final"), `tune_006753` (medium) — these cleared
+  croma on the premise that its omission "renders identically to invisible."
+
+**Reconciliation (orchestrator):** in MusicXML an **omitted** `<barline>` is NOT equivalent to
+`<bar-style>none</bar-style>` — the boundary renders as a default thin bar — so croma's omission is a real defect
+(the Bug 7/28 emission gate: croma gates barline emission on a real note event and drops the `none` style on empty
+measures). abc2xml is **also** wrong (synthesizes `light-heavy`/final). Both diverge from the spec-correct `none`, so
+**all five are kept** (none dropped), per keep-bias and the asymmetric cost of hiding a croma bug. A spec/human call
+is needed on whether croma's empty-measure omission must emit an explicit `none`. Files: `tune_006755`,
+`tune_006759`, `tune_006758`, `tune_006750`, `tune_006753`.
+
+### Round-2 barline-category triage — final tally (2026-06-14)
+
+39 un-adjudicated single-category `barline` files investigated (one subagent each, all four instruments treated as
+fallible). **12 dropped** as `abc2xml-barline-style` (croma spec-correct: `[|` thick-thin reversal ×5; abc2xml
+double-bar synthesis/demotion near repeats ×4; `[|]` phantom-final ×1 [`tune_006750` — note its sibling empty-`[|]`
+files were kept]; bare-`:` ending truncation ×1; `|]:`-vs-style ×1). **27 kept** as croma fix candidates / undetermined,
+all in the deferred barline-tokenization/emission cluster: Bug 25 `|]:` (7), Bug 26 seam `|:`/`:|` (6), Bug 27 `| |`
+(5), Bug 28 `[|]` note-less (5), Bug 29 bare-`:`/`:[2` (2), undetermined `| |` (2). No drive-by fixes (whole subsystem
+deferred to a focused TDD+regression session).
