@@ -420,8 +420,11 @@ fn parses_liberal_dotted_and_invisible_barlines_with_diagnostics() {
 
 #[test]
 fn trailing_final_barline_after_liberal_boundary_stays_on_previous_measure() {
-    let document = parse_document("X:1\nM:4/4\nL:1/4\nK:C\nCDEF:\n|]\n", ParseOptions::default())
-        .value;
+    let document = parse_document(
+        "X:1\nM:4/4\nL:1/4\nK:C\nCDEF:\n|]\n",
+        ParseOptions::default(),
+    )
+    .value;
     let report = parse_tune_report_from_document(&document);
     let tune = report.value.expect("expected tune");
     let measures = &tune.score.parts[0].voices[0].measures;
