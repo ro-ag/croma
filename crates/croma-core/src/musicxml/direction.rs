@@ -17,7 +17,13 @@ impl<'score> MusicXmlWriter<'score> {
         }
         if let Some(tempo_model) = &self.score.metadata.tempo_model {
             self.write_tempo_direction(tempo_model);
-        } else if let Some(tempo) = &self.score.metadata.tempo {
+        } else if let Some(tempo) = &self.score.metadata.tempo
+            && !tempo.text.trim().is_empty()
+        {
+            // An empty `Q:` field carries neither a numeric tempo nor a quoted
+            // text string (ABC 2.1 §3.1.8), so there is nothing to print —
+            // emitting a content-free <words></words> direction (which abc2xml
+            // does not) would only diverge. Suppress the blank-text case.
             self.write_direction_words(&tempo.text, None, Some("1"), Some(1));
         }
         // Preserved `%%`/`%%MIDI` stylesheet directives are kept on the model
