@@ -2468,6 +2468,31 @@ fn trailing_grace_after_chord_member_trill_does_not_drain_into_member() {
 }
 
 #[test]
+fn pre_barline_grace_after_complete_measure_stays_before_barline() {
+    let source = "X:1\nM:2/4\nL:1/8\nK:D\nD>E FA {G}|FF EF|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+    assert_eq!(notes.len(), 8);
+
+    let final_note_before_bar = notes[3];
+    assert_eq!(final_note_before_bar.measure.number, 1);
+    assert_eq!(
+        final_note_before_bar.attachments.after_grace_groups.len(),
+        1
+    );
+    assert_eq!(
+        final_note_before_bar.attachments.after_grace_groups[0].note_count,
+        1
+    );
+
+    let first_note_after_bar = notes[4];
+    assert_eq!(first_note_after_bar.measure.number, 2);
+    assert!(first_note_after_bar.attachments.grace_groups.is_empty());
+}
+
+#[test]
 fn chord_symbol_before_slur_open_binds_to_first_slurred_note() {
     // `"G7"(DE)`: the chord symbol rides across the slur-open and binds to
     // `D`, which also carries the slur start; `E` carries the slur stop.
