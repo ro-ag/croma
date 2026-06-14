@@ -437,9 +437,18 @@ fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Ve
 }
 
 fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
+    // ABC 2.1 §4.10: "The Nth ending starts with [N and ends with one of ||,
+    // :| |] or [|" — so the thick-thin `[|` (BarlineKind::Initial) closes an
+    // open ending bracket, exactly like ||/|]/:|. Only consulted when an ending
+    // is already open (see the `open.is_some()` guard), so this never closes a
+    // section-opening `[|` that has no ending in flight.
     matches!(
         kind,
-        BarlineKind::Double | BarlineKind::Final | BarlineKind::RepeatEnd | BarlineKind::RepeatBoth
+        BarlineKind::Double
+            | BarlineKind::Final
+            | BarlineKind::RepeatEnd
+            | BarlineKind::RepeatBoth
+            | BarlineKind::Initial
     )
 }
 

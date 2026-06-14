@@ -103,7 +103,7 @@ fn parse_tempo_beat(remainder: &str, unit_note_length: Fraction) -> Option<Tempo
         })
     } else {
         // Bare number: the unit note length is the beat unit.
-        let bpm = parse_u32(trimmed)?;
+        let bpm = parse_bare_tempo_bpm(trimmed)?;
         Some(TempoBeat {
             beat_numerator: unit_note_length.numerator,
             beat_denominator: unit_note_length.denominator,
@@ -114,6 +114,38 @@ fn parse_tempo_beat(remainder: &str, unit_note_length: Fraction) -> Option<Tempo
 
 fn parse_u32(text: &str) -> Option<u32> {
     let value = text.trim().parse::<u32>().ok()?;
+    (value > 0).then_some(value)
+}
+
+/// Parse the bare-number tempo form (ABC 2.1 §10.1, deprecated `Q:120`): the
+/// leading integer is the bpm. Tolerates a trailing decimal tail (`400.`,
+/// `400.0`, `400.5`) and legacy abc2mtex suffix letters (`320s`), matching
+/// abc2xml's lenient acceptance. Rejects fields with internal whitespace or no
+/// leading digit (free text such as `Q:Fast` or `Q:3 dancers`) so they keep
+/// falling through to verbatim words.
+fn parse_bare_tempo_bpm(trimmed: &str) -> Option<u32> {
+    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
+        return None;
+    }
+    let digit_len = trimmed
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .map(char::len_utf8)
+        .sum::<usize>();
+    if digit_len == 0 {
+        return None;
+    }
+    // The remainder after the leading digits must be a benign suffix: a decimal
+    // tail (`.`/`.123`) or purely-alphabetic legacy chars. Anything else (an
+    // operator or a disjoint number) is not a bare tempo.
+    let rest = &trimmed[digit_len..];
+    let benign = rest.is_empty()
+        || rest.chars().all(|c| c == '.' || c.is_ascii_digit())
+        || rest.chars().all(|c| c.is_ascii_alphabetic());
+    if !benign {
+        return None;
+    }
+    let value = trimmed[..digit_len].parse::<u32>().ok()?;
     (value > 0).then_some(value)
 }
 
