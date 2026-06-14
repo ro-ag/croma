@@ -466,7 +466,10 @@ impl MultiVoiceLowering {
     }
 
     fn apply_music_line(&mut self, line: &MusicLine) {
+        let mut previous_item_end = None;
         for item in &line.items {
+            let item_span = item.span();
+            let detached_from_previous = previous_item_end.is_some_and(|end| end < item_span.start);
             match item {
                 MusicItem::Note(note) => {
                     let source_order = self.next_source_order();
@@ -587,6 +590,8 @@ impl MultiVoiceLowering {
                     }
                     self.current_state()
                         .attach_pending_grace_groups_to_previous_note();
+                    self.current_state()
+                        .attach_pending_grace_groups_to_previous_note_if_measure_complete();
                     self.current_state().finish_pending_broken_at_boundary();
                     self.current_state().finish_open_tuplets_at_boundary();
                     self.current_state().reset_measure_accidentals_at_barline();
@@ -618,8 +623,7 @@ impl MultiVoiceLowering {
                     // to the next timed event as a leading grace or to the
                     // previous timed note as an after-grace at a boundary.
                     self.current_state()
-                        .pending_grace_groups
-                        .push(grace.clone());
+                        .push_pending_grace_group(grace.clone(), detached_from_previous);
                 }
                 MusicItem::ChordSymbol(text) => {
                     // Flushed ahead of its note by a barline / line end / other
@@ -644,6 +648,7 @@ impl MultiVoiceLowering {
                 }
                 MusicItem::Unsupported(_) | MusicItem::Malformed(_) => {}
             }
+            previous_item_end = Some(item_span.end);
         }
     }
 
@@ -723,6 +728,7 @@ impl MultiVoiceLowering {
     fn push_implicit_regular_barline(&mut self, span: Span) {
         let voice = self.current_state();
         voice.attach_pending_grace_groups_to_previous_note();
+        voice.attach_pending_grace_groups_to_previous_note_if_measure_complete();
         voice.finish_pending_broken_at_boundary();
         voice.finish_open_tuplets_at_boundary();
         voice.reset_measure_accidentals_at_barline();

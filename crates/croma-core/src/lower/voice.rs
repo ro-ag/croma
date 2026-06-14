@@ -95,7 +95,7 @@ pub(crate) struct LoweringState {
     /// grace still attaches to the note it precedes. If a hard boundary follows
     /// and the current measure already has a previous timed note, the group is
     /// instead resolved as an after-grace/trill termination on that note.
-    pub(crate) pending_grace_groups: Vec<GraceGroupSyntax>,
+    pub(crate) pending_grace_groups: Vec<PendingGraceGroup>,
     /// Quoted chord symbols flushed out of the parser's pending attachments by
     /// an intervening barline (`"F"| c`), line end, or other flush trigger
     /// before their note was parsed. ABC 2.1 §4.18 binds a chord symbol to the
@@ -140,6 +140,12 @@ pub(crate) struct OpenSlur {
 pub(crate) struct PendingGraceSlurStop {
     pub(crate) pair_id: u32,
     pub(crate) marker: SlurSyntax,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingGraceGroup {
+    pub(crate) grace: GraceGroupSyntax,
+    pub(crate) detached_from_previous: bool,
 }
 
 impl LoweringState {
@@ -642,6 +648,40 @@ impl LoweringState {
         false
     }
 
+    pub(crate) fn attach_pending_grace_groups_to_previous_note_if_measure_complete(
+        &mut self,
+    ) -> bool {
+        if self.pending_grace_groups.is_empty()
+            || !self
+                .pending_grace_groups
+                .iter()
+                .all(|group| group.detached_from_previous)
+            || !self.current_measure_has_reached_meter()
+        {
+            return false;
+        }
+        let Some(event_index) = self.previous_timed_note_event_index() else {
+            return false;
+        };
+        let graces = self.take_pending_grace_group_attachments();
+        if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(event_index) {
+            timed.attachments.after_grace_groups.extend(graces);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn push_pending_grace_group(
+        &mut self,
+        grace: GraceGroupSyntax,
+        detached_from_previous: bool,
+    ) {
+        self.pending_grace_groups.push(PendingGraceGroup {
+            grace,
+            detached_from_previous,
+        });
+    }
+
     fn attach_pending_slur_starts(&mut self, group: &[usize]) {
         if self.pending_slur_starts.is_empty() {
             return;
@@ -714,11 +754,27 @@ impl LoweringState {
     }
 
     fn pending_grace_group_between(&self, open_span: Span, close_span: Span) -> bool {
-        self.pending_grace_groups.iter().any(|grace| {
-            grace.span.start > open_span.start
-                && grace.span.end <= close_span.start
-                && grace_contains_note_event(grace)
+        self.pending_grace_groups.iter().any(|group| {
+            group.grace.span.start > open_span.start
+                && group.grace.span.end <= close_span.start
+                && grace_contains_note_event(&group.grace)
         })
+    }
+
+    fn current_measure_has_reached_meter(&self) -> bool {
+        let Some(expected) = self.meter_duration else {
+            return false;
+        };
+        let elapsed = self
+            .lowered
+            .iter()
+            .rev()
+            .take_while(|event| !matches!(event, LoweredEvent::Untimed(Event::Barline { .. })))
+            .fold(Fraction::zero(), |total, event| match event {
+                LoweredEvent::Timed(timed) => total.checked_add(timed.event.duration),
+                _ => total,
+            });
+        !elapsed.less_than(expected)
     }
 
     fn take_pending_grace_group_attachments(&mut self) -> Vec<GraceGroupAttachment> {
@@ -734,9 +790,10 @@ impl LoweringState {
                 .iter()
                 .enumerate()
                 .filter(|(_, grace)| {
-                    grace.span.start > start.marker.span.start && grace_contains_note_event(grace)
+                    grace.grace.span.start > start.marker.span.start
+                        && grace_contains_note_event(&grace.grace)
                 })
-                .min_by_key(|(_, grace)| grace.span.start)
+                .min_by_key(|(_, grace)| grace.grace.span.start)
                 .map(|(index, _)| index)
             {
                 starts_by_group[index].push(start);
@@ -753,7 +810,8 @@ impl LoweringState {
                 .iter()
                 .enumerate()
                 .filter(|(_, grace)| {
-                    grace.span.end <= stop.marker.span.start && grace_contains_note_event(grace)
+                    grace.grace.span.end <= stop.marker.span.start
+                        && grace_contains_note_event(&grace.grace)
                 })
                 .map(|(index, _)| index)
                 .next_back()
@@ -771,7 +829,7 @@ impl LoweringState {
             .zip(starts_by_group)
             .zip(stops_by_group)
         {
-            let mut attachment = grace_group_attachment_model(grace, self);
+            let mut attachment = grace_group_attachment_model(&grace.grace, self);
             for start in starts {
                 attachment.slurs.push(SlurAttachment {
                     pair_id: start.pair_id,
@@ -864,9 +922,9 @@ impl LoweringState {
         self.attach_pending_grace_groups_to_previous_note();
         // Same for a grace group with no following or previous note to decorate
         // (§4.12).
-        for grace in std::mem::take(&mut self.pending_grace_groups) {
+        for group in std::mem::take(&mut self.pending_grace_groups) {
             self.diagnostics
-                .push(dangling_grace_group_warning(grace.span));
+                .push(dangling_grace_group_warning(group.grace.span));
         }
         // And a decoration with no following symbol (§4.14): the dangling
         // text warning covers it (same no-silent-loss policy).
