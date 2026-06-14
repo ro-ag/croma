@@ -209,6 +209,18 @@ def test_whitelist_csv_lists_only_raw_matches(tmp_path: Path) -> None:
     assert report["whitelist_files"] == 1
 
 
+def test_whitelist_csv_uses_lf_line_endings(tmp_path: Path) -> None:
+    paths = FixturePaths.create(tmp_path)
+    write_result_set(paths, ["good"])
+    write_musicxml(paths.croma_xml("good"), [note(step="C")])
+    write_musicxml(paths.reference_xml("good"), [note(step="C")])
+    whitelist = paths.output / "whitelist.csv"
+
+    run_compare(paths, jobs=1, output_name="wl-lf", extra=["--whitelist-csv", str(whitelist)])
+
+    assert whitelist.read_bytes() == b"filename\ngood.abc\n"
+
+
 def test_courtesy_natural_matches_absent_accidental_but_real_alter_still_flagged(
     tmp_path: Path,
 ) -> None:
@@ -917,5 +929,4 @@ def barline(*, type_: str, repeat_direction: str | None = None) -> str:
         {repeat_xml}
       </barline>
 """
-
 

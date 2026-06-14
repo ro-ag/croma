@@ -732,7 +732,7 @@ def write_whitelist(path: Path | None, filenames: list[str]) -> int:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["filename"])
         for filename in sorted(filenames):
             writer.writerow([filename])
