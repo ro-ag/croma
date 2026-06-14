@@ -419,6 +419,25 @@ fn parses_liberal_dotted_and_invisible_barlines_with_diagnostics() {
 }
 
 #[test]
+fn trailing_final_barline_after_liberal_boundary_stays_on_previous_measure() {
+    let document = parse_document("X:1\nM:4/4\nL:1/4\nK:C\nCDEF:\n|]\n", ParseOptions::default())
+        .value;
+    let report = parse_tune_report_from_document(&document);
+    let tune = report.value.expect("expected tune");
+    let measures = &tune.score.parts[0].voices[0].measures;
+
+    assert_eq!(measures.len(), 1);
+    assert!(
+        measures[0]
+            .barlines
+            .iter()
+            .any(|barline| barline.kind == BarlineKind::Final),
+        "explicit final |] after a liberal : boundary must survive: {:?}",
+        measures[0].barlines
+    );
+}
+
+#[test]
 fn unclosed_inline_fields_groups_and_strings_are_recoverable_syntax() {
     let document_report = parse_document(
         "X:1\nK:C\nC [M:3/4\nD {ef\nE \"Am\nF [CE\nG\n",
@@ -3216,6 +3235,19 @@ fn matched_tie_stop_accidental_is_stop_note_only() {
             .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
     );
     assert_eq!(semantic_note_alters(&tune), vec![1, 1, 0, 0]);
+}
+
+#[test]
+fn chained_tie_across_barline_preserves_accidental_until_chain_ends() {
+    let source = "X:1\nL:1/8\nK:C\n^g- | g-g g\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_tie")
+    );
+    assert_eq!(semantic_note_alters(&tune), vec![1, 1, 1, 0]);
 }
 
 #[test]

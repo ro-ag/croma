@@ -190,6 +190,60 @@ impl LoweringState {
         self.accidental_state.extend(preserved);
     }
 
+    /// Preserve the effective pitch of a note that is about to start a pending
+    /// tie. This matters for chains such as `^G-|G-G`: the first stop note gets
+    /// its sharp from a synthetic cross-bar carry, then immediately starts a new
+    /// tie before any later same-pitch note can re-resolve naturally.
+    pub(crate) fn preserve_pending_tie_carry_from_event(&mut self, event_index: usize) {
+        let Some((step, octave, accidental, span)) =
+            lowered_timed_note(self.lowered.get(event_index)).and_then(|timed| {
+                if let LoweredEventAtomKind::Note {
+                    step,
+                    octave,
+                    effective_accidental,
+                    accidental_source,
+                    ..
+                } = timed.event.kind
+                {
+                    effective_accidental.map(|accidental| {
+                        (
+                            step.to_ascii_uppercase(),
+                            octave,
+                            accidental,
+                            accidental_source.unwrap_or_else(|| {
+                                Span::new(self.source_span.end, self.source_span.end)
+                            }),
+                        )
+                    })
+                } else {
+                    None
+                }
+            })
+        else {
+            return;
+        };
+
+        if let Some(entry) = self
+            .accidental_state
+            .iter_mut()
+            .find(|entry| entry.step == step && entry.octave == octave)
+        {
+            if entry.from_pending_tie {
+                entry.accidental = accidental;
+                entry.span = span;
+            }
+            return;
+        }
+
+        self.accidental_state.push(MeasureAccidental {
+            step,
+            octave,
+            accidental,
+            span,
+            from_pending_tie: true,
+        });
+    }
+
     /// Preserve open-tie pitches across a mid-measure key change: per ABC 2.1
     /// §4.20 a tie continues the same sounding pitch, so the stop note must
     /// not re-resolve under the NEW key. Unlike the barline rule above (which

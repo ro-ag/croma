@@ -52,6 +52,7 @@ impl LoweringState {
             self.diagnostics.push(unmatched_tie_warning(marker.span));
             return;
         };
+        self.preserve_pending_tie_carry_from_event(event_index);
         self.pending_ties.push(PendingTie {
             event_index,
             signature,

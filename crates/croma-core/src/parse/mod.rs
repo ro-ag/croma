@@ -193,7 +193,7 @@ fn parse_tune_report_with_fields(
                         span: metadata.value.span,
                     });
                 }
-                ParsedFieldKind::Tempo(value) if tempo_line.is_none() => {
+                ParsedFieldKind::Tempo(value) => {
                     tempo_line = Some(TextLine {
                         text: value.value.clone(),
                         span: value.span,
