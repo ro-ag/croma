@@ -72,6 +72,8 @@ fi
 
 default_branch="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || true)"
 [[ -n "$default_branch" ]] || default_branch="main"
+nwo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+[[ -n "$nwo" ]] || die "could not determine owner/repo (gh repo view)"
 
 # --- choose the branch to land ---------------------------------------------
 current="$(git branch --show-current)"
@@ -135,29 +137,70 @@ fi
 [[ -n "$pr_num" ]] || die "could not determine PR number"
 
 # --- wait for CI to go green ------------------------------------------------
+# Poll check runs for the EXACT pushed commit SHA via the REST API. Keying on
+# the SHA makes this immune to the supersede race that trips
+# `gh pr checks --watch`: a run cancelled because a newer push replaced it
+# belongs to a different SHA and is never queried here. Only runs for $sha count.
 wait_for_checks() {
-  local n="$1"
-  local grace=90 waited=0 count
+  local n="$1" sha="$2"
+  local grace=90 timeout=2400 waited=0 ever=false
+  local lines total fail pending pass
 
-  # Checks can take a few seconds to register after the push/PR is created.
   while :; do
-    count="$(gh pr checks "$n" --json state -q 'length' 2>/dev/null || echo 0)"
-    [[ "$count" =~ ^[0-9]+$ ]] || count=0
-    (( count > 0 )) && break
-    if (( waited >= grace )); then
-      warn "no CI checks reported after ${grace}s; proceeding without CI verification"
-      return 0
+    # One line per check run: "<status>:<conclusion>" (conclusion may be empty).
+    lines="$(gh api "repos/$nwo/commits/$sha/check-runs" \
+      -q '.check_runs[] | "\(.status):\(.conclusion // "")"' 2>/dev/null || true)"
+
+    if [[ -n "$lines" ]]; then
+      total=$(printf '%s\n' "$lines" | grep -c . || true)
+    else
+      total=0
     fi
-    info "waiting for CI checks to register (${waited}s/${grace}s)..."
+    if (( total > 0 )); then ever=true; fi
+
+    # Genuine failures: cancelled/skipped/neutral are deliberately tolerated.
+    fail=$(printf '%s\n' "$lines" | grep -cE ':(failure|timed_out|action_required|startup_failure|stale)$' || true)
+    if (( fail > 0 )); then
+      warn "failing checks for PR #$n:"
+      gh pr checks "$n" 2>/dev/null | grep -iE 'fail|timed_out' || true
+      die "CI checks failed for PR #$n; not merging"
+    fi
+
+    if (( total > 0 )); then
+      pending=$(printf '%s\n' "$lines" | grep -cvE '^completed:' || true)
+    else
+      pending=0
+    fi
+    pass=$(printf '%s\n' "$lines" | grep -cE '^completed:success$' || true)
+
+    if (( total > 0 && pending == 0 )); then
+      if (( pass > 0 )); then info "CI is green ($pass check(s) passed)"; return 0; fi
+      die "checks completed but none passed (cancelled/skipped) for PR #$n; not merging"
+    fi
+
+    if (( total == 0 )); then
+      if [[ "$ever" == false ]]; then
+        if (( waited >= grace )); then
+          warn "no CI checks reported after ${grace}s; proceeding without CI verification"
+          return 0
+        fi
+        info "waiting for CI checks to register (${waited}s/${grace}s)..."
+      else
+        info "checks re-registering (run superseded?); waiting..."
+      fi
+    else
+      info "CI running ($pending pending / $total check(s))..."
+    fi
+
+    if (( waited >= timeout )); then
+      die "timed out after ${timeout}s waiting for CI on PR #$n"
+    fi
     sleep "$interval"; waited=$(( waited + interval ))
   done
-
-  info "$count CI check(s) registered for PR #$n; watching until complete"
-  gh pr checks "$n" --watch --fail-fast --interval "$interval" \
-    || die "CI checks failed for PR #$n; not merging"
-  info "CI is green"
 }
-wait_for_checks "$pr_num"
+sha="$(git rev-parse HEAD)"
+info "waiting for CI on PR #$pr_num @ ${sha:0:8}"
+wait_for_checks "$pr_num" "$sha"
 
 # --- merge ------------------------------------------------------------------
 info "squash-merging PR #$pr_num and deleting the branch"
