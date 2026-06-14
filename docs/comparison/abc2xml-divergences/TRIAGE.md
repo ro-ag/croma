@@ -26,10 +26,14 @@ tool-neutral version of what they do. Background: [`README.md`](README.md).
   structural differences and forces no matches. **Never re-add a normalization to
   recover the match rate**; fix croma (files graduate into the whitelist) or drop with
   a reasoned record.
-- **`whitelist.csv`** — ~9,259 raw matches (8,583 at the original baseline; grew as
+- **`whitelist.csv`** — 9,378 raw matches (8,583 at the original baseline; grew as
   croma fixes landed); the regression baseline (breaking one is a regression).
-- **`dropped.csv`** — adjudicated non-croma-bugs (76 so far), excluded via `--dropped-csv`.
-- **worklist** — ~600 mismatched files (down from 1,352). This is the remaining work.
+- **`dropped.csv`** — adjudicated non-croma-bugs (521 so far), excluded via `--dropped-csv`.
+- **worklist** — 36 mismatched files (down from 1,352), **all now adjudicated** (2026-06-14):
+  deferred croma bugs (the barline-tokenization/emission cluster, Bugs 7/8/13/.../29 in
+  [`croma-fix-candidates.md`](croma-fix-candidates.md)) plus a few undetermined human-policy
+  calls. No un-triaged files remain; the next productive step is the focused barline fix session,
+  not more triage.
 - Numbers / reproduce: [`RAW-BASELINE.md`](RAW-BASELINE.md). Spec authority: `docs/reference/abc-spec-kb/`.
 
 ## Reproduce the worklist
