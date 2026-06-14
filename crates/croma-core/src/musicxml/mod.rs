@@ -492,7 +492,7 @@ fn unsupported_decoration_warning(decoration: &DecorationAttachment) -> Diagnost
         Severity::Warning,
         "abc.musicxml.decoration.unsupported",
         format!(
-            "Decoration `{}` is preserved as MusicXML direction text",
+            "Decoration `{}` has no MusicXML mapping and was ignored",
             decoration.name
         ),
         decoration.span,

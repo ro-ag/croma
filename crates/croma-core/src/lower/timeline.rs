@@ -89,6 +89,10 @@ impl VoiceTimelineBuilder {
                 } else {
                     kind
                 };
+                if self.repeat_end_closes_previous_measure(kind) {
+                    self.push_barline_to_previous_measure(kind, span);
+                    return;
+                }
                 let starts_current_measure = self.is_empty_measure_start()
                     && (starts_measure_barline(kind)
                         || (self.is_first_measure_start()
@@ -251,6 +255,56 @@ impl VoiceTimelineBuilder {
             };
     }
 
+    fn repeat_end_closes_previous_measure(&self, kind: BarlineKind) -> bool {
+        matches!(kind, BarlineKind::RepeatEnd | BarlineKind::RepeatBoth)
+            && self.onset == Fraction::zero()
+            && self.active_overlay.is_none()
+            && self.measures.len() > 1
+            && self
+                .measures
+                .last()
+                .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
+            && self.previous_measure_ends_with_invisible_barline()
+    }
+
+    fn push_barline_to_previous_measure(&mut self, kind: BarlineKind, span: Span) {
+        let previous_index = self.measures.len().saturating_sub(2);
+        let Some(previous) = self.measures.get_mut(previous_index) else {
+            return;
+        };
+        let onset = timeline_measure_actual_duration(previous);
+        previous.events.push(VoiceTimedEvent {
+            onset,
+            duration: Fraction::zero(),
+            span,
+            line_index: 0,
+            source_order: 0,
+            alignable: false,
+            kind: TimelineEventKind::Barline { kind },
+            lyrics: Vec::new(),
+            symbols: Vec::new(),
+            attachments: EventAttachments::default(),
+        });
+        previous.span = extend_span(previous.span, span);
+    }
+
+    fn previous_measure_ends_with_invisible_barline(&self) -> bool {
+        self.measures
+            .iter()
+            .rev()
+            .nth(1)
+            .is_some_and(|measure| {
+                measure.events.iter().rev().any(|event| {
+                    matches!(
+                        event.kind,
+                        TimelineEventKind::Barline {
+                            kind: BarlineKind::Invisible
+                        }
+                    )
+                })
+            })
+    }
+
     fn is_empty_measure_start(&self) -> bool {
         self.onset == Fraction::zero()
             && self.active_overlay.is_none()
@@ -386,7 +440,13 @@ impl VoiceTimelineBuilder {
                 || (may_coalesce_barline_only && is_barline_only_measure(measure))
         }) && self.measures.len() > 1
         {
-            self.measures.pop();
+            let trailing = self
+                .measures
+                .pop()
+                .expect("checked that a trailing measure exists");
+            if let Some(previous) = self.measures.last_mut() {
+                merge_visible_trailing_barlines(previous, trailing);
+            }
         }
         self.measures
     }
@@ -465,6 +525,61 @@ fn is_barline_only_measure(measure: &VoiceMeasureTimeline) -> bool {
                     | TimelineEventKind::ClefChange(_)
             )
         })
+}
+
+fn merge_visible_trailing_barlines(
+    previous: &mut VoiceMeasureTimeline,
+    trailing: VoiceMeasureTimeline,
+) {
+    for event in trailing.events {
+        let TimelineEventKind::Barline { kind } = event.kind else {
+            continue;
+        };
+        if matches!(kind, BarlineKind::Regular | BarlineKind::Liberal) {
+            continue;
+        }
+        if kind == BarlineKind::Final && has_repeat_end_barline(previous) {
+            continue;
+        }
+        if previous.events.iter().any(|existing| {
+            matches!(
+                existing.kind,
+                TimelineEventKind::Barline {
+                    kind: existing_kind
+                } if existing_kind == kind && existing.span == event.span
+            )
+        }) {
+            continue;
+        }
+        previous.events.push(event);
+    }
+}
+
+fn has_repeat_end_barline(measure: &VoiceMeasureTimeline) -> bool {
+    measure.events.iter().any(|event| {
+        matches!(
+            event.kind,
+            TimelineEventKind::Barline {
+                kind: BarlineKind::RepeatEnd | BarlineKind::RepeatBoth
+            }
+        )
+    })
+}
+
+fn timeline_measure_actual_duration(measure: &VoiceMeasureTimeline) -> Fraction {
+    let mut actual = Fraction::zero();
+    for event in &measure.events {
+        if matches!(
+            event.kind,
+            TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
+        ) {
+            let end = event.onset.checked_add(event.duration);
+            if actual.less_than(end) {
+                actual = end;
+            }
+        }
+    }
+    actual
 }
 
 fn starts_measure_barline(kind: BarlineKind) -> bool {

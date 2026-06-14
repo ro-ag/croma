@@ -238,11 +238,15 @@ impl LoweringState {
         kind: BarlineKind,
     ) {
         let mut attachments = EventAttachments::default();
+        let mut direction_span: Option<Span> = None;
         if !self.pending_annotations.is_empty() {
             attachments.annotations = self
                 .pending_annotations
                 .drain(..)
-                .map(|text| annotation_attachment_model(&text))
+                .map(|text| {
+                    direction_span = Some(merge_spans(direction_span, text.span));
+                    annotation_attachment_model(&text)
+                })
                 .collect();
         }
 
@@ -253,6 +257,7 @@ impl LoweringState {
             if kind == BarlineKind::Final || quoted_text_may_be_harmony(text.text.as_str()) {
                 remaining_symbols.push(text);
             } else {
+                direction_span = Some(merge_spans(direction_span, text.span));
                 attachments
                     .annotations
                     .push(chord_symbol_attachment_model(&text));
@@ -263,6 +268,7 @@ impl LoweringState {
         let mut remaining_decorations = Vec::new();
         for decoration in self.pending_decorations.drain(..) {
             if decoration_binds_to_barline(decoration.name.as_str()) {
+                direction_span = Some(merge_spans(direction_span, decoration.span));
                 attachments
                     .decorations
                     .push(decoration_attachment_model(&decoration));
@@ -278,7 +284,9 @@ impl LoweringState {
 
         self.lowered.push(LoweredEvent::Timed(LoweredTimedEvent {
             event: LoweredEventAtom {
-                kind: LoweredEventAtomKind::Spacer { span },
+                kind: LoweredEventAtomKind::Spacer {
+                    span: direction_span.unwrap_or(span),
+                },
                 duration: Fraction::zero(),
             },
             line_index,
@@ -598,7 +606,19 @@ impl LoweringState {
                             pair_id: open.pair_id,
                             marker: slur,
                         });
-                    } else if let Some(event_index) = self.last_note_event_index() {
+                        return;
+                    }
+                    let start_was_pending = self
+                        .pending_slur_starts
+                        .iter()
+                        .any(|pending| pending.pair_id == open.pair_id);
+                    if start_was_pending {
+                        self.pending_slur_starts
+                            .retain(|pending| pending.pair_id != open.pair_id);
+                        self.diagnostics.push(unmatched_slur_warning(slur.span));
+                        return;
+                    }
+                    if let Some(event_index) = self.last_note_event_index() {
                         self.attach_slur(event_index, open.pair_id, SlurRole::Stop, slur);
                     } else {
                         self.diagnostics.push(unmatched_slur_warning(slur.span));
@@ -1118,6 +1138,13 @@ fn attachment_bundle_model(
         ties: Vec::new(),
         slurs: Vec::new(),
         tuplets: Vec::new(),
+    }
+}
+
+fn merge_spans(accumulator: Option<Span>, span: Span) -> Span {
+    match accumulator {
+        Some(current) => Span::new(current.start.min(span.start), current.end.max(span.end)),
+        None => span,
     }
 }
 

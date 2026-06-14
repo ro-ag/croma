@@ -130,12 +130,6 @@ impl<'score> MusicXmlWriter<'score> {
             } else if decoration_notation(decoration).is_none() {
                 self.diagnostics
                     .push(unsupported_decoration_warning(decoration));
-                self.write_direction_words(
-                    &decoration.name,
-                    None,
-                    Some(sequence.voice_number.as_str()),
-                    Some(sequence.staff.value),
-                );
             }
         }
     }

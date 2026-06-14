@@ -335,6 +335,7 @@ fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
                         false,
                         BarlineKind::Double
                             | BarlineKind::Final
+                            | BarlineKind::Initial
                             | BarlineKind::RepeatEnd
                             | BarlineKind::RepeatBoth
                             | BarlineKind::Dotted

@@ -997,6 +997,18 @@ fn tempo_text_plus_beat_emits_words_and_metronome() {
 }
 
 #[test]
+fn later_header_tempo_overrides_earlier_header_tempo() {
+    let source = "X:1\nQ:1/4=120\nQ:\"Animato\"\nM:4/4\nL:1/4\nK:C\nC4|\n";
+    let export = export_musicxml(source).expect("tempo override score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<words>Animato</words>"));
+    assert!(export.musicxml.contains("<sound tempo=\"120.00\""));
+    assert_eq!(count(&export.musicxml, "<metronome>"), 0);
+    assert!(!export.musicxml.contains("<per-minute>120</per-minute>"));
+}
+
+#[test]
 fn midi_directives_are_not_emitted_as_words() {
     // `%%MIDI` (and other preserved `%%` stylesheet directives) control
     // playback/formatting, not printed musical text. abc2xml emits nothing for
@@ -1326,6 +1338,115 @@ fn triple_repeat_extensions_export_repeat_edges() {
             .all(|barline| barline.repeat_times.is_none())
     );
     assert_eq!(note_steps(&measures[0]), vec!['C', 'D', 'E', 'F']);
+}
+
+#[test]
+fn split_final_after_repeat_end_does_not_duplicate_right_barline() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F:[|]|]\n";
+    let export = export_musicxml(source).expect("split final after repeat end should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1"]);
+    let right_barlines = measures[0]
+        .barlines
+        .iter()
+        .filter(|barline| barline.location == "right")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        right_barlines.len(),
+        1,
+        "right barlines should be merged: {right_barlines:?}"
+    );
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+}
+
+#[test]
+fn repeat_end_after_invisible_barline_closes_previous_measure() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F H[|]:|\n|:G A B c:|\n";
+    let export = export_musicxml(source).expect("invisible plus repeat end should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("none"),
+        None
+    ));
+    assert!(has_barline(
+        &measures[0],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+    assert!(has_barline(
+        &measures[1],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+}
+
+#[test]
+fn direction_only_measure_preserves_trailing_invisible_barline() {
+    let source = "X:1\nK:C\nC|\"^VAR:\"[|]\\\n\"a.\"A [|] y8\n";
+    let export = export_musicxml(source).expect("direction-only invisible barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4"]);
+    assert!(has_barline(&measures[1], "right", Some("none"), None));
+    assert!(has_barline(&measures[2], "right", Some("none"), None));
+}
+
+#[test]
+fn direction_only_measure_preserves_trailing_initial_barline() {
+    let source = "X:1\nK:C\nC|\"^B\"[|A|]\n";
+    let export = export_musicxml(source).expect("direction-only initial barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3"]);
+    assert!(has_barline(
+        &measures[1],
+        "right",
+        Some("heavy-light"),
+        None
+    ));
+    assert!(has_barline(
+        &measures[2],
+        "right",
+        Some("light-heavy"),
+        None
+    ));
+}
+
+#[test]
+fn empty_slur_pair_does_not_emit_degenerate_musicxml_slur() {
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC() D E F|]\n";
+    let export = export_musicxml(source).expect("empty slur pair should recover");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export.musicxml.contains("<slur "),
+        "empty () must not produce a MusicXML slur: {}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.unmatched_slur"),
+        "empty () should be diagnosed: {:?}",
+        export.diagnostics
+    );
 }
 
 #[test]
@@ -2926,6 +3047,21 @@ fn user_defined_symbol_expands_to_its_notation_not_words() {
 }
 
 #[test]
+fn bare_user_defined_symbol_name_expands_to_its_notation_not_words() {
+    let source = "X:1\nU:t=tenuto\nL:1/4\nK:C\ntC D|\n";
+    let export = export_musicxml(source).expect("user symbol should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<tenuto/>"));
+    assert!(!export.musicxml.contains("<words>t</words>"));
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported")
+    );
+}
+
+#[test]
 fn post_tune_words_export_as_credits_not_in_measure_directions() {
     // `W:` words are printed after the tune (ABC 2.1), so they belong in
     // score-header <credit> elements, not as in-measure <words> directions.
@@ -3684,6 +3820,7 @@ fn unsupported_decoration_diagnoses_without_dropping_note_or_timing() {
         "abc.musicxml.decoration.unsupported",
         "!unknown!",
     );
+    assert!(!export.musicxml.contains("<words>unknown</words>"));
     assert_eq!(count(&export.musicxml, "<note>"), 2);
     assert_eq!(count(&export.musicxml, "<duration>4</duration>"), 2);
 }

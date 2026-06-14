@@ -1043,8 +1043,9 @@ pub(super) fn shorthand_canonical_name(symbol: char) -> Option<String> {
 }
 
 /// Canonical decoration name for a `U:`-defined replacement. Replacements are
-/// stored verbatim (e.g. `!trill!`); strip the `!...!` delimiters and, when the
-/// inner text is itself a single-char shorthand, normalize it too.
+/// stored verbatim (e.g. `!trill!` or the corpus' bare `tenuto`); strip
+/// decoration delimiters when present and, when the replacement is itself a
+/// single-char shorthand, normalize it too.
 pub(super) fn user_symbol_canonical_name(replacement: &str) -> Option<String> {
     let trimmed = replacement.trim();
     let inner = trimmed
@@ -1054,8 +1055,12 @@ pub(super) fn user_symbol_canonical_name(replacement: &str) -> Option<String> {
             trimmed
                 .strip_prefix('+')
                 .and_then(|rest| rest.strip_suffix('+'))
-        })?;
+        })
+        .unwrap_or(trimmed);
     if inner.is_empty() {
+        return None;
+    }
+    if inner.starts_with('"') || inner.chars().any(char::is_whitespace) {
         return None;
     }
     if let Some(symbol) = inner.chars().next().filter(|_| inner.chars().count() == 1)
