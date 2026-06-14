@@ -449,3 +449,109 @@ drive-by.
 > Bugs 4, 5, 6, 9, 12 and the whitespace-barline family remain **deliberate/debatable
 > policy calls** (kept, flagged for a human), distinct from these clean defects.
 > Bug 11 is a real fidelity gap but medium-confidence / entangled with malformed input.
+
+### Bug 18 — bare-number tempo with trailing decimal/suffix dropped to words (`Q:400.`, `Q:320s`) — FIXED 2026-06-14
+
+The deprecated bare-number tempo form (ABC 2.1 §10.1, `Q:120` = "play 120 unit
+note-lengths per minute") was rejected by croma whenever the integer carried a trailing
+decimal point (`Q:400.`) or a legacy abc2mtex suffix letter (`Q:320s`): `parse_tempo_beat`
+called `parse_u32` which requires the whole token to parse as `u32`, so any trailing
+character made the field fall through to literal `<words>400.</words>` / `<words>320s</words>`
+with no metronome. abc2xml leniently reads the leading integer.
+
+- **Spec:** ABC 2.1 §10.1 (KB raw line 1909–1915) — `Q:120` "programs should accept it" as
+  a tempo; the unit note length `L:` is the beat unit.
+- **Fix:** new `parse_bare_tempo_bpm` (`crates/croma-core/src/lower/tempo.rs`) reads the
+  leading digit run as the bpm, tolerating a decimal tail (`.`/`.123`) or purely-alphabetic
+  legacy suffix, while rejecting internal whitespace / no-leading-digit fields (free text such
+  as `Q:Fast`, `Q:3 dancers` stay verbatim words). Only the **bare-number** branch is
+  loosened; the `beat=bpm` branch stays strict. Tests `tempo_bare_number_with_trailing_dot_emits_metronome`,
+  `tempo_bare_number_with_legacy_suffix_emits_metronome`, guard
+  `tempo_bare_leading_digits_with_space_stays_words` (`crates/croma-core/src/musicxml/mod_tests.rs`).
+- **Graduates:** `tune_009608` (`Q:400.` → metronome eighth=400, sound tempo 200.00),
+  `tune_001192` (`Q:320s` → metronome eighth=320, sound tempo 160.00).
+
+### Bug 19 — text-only `y`-spacer bar emits spurious empty measure + mis-anchors annotation (`tune_003230`) — DEFERRED (barline/note-less-measure cluster)
+
+`tune_003230` final line `... f4 "Da Capo"c4 |] "Final measure at end."y16 | f8 |]`: the bar
+`"Final measure at end."y16 |` is note-less (the `y` spacer creates no rest, §6.1.2) and should
+be its own measure carrying the annotation, with `f8` as the next measure (abc2xml: text in m15,
+`f8` in m16). croma instead emits an **empty measure 15** and pushes the annotation into the
+`f8` measure (m16), offsetting the direction by one measure. Confirmed croma bug (high), 1
+comparator row, 50=50 notes (no music dropped). **Same family as Bugs 7/13/17** (croma gates
+measure/barline handling on a real note event and mishandles a note-less measure) → high
+regression risk, belongs in the focused barline/empty-measure session, **not a drive-by**.
+
+### Bug 20 — leading-space annotation `" >"` placement-glyph ambiguity (`tune_007910`) — UNDETERMINED (flagged for human)
+
+`tune_007910` (`" >"G2 ...`, bytes `0x22 0x20 0x3e 0x22` = quote, space, `>`, quote): §4.19 is
+ambiguous whether a placement specifier (`>`) preceded by whitespace is consumed as placement
+(abc2xml → empty `<words/>`) or kept as literal text (croma → `<words>></words>`). Both render at
+identical note onsets; 95=95 notes. Strict reading (specifier must lead the string) favors croma;
+lenient reading favors abc2xml. Genuine spec edge case → kept, flagged for a human policy call
+(same class as Bugs 4/5/6/9/12), not droppable and not a clean croma fault.
+
+### Bug 21 — bare-accidental mid-tune key modification dropped (`K:^F` after `K:Gmin`) (`tune_005044`) — DEFERRED (key-composition + spec-ambiguity)
+
+`tune_005044` has header `K: Gmin` then a body `K:^F`. croma's `key_is_invalid_for_lowering`
+(`crates/croma-core/src/lower/mod.rs:1186`) flags a tonic-less, clef-less, default-Major K: as
+invalid and drops it (warning `abc.field.invalid_k`), so the 9 bare F/f notes in the second part
+stay F-natural (Gmin) instead of F#. abc2xml applies it as Gmin **+ F#** (key steps Eb, Bb, F#).
+50=50 notes, no music dropped — purely the lost key modification.
+
+**Why deferred, not a drive-by:** (a) §3.1.14's modification format is `K:<tonic> <mode>
+<accidentals>` — every spec example carries a tonic (`K:D Phr ^f`, `K:D =c`); a *bare* tonic-less
+`K:^F` is **not** in the documented format, so abc2xml's "modify the current key" is a reasonable
+but not spec-mandated interpretation (genuine ambiguity). (b) Even granting that reading, the
+correct output is the **prevailing Gmin signature merged with F#** (Eb, Bb, F#), which needs
+key-composition logic croma's key-change lowering lacks; naively un-gating would emit an F#-only
+signature (fifths=0), **losing** Gmin's Bb/Eb — a different wrong answer. Real fidelity gap, kept
+in the worklist, but needs a spec call + key-merge work, like Bug 11.
+
+### Bug 22 — backslash-joined `||` before a `|N` ending drops the double bar (`tune_006302`) — DEFERRED (barline cluster)
+
+`tune_006302` line 12 ends `... edB/c/ |\` and line 13 begins `|1 "Am"A3- ...`. Per §6.1.1 (KB
+raw line 1502) the trailing `\` "effectively joins two lines together for processing," so the
+stream is `edB/c/ ||1` — the two `|` become **adjacent `||`** (thin-thin double, §4.8 line 985)
+immediately before the `|1` first-ending. abc2xml emits measure-32 right `light-light` + measure-33
+ending-1-start; croma drops the double bar, emitting no right barline on m32 and only the
+ending-start on m33. croma DOES emit `light-light` for a plain `||` at m36, so the engine works —
+it mishandles the `\`-joined `||N` adjacency specifically. 127=127=127 notes, 45 measures aligned
+1:1 (no music dropped). **Same barline-emission cluster as Bugs 7/8/13/14/19** (croma drops a
+barline at a line-continuation/note-less boundary) → deferred to the focused TDD+regression session,
+not a drive-by.
+
+> Also kept this pass: `tune_008105` — trailing bare `:` (truncated `:|` end-repeat) renders as
+> croma's deliberate `abc.music.barline.liberal` normalization (no glyph) vs abc2xml's spec-unsupported
+> `dotted`; neither matches the spec-correct `:|`, so `undetermined`/low, kept. Same **bare-`:`
+> liberal-barline family as Bug 9** (human policy call).
+
+### Bug 23 — thick-thin `[|` did not close an open Nth ending bracket — FIXED 2026-06-14
+
+ABC 2.1 §4.10 (KB raw line 1034): "The Nth ending starts with `[N` and ends with one of `||`, `:|`
+`|]` or `[|`." croma's `stops_repeat_ending_barline` (`crates/croma-core/src/musicxml/score.rs:439`)
+matched `Double | Final | RepeatEnd | RepeatBoth` but **omitted `BarlineKind::Initial`** — the kind
+`[|` parses to (`parse/barline.rs:237`) — so a 2nd ending closed by `[|` was left a dangling
+`<ending type="start">` with no stop, or its stop leaked to the next closing bar (carrying the
+volta span too far). The adjacent code comment (score.rs:434) already listed `[|` among the closing
+bars, so the implementation contradicted its own doc.
+
+- **Fix:** add `BarlineKind::Initial` to `stops_repeat_ending_barline`. It is consulted only under the
+  `open.is_some()` guard (score.rs:424), so it closes a `[|` **only** when an ending is in flight and
+  never affects a section-opening `[|`. Test `volta_ending_closed_by_thick_thin_bar_emits_stop`
+  (`crates/croma-core/src/musicxml/mod_tests.rs`); existing `volta_unclosed_in_source_stays_open_at_part_end`
+  still passes.
+- **Outcome:** resolved the ending-span rows for `tune_004922` / `tune_002878`; both then dropped as
+  `abc2xml-barline-style` (their only residual divergence is abc2xml's separate `[|`-reversal, croma's
+  heavy-light being spec-correct). No whitelist regression (matches held at 9378).
+
+### Bug 24 — `]||:` run mis-tokenized: thick-bar `]` dropped / `|:` misplaced (`tune_014316`, `tune_004475`) — DEFERRED (barline cluster)
+
+When a 2nd-ending close abuts a repeat-start across a `\`-continuation or directly — logical run
+`]||:` — croma's `barline_kind` (`parse/barline.rs:245`, `raw.contains(']') && has_repeat_start(raw)`)
+classifies the **whole** `]||:` as one `RepeatStart`, firing before the colon-less-`]`→`Final` branch
+(line 268). Consequences: `tune_014316` — the `]` thick-bar that should close ending 2 (light-heavy)
+is absorbed, leaving m10 right = `regular`; `tune_004475` — the `|:` forward-repeat lands one measure
+late (m11 left instead of m10 left). 53=53 / 66=66 notes, no music dropped. Real croma bug, but the
+fix means re-splitting a fused barline run (touching `barline_kind` tokenization + repeat/ending
+attachment) → **barline cluster**, deferred to the focused TDD+regression session with Bugs 7/8/13/14/19/22.

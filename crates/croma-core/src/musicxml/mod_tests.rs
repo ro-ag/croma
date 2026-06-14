@@ -497,6 +497,33 @@ fn multi_measure_volta_emits_ending_stop_at_closing_barline() {
 }
 
 #[test]
+fn volta_ending_closed_by_thick_thin_bar_emits_stop() {
+    // ABC 2.1 §4.10: "The Nth ending starts with [N and ends with one of
+    // ||, :| |] or [|" — the thick-thin `[|` is a valid ending terminator.
+    // croma's stops_repeat_ending_barline omitted BarlineKind::Initial (the kind
+    // `[|` parses to), so a 2nd ending closed by `[|` was left a dangling
+    // <ending type="start"> with no stop (tune_004922 / tune_002878 family).
+    // No trailing final bar here, so without the fix the bracket stays open at
+    // the part end and emits no stop at all.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:CDEF|[1 GABc:|[2 cdef[|GGGG\n";
+    let export = export_musicxml(source).expect("volta closed by [| should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"start\"/>"),
+        "ending 2 should start"
+    );
+    assert!(
+        export
+            .musicxml
+            .contains("<ending number=\"2\" type=\"stop\"/>"),
+        "ending 2 must be closed by the `[|` thick-thin terminator (§4.10), not left dangling"
+    );
+}
+
+#[test]
 fn quoted_text_volta_extension_exports_ending_and_harmony() {
     let source = "X:1\nM:4/4\nL:1/8\nK:C\n\"G\"B2A2 G2F2 |[\"cont\" \"Am7\"F2G2 A2B2 | \"D7\"c2d2 \"G\"e4 |]\n";
     let export = export_musicxml(source).expect("quoted-text volta should export");
@@ -955,6 +982,49 @@ fn tempo_bare_number_uses_unit_note_length() {
     assert!(export.musicxml.contains("<per-minute>120</per-minute>"));
     assert!(export.musicxml.contains("<sound tempo=\"60.00\""));
     assert!(!export.musicxml.contains("<words>120</words>"));
+}
+
+#[test]
+fn tempo_bare_number_with_trailing_dot_emits_metronome() {
+    // `Q:400.` is the deprecated bare-number tempo (ABC 2.1 §10.1) with a
+    // trailing decimal point. abc2xml accepts it as 400; croma must too rather
+    // than degrading the whole field to literal <words>400.</words>.
+    let source = "X:1\nM:4/4\nL:1/8\nQ:400.\nK:C\nC4|\n";
+    let export = export_musicxml(source).expect("tempo score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<beat-unit>eighth</beat-unit>"));
+    assert!(export.musicxml.contains("<per-minute>400</per-minute>"));
+    assert!(export.musicxml.contains("<sound tempo=\"200.00\""));
+    assert!(!export.musicxml.contains("<words>400.</words>"));
+}
+
+#[test]
+fn tempo_bare_number_with_legacy_suffix_emits_metronome() {
+    // `Q:320s` is the deprecated bare-number tempo (ABC 2.1 §10.1) with a legacy
+    // abc2mtex suffix letter. abc2xml strips the `s` and reads 320; croma must
+    // too rather than degrading the field to literal <words>320s</words>.
+    let source = "X:1\nM:4/4\nL:1/8\nQ:320s\nK:C\nC4|\n";
+    let export = export_musicxml(source).expect("tempo score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<beat-unit>eighth</beat-unit>"));
+    assert!(export.musicxml.contains("<per-minute>320</per-minute>"));
+    assert!(export.musicxml.contains("<sound tempo=\"160.00\""));
+    assert!(!export.musicxml.contains("<words>320s</words>"));
+}
+
+#[test]
+fn tempo_bare_leading_digits_with_space_stays_words() {
+    // A bare field with internal whitespace after the leading digits is free
+    // text, not a bare-number tempo: croma must NOT mine the leading `3` into a
+    // metronome. Guards the lenient bare-number parse against over-triggering.
+    let source = "X:1\nM:4/4\nL:1/4\nQ:3 dancers\nK:C\nC4|\n";
+    let export = export_musicxml(source).expect("tempo score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<metronome>"), 0);
+    assert!(!export.musicxml.contains("<per-minute>"));
 }
 
 #[test]
