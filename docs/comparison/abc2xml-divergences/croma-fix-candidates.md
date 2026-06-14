@@ -121,6 +121,15 @@ flagged `undetermined`. If revisited, a real fix must preserve §4.8 barline-run
 coalescing while distinguishing intended empty measures — likely needs the parser
 to carry barline-adjacency into the timeline.
 
+- **Reconfirmed 2026-06-14** (content-category triage, adversarial "find a croma
+  error" pass): croma collapses the 9-empty run to 4 and additionally emits the
+  surviving empty bars as **content-less `<measure></measure>` shells** (no
+  full-measure rest) — invalid MusicXML in its own right, but the same
+  empty-measure-handling code as the collapse, entangled with the deferred policy
+  call. Pitched-note counts still match the source exactly per voice
+  (37/28/9/20/5), so no *pitched* music is lost. Still kept, still deferred — the
+  file won't graduate regardless (abc2xml drops the empties to 6 measures).
+
 ### Bug 5 — whitespace-surrounded lone `:` treated as malformed, not a barline (DEBATABLE — deliberate behavior)
 
 croma rejects a `:` with **whitespace on both sides** as a barline: `parse_colon`
@@ -227,6 +236,22 @@ all 7 notes match; only the 2 fabricated word-directions differ.
   files are already off the whitelist), so it's a strong candidate for the focused fix session
   *if* the policy call is to follow §4.14. Kept, flagged for a human decision.
 
+### tonic-less accidental-only `K:^F` rejected (DEBATABLE — spec grammar requires a tonic)
+
+`tune_005044` (`K:^F`, a body key-modifier line): croma rejects the field
+(`warning[abc.field.invalid_k]`) and drops the intended F♯, so 9 bare f/F notes in part 2
+sound natural instead of sharp (G-minor raised leading tone). abc2xml keeps the running
+G-minor signature and adds F♯ (alter=1, no printed glyph). croma **does** honor the
+tonic-ful form `K:Gm ^f` (→ F♯), so only the tonic-less `K:^F` fails.
+
+- **Spec-debatable:** §3.1.14's grammar is `K:<tonic> <mode> <accidentals>` and every
+  spec example includes a tonic, so a literal reading makes `K:^F` malformed (croma's
+  defense); but line 690 ("software … should mark the individual notes … with the
+  accidentals that apply") and the universal real-world idiom favor abc2xml. Investigator
+  rated croma at-fault **medium**. Distinct from Bug 15 (a *valid* tonic `Bb` wrongly
+  rejected over a stray comma — a clean bug); this one is a missing-feature / policy call.
+  Kept, flagged `undetermined` for a human decision.
+
 ## Open — clean croma bugs found in barline triage (2026-06-13, NOT yet fixed)
 
 These are **genuine croma defects** (clear spec violations, abc2xml correct, no test
@@ -235,7 +260,12 @@ focused fix session — the barline subsystem is heavily tested (≈6 leading-ba
 tests + the 9,259-match whitelist), so each needs TDD + a full corpus regression run,
 not a triage drive-by. Fixing Bug 7/8 should graduate the listed files.
 
-### Bug 7 — invisible barline `[|]` dropped on an annotation-only measure (HIGH)
+### Bug 7 — invisible barline `[|]` dropped on an annotation-only measure — RESOLVED
+
+**Resolved (verified 2026-06-14):** `tune_004088`/`tune_010209` now match (graduated by
+prior barline work; the general direction-only-barline path works). Regression guards
+added: `leading_invisible_barline_on_annotation_only_measure_is_emitted`,
+`closing_barline_on_directive_and_spacer_only_measure_is_emitted`. Original report below.
 
 `tune_004088`, `tune_010209` (`"^A"[|] ...`): croma logs
 `info[abc.musicxml.barline_policy]: Invisible barline is exported as a MusicXML none
@@ -256,7 +286,14 @@ abc2xml correctly emits `<barline location="right"><bar-style>none</bar-style></
   (leading `||`/`|]` *before content in the same measure* must stay absorbed). Needs
   model tracing of how an annotation-only measure sets `source_span` vs the barline span.
 
-### Bug 8 — split left-barline edge drops the forward repeat (`:|:[2`) (HIGH)
+### Bug 8 — split left-barline edge drops the forward repeat (`:|:[2`) — FIXED 2026-06-14
+
+**Fixed:** when a measure's left edge carries both a forward-repeat and an ending start,
+`score.rs` now emits a SINGLE `<barline location="left">` (bar-style + `<ending>` +
+`<repeat>`) via `write_ending_barline(.., Some(RepeatStart))` instead of two elements.
+Test `forward_repeat_and_second_ending_share_one_left_barline`. Graduated `tune_005957`.
+Original report below.
+
 
 `tune_005957` (`...:|:[2 ...`): a forward-repeat (`|:`) and a second-ending start (`[2`)
 land on one measure's left edge. croma emits **two** separate `<barline location="left">`
@@ -274,19 +311,37 @@ together.
   edge, emit a single `<barline location="left">` containing bar-style + `<ending>` +
   `<repeat>` (the MusicXML content-model order already in `write_barline`).
 
-### Bug 11 — chord-internal slur marks collapse onto the chord head (MEDIUM / entangled)
+### Bug 11 — chord-internal slur marks collapse onto the chord head — FIXED 2026-06-14
 
-`tune_007779` (`[(C(G] ... [G,,)G,)]`): an ABC chord with per-note slur marks (`(`/`)`
-adjacent to specific chord members) is serialized by croma with **both** slur-starts on
-the first chord note (C) — G gets none — and both stops on one member; abc2xml honors
-per-note placement (start#1 on C, start#2 on G). §4.11 stresses the into/out-of/between-
-chord slur distinction is "particularly important." Demonstrable collapse, but rated
-**medium**: the exact reported endpoint figures are second-order artifacts of music21
-flattening chords + the source being slur-unbalanced (P1 4 opens/3 closes; croma warns
-`unclosed_slur`/`unmatched_slur`). Kept as a fix candidate; corpus impact unclear until
-the chord-internal placement is fixed and re-measured.
+`tune_007779` (`[(C(G] ... [G,,)G,)]`) and **`tune_011866`** (`[(B,3/(D3/] [F3/)B3/)]`,
+4-voice): an ABC chord with per-note slur marks (`(`/`)` adjacent to specific chord
+members) is serialized by croma with **all** slur-starts on the chord's first note and
+**all** stops on its last note; abc2xml honors per-note placement (e.g. start#1 on C,
+start#2 on G; stop on B3 and on D4 separately). §4.11 stresses the into/out-of/between-
+chord slur distinction is "particularly important." Reconfirmed 2026-06-14: both files'
+investigators rate **high** (ground-truth note counts match exactly — 119=119 and
+284=284 — so no music is dropped; the divergence is purely chord-member slur placement,
+and croma's own `unclosed_slur`/`unmatched_slur` warnings are the downstream symptom of
+its slur-matcher not handling `(`/`)` bound to individual chord notes).
 
-### Bug 13 — closing barline dropped on a note-less (directive+spacer) measure (HIGH)
+- **Fix (2026-06-14):** `ChordMemberSyntax` now carries `slur_starts`/`slur_ends`
+  (mirroring its `tie`); `parse_chord` captures a chord-internal `(` as the next
+  member's start and `)` as the preceding member's end (instead of emitting voice-level
+  `MusicItem::Slur`s before/after the chord); `push_chord_group` attaches them to the
+  specific member event via the voice-level open-slur stack (so slurs into/out of the
+  chord still pair). Test `chord_internal_slurs_bind_to_their_own_member`. Verified:
+  croma now puts the start on each member (e.g. `[(C(G]` → start on C **and** G),
+  matching abc2xml. 0 regressions. **Partial:** `tune_007779`/`tune_011866` improve but
+  do not fully graduate — residual rows come from their **unbalanced-slur sources**
+  (007779: 4 opens/3 closes; 011866 multi-voice) where croma's LIFO pairing and
+  abc2xml's differ on the leftover; that is a separate, lesser issue than the collapse.
+
+### Bug 13 — closing barline dropped on a note-less (directive+spacer) measure — RESOLVED
+
+**Resolved (verified 2026-06-14):** `tune_003124` now matches; covered by the
+`closing_barline_on_directive_and_spacer_only_measure_is_emitted` regression guard.
+Original report below.
+
 
 `tune_003124` (`...!segno!y |]`): a measure whose only content is a directive (`!segno!`)
 plus a spacer `y` — no real note — makes croma **drop the `|]` closing barline** entirely.
@@ -299,7 +354,27 @@ measure has no note event.
 - **Same family as Bug 7** (closing barline dropped on a content-less / annotation-only
   measure): croma's barline emission appears gated on the measure having a real note event.
 
-### Bug 14 — liberal repeat-end `:]` normalized away to a bare boundary (HIGH)
+### Bug 14 — liberal repeat-end `:]` normalized away to a bare boundary — FIXED 2026-06-14
+
+**Fixed:** `parse_colon` now routes a `:` followed by `]` (as well as `|`) into
+`parse_barline`, and `barline_kind`'s liberal arm treats leading dots over a `]` thick
+bar as a repeat-end, so `:]` = `:|]` → light-heavy + backward repeat. Test
+`liberal_colon_thick_barline_is_a_backward_repeat`. Graduated `tune_000746`.
+
+### Bug 18 — `|`+`|` double bar across a `\` line-continuation seam dropped — FIXED 2026-06-14
+
+`tune_001312` and ~many: a music line ending `...|\` continued to a line starting `|`
+forms an adjacent `||` thin-thin double bar, but `merge_continued_barline_run`
+(`parse/music.rs`) only coalesced runs where the previous bar carried a `]`, so the plain
+`|`+`|` seam was dropped (the bar before the seam got no right barline).
+
+- **Fix:** also merge when both seam glyphs are pipe-only (`|`/`||`) → `||`, but NOT when
+  the next line opens a repeat (`|:`/`:|`, not pipe-only) or a variant ending — its
+  leading `|` is a deliberate new boundary, not a double-bar component (that over-merge
+  regressed `tune_002255`/`tune_013361`; the narrowed rule graduates 45 files, 0
+  regressions). Test `double_bar_across_backslash_continuation_is_coalesced`.
+
+### (original) Bug 14 — liberal repeat-end `:]` normalized away to a bare boundary (HIGH)
 
 `tune_000746` (`...d4 :]`): the liberal spelling `:]` (= `:|]`, repeat-end + thin-thick
 final bar) makes croma emit **no `<barline>` at all** and warn
@@ -312,6 +387,54 @@ elsewhere in the same tune, so this is the `:]`/liberal-spelling path dropping t
   liberal recognition, so `:]` ≡ `:|]`.
 - **Same cluster:** croma's *liberal-barline normalization* reduces non-canonical spellings
   (`:]`, and the whitespace `| |` of Bug 9) to a bare boundary, discarding the style/repeat.
+
+### Bug 15 — `K:` tonic with a trailing comma rejects the whole field — FIXED 2026-06-14
+
+`tune_004340` (`K:Bb, F` — a mid-tune key change): croma emits
+`warning[abc.field.invalid_k]: Invalid K: field value was ignored` and **discards the
+entire field**, so the key change to B♭ major (fifths −2) is dropped and the prior D
+major (F♯/C♯) persists — wrong accidentals on E/B/F/C across the whole section (32
+accidental rows; 4 slur rows are the same notes shifted by the wrong key). croma already
+parses `K:Bb F` correctly (fifths −2); the bug is triggered specifically by the **stray
+comma after the valid tonic** (`Bb,`). Probe: `K:Bb F`→−2 ✓ but `K:Bb,`/`K:Bb, F`→rejected.
+
+- **Spec:** §3.1.14 (KB raw line 661/686) — a key is `<tonic>` (A–G + optional #/b) then
+  optional mode/accidentals; `Bb` = 2 flats. The valid tonic should yield fifths −2 and
+  the unparseable trailing tokens be discarded (as croma already does for `K:Bb F`).
+- **Fix (2026-06-14):** `parse_tonic_token` (`crates/croma-core/src/parse/field/key.rs`)
+  now recovers the leading valid tonic when the trailing junk is **non-alphabetic**
+  (cannot be a mode or clef word), matching the already-working spaced `K:Bb F`;
+  alphabetic remainders (`Bass`, `Cmaj`) still reject as before. Same family as the
+  resolved Bug 2. Test `key_tonic_recovers_from_trailing_comma_junk`. **Graduated
+  `tune_004340`** (whitelist +1, 0 regressions, comparator `facts_misses:1`).
+
+### Bug 16 — slur start is not anchored on a rest — FIXED 2026-06-14
+
+`tune_008749` (`(6:4:6(z/G/A/B/c/d/)`): the slur-open `(` sits immediately before the
+rest `z/`, so the slur must start **on the rest** (abc2xml emits `<slur type="start"/>`
+on the rest, `start=""`). croma was relocating the slur start onto the **next pitched
+note G**, skipping the rest (`start="G4"`). Same in measure 5.
+
+- **Spec:** §4.11/§4.20 (KB raw line 1050/1330) — `()` slurs enclose the note sequence
+  beginning where `(` appears; the spec does not forbid a slur starting on a rest, and
+  §4.5 allows rests to be modified like notes.
+- **Fix (2026-06-14):** `attach_pending_slur_starts` (`lower/voice.rs`) now anchors a
+  pending start on the first timed Note **or Rest** of the group (skipping spacers); the
+  existing `attach_slur`/`write_note` paths already emit `<notations>` on rest `<note>`
+  elements. Test `slur_start_anchors_on_a_following_rest`. **Graduated `tune_008749`**
+  (whitelist +1, 0 regressions).
+
+### Bug 17 — second `||` dropped on an empty measure between consecutive barlines (HIGH)
+
+`tune_003874` (lines 17–19 `| DD EF ||` / `"B"` / `||"Gm"G4`): two consecutive `||`
+double-bars bracket an orphan chord `"B"`. croma emits a fully **empty** measure 12 with
+**no right barline at all** (the second `||` is dropped) and pushes `"B"` into m13;
+abc2xml keeps `"B"` + a `light-light` right barline on m12. Minimal repro: consecutive
+`||` around an orphan chord → croma emits an empty measure with no right barline. Note
+count 129=129 (no music dropped). **Same family as the barline cluster / Bug 4** (croma
+gates barline emission on a real note event and mishandles the empty measure between a
+run of barlines) — high regression risk, belongs in the focused barline session, not a
+drive-by.
 
 > **Barline croma-bug cluster (the session's main fix lead).** Bugs 7, 8, 13, 14 (clean,
 > HIGH) plus the whitespace `| |` family (Bug 9, debatable) share two root themes worth one

@@ -464,6 +464,27 @@ impl LoweringState {
         }
         self.push_time_group(events, line_index, source_order);
 
+        // Chord-internal slur markers bind to their OWN member (ABC 2.1 §4.11:
+        // slurs "into, out of and between chords"), not the chord head/tail.
+        // Run after the group is pushed so member indices exist (one-to-one with
+        // `chord.members` in order), threading each marker through the voice-level
+        // open-slur stack so slurs that cross the chord boundary still pair.
+        if chord
+            .members
+            .iter()
+            .any(|member| !member.slur_starts.is_empty() || !member.slur_ends.is_empty())
+            && let Some(group) = self.time_groups.last().cloned()
+        {
+            for (member, &event_index) in chord.members.iter().zip(group.iter()) {
+                for start in &member.slur_starts {
+                    self.open_chord_member_slur(event_index, *start);
+                }
+                for end in &member.slur_ends {
+                    self.close_chord_member_slur(event_index, *end);
+                }
+            }
+        }
+
         // Register chord-internal tie markers (`[DA-]`) as pending ties keyed to
         // the specific member that carried the `-`. This runs after the group is
         // pushed so the member indices exist and so the tie matches the *next*
@@ -706,11 +727,21 @@ impl LoweringState {
         if self.pending_slur_starts.is_empty() {
             return;
         }
-        let Some(event_index) = group
-            .iter()
-            .copied()
-            .find(|index| lowered_timed_note(self.lowered.get(*index)).is_some())
-        else {
+        // The slur `(` binds to the immediately-following element, which may be a
+        // rest (`(z/G/...`): a rest carries notations in MusicXML, so anchor the
+        // start on the first timed note OR rest of the group (skipping spacers).
+        // Earlier this looked for a note only, relocating the start onto the next
+        // pitched note and skipping the rest (ABC 2.1 §4.11/§4.20; tune_008749).
+        let Some(event_index) = group.iter().copied().find(|index| {
+            matches!(
+                self.lowered.get(*index),
+                Some(LoweredEvent::Timed(timed))
+                    if matches!(
+                        timed.event.kind,
+                        LoweredEventAtomKind::Note { .. } | LoweredEventAtomKind::Rest { .. }
+                    )
+            )
+        }) else {
             return;
         };
         for slur in std::mem::take(&mut self.pending_slur_starts) {
@@ -919,6 +950,54 @@ impl LoweringState {
                 dotted: marker.dotted,
             });
         }
+    }
+
+    /// Open a slur on a specific chord member: allocate a pair id, push it onto
+    /// the voice-level open-slur stack (so a `)` outside the chord can still
+    /// close it), and attach the start to that member's event (ABC 2.1 §4.11).
+    fn open_chord_member_slur(&mut self, event_index: usize, marker: SlurSyntax) {
+        let open = OpenSlur {
+            pair_id: self.next_slur_id,
+            marker,
+        };
+        self.next_slur_id = self.next_slur_id.saturating_add(1);
+        self.open_slurs.push(open);
+        self.attach_slur(event_index, open.pair_id, SlurRole::Start, marker);
+    }
+
+    /// Close a slur on a specific chord member. Mirrors `apply_slur`'s End
+    /// matching (dotted-aware crossing recovery) but attaches the stop to this
+    /// member rather than the last note overall.
+    fn close_chord_member_slur(&mut self, event_index: usize, marker: SlurSyntax) {
+        let open = if self
+            .open_slurs
+            .last()
+            .is_some_and(|open| open.marker.dotted != marker.dotted)
+            && let Some(position) = self
+                .open_slurs
+                .iter()
+                .rposition(|open| open.marker.dotted == marker.dotted)
+        {
+            self.diagnostics.push(crossing_slur_warning(marker.span));
+            Some(self.open_slurs.remove(position))
+        } else {
+            self.open_slurs.pop()
+        };
+        let Some(open) = open else {
+            self.diagnostics.push(unmatched_slur_warning(marker.span));
+            return;
+        };
+        let start_was_pending = self
+            .pending_slur_starts
+            .iter()
+            .any(|pending| pending.pair_id == open.pair_id);
+        if start_was_pending {
+            self.pending_slur_starts
+                .retain(|pending| pending.pair_id != open.pair_id);
+            self.diagnostics.push(unmatched_slur_warning(marker.span));
+            return;
+        }
+        self.attach_slur(event_index, open.pair_id, SlurRole::Stop, marker);
     }
 
     pub(crate) fn finish_open_constructs(&mut self) {

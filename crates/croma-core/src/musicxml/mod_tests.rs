@@ -1223,6 +1223,72 @@ fn leading_double_and_final_barlines_do_not_create_empty_measure() {
 }
 
 #[test]
+fn double_bar_across_backslash_continuation_is_coalesced() {
+    // tune_001312: a music line ending `...|\` continued (backslash) to a line
+    // starting with `|` forms an adjacent `||` thin-thin double bar (the line
+    // continuation joins them for processing). croma dropped it — measure 1 (the
+    // bar before the seam) got no right barline. abc2xml emits light-light.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |\\\n| G A B c|]\n";
+    let export = export_musicxml(source).expect("seam || should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert!(
+        has_barline(&measures[0], "right", Some("light-light"), None),
+        "the `|\\`+`|` seam must coalesce into a light-light double bar: {}",
+        export.musicxml
+    );
+}
+
+#[test]
+fn forward_repeat_and_second_ending_share_one_left_barline() {
+    // tune_005957: `:|:[2` puts a forward-repeat start AND a 2nd-ending start on
+    // one measure's left edge. croma emitted TWO <barline location="left">, and
+    // music21 keeps only the second, silently dropping the forward repeat (Bug 8).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|: C D E F |1 G A B c :|:[2 A B c d|]\n";
+    let export = export_musicxml(source).expect(":|:[2 should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    let last = measures.last().expect("second-ending measure");
+    let lefts: Vec<_> = last
+        .barlines
+        .iter()
+        .filter(|barline| barline.location == "left")
+        .collect();
+    assert_eq!(
+        lefts.len(),
+        1,
+        "the 2nd-ending measure must carry ONE merged left barline, not two: {}",
+        export.musicxml
+    );
+    assert_eq!(
+        lefts[0].repeat_direction.as_deref(),
+        Some("forward"),
+        "the forward repeat must survive on the merged left barline: {}",
+        export.musicxml
+    );
+}
+
+#[test]
+fn liberal_colon_thick_barline_is_a_backward_repeat() {
+    // ABC 2.1 §4.8 liberal recognition: `:]` = `:|]` (repeat-end dots + thick
+    // final bar), so the closing bar is light-heavy + a backward repeat. croma
+    // normalized `:]` to a bare boundary, dropping both (tune_000746).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|: C D E F | G A B c :]\n";
+    let export = export_musicxml(source).expect(":] should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    let last = measures.last().expect("at least one measure");
+    assert!(
+        has_barline(last, "right", Some("light-heavy"), Some("backward")),
+        "`:]` must export light-heavy + backward repeat: {}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn leading_liberal_barline_diagnoses_and_keeps_measure_timing() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\n[::] C D E F |]\n";
     let export = export_musicxml(source).expect("liberal leading barline should recover");
@@ -1421,6 +1487,40 @@ fn direction_only_measure_preserves_trailing_initial_barline() {
         Some("light-heavy"),
         None
     ));
+}
+
+#[test]
+fn leading_invisible_barline_on_annotation_only_measure_is_emitted() {
+    // tune_004088/010209: `"^A"[|] CDEF` at body start. The invisible barline
+    // `[|]` terminates a note-less annotation-only measure 1 and must export as
+    // <bar-style>none</bar-style>; croma logged the policy but dropped the glyph
+    // (the barline leads its measure and matched neither barline filter).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"^A\"[|] C D E F|]\n";
+    let export = export_musicxml(source).expect("leading invisible barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert!(
+        has_barline(&measures[0], "right", Some("none"), None),
+        "annotation-only measure 1 must keep its [|] none barline: {}",
+        export.musicxml
+    );
+}
+
+#[test]
+fn closing_barline_on_directive_and_spacer_only_measure_is_emitted() {
+    // tune_003124: `...!segno!y |]` — a measure whose only content is a !segno!
+    // directive plus a spacer `y` (no note) must still emit its `|]` light-heavy.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F|!segno!y |]\n";
+    let export = export_musicxml(source).expect("directive+spacer barline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert!(
+        has_barline(measures.last().unwrap(), "right", Some("light-heavy"), None),
+        "directive+spacer-only measure must keep its |] barline: {}",
+        export.musicxml
+    );
 }
 
 #[test]

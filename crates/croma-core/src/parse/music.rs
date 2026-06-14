@@ -184,13 +184,30 @@ fn merge_continued_barline_run(
         return;
     }
 
+    let next_starts_variant_ending =
+        matches!(current.items.get(1), Some(MusicItem::VariantEnding(_)));
     let Some(MusicItem::Barline(previous_barline)) = previous.items.last_mut() else {
         return;
     };
     let Some(MusicItem::Barline(next_barline)) = current.items.first() else {
         return;
     };
-    if !previous_barline.raw.contains(']') {
+
+    // The backslash joins the two lines for processing, so a barline ending the
+    // first line and a barline opening the second can be adjacent glyphs of ONE
+    // barline run (ABC 2.1 line-continuation): `...|\`<EOL>`|...` is `||`
+    // (thin-thin double). Merge when either the previous run already carries a
+    // thick `]` glyph (the original case), OR both sides are pipe-only runs
+    // (`|`/`||`) — but NEVER when the next line opens a repeat (`|:`/`:|`, not
+    // pipe-only) or a variant ending, whose leading `|` is a deliberate new
+    // boundary rather than a continuation of the previous bar (tune_002255,
+    // tune_013361). (tune_001312: the plain `|`+`|` seam.)
+    let pipe_only = |raw: &str| !raw.is_empty() && raw.bytes().all(|byte| byte == b'|');
+    let should_merge = previous_barline.raw.contains(']')
+        || (pipe_only(&previous_barline.raw)
+            && pipe_only(&next_barline.raw)
+            && !next_starts_variant_ending);
+    if !should_merge {
         return;
     }
 
