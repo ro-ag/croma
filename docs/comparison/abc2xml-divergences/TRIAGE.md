@@ -97,6 +97,31 @@ PY
 > subagents in parallel, but **every dropped file must have its own verdict** — never a
 > shared, heuristic one.
 
+### Human-approved bulk exception: forced-4/4 bar-duration artifact
+
+If the user explicitly approves bulk handling, it is acceptable to bulk-drop a
+**narrow same-signature** set when per-file subagents would only burn tokens. The
+current approved case is the pure `measure_alignment` / `measure.bar_duration`
+signature where abc2xml inserts an unsourced first-measure `4/4` and croma either
+emits free meter/no time signature or the source meter from a body `M:` field.
+
+Bulk handling is still fail-closed. Before appending any `dropped.csv` row,
+verify each original ABC file directly with a source regex/token scan and XML
+checks:
+
+- the file has only `measure_alignment` rows, and every row is
+  `component=measure`, `field_name=bar_duration`;
+- every reference value is `4.0`, and every croma value differs from `4.0`;
+- abc2xml MusicXML measure 1 starts with `<time>4/4</time>`;
+- croma MusicXML measure 1 does **not** start with `<time>4/4</time>`;
+- the regex/token scan of the original ABC source's sounding note letters equals
+  croma's pitched-note count and abc2xml's pitched-note count.
+
+If any check fails, keep the file in the worklist and send it through the normal
+one-investigator-per-file path. This exception does **not** apply to
+`missing_in_croma`/`extra_in_croma` cascades, measure-numbering rows, or any file
+with pitch/duration/voice/lyric content rows.
+
 The subagent treats **croma, abc2xml, music21, and the comparator** as all fallible;
 trusts none; reasons from the ABC source and the ABC 2.1 spec KB. Its full protocol and
 runnable commands live in `.claude/agents/abc-divergence-investigator.md` (the body is
