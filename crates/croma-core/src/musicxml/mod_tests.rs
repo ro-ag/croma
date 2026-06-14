@@ -394,6 +394,32 @@ fn trailing_colon_after_final_bar_is_a_repeat_start_not_a_phantom_measure() {
 }
 
 #[test]
+fn line_leading_colon_after_repeat_end_does_not_emit_phantom_measure() {
+    // tune_015346: a line-leading `:` after a previous `:|` marks the next
+    // repeated section. It must attach to the following pickup, not emit an
+    // empty measure between the repeat end and `gf`.
+    let source = "X:1\nM:4/4\nL:1/8\nK:G\nGA|G2GGG2:|\n:gf|e2ddd2GA|\n";
+    let export = export_musicxml(source).expect("line-leading colon should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4"]);
+    assert_eq!(note_steps(&measures[2]), vec!['G', 'F']);
+    assert!(has_barline(
+        &measures[1],
+        "right",
+        Some("light-heavy"),
+        Some("backward")
+    ));
+    assert!(has_barline(
+        &measures[2],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+}
+
+#[test]
 fn lone_colon_between_notes_is_a_liberal_measure_boundary() {
     // `CDEF:GABc|`: §4.8's liberal-recognition guidance covers colon runs;
     // dropping the boundary mangled the measure structure (71 files). The
