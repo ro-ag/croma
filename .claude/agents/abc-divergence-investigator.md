@@ -27,15 +27,22 @@ Trust **none** of them. Reason from the ABC source and the ABC 2.1 specification
 
 ## Commands (copy these; `<stem>` is the filename without `.abc`)
 
+> **Write to a `<stem>`-scoped temp path, never a bare `/tmp/croma.xml`.** Many
+> investigators run in parallel; a shared `/tmp/croma.xml` gets clobbered mid-run by
+> a sibling investigating a different tune, so you read another tune's output and
+> reach a false verdict. Always use `/tmp/croma_<stem>.xml` (substitute the real
+> stem) so your file is yours alone. The subcommand is `croma xml` (not `convert`);
+> `croma convert` is not a command and writes nothing.
+
 ```sh
 # raw ABC
 cat docs/untracked/corpus/zenodo-10k/abc/<filename>
-# croma output + warnings (warnings are evidence)
-target/debug/croma xml docs/untracked/corpus/zenodo-10k/abc/<filename> > /tmp/croma.xml 2>/tmp/croma.err; cat /tmp/croma.err
+# croma output + warnings (warnings are evidence) — NOTE the <stem>-scoped paths
+target/debug/croma xml docs/untracked/corpus/zenodo-10k/abc/<filename> > /tmp/croma_<stem>.xml 2>/tmp/croma_<stem>.err; cat /tmp/croma_<stem>.err
 # abc2xml reference output (pre-generated)
 cat docs/untracked/corpus/zenodo-10k/musicxml/<stem>.xml
 # music21 facts + comparison for both sides
-uv run python tools/music21_compare.py --croma-xml /tmp/croma.xml --reference-xml docs/untracked/corpus/zenodo-10k/musicxml/<stem>.xml --json
+uv run python tools/music21_compare.py --croma-xml /tmp/croma_<stem>.xml --reference-xml docs/untracked/corpus/zenodo-10k/musicxml/<stem>.xml --json
 # what the comparator reported for this file (filter the worklist)
 grep -F '<filename>' docs/untracked/raw-baseline/mismatches.jsonl
 ```

@@ -917,6 +917,21 @@ fn tempo_text_only_stays_words_with_default_sound() {
 }
 
 #[test]
+fn empty_tempo_field_emits_no_direction() {
+    // An empty `Q:` field carries neither a numeric tempo nor a quoted text
+    // string (ABC 2.1 §3.1.8), so there is nothing to render. Croma must not
+    // emit a degenerate empty <words></words> direction — abc2xml emits nothing,
+    // and croma already suppresses empty "" annotations, so this should match.
+    let source = "X:1\nM:4/4\nL:1/4\nQ:\nK:C\nC4|\n";
+    let export = export_musicxml(source).expect("empty tempo score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<words>"), 0);
+    assert_eq!(count(&export.musicxml, "<direction>"), 0);
+    assert_eq!(count(&export.musicxml, "<direction "), 0);
+}
+
+#[test]
 fn tempo_text_plus_beat_emits_words_and_metronome() {
     let source = "X:1\nM:4/4\nL:1/4\nQ:\"allegretto\" 1/4=110\nK:C\nC4|\n";
     let export = export_musicxml(source).expect("tempo score should export");
