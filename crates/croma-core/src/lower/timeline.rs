@@ -81,6 +81,14 @@ impl VoiceTimelineBuilder {
             LoweredEvent::Timed(timed) => self.push_timed(timed),
             LoweredEvent::Untimed(Event::Barline { kind, span }) => {
                 self.finish_overlay(diagnostics);
+                let kind = if kind == BarlineKind::Liberal
+                    && self.is_empty_measure_start()
+                    && self.previous_measure_ends_repeat()
+                {
+                    BarlineKind::RepeatStart
+                } else {
+                    kind
+                };
                 let starts_current_measure = self.is_empty_measure_start()
                     && (starts_measure_barline(kind)
                         || (self.is_first_measure_start()
@@ -288,6 +296,19 @@ impl VoiceTimelineBuilder {
                             )
                     })
             })
+    }
+
+    fn previous_measure_ends_repeat(&self) -> bool {
+        self.measures.iter().rev().nth(1).is_some_and(|measure| {
+            measure.events.iter().any(|event| {
+                matches!(
+                    event.kind,
+                    TimelineEventKind::Barline {
+                        kind: BarlineKind::RepeatEnd | BarlineKind::RepeatBoth
+                    }
+                )
+            })
+        })
     }
 
     fn start_measure_after_barline(&mut self, span: Span) {
