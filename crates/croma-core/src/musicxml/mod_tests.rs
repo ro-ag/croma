@@ -1517,7 +1517,12 @@ fn closing_barline_on_directive_and_spacer_only_measure_is_emitted() {
     assert_balanced_xml(&export.musicxml);
     let measures = musicxml_measures(&export.musicxml);
     assert!(
-        has_barline(measures.last().unwrap(), "right", Some("light-heavy"), None),
+        has_barline(
+            measures.last().expect("at least one measure"),
+            "right",
+            Some("light-heavy"),
+            None
+        ),
         "directive+spacer-only measure must keep its |] barline: {}",
         export.musicxml
     );
