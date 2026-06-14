@@ -90,6 +90,19 @@ impl<'line> MusicLineParser<'line> {
             self.push_token(MusicTokenKind::Barline, span);
             return;
         }
+        let adjacent_before = self.text[..self.index]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| !ch.is_whitespace());
+        let adjacent_after = self.peek_next_char().is_some_and(|ch| !ch.is_whitespace());
+        // A single `:` at the start of a music segment is a stripped repeat
+        // start for the following notes. This shows up after section-ending
+        // `|]` lines in corpus files: treating it as a liberal boundary opens
+        // a zero-event phantom measure before the repeated section.
+        if !adjacent_before && adjacent_after {
+            self.parse_line_leading_colon_repeat_start();
+            return;
+        }
         // A lone `:` glued to a note group (`CDEF:GABc`) is still a bar-line
         // character run under §4.8's liberal-recognition guidance; dropping it
         // as malformed destroyed the measure boundary and cascaded
@@ -97,11 +110,6 @@ impl<'line> MusicLineParser<'line> {
         // `:` as a Liberal boundary (no repeat glyph) with the
         // liberal-spelling warning. A free-floating `: ` with whitespace on
         // both sides stays a malformed stray repeat dot.
-        let adjacent_before = self.text[..self.index]
-            .chars()
-            .next_back()
-            .is_some_and(|ch| !ch.is_whitespace());
-        let adjacent_after = self.peek_next_char().is_some_and(|ch| !ch.is_whitespace());
         if adjacent_before || adjacent_after {
             self.parse_barline(false);
             return;
@@ -112,6 +120,20 @@ impl<'line> MusicLineParser<'line> {
             "abc.music.invalid_barline",
             "A repeat dot must be part of a barline spelling",
         );
+    }
+
+    fn parse_line_leading_colon_repeat_start(&mut self) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Barline, span);
+        self.items.push(MusicItem::Barline(BarlineSyntax {
+            span,
+            kind: BarlineKind::RepeatStart,
+            dotted: false,
+            raw: ":".to_owned(),
+        }));
     }
 
     pub(super) fn parse_variant_ending(&mut self, shorthand: bool) {
