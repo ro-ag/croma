@@ -65,7 +65,11 @@ impl<'line> MusicLineParser<'line> {
             self.parse_barline(false);
             return;
         }
-        if self.peek_next_char() == Some('|') {
+        // A `:` immediately followed by a bar glyph is the repeat-end dots of
+        // that bar: `:|` (thin) and, under §4.8 liberal recognition, `:]` (the
+        // `]` thick bar serving as the boundary, i.e. `:|]`). Consume the whole
+        // run as one barline rather than splitting the `:` off as a stray dot.
+        if matches!(self.peek_next_char(), Some('|') | Some(']')) {
             self.parse_barline(false);
             return;
         }
@@ -247,7 +251,9 @@ pub(in crate::parse) fn barline_kind(raw: &str, dotted: bool) -> BarlineKind {
         // (`|:|` opens a repeat; `:|...|:` exact forms matched above).
         _ => {
             let forward = raw.find("|:");
-            let backward = if raw.starts_with(':') && raw.contains('|') {
+            let backward = if raw.starts_with(':') && (raw.contains('|') || raw.contains(']')) {
+                // Leading repeat dots over a `|` (`:|...`) or a `]` thick bar
+                // (`:]` = `:|]`, §4.8 liberal) are a repeat-end boundary.
                 Some(0)
             } else {
                 raw.find(":|")

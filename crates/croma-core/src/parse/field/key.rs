@@ -181,13 +181,21 @@ fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
 
     let mode = if mode_start < token.len() {
         // Any text after the tonic letter (and optional accidental) must be a
-        // recognised mode suffix, e.g. `Cmaj`, `Ador`. Otherwise the token is
-        // not a key tonic at all — for instance a clef shorthand (`bass`,
-        // `alto`) or a property token (`clef=bass`) that merely happens to start
-        // with a note letter must not be misread as a key change.
-        match parse_key_mode(&token[mode_start..]) {
+        // recognised mode suffix, e.g. `Cmaj`, `Ador`. A non-mode remainder that
+        // begins with a letter may be a clef shorthand (`bass`, `alto`) or a
+        // property token (`clef=bass`) that merely happens to start with a note
+        // letter, so the token is not a tonic at all and is rejected. But a
+        // remainder that begins with non-letter junk (e.g. a stray comma in
+        // `K:Bb, F`) cannot be a mode or clef word: recover the valid leading
+        // tonic and ignore the junk, matching the already-working spaced form
+        // `K:Bb F` (ABC 2.1 §3.1.14; tune_004340 mid-tune key change).
+        let remainder = &token[mode_start..];
+        match parse_key_mode(remainder) {
             Some(mode) => Some(mode),
-            None => return None,
+            None if remainder.starts_with(|c: char| c.is_ascii_alphabetic()) => {
+                return None;
+            }
+            None => None,
         }
     } else {
         None

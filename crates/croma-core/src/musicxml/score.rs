@@ -73,20 +73,42 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_initial_directions(part_index == 0);
             }
 
-            if pending_left_repeat {
-                self.write_barline(BarlineLocation::Left, BarlineKind::RepeatStart, &[]);
-                pending_left_repeat = false;
-            }
-
             let measure_refs = part_measure_refs(part, *measure_id);
             let left_barlines = unique_barlines(&measure_refs, true);
-            for barline in &left_barlines {
-                self.write_barline(BarlineLocation::Left, barline.kind, &[]);
-            }
-
             let endings = unique_endings(&measure_refs);
-            if !endings.is_empty() {
-                self.write_ending_barline(BarlineLocation::Left, &endings, EndingType::Start, None);
+            // A left forward-repeat is either deferred from a previous
+            // RepeatBoth / trailing `|:` (`pending_left_repeat`) or a leading
+            // `|:` in this measure (`unique_barlines(left)` only ever yields
+            // RepeatStart).
+            let has_left_repeat = pending_left_repeat
+                || left_barlines
+                    .iter()
+                    .any(|barline| barline.kind == BarlineKind::RepeatStart);
+            pending_left_repeat = false;
+
+            if has_left_repeat && !endings.is_empty() {
+                // `:|:[2` / `|:[2`: the forward repeat and the ending start share
+                // one measure edge — emit a SINGLE <barline location="left">
+                // carrying bar-style + <ending> + <repeat> so a standard consumer
+                // (music21) keeps the forward repeat instead of dropping it (Bug 8).
+                self.write_ending_barline(
+                    BarlineLocation::Left,
+                    &endings,
+                    EndingType::Start,
+                    Some(BarlineKind::RepeatStart),
+                );
+            } else {
+                if has_left_repeat {
+                    self.write_barline(BarlineLocation::Left, BarlineKind::RepeatStart, &[]);
+                }
+                if !endings.is_empty() {
+                    self.write_ending_barline(
+                        BarlineLocation::Left,
+                        &endings,
+                        EndingType::Start,
+                        None,
+                    );
+                }
             }
 
             if let Some(count) = unique_multiple_rest(&measure_refs) {

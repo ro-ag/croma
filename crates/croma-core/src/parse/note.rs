@@ -160,10 +160,14 @@ impl<'line> MusicLineParser<'line> {
         let mut closed = false;
         let mut stopped_at_barline = false;
         // Per-member slurs (`[(C(E] [C)E)]`, ABC 2.1 §4.11: "Both ties and
-        // slurs may be used into, out of and between chords"). A `(` inside
-        // the bracket opens a slur that binds forward to this chord; a `)`
-        // closes one ending on this chord — its item is deferred until after
-        // the chord item so lowering's stop-binding sees the chord.
+        // slurs may be used into, out of and between chords"). A `(` inside the
+        // bracket opens a slur on the member that follows it; a `)` closes one on
+        // the member that precedes it. Each binds to its own member (not the
+        // chord head/tail), mirroring the per-member `tie` handling below.
+        // `pending_member_starts` holds `(`s seen since the last member, to attach
+        // to the next member; `deferred_slur_ends` holds a `)` with no preceding
+        // member (malformed), re-emitted after the chord as a voice-level item.
+        let mut pending_member_starts: Vec<SlurSyntax> = Vec::new();
         let mut deferred_slur_ends = Vec::new();
 
         while let Some(ch) = self.peek_char() {
@@ -197,6 +201,8 @@ impl<'line> MusicLineParser<'line> {
                                 span: note.span,
                                 note,
                                 tie,
+                                slur_starts: std::mem::take(&mut pending_member_starts),
+                                slur_ends: Vec::new(),
                             });
                         }
                     } else {
@@ -215,6 +221,8 @@ impl<'line> MusicLineParser<'line> {
                             span: note.span,
                             note,
                             tie,
+                            slur_starts: std::mem::take(&mut pending_member_starts),
+                            slur_ends: Vec::new(),
                         });
                     }
                 }
@@ -241,18 +249,33 @@ impl<'line> MusicLineParser<'line> {
                     .peek_next_char()
                     .is_some_and(|next| next.is_ascii_digit()) =>
                 {
-                    self.parse_slur(SlurDirection::Start, false);
+                    let slur_start = self.index;
+                    self.bump_char();
+                    let span = self.span(slur_start, self.index);
+                    self.push_token(MusicTokenKind::Slur, span);
+                    pending_member_starts.push(SlurSyntax {
+                        span,
+                        dotted: false,
+                        direction: SlurDirection::Start,
+                    });
                 }
                 ')' => {
                     let slur_start = self.index;
                     self.bump_char();
                     let span = self.span(slur_start, self.index);
                     self.push_token(MusicTokenKind::Slur, span);
-                    deferred_slur_ends.push(SlurSyntax {
+                    let end = SlurSyntax {
                         span,
                         dotted: false,
                         direction: SlurDirection::End,
-                    });
+                    };
+                    // `)` closes a slur on the member it follows; with no preceding
+                    // member it is deferred to a voice-level item after the chord.
+                    if let Some(last) = members.last_mut() {
+                        last.slur_ends.push(end);
+                    } else {
+                        deferred_slur_ends.push(end);
+                    }
                 }
                 _ => {
                     self.parse_malformed_single(
@@ -276,10 +299,19 @@ impl<'line> MusicLineParser<'line> {
             );
             if recover_barline_members_as_notes && stopped_at_barline {
                 for member in members {
+                    for slur in member.slur_starts {
+                        self.items.push(MusicItem::Slur(slur));
+                    }
                     self.items.push(MusicItem::Note(member.note));
                     if let Some(tie) = member.tie {
                         self.items.push(MusicItem::Tie(tie));
                     }
+                    for slur in member.slur_ends {
+                        self.items.push(MusicItem::Slur(slur));
+                    }
+                }
+                for slur in deferred_slur_ends {
+                    self.items.push(MusicItem::Slur(slur));
                 }
             }
             return;
@@ -301,6 +333,11 @@ impl<'line> MusicLineParser<'line> {
             length,
         }));
         for slur in deferred_slur_ends {
+            self.items.push(MusicItem::Slur(slur));
+        }
+        // A `(` after the last member with no member to bind to (`[C(]`) opens a
+        // slur on the FOLLOWING note, so re-emit it as a voice-level item.
+        for slur in pending_member_starts {
             self.items.push(MusicItem::Slur(slur));
         }
     }
