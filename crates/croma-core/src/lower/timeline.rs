@@ -289,20 +289,16 @@ impl VoiceTimelineBuilder {
     }
 
     fn previous_measure_ends_with_invisible_barline(&self) -> bool {
-        self.measures
-            .iter()
-            .rev()
-            .nth(1)
-            .is_some_and(|measure| {
-                measure.events.iter().rev().any(|event| {
-                    matches!(
-                        event.kind,
-                        TimelineEventKind::Barline {
-                            kind: BarlineKind::Invisible
-                        }
-                    )
-                })
+        self.measures.iter().rev().nth(1).is_some_and(|measure| {
+            measure.events.iter().rev().any(|event| {
+                matches!(
+                    event.kind,
+                    TimelineEventKind::Barline {
+                        kind: BarlineKind::Invisible
+                    }
+                )
             })
+        })
     }
 
     fn is_empty_measure_start(&self) -> bool {
