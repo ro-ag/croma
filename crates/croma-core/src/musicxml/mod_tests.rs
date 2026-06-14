@@ -1374,12 +1374,7 @@ fn repeat_end_after_invisible_barline_closes_previous_measure() {
     assert_balanced_xml(&export.musicxml);
     let measures = musicxml_measures(&export.musicxml);
     assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
-    assert!(has_barline(
-        &measures[0],
-        "right",
-        Some("none"),
-        None
-    ));
+    assert!(has_barline(&measures[0], "right", Some("none"), None));
     assert!(has_barline(
         &measures[0],
         "right",
