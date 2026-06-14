@@ -2454,6 +2454,36 @@ fn lyric_hyphen_controls_export_syllabic_begin_middle_end() {
 }
 
 #[test]
+fn trailing_lyric_hyphen_keeps_syllabic_word_open() {
+    fn syllabic_values(source: &str) -> Vec<String> {
+        let export = export_musicxml(source).expect("trailing-hyphen lyric score should export");
+        assert_balanced_xml(&export.musicxml);
+        assert!(export.diagnostics.is_empty());
+        export
+            .musicxml
+            .match_indices("<syllabic>")
+            .map(|(index, _)| {
+                let start = index + "<syllabic>".len();
+                let end = export.musicxml[start..]
+                    .find("</syllabic>")
+                    .map(|offset| start + offset)
+                    .expect("syllabic should close");
+                export.musicxml[start..end].to_owned()
+            })
+            .collect()
+    }
+
+    assert_eq!(
+        syllabic_values("X:1\nT:Trailing Begin\nM:2/4\nL:1/4\nK:C\nC D|\nw: be-*\n"),
+        vec!["begin"]
+    );
+    assert_eq!(
+        syllabic_values("X:1\nT:Trailing Middle\nM:2/4\nL:1/4\nK:C\nC D|\nw: au- di-\n"),
+        vec!["begin", "middle"]
+    );
+}
+
+#[test]
 fn orphan_lyric_hyphen_does_not_start_syllabic_word() {
     let source = "X:1\nT:Orphan Hyphen\nM:1/4\nL:1/4\nK:C\nC|\nw: a-b\n";
     let export = export_musicxml(source).expect("orphan hyphen score should export");

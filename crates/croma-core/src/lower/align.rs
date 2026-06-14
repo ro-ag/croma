@@ -146,16 +146,19 @@ fn align_lyric_line(
                 }
             }
             LyricTokenKind::Hyphen => {
+                let future_tokens = &line.tokens[token_index + 1..];
                 if position > start
-                    && (future_syllable_can_attach(
-                        refs,
-                        start,
-                        end,
-                        position,
-                        block_measure,
-                        last_bar_consume,
-                        &line.tokens[token_index + 1..],
-                    ) || future_same_verse_syllable_can_attach(refs, verse, future_contexts))
+                    && (trailing_word_hyphen(future_tokens)
+                        || future_syllable_can_attach(
+                            refs,
+                            start,
+                            end,
+                            position,
+                            block_measure,
+                            last_bar_consume,
+                            future_tokens,
+                        )
+                        || future_same_verse_syllable_can_attach(refs, verse, future_contexts))
                     && let Some(reference) = refs.get(position - 1).copied()
                 {
                     attach_lyric(
@@ -208,6 +211,12 @@ fn align_lyric_line(
     {
         diagnostics.push(lyric_syllable_count_warning(line.value.span));
     }
+}
+
+fn trailing_word_hyphen(tokens: &[LyricTokenSyntax]) -> bool {
+    !tokens
+        .iter()
+        .any(|token| matches!(token.kind, LyricTokenKind::Syllable))
 }
 
 fn future_same_verse_syllable_can_attach(
