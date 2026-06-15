@@ -424,17 +424,28 @@ note G**, skipping the rest (`start="G4"`). Same in measure 5.
   elements. Test `slur_start_anchors_on_a_following_rest`. **Graduated `tune_008749`**
   (whitelist +1, 0 regressions).
 
-### Bug 17 — second `||` dropped on an empty measure between consecutive barlines (HIGH)
+### Bug 17 — second `||` dropped on an empty measure between consecutive barlines — FIXED (orphan `"B"`) 2026-06-14; residual is the chord-before-barline binding policy
 
-`tune_003874` (lines 17–19 `| DD EF ||` / `"B"` / `||"Gm"G4`): two consecutive `||`
-double-bars bracket an orphan chord `"B"`. croma emits a fully **empty** measure 12 with
-**no right barline at all** (the second `||` is dropped) and pushes `"B"` into m13;
-abc2xml keeps `"B"` + a `light-light` right barline on m12. Minimal repro: consecutive
-`||` around an orphan chord → croma emits an empty measure with no right barline. Note
-count 129=129 (no music dropped). **Same family as the barline cluster / Bug 4** (croma
-gates barline emission on a real note event and mishandles the empty measure between a
-run of barlines) — high regression risk, belongs in the focused barline session, not a
-drive-by.
+**Fixed (the orphan-`"B"` half):** a dangling chord symbol / annotation in a NOTE-LESS measure
+(an orphan `"B"` between two `||`; the §6.1.2 `y`-spacer measure of Bug 19) is now flushed to the
+measure's bar line instead of deferring across it to the next note. Mechanism: in
+`flush_pending_barline_directions` (`crates/croma-core/src/lower/voice.rs`) a harmony candidate is
+held for its note only when the current measure HAS a timed note/rest (`broken_left_available`); in a
+note-less measure it has no note to host it, so per §4.18/§4.19 it anchors to the bar line. Flushing it
+also un-empties the measure, so the second `||` emits `light-light` (no separate `closes_empty_measure_barline`
+change needed). The flushed symbol now goes through the chord-symbol channel (`attachments.chord_symbols`)
+so a valid chord renders as `<harmony>` and non-harmony text falls back to `<words>` — exactly as it
+would on a note. Test `orphan_chord_symbol_between_double_bars_anchors_to_its_note_less_measure`; the
+`||` and the `"B"` harmony now match abc2xml (m12). **Bug 19 (`tune_003230`) GRADUATED** by the same
+fix; `tune_003874` reduced 5→3 rows.
+
+**Residual (kept in worklist):** `tune_003874`'s remaining 3 rows are the section labels `"A1"`/`"A2"`/`"C"`
+that sit AFTER the last note of a measure-WITH-notes, before a section barline (`|`/`||`/`|:`). croma
+binds a chord-before-a-barline to the NEXT note (pinned by `chord_symbol_before_barline_binds_to_next_note`,
+§4.18 "left of the note it is sounded with"); abc2xml binds these to the CURRENT measure's bar line
+(§4.19 "following note, rest or bar line"). That is a deliberate-policy difference for a different
+construct (a note-bearing measure), not the note-less orphan fixed here — needs its own spec
+adjudication (chord-vs-annotation classification of non-chord text like `"A1"`). Original report below.
 
 > **Barline croma-bug cluster (the session's main fix lead).** Bugs 7, 8, 13, 14 (clean,
 > HIGH) plus the whitespace `| |` family (Bug 9, debatable) share two root themes worth one
@@ -471,7 +482,14 @@ with no metronome. abc2xml leniently reads the leading integer.
 - **Graduates:** `tune_009608` (`Q:400.` → metronome eighth=400, sound tempo 200.00),
   `tune_001192` (`Q:320s` → metronome eighth=320, sound tempo 160.00).
 
-### Bug 19 — text-only `y`-spacer bar emits spurious empty measure + mis-anchors annotation (`tune_003230`) — DEFERRED (barline/note-less-measure cluster)
+### Bug 19 — text-only `y`-spacer bar emits spurious empty measure + mis-anchors annotation (`tune_003230`) — FIXED + GRADUATED 2026-06-14
+
+**Fixed (with Bug 17's note-less-measure flush):** the note-less `y`-spacer measure now carries its
+annotation at the bar line instead of deferring it to the `f8` measure. `"Final measure at end."`
+(a non-harmony quoted string, but a §4.19 chord-candidate by the leading-letter heuristic) is flushed
+to the spacer measure's bar line where it falls back to `<words>`. Test
+`annotation_on_note_less_spacer_measure_stays_on_that_measure`. **Graduated `tune_003230`** (whitelist
+9,392 → 9,393, 0 regressions). Original report below.
 
 `tune_003230` final line `... f4 "Da Capo"c4 |] "Final measure at end."y16 | f8 |]`: the bar
 `"Final measure at end."y16 |` is note-less (the `y` spacer creates no rest, §6.1.2) and should

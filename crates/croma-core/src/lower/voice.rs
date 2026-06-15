@@ -250,16 +250,33 @@ impl LoweringState {
                 .collect();
         }
 
+        // A harmony candidate normally waits for the note it precedes, even
+        // across a bar line (`"F"| c` binds F to c). But in a NOTE-LESS measure
+        // — no note or rest since the last bar line: an orphan `"B"` between two
+        // `||`, or a `y`-spacer measure carrying only an annotation — there is
+        // no following note in this measure to host it, so per ABC 2.1
+        // §4.18/§4.19 it anchors to this measure's bar line instead of deferring
+        // across it. `broken_left_available` is the §4.4 "a timed note/rest
+        // exists in the current measure" flag, still set here (the boundary
+        // reset runs after this flush).
+        let measure_is_note_less = !self.broken_left_available;
         let mut remaining_symbols = Vec::new();
         for text in self.pending_chord_symbols.drain(..) {
             // A final barline still has no following symbol; keep the pending
             // text for the end-of-voice dangling diagnostic path.
-            if kind == BarlineKind::Final || quoted_text_may_be_harmony(text.text.as_str()) {
+            let keep_pending = kind == BarlineKind::Final
+                || (quoted_text_may_be_harmony(text.text.as_str()) && !measure_is_note_less);
+            if keep_pending {
                 remaining_symbols.push(text);
             } else {
                 direction_span = Some(merge_spans(direction_span, text.span));
+                // The chord-symbol channel renders a valid chord as `<harmony>`
+                // (the orphan `"B"` between two `||`) and falls back to `<words>`
+                // for non-harmony text (`"I"`, `"Final."`), matching how the same
+                // symbol would render on a note. The annotations channel below is
+                // words-only, so a flushed chord must not go there.
                 attachments
-                    .annotations
+                    .chord_symbols
                     .push(chord_symbol_attachment_model(&text));
             }
         }
@@ -278,7 +295,10 @@ impl LoweringState {
         }
         self.pending_decorations = remaining_decorations;
 
-        if attachments.annotations.is_empty() && attachments.decorations.is_empty() {
+        if attachments.annotations.is_empty()
+            && attachments.decorations.is_empty()
+            && attachments.chord_symbols.is_empty()
+        {
             return;
         }
 
