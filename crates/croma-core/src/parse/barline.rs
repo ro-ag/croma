@@ -116,11 +116,16 @@ impl<'line> MusicLineParser<'line> {
             .next_back()
             .is_some_and(|ch| !ch.is_whitespace());
         let adjacent_after = self.peek_next_char().is_some_and(|ch| !ch.is_whitespace());
-        // A single `:` at the start of a music segment is a stripped repeat
-        // start for the following notes. This shows up after section-ending
-        // `|]` lines in corpus files: treating it as a liberal boundary opens
-        // a zero-event phantom measure before the repeated section.
-        if !adjacent_before && adjacent_after {
+        // A single `:` at the START OF A LINE (nothing but whitespace before it
+        // on this line) is a stripped repeat start for the following notes. This
+        // shows up after section-ending `|]` lines in corpus files: treating it
+        // as a liberal boundary opens a zero-event phantom measure before the
+        // repeated section. A `:` that merely has whitespace *immediately*
+        // before it but real content earlier on the line (`... A4 :D ...`,
+        // tune_003603) is a stray mid-line repeat dot, NOT a section start — it
+        // must not fabricate a forward repeat.
+        let line_leading = self.text[..self.index].trim().is_empty();
+        if line_leading && adjacent_after {
             self.parse_line_leading_colon_repeat_start();
             return;
         }
