@@ -1350,6 +1350,16 @@ fn additive_u32(value: &str) -> Option<u32> {
 fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
     let raw = barline.raw.strip_prefix('.').unwrap_or(&barline.raw);
     if barline.kind == BarlineKind::RepeatStart {
+        // A fused closer+repeat-start run (`|]:`, `]||:`, `||]:`): the thick `]`
+        // bar closes the current measure (light-heavy) while the trailing `:`
+        // opens the next section's repeat. Split like `||:`/`[|:` so the closer
+        // lands on this measure's right and the forward repeat leads the next
+        // measure — otherwise the `]` final bar is silently dropped (ABC 2.1
+        // §4.8). Checked before the `||`/`[|` arms because `||]:` starts with
+        // `||` yet must close light-heavy, not light-light.
+        if raw.contains(']') {
+            return vec![BarlineKind::Final, BarlineKind::RepeatStart];
+        }
         if raw.starts_with("||") {
             return vec![BarlineKind::Double, BarlineKind::RepeatStart];
         }
