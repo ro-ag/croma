@@ -508,7 +508,23 @@ key-composition logic croma's key-change lowering lacks; naively un-gating would
 signature (fifths=0), **losing** Gmin's Bb/Eb — a different wrong answer. Real fidelity gap, kept
 in the worklist, but needs a spec call + key-merge work, like Bug 11.
 
-### Bug 22 — backslash-joined `||` before a `|N` ending drops the double bar (`tune_006302`) — DEFERRED (barline cluster)
+### Bug 22 — backslash-joined `||` before a `|N` ending drops the double bar (`tune_006302`) — FIXED 2026-06-14 (Cluster D)
+
+**Fixed:** `merge_continued_barline_run` (`crates/croma-core/src/parse/music.rs`) dropped the
+`!next_starts_variant_ending` guard that blocked Bug 18's `\`-seam coalesce whenever the next
+line opened a `|N` ending. Two investigators (tune_006302 + tune_002255) confirmed from §6.1.1 +
+§4.8 that a two-pipe `||1` join is a `||` (light-light) double bar followed by the ending — the
+ending start is a separate `VariantEnding` item that survives the `|`-merge intact. To avoid
+regressing `tune_013361` — where the `\` continuation bridges an intervening `M:1/4` information
+field (`...| \` / `M:1/4` / `|1 ...`), so the bars are NOT adjacent — the merge now also requires
+the seam to join **directly consecutive** lines (`edge.to_line == edge.from_line + 1`). Tests
+`double_bar_across_backslash_continuation_before_variant_ending_is_coalesced` and
+`backslash_seam_across_intervening_field_does_not_coalesce` (`musicxml/mod_tests.rs`).
+**Graduated `tune_006302`** (whitelist 9,387 → 9,388, 0 regressions; tune_013361 stays matched).
+`tune_002255` was a one-pipe seam (prev line ends ` \`, no trailing `|`) — already correct, no
+change. Original report below.
+
+
 
 `tune_006302` line 12 ends `... edB/c/ |\` and line 13 begins `|1 "Am"A3- ...`. Per §6.1.1 (KB
 raw line 1502) the trailing `\` "effectively joins two lines together for processing," so the

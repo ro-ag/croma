@@ -176,16 +176,21 @@ fn merge_continued_barline_run(
     let Some(previous) = tune.lines.last_mut() else {
         return;
     };
+    // Only a `\` seam between *directly consecutive* lines makes the two barlines
+    // adjacent glyphs of one run. A music-backslash continuation survives an
+    // intervening information field (`...| \`<EOL>`M:1/4`<EOL>`|1 ...`), but that
+    // field is a measure-affecting boundary between the two bars, so they are NOT
+    // adjacent and must not coalesce (tune_013361). Requiring `to == from + 1`
+    // restricts the merge to a true line-to-line seam.
     if !surface.line_map.continuation_edges.iter().any(|edge| {
         edge.kind == ContinuationKind::MusicBackslash
             && edge.from_line == previous.line_index
             && edge.to_line == current.line_index
+            && edge.to_line == edge.from_line + 1
     }) {
         return;
     }
 
-    let next_starts_variant_ending =
-        matches!(current.items.get(1), Some(MusicItem::VariantEnding(_)));
     let Some(MusicItem::Barline(previous_barline)) = previous.items.last_mut() else {
         return;
     };
@@ -198,15 +203,16 @@ fn merge_continued_barline_run(
     // barline run (ABC 2.1 line-continuation): `...|\`<EOL>`|...` is `||`
     // (thin-thin double). Merge when either the previous run already carries a
     // thick `]` glyph (the original case), OR both sides are pipe-only runs
-    // (`|`/`||`) — but NEVER when the next line opens a repeat (`|:`/`:|`, not
-    // pipe-only) or a variant ending, whose leading `|` is a deliberate new
-    // boundary rather than a continuation of the previous bar (tune_002255,
-    // tune_013361). (tune_001312: the plain `|`+`|` seam.)
+    // (`|`/`||`) — but NEVER when the next line opens a repeat (`|:`/`:|`), whose
+    // leading `|` is a deliberate new boundary, not a double-bar component (a
+    // repeat run is not pipe-only, so `pipe_only(next)` already excludes it).
+    // A pipe-only `|` that leads a variant ending (`|1`) IS a double-bar
+    // component: `...|\`+`|1` joins to `||1` = `||` (light-light) + the ending,
+    // which the ending start (a separate VariantEnding item) keeps intact on the
+    // next measure (tune_006302). (tune_001312: the plain `|`+`|` seam.)
     let pipe_only = |raw: &str| !raw.is_empty() && raw.bytes().all(|byte| byte == b'|');
     let should_merge = previous_barline.raw.contains(']')
-        || (pipe_only(&previous_barline.raw)
-            && pipe_only(&next_barline.raw)
-            && !next_starts_variant_ending);
+        || (pipe_only(&previous_barline.raw) && pipe_only(&next_barline.raw));
     if !should_merge {
         return;
     }

@@ -1311,6 +1311,54 @@ fn double_bar_across_backslash_continuation_is_coalesced() {
 }
 
 #[test]
+fn double_bar_across_backslash_continuation_before_variant_ending_is_coalesced() {
+    // tune_006302: a music line ending `...|\` continued to a line starting `|1`
+    // forms `||1` after the §6.1.1 join — an adjacent `||` thin-thin double bar
+    // (light-light) on the measure before the seam, with the variant ending then
+    // starting on the NEXT measure's left. croma's coalesce skipped this because
+    // the next line opens a variant ending, dropping the double bar (the pre-seam
+    // measure got no right barline). ABC 2.1 §6.1.1 (line continuation) + §4.8.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |\\\n|1 G A B c :|2 d e f g |]\n";
+    let export = export_musicxml(source).expect("seam ||1 should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert!(
+        has_barline(&measures[0], "right", Some("light-light"), None),
+        "the `|\\`+`|1` seam must coalesce into a light-light double bar: {}",
+        export.musicxml
+    );
+    assert!(
+        has_ending(&measures[1], "left", "1", "start"),
+        "ending 1 must start on the measure after the double bar, not fold in: {}",
+        export.musicxml
+    );
+}
+
+#[test]
+fn backslash_seam_across_intervening_field_does_not_coalesce() {
+    // tune_013361: a `\` continuation survives an intervening information field
+    // (`...| \` / `M:2/4` / `|1 ...`), but that field is a boundary between the
+    // two bars, so they are NOT adjacent and must not merge into `||`. The first
+    // measure keeps its plain right bar and ending 1 starts on the next measure.
+    let source = "X:1\nL:1/4\nK:C\nC D E F | \\\nM:2/4\n|1 G A :|2 c d |]\n";
+    let export = export_musicxml(source).expect("field-seam should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert!(
+        !has_barline(&measures[0], "right", Some("light-light"), None),
+        "a `\\` seam across an intervening field must NOT coalesce into `||`: {}",
+        export.musicxml
+    );
+    assert!(
+        has_ending(&measures[1], "left", "1", "start"),
+        "ending 1 still starts on the measure after the field: {}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn forward_repeat_and_second_ending_share_one_left_barline() {
     // tune_005957: `:|:[2` puts a forward-repeat start AND a 2nd-ending start on
     // one measure's left edge. croma emitted TWO <barline location="left">, and
