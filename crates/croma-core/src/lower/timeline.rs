@@ -93,6 +93,23 @@ impl VoiceTimelineBuilder {
                     self.push_barline_to_previous_measure(kind, span);
                     return;
                 }
+                // A redundant plain `|` in a spaced bar-run seam (`| |`, `: |`):
+                // the prior glyph already closed the previous measure and opened
+                // this empty one, so a further plain bar adds no boundary.
+                // Absorbing it — rather than recording it as this measure's
+                // leading bar — keeps the seam as ONE boundary, so a following
+                // `|:`/`[N` leads the measure instead of being displaced one bar
+                // late (tune_010091). Contiguous `||`/`:|`/`]|` are single tokens
+                // that never reach here; only `Regular` is dropped, so a styled
+                // closer keeps emitting. Single-voice only — multi-voice empty
+                // measures are preserved for alignment.
+                if kind == BarlineKind::Regular
+                    && self.measure_index > 0
+                    && self.may_coalesce_barline_only()
+                    && self.is_empty_measure_start()
+                {
+                    return;
+                }
                 let starts_current_measure = self.is_empty_measure_start()
                     && (starts_measure_barline(kind)
                         || (self.is_first_measure_start()

@@ -1586,6 +1586,31 @@ fn thick_thin_seam_barline_keeps_following_repeat_leading() {
 }
 
 #[test]
+fn spaced_bar_seam_before_repeat_keeps_following_repeat_leading() {
+    // tune_010091: a spaced bar-run seam — a whitespace-separated `| |`, or a
+    // loose `: |` (colon glued to the note, then a spaced bar) — immediately
+    // before a `|:` section open. The second, redundant bar of the spaced run
+    // was taking the next measure's leading slot, so the `|:` became non-leading
+    // and its forward repeat was deferred one measure too late. Contiguous `||`
+    // / `:|` are single tokens and already behave; the spaced forms must match.
+    for seam in ["| |", ": |"] {
+        let source = format!("X:1\nM:6/8\nL:1/8\nK:A\nGAB cde|fga ab2{seam}\n|:a|aga abc|]\n");
+        let export = export_musicxml(&source).expect("spaced seam should export");
+
+        assert_balanced_xml(&export.musicxml);
+        let measures = musicxml_measures(&export.musicxml);
+        // m3 is the `a` pickup that opens the repeated section.
+        assert_eq!(note_steps(&measures[2]), vec!['A'], "seam={seam}");
+        assert!(
+            has_barline(&measures[2], "left", Some("heavy-light"), Some("forward")),
+            "[{seam}] `|:` forward repeat must lead the pickup measure m3, not be \
+             deferred by the redundant spaced bar: {}",
+            export.musicxml
+        );
+    }
+}
+
+#[test]
 fn repeat_both_between_sections_exports_right_then_left_repeat() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F :||: G A B c |]\n";
     let export = export_musicxml(source).expect("repeat-both barline should export");
