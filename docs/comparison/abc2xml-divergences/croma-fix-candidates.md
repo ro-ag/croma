@@ -650,12 +650,24 @@ measure is absorbed; the 2nd ending no longer leaks (011411 m34→m43). Both adv
 phantom empty seam measure), so each **dropped as `abc2xml-phantom-measure`** (0 whitelist regressions;
 worklist 10→8).
 
-**Still open** (`tune_010091`): a *different* root — the seam `...ecA A2: |` is colon-SPACE-pipe, so
-under the strict-spec policy (§4.9 KB line 1009: bar/repeat glyphs must be contiguous) croma is correct
-that m9's right is a plain bar (no backward repeat) and abc2xml over-reads `: |` as a `:|`. croma's real
-bug is narrower: the loose `:` normalizes into a measure boundary whose stray slot mis-places the
-following `|:` forward repeat onto m11 instead of the `a`-pickup m10. Separate fix; abc2xml is at fault on
-the residual `:` so the file drops regardless. Original report below.
+**Fixed (spaced bar-run seam mis-places the following repeat) 2026-06-14:** `tune_010091`'s seam
+`...ecA A2: |` is colon-SPACE-pipe — a *different* root from the leading-`:|` fix above. Under the
+strict-spec policy (§4.8/§4.9, KB line 1009: bar/repeat glyphs must be contiguous, `| [1` legal but
+`| 1` not) croma is correct that m9's right is a plain bar (no backward repeat); abc2xml over-reads the
+spaced `: |` as a `:|` backward repeat (the contiguous `A2:|` at m18 is emitted backward by both,
+isolating the space). croma's real bug was narrower: the loose `:` (a Liberal boundary) plus the
+trailing spaced `|` left a *stray* plain bar in the next measure's leading slot, so `is_leading_barline`
+saw the `|:` as non-leading and deferred its forward repeat onto m11 instead of the `a`-pickup m10. The
+same defect hit any spaced `| |`/`: |` run immediately before a `|:`. Fix: a redundant plain `Regular`
+bar arriving at an already-open single-voice empty seam measure is now **absorbed** (the boundary
+already exists), so a following `|:`/`[N` leads the next measure. Contiguous `||`/`:|`/`]|` are single
+tokens and never reach the guard; only `Regular` is dropped, so styled closers still emit; multi-voice
+empty measures are preserved (`may_coalesce_barline_only`). Test
+`spaced_bar_seam_before_repeat_keeps_following_repeat_leading` (`crates/croma-core/src/musicxml/mod_tests.rs`),
+guard in `crates/croma-core/src/lower/timeline.rs`. **`tune_010091`** now places the `|:` on m10
+(adversarial-verified, all 18 measures + notes align 1:1); the sole residual is abc2xml's m9 over-read,
+so the file **dropped as `abc2xml-barline-style`** (0 whitelist regressions; worklist 8→7). Original
+report below.
 
 When `|:` opens a body line that follows a line ending in a closing/thick bar (`]|`) or a standalone
 inline-field line (`[K:Em]`, `K:Ddor`), croma leaves the first real measure barline-less and defers
