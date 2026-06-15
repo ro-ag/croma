@@ -635,7 +635,18 @@ the same symptom as Bug 24's `tune_004475`.
   Bug 24 after the Cluster A fused-run fix confirmed it is a seam, not a tokenization, fault).
   50–173 notes, all 1:1 measure-aligned, no music dropped.
 
-### Bug 27 — `| |` same-line whitespace double bar dropped — DEFERRED (Bug 9/18 family)
+### Bug 27 — `| |` same-line whitespace double bar dropped — RESOLVED 2026-06-14 as DROP (strict-spec policy)
+
+**Resolved (human policy call, Q1):** the parser/exporter is **strict** to ABC 2.1; §4.8 line 1001's
+liberal recognition applies to a *contiguous sequence* of `|`/`[`/`]`/`:` (examples `|[|`, `[|:::`),
+so a whitespace-separated `| |` is **not** a `||` double bar. croma's plain measure boundary is
+spec-correct; abc2xml's light-light is the liberal over-reach. All seven files
+(`tune_014544`, `tune_014545`, `tune_014559`, `tune_002876`, `tune_002874` + the undetermined
+`tune_013523`, `tune_006454`) have **matching measure and note counts** — the sole divergence is the
+interior `| |` bar style — and the multi-voice `tune_013523` has a plain `|` in its parallel voice at
+the same boundary (light-light would be cross-voice-inconsistent). **Dropped as
+`abc2xml-barline-style`** (no export change). Loose `| |` source is a `croma fmt --auto-fix`
+sanitization concern, not a parser bend. Original report below.
 
 Bug 18 fixed the `\`-continuation seam (`...|\` + `|` → `light-light`) but the merge in
 `parse/music.rs:180-219` is **gated to the backslash seam**, so a same-line `| |` (bar–space–bar)
@@ -695,7 +706,13 @@ Same `parse_colon`/`barline_kind` subsystem as Bug 14 (`:]`, fixed) and Bugs 24/
   left unterminated — runs m34→m43).
 - **Bug 27** (`| |` same-line whitespace double bar) + `tune_014559`.
 
-### Undetermined `| |` (spec genuinely silent) — KEEP, flag for human
+### Undetermined `| |` (spec genuinely silent) — RESOLVED 2026-06-14 as DROP (Q1, strict-spec)
+
+**Resolved with Bug 27** (see above): the human policy call (Q1) was **strict spec** — §4.8 line 1001's
+liberal recognition is contiguous-only, so a space-separated `| |` is not a `||` and croma's plain bar is
+correct. `tune_013523`, `tune_006454` **dropped as `abc2xml-barline-style`** alongside the Bug-27 files.
+The multi-voice `tune_013523` confirmed it: its parallel voice has a plain `|` at the same boundary, so
+light-light would be cross-voice-inconsistent. Original note below.
 
 `tune_013523`, `tune_006454`: recurring space-separated `| |` where abc2xml emits `light-light` and croma a
 plain bar. §4.8/§4.9 define **no** style for space-separated `| |` (only contiguous sequences), so neither
