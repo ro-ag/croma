@@ -107,6 +107,17 @@ fn key_tokens_with_spans(value: &str, offset: usize) -> (Vec<Spanned<String>>, b
     (expanded, true)
 }
 
+/// Detect a tonic immediately followed — with NO space — by a run of accidental
+/// tokens (`K:D^f`, `K:A=G`). ABC 2.1 §3.1.14 requires modifying accidentals to be
+/// "separated by spaces" (`K:D ^f`, `K:D =c`); only the *mode* may be written
+/// space-less (`K:F#Mix`). A space-less accidental run is therefore not a valid
+/// accidental list: the strict parser keeps only the valid leading tonic (returned
+/// as the single first token) and the caller flags the dropped run so lowering can
+/// emit `abc.field.key.compact_accidentals_ignored`. Inserting the missing space
+/// (`K:D^f` -> `K:D ^f`) is a job for `fmt --auto-fix`, not the strict parser.
+///
+/// Returns `None` when the first token is not this tonic+compact-accidental shape,
+/// leaving the normal space-delimited tokens untouched.
 fn split_compact_key_accidentals(token: &Spanned<String>) -> Option<Vec<Spanned<String>>> {
     let value = token.value.as_str();
     for (tail_start, _) in value.char_indices().skip(1) {
@@ -179,16 +190,18 @@ fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
         }
     }
 
+    // ABC 2.1 §3.1.14: a tonic is `A-G` plus an optional `#`/`b`. Classify
+    // whatever follows the tonic *within the same whitespace-delimited token* by
+    // one rule (not per-bug special cases):
+    //   - a recognised mode suffix (`Cmaj`, `Ador`, `F#min`) -> that mode;
+    //   - an *alphabetic* non-mode remainder -> the token is NOT a tonic but a
+    //     word that merely starts with a note letter — a clef shorthand
+    //     (`bass`, `alto`) or a property token — so reject it (`return None`);
+    //   - a *non-alphabetic* remainder (stray punctuation, e.g. the comma in
+    //     `K:Bb,`) -> it can be neither a mode nor a clef word, so keep the valid
+    //     leading tonic and discard the junk. The joined form then parses like the
+    //     already-valid spaced form (`K:Bb,` behaves as `K:Bb`).
     let mode = if mode_start < token.len() {
-        // Any text after the tonic letter (and optional accidental) must be a
-        // recognised mode suffix, e.g. `Cmaj`, `Ador`. A non-mode remainder that
-        // begins with a letter may be a clef shorthand (`bass`, `alto`) or a
-        // property token (`clef=bass`) that merely happens to start with a note
-        // letter, so the token is not a tonic at all and is rejected. But a
-        // remainder that begins with non-letter junk (e.g. a stray comma in
-        // `K:Bb, F`) cannot be a mode or clef word: recover the valid leading
-        // tonic and ignore the junk, matching the already-working spaced form
-        // `K:Bb F` (ABC 2.1 §3.1.14; tune_004340 mid-tune key change).
         let remainder = &token[mode_start..];
         match parse_key_mode(remainder) {
             Some(mode) => Some(mode),

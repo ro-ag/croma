@@ -92,6 +92,22 @@ fn key_tonic_recovers_from_trailing_comma_junk() {
 }
 
 #[test]
+fn key_tonic_rejects_alphabetic_nonmode_remainder() {
+    // The complement of `key_tonic_recovers_from_trailing_comma_junk`: a tonic
+    // letter followed by an *alphabetic* non-mode remainder is NOT recovered as a
+    // tonic. `K:Bass` is `B` + `ass`, but `ass` is neither a mode nor an
+    // accidental — it may be a clef word (`bass`, `alto`) or a property token, so
+    // the whole token is treated as not-a-tonic. Only non-alphabetic trailing
+    // junk (the comma case) recovers the leading tonic. This is the boundary of
+    // the single §3.1.14 tonic-recognition rule in `parse_tonic_token`.
+    let report = parse_document("X:1\nK:Bass\nC\n", ParseOptions::default());
+    let tune = report.value.fields.tune(0).expect("expected tune fields");
+    let key = tune.header.key.as_ref().expect("expected key");
+
+    assert_eq!(key.value.tonic, None, "`Bass` must not parse as tonic B");
+}
+
+#[test]
 fn parses_explicit_accidental_list_written_without_spaces() {
     // `K:D exp _B^g` — the explicit (exp) accidental list is written space-less,
     // so it arrives as a single token. Every accidental in the token must be
