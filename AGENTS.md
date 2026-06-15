@@ -75,8 +75,12 @@ on any host. Never hardcode an absolute toolchain path. Use `uv` for all Python.
   [`docs/testing/corpus-reproducibility.md`](docs/testing/corpus-reproducibility.md).
 - `croma-core` must stay crates.io-publishable — no path-only/local runtime
   assumptions in library code.
-- **Formatter and LSP are gated** until parser quality is proven. Parser /
-  corpus / music21 comparison work remains the priority.
+- The **formatter (`croma fmt` + `--auto-fix`) is promoted** (un-gated): parser
+  quality is proven (raw whitelist 9,390 / dropped 545 / worklist 0) and the
+  formatter is idempotent + lossless over the full 10k corpus — see
+  [`docs/formatter.md`](docs/formatter.md) and the `corpus_proof` test +
+  `tools/prove_fmt_lossless.py`. **LSP remains gated** until it has comparable
+  evidence; parser / corpus / music21 comparison work stays the priority for it.
 
 ## Parser recovery policy
 
