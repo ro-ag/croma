@@ -49,6 +49,10 @@ pub enum FixKind {
     ChordSymbolInBrackets,
     /// A tempo whose beat spec is doubled, e.g. `Q:1/4=1/4=160` → `Q:1/4=160`.
     DoubledTempo,
+    /// A bare-number tempo with a non-integer suffix, e.g. `Q:320s` → `Q:320` or
+    /// `Q:400.` → `Q:400` — strip the legacy/decimal junk the strict parser
+    /// rejects so it reads the bare integer (ABC 2.1 §10.1).
+    BareTempoSuffix,
     /// A redundant bar-line run collapsed to its canonical boundary, e.g. the
     /// spaced `| |` → `|` or the run `]||:` → `|:`.
     RedundantBarline,
@@ -64,6 +68,7 @@ impl FixKind {
             FixKind::DetachedLength => "detached-length",
             FixKind::ChordSymbolInBrackets => "chord-symbol-in-brackets",
             FixKind::DoubledTempo => "doubled-tempo",
+            FixKind::BareTempoSuffix => "bare-tempo-suffix",
             FixKind::RedundantBarline => "redundant-barline",
             FixKind::FieldSpacing => "field-spacing",
         }
@@ -75,9 +80,10 @@ impl FixKind {
             // These intentionally restore a dropped duration/structure/tempo, so
             // the rendered MusicXML legitimately changes; only the ordered pitch
             // sequence must be preserved.
-            FixKind::DetachedLength | FixKind::ChordSymbolInBrackets | FixKind::DoubledTempo => {
-                Gate::Pitch
-            }
+            FixKind::DetachedLength
+            | FixKind::ChordSymbolInBrackets
+            | FixKind::DoubledTempo
+            | FixKind::BareTempoSuffix => Gate::Pitch,
             // These must not change ANY rendered aspect; the structure gate
             // reverts e.g. an alignment-sensitive `w:` lyric whose leading
             // whitespace turns out to matter.

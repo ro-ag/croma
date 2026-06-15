@@ -87,6 +87,7 @@ fn collect_candidates(source: &str, options: ParseOptions) -> Vec<Change> {
     detached_length(source, &report.diagnostics, &mut candidates);
     chord_symbol_in_brackets(source, document, &mut candidates);
     doubled_tempo(source, document, &mut candidates);
+    bare_tempo_suffix(source, document, &mut candidates);
     redundant_barlines(source, document, &mut candidates);
     field_spacing(source, document, &mut candidates);
     candidates
@@ -329,6 +330,57 @@ fn collapse_doubled_tempo(value: &str) -> Option<String> {
     Some(format!("{first}={bpm}"))
 }
 
+/// `Q:320s` → `Q:320`, `Q:400.` → `Q:400`: strip a non-integer suffix from a
+/// bare-number tempo so the strict parser reads the bare integer. The parser
+/// rejects these legacy/decimal forms (ABC 2.1 §10.1 defines a bare *integer*),
+/// deferring the repair here.
+fn bare_tempo_suffix(source: &str, document: &croma_core::AbcDocument, out: &mut Vec<Change>) {
+    for field in &document.fields.fields {
+        if field.code != 'Q' {
+            continue;
+        }
+        let raw = source
+            .get(field.value_span.start..field.value_span.end)
+            .unwrap_or("");
+        let Some(stripped) = strip_bare_tempo_suffix(raw.trim()) else {
+            continue;
+        };
+        out.push(Change {
+            kind: FixKind::BareTempoSuffix,
+            span: field.value_span,
+            before: raw.to_string(),
+            after: stripped,
+        });
+    }
+}
+
+/// If `value` is a bare-number tempo with a non-integer suffix — leading digits
+/// followed only by a decimal tail (`400.`, `400.5`) or purely-alphabetic legacy
+/// chars (`320s`) — return the leading integer. `None` for a clean integer, a
+/// beat spec (`1/4=120`), quoted text, or any value with whitespace or `=`.
+fn strip_bare_tempo_suffix(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value.contains(char::is_whitespace)
+        || value.contains('=')
+        || value.contains('"')
+    {
+        return None;
+    }
+    let digit_len = value
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .map(char::len_utf8)
+        .sum::<usize>();
+    if digit_len == 0 || digit_len == value.len() {
+        // No leading digit, or already a clean integer (nothing to strip).
+        return None;
+    }
+    let rest = &value[digit_len..];
+    let benign = rest.chars().all(|c| c == '.' || c.is_ascii_digit())
+        || rest.chars().all(|c| c.is_ascii_alphabetic());
+    benign.then(|| value[..digit_len].to_string())
+}
+
 /// True for a `numerator/denominator` beat spec like `1/4`.
 fn is_beat_spec(value: &str) -> bool {
     match value.split_once('/') {
@@ -436,6 +488,46 @@ mod tests {
         );
         assert_eq!(result.changes.len(), 1);
         assert_eq!(result.changes[0].kind, FixKind::DoubledTempo);
+    }
+
+    #[test]
+    fn strips_bare_tempo_legacy_suffix() {
+        let result = auto_fix("X:1\nQ:320s\nK:C\nC\n", opts());
+        assert!(
+            result.output.contains("Q:320\n"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(
+            result
+                .changes
+                .iter()
+                .any(|c| c.kind == FixKind::BareTempoSuffix)
+        );
+    }
+
+    #[test]
+    fn strips_bare_tempo_trailing_dot() {
+        let result = auto_fix("X:1\nQ:400.\nK:C\nC\n", opts());
+        assert!(
+            result.output.contains("Q:400\n"),
+            "got: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn clean_bare_tempo_and_beat_spec_are_untouched() {
+        for src in ["X:1\nQ:120\nK:C\nC\n", "X:1\nQ:1/4=120\nK:C\nC\n"] {
+            let result = auto_fix(src, opts());
+            assert!(
+                !result
+                    .changes
+                    .iter()
+                    .any(|c| c.kind == FixKind::BareTempoSuffix),
+                "should not fire on {src:?}"
+            );
+        }
     }
 
     #[test]
