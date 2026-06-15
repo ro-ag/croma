@@ -3784,6 +3784,60 @@ fn clean_key_tonic_does_not_warn_trailing_junk() {
 }
 
 #[test]
+fn redundant_chord_tie_marker_warns() {
+    // A tie marker inside a chord that is not directly after a member note
+    // (`[-CE]`, doubled `[CE--]`) is recovered (attached-or-dropped) but must
+    // warn — recovery is never silent (3-tier policy, tier 2).
+    for source in ["X:1\nL:1/4\nK:C\n[-CE]|\n", "X:1\nL:1/4\nK:C\n[CE--]|\n"] {
+        let (_, diagnostics) = tune_for(source);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "abc.music.redundant_tie"),
+            "expected redundant_tie warning for {source:?}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn invalid_inline_unit_length_warns() {
+    // An unparseable inline `[L:..]` keeps the previous unit length but must warn.
+    let (_, diagnostics) = tune_for("X:1\nL:1/4\nK:C\nC[L:bad]D|\n");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "abc.field.invalid_l"),
+        "expected invalid_l for inline [L:bad]: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn invalid_inline_key_change_warns() {
+    // An invalid inline `[K:..]` that names no signature and no clef keeps the
+    // prevailing key but must warn, mirroring the whole-line invalid-K: path.
+    let (_, diagnostics) = tune_for("X:1\nL:1/4\nK:C\nC[K:???]D|\n");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "abc.field.invalid_k"),
+        "expected invalid_k for inline [K:???]: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn unhandled_inline_field_code_warns() {
+    // An inline field code lowering does not apply (e.g. `[P:..]`) is dropped, but
+    // with a diagnostic — never silently. Voice switches `[V:..]` are exempt
+    // (handled separately) and must NOT warn.
+    let (_, dropped) = tune_for("X:1\nL:1/4\nK:C\nC[P:A]D|\n");
+    assert!(
+        dropped.iter().any(|d| d.code == "abc.field.inline_ignored"),
+        "expected inline_ignored for inline [P:A]: {dropped:?}"
+    );
+    let (_, voice) = tune_for("X:1\nL:1/4\nK:C\nV:1\nC[V:1]D|\n");
+    assert!(
+        voice.iter().all(|d| d.code != "abc.field.inline_ignored"),
+        "voice switch [V:1] must not warn inline_ignored: {voice:?}"
+    );
+}
+
+#[test]
 fn supported_body_additive_meter_change_does_not_warn() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
     let (tune, diagnostics) = tune_for(source);
