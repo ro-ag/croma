@@ -1117,6 +1117,19 @@ pub(super) fn classify_quoted_text(text: &str) -> QuotedTextKind {
     }
 }
 
+pub(super) fn redundant_chord_tie_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.redundant_tie",
+        "A tie marker inside a chord was not directly after a member note",
+        span,
+    )
+    .with_spec_reference(abc_music_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The tie was attached to the preceding member if any, otherwise discarded.",
+    ))
+}
+
 pub(super) fn invalid_length_warning(span: Span, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,

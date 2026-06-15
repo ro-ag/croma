@@ -3,7 +3,9 @@
 use crate::diagnostic::Span;
 use crate::lower::invalid_tuplet_warning;
 use crate::model::{Accidental, Fraction, RestVisibility};
-use crate::parse::music::{MusicLineParser, invalid_length_warning, is_note_letter};
+use crate::parse::music::{
+    MusicLineParser, invalid_length_warning, is_note_letter, redundant_chord_tie_warning,
+};
 use crate::syntax::{
     AccidentalSyntax, BrokenRhythmDirection, BrokenRhythmSyntax, ChordMemberSyntax, ChordSyntax,
     GraceElementSyntax, GraceGroupSyntax, LengthSyntax, MalformedSyntax, MalformedSyntaxKind,
@@ -228,13 +230,17 @@ impl<'line> MusicLineParser<'line> {
                 }
                 '-' => {
                     // A tie marker that is not directly after a member note
-                    // (e.g. `[-CE]` or a doubled `--`). Attach it to the most
-                    // recent member if one exists, otherwise drop it.
-                    if let Some(tie) = self.parse_chord_member_tie()
-                        && let Some(last) = members.last_mut()
-                        && last.tie.is_none()
-                    {
-                        last.tie = Some(tie);
+                    // (e.g. `[-CE]` or a doubled `--`). This is a misplaced or
+                    // redundant marker: attach it to the most recent untied
+                    // member if one exists, otherwise drop it — and always warn,
+                    // since the strict parser never recovers silently.
+                    if let Some(tie) = self.parse_chord_member_tie() {
+                        self.diagnostics.push(redundant_chord_tie_warning(tie.span));
+                        if let Some(last) = members.last_mut()
+                            && last.tie.is_none()
+                        {
+                            last.tie = Some(tie);
+                        }
                     }
                 }
                 '"' => self.parse_quoted_text(),
