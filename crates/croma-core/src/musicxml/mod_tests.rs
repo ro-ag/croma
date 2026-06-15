@@ -3855,6 +3855,32 @@ fn inline_key_change_applies_to_following_accidentals() {
 }
 
 #[test]
+fn tonic_less_key_accidental_modifies_prevailing_key() {
+    // tune_005044: a body `K:^F` after a `K:Gmin` header is a tonic-less key
+    // modification (ABC 2.1 §3.1.14 "key signatures may be modified by adding
+    // accidentals"). It must INHERIT the prevailing G-minor (Bb/Eb) and ADD F#
+    // — like the tonic-ful `K:Gm ^f` — not be dropped as invalid. So the
+    // following bare F sounds F#, AND the prevailing two-flat signature stays
+    // (B stays flat, not reset to an F#-only key).
+    let source = "X:1\nL:1/8\nK:Gmin\nGABc|\nK:^F\nFBFB|\n";
+    let export = export_musicxml(source).expect("tonic-less key accidental should export");
+    assert_balanced_xml(&export.musicxml);
+    let second = export
+        .musicxml
+        .split("<measure number=\"2\">")
+        .nth(1)
+        .expect("second measure");
+    assert!(
+        second.contains("<step>F</step>\n          <alter>1</alter>"),
+        "F must sound F# after `K:^F` modifies the prevailing G-minor: {second}"
+    );
+    assert!(
+        second.contains("<step>B</step>\n          <alter>-1</alter>"),
+        "B must stay flat (prevailing G-minor inherited, not reset to F#-only): {second}"
+    );
+}
+
+#[test]
 fn inline_clef_only_key_field_does_not_reset_the_signature() {
     // `[K:clef=bass]` only changes the clef; it must not be misread as a key
     // change that wipes the D-major signature (the following F stays F#).
