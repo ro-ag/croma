@@ -657,7 +657,19 @@ not clear croma.)
 - **Spec:** §4.8 KB raw line 999 (`[|]` invisible bar line → MusicXML `bar-style none`).
 - **File (kept):** `tune_006759` (429=429 notes, 29=29 measures). Same emission-gate root as Bug 7/13.
 
-### Bug 29 — bare `:` / `:[2` repeat-end mis-tokenized (direction inversion or drop) — DEFERRED (barline-tokenization cluster)
+### Bug 29 — bare `:` / `:[2` repeat-end mis-tokenized (direction inversion or drop) — FIXED 2026-06-14 (tune_013149); tune_003603 is the free-floating-`:` policy case
+
+**Fixed (`:[2`):** `parse_colon` now routes a bare `:` directly before a variant ending (`:[<digit>`)
+to a `RepeatEnd` boundary (`parse_bare_colon_repeat_end`), mirroring §4.9's `:|2` shorthand — it
+closes the open ending and repeats backward, then `[N` parses as the next ending. The branch is gated
+on a digit after `[`, so a section transition `|]:[K:..]` keeps its Cluster-A glued-merge. Test
+`bare_colon_before_variant_ending_is_a_backward_repeat`. **`tune_013149`** now emits light-heavy +
+backward repeat (spec-correct) where it previously produced a structurally impossible all-forward /
+no-backward tune; abc2xml renders the bare `:` as `dotted` (spec-wrong), so the file does **not**
+graduate — **dropped as `abc2xml-barline-style`** (0 regressions). `tune_003603` is **not** this
+construct: its `:` are free-floating mid-line dots (` :D`, `D:d`), which under the strict-spec policy
+(§4.8 line 1001 liberal recognition is contiguous-only) stay malformed/skipped — a Q3 free-floating-`:`
+case, not a `:[N` repeat-end. Original report below.
 
 croma classifies a bare `:` repeat-end (no leading `|`) as a forward `RepeatStart`, or drops it, instead
 of a backward repeat-end:

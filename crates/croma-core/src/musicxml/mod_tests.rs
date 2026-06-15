@@ -1407,6 +1407,36 @@ fn liberal_colon_thick_barline_is_a_backward_repeat() {
 }
 
 #[test]
+fn bare_colon_before_variant_ending_is_a_backward_repeat() {
+    // tune_013149: `:[2` is a repeat-end whose bar `|` was dropped (§4.9's `:|2`
+    // shorthand family) — the `:` closes ending 1 and repeats backward, then `[2`
+    // opens ending 2. croma routed the bare `:` to a forward RepeatStart, yielding
+    // a structurally impossible all-forward / no-backward tune. ABC 2.1 §4.8 / §4.9
+    // (raw line 1009/1021).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|: C D E F |[1 G A B c :[2 d e f g |]\n";
+    let export = export_musicxml(source).expect("`:[2` should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    let ending1 = &measures[1];
+    assert!(
+        has_barline(ending1, "right", Some("light-heavy"), Some("backward")),
+        "the `:` before `[2` must close ending 1 with a backward repeat: {}",
+        export.musicxml
+    );
+    assert!(
+        has_ending(ending1, "right", "1", "stop"),
+        "ending 1 must stop at the `:` repeat-end: {}",
+        export.musicxml
+    );
+    assert!(
+        has_ending(&measures[2], "left", "2", "start"),
+        "ending 2 must start after the repeat-end: {}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn fused_final_then_repeat_start_emits_closer_and_left_repeat() {
     // tune_009754: `|]:` is a thin-thick final bar fused with a forward-repeat
     // start (the section transition `... G2 G2 |]:[K:..]"^Dans" ...`). The `|]`
