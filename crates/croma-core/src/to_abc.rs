@@ -1884,6 +1884,10 @@ mod tests {
             "X:1\nL:1/4\nK:C\n||: CDEF :|\n",
             "X:1\nL:1/4\nK:C\n[|: CDEF :|\n",
             "X:1\nL:1/4\nK:C\nCDEF ||: GABc :|\n",
+            // `|]:` lowers to [Final, RepeatStart] sharing one span (a final bar
+            // fused with a forward repeat); it must rejoin to `|]:`, not split
+            // into a spaced `|] |:` that phantoms an empty measure.
+            "X:1\nL:1/4\nK:C\nCDEF |]: GABc :|\n",
         ] {
             let s1 = score_of(src);
             let abc = write_abc(&s1, AbcWriteOptions::default());

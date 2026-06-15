@@ -187,15 +187,22 @@ fn collect_barline_runs(source: &str, line: &croma_core::MusicLine, out: &mut Ve
 
 /// The canonical single bar line for a whitespace-stripped run, derived from its
 /// repeat markers: a trailing `:` opens a repeat (`|:`), a leading `:` closes one
-/// (`:|`).
+/// (`:|`). A thick `]` in the run is a light-heavy final bar that must survive the
+/// collapse — `]||:` is `|]:` (final + repeat-start), not a bare `|:` — otherwise
+/// the structure gate rejects the lossy candidate and no simplification is made.
 fn canonical_barline(core: &str) -> &'static str {
     let opens_repeat = core.ends_with(':');
     let closes_repeat = core.starts_with(':');
-    match (closes_repeat, opens_repeat) {
-        (true, true) => ":|:",
-        (false, true) => "|:",
-        (true, false) => ":|",
-        (false, false) => "|",
+    let has_final = core.contains(']');
+    match (has_final, closes_repeat, opens_repeat) {
+        (false, true, true) => ":|:",
+        (false, false, true) => "|:",
+        (false, true, false) => ":|",
+        (false, false, false) => "|",
+        (true, true, true) => ":|]:",
+        (true, false, true) => "|]:",
+        (true, true, false) => ":|]",
+        (true, false, false) => "|]",
     }
 }
 
@@ -474,9 +481,13 @@ mod tests {
 
     #[test]
     fn collapses_thick_thin_repeat_run() {
+        // `]||:` = a thick-thin final bar fused with a forward repeat (lowers to
+        // [Final, RepeatStart]). The redundant `||` collapses away, but the `]`
+        // light-heavy closer must survive: the canonical form is `|]:`, NOT a
+        // bare `|:` (which would drop the final bar and fail the structure gate).
         let result = auto_fix("X:1\nL:1/4\nK:C\nab ]||: cd\n", opts());
         assert!(
-            result.output.contains("ab |: cd"),
+            result.output.contains("ab |]: cd"),
             "got: {:?}",
             result.output
         );

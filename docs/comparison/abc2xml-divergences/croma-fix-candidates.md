@@ -545,7 +545,15 @@ bars, so the implementation contradicted its own doc.
   `abc2xml-barline-style` (their only residual divergence is abc2xml's separate `[|`-reversal, croma's
   heavy-light being spec-correct). No whitelist regression (matches held at 9378).
 
-### Bug 24 — `]||:` run mis-tokenized: thick-bar `]` dropped / `|:` misplaced (`tune_014316`, `tune_004475`) — DEFERRED (barline cluster)
+### Bug 24 — `]||:` run mis-tokenized: thick-bar `]` dropped / `|:` misplaced (`tune_014316`, `tune_004475`) — FIXED 2026-06-14 (tune_014316); tune_004475 DEFERRED to Bug 26
+
+**Fixed (Cluster A):** the fused-run split (see Bug 25) graduates **`tune_014316`** — the `]`
+now closes ending 2 with `light-heavy` (+ ending stop) and the `||:` opens the next repeated
+section on the following measure's left (`heavy-light` + forward). `tune_004475` is **not** a
+fused-run case (its `]|` and `|:` sit on two plain lines with no `\` continuation, so they are
+never merged into one run); its `|:` lands one measure late at a **line seam**, which is the
+**Bug 26** root (`is_leading_barline` / seam placement), not `barline_kind` tokenization. Moved
+to Bug 26's file list. Original report below.
 
 When a 2nd-ending close abuts a repeat-start across a `\`-continuation or directly — logical run
 `]||:` — croma's `barline_kind` (`parse/barline.rs:245`, `raw.contains(']') && has_repeat_start(raw)`)
@@ -565,7 +573,23 @@ repeat placement / `| |` whitespace / note-less-measure emission gate), so all a
 recorded, not drive-by-fixed** per the cluster's TDD+regression requirement. abc2xml-at-fault
 files were dropped (`abc2xml-barline-style`).
 
-### Bug 25 — fused `|]:` run drops the `|]` thin-thick closer (6 files) — DEFERRED (Bug 24 family)
+### Bug 25 — fused `|]:` run drops the `|]` thin-thick closer (7 files) — FIXED 2026-06-14 (Cluster A)
+
+**Fixed:** `barline_lowering_kinds` (`crates/croma-core/src/lower/mod.rs`) now splits a
+`RepeatStart`-classified run whose raw carries a thick `]` (`|]:`, `]||:`, `||]:`) into
+`[Final, RepeatStart]` — mirroring the existing `||:`→`[Double, RepeatStart]` and
+`[|:`→`[Initial, RepeatStart]` split pairs. The two same-span events flow through the proven
+split-pair machinery: the `Final` closer lands on the current measure's right (`light-heavy`) and
+the `RepeatStart` leads the next measure's left (`heavy-light` + forward repeat). One arm clears
+the whole fused-run cluster (Bug 25 + Bug 24's `tune_014316`) — every tokenization site
+(`parse_barline` scan, `parse_colon` glued-merge, `merge_continued_barline_run`) already routes
+these runs through `barline_kind`→`RepeatStart`, so no parser change was needed. Tests
+`fused_final_then_repeat_start_emits_closer_and_left_repeat`,
+`fused_thick_bar_repeat_start_closes_ending_and_starts_repeat`
+(`crates/croma-core/src/musicxml/mod_tests.rs`), roundtrip guard
+`split_token_barline_pairs_rejoin` extended for `|]:`. **Graduated all 7:** `tune_009754`,
+`tune_009394`, `tune_009381`, `tune_012513`, `tune_012511`, `tune_009392`, `tune_009382`
+(whitelist 9,379 → 9,387 = +8 with `tune_014316`, **0 regressions**). Original report below.
 
 `|]:` (a `|]` thin-thick double bar fused with a following `:` repeat-start — the classic
 tune-A→tune-B transition `... |]:[K:...]`) is mis-tokenized exactly like Bug 24's `]||:`:
@@ -590,8 +614,10 @@ the same symptom as Bug 24's `tune_004475`.
 
 - **Spec:** §4.8 KB raw line 987 (`|:` start of repeated section — opens the measure it precedes).
 - **Files (kept):** `tune_007014` (`]||:` split across a plain line break), `tune_009389` (`|:`
-  after a `[K:Em]` line), `tune_004928` (`|:` after `...A4]|` + `K:Ddor` line). 50–173 notes, all
-  1:1 measure-aligned, no music dropped.
+  after a `[K:Em]` line), `tune_004928` (`|:` after `...A4]|` + `K:Ddor` line), `tune_004475`
+  (`]|` line 2 / `|:` line 3 across a plain break — `|:` lands m11 instead of m10; moved here from
+  Bug 24 after the Cluster A fused-run fix confirmed it is a seam, not a tokenization, fault).
+  50–173 notes, all 1:1 measure-aligned, no music dropped.
 
 ### Bug 27 — `| |` same-line whitespace double bar dropped — DEFERRED (Bug 9/18 family)
 

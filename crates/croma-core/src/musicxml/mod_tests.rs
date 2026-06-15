@@ -1359,6 +1359,64 @@ fn liberal_colon_thick_barline_is_a_backward_repeat() {
 }
 
 #[test]
+fn fused_final_then_repeat_start_emits_closer_and_left_repeat() {
+    // tune_009754: `|]:` is a thin-thick final bar fused with a forward-repeat
+    // start (the section transition `... G2 G2 |]:[K:..]"^Dans" ...`). The `|]`
+    // closes the current measure (light-heavy) and the trailing `:` opens the
+    // next section's repeat (heavy-light + forward). croma merged the run into a
+    // bare RepeatStart, dropping the `|]` closer entirely (ABC 2.1 §4.8 line
+    // 984 / 1001).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |]: G A B c :|\n";
+    let export = export_musicxml(source).expect("|]: should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(
+        has_barline(&measures[0], "right", Some("light-heavy"), None),
+        "the `|]` closer must land on measure 1's right with no repeat: {}",
+        export.musicxml
+    );
+    assert!(
+        has_barline(&measures[1], "left", Some("heavy-light"), Some("forward")),
+        "the `:` forward repeat must lead measure 2: {}",
+        export.musicxml
+    );
+}
+
+#[test]
+fn fused_thick_bar_repeat_start_closes_ending_and_starts_repeat() {
+    // tune_014316: a 2nd ending closed by `]` abutting a repeat-start `||:`
+    // (logical run `]||:`). The `]` closes ending 2 (light-heavy + stop) and the
+    // `||:` opens the next repeated section (heavy-light + forward). croma
+    // mis-tokenized the whole run as one RepeatStart, dropping the `]` closer
+    // and leaving the ending unterminated (ABC 2.1 §4.8 / §4.10).
+    let source = "X:1\nM:3/4\nL:1/4\nK:C\nG A B |1 c d e :|[2 f g a ]||: C2 D | E3 :|\n";
+    let export = export_musicxml(source).expect("]||: should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    let ending2 = &measures[2];
+    assert_eq!(note_steps(ending2), vec!['F', 'G', 'A']);
+    assert!(
+        has_barline(ending2, "right", Some("light-heavy"), None),
+        "the `]` must close ending 2 with light-heavy and no repeat: {}",
+        export.musicxml
+    );
+    assert!(
+        has_ending(ending2, "right", "2", "stop"),
+        "ending 2 must stop at the `]` closer: {}",
+        export.musicxml
+    );
+    let repeated = &measures[3];
+    assert!(
+        has_barline(repeated, "left", Some("heavy-light"), Some("forward")),
+        "the `||:` forward repeat must lead the next section: {}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn leading_liberal_barline_diagnoses_and_keeps_measure_timing() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\n[::] C D E F |]\n";
     let export = export_musicxml(source).expect("liberal leading barline should recover");
