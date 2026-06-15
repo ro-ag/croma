@@ -73,6 +73,20 @@ impl<'line> MusicLineParser<'line> {
             self.parse_barline(false);
             return;
         }
+        // A `:` directly before a variant ending (`:[2`) is the end-of-repeat
+        // dots of a bar whose `|` was dropped — §4.9's `:|2` shorthand family. It
+        // closes the open ending and repeats backward; route it to a RepeatEnd
+        // and let the following `[N` parse as the next ending. (Gated on a digit
+        // after `[`, so a section transition `|]:[K:..]` keeps its glued-merge.)
+        if self.peek_next_char() == Some('[')
+            && self.text[self.index..]
+                .chars()
+                .nth(2)
+                .is_some_and(|ch| ch.is_ascii_digit())
+        {
+            self.parse_bare_colon_repeat_end();
+            return;
+        }
         // A `:` glued onto the barline it follows (`|]:` before a new
         // section) is that bar's trailing repeat dots — extend the barline
         // instead of opening a phantom one-colon measure of its own.
@@ -135,6 +149,20 @@ impl<'line> MusicLineParser<'line> {
         self.items.push(MusicItem::Barline(BarlineSyntax {
             span,
             kind: BarlineKind::RepeatStart,
+            dotted: false,
+            raw: ":".to_owned(),
+        }));
+    }
+
+    fn parse_bare_colon_repeat_end(&mut self) {
+        self.flush_pending_attachments();
+        let start = self.index;
+        self.bump_char();
+        let span = self.span(start, self.index);
+        self.push_token(MusicTokenKind::Barline, span);
+        self.items.push(MusicItem::Barline(BarlineSyntax {
+            span,
+            kind: BarlineKind::RepeatEnd,
             dotted: false,
             raw: ":".to_owned(),
         }));
