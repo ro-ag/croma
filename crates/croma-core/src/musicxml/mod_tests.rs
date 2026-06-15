@@ -136,6 +136,61 @@ fn non_harmony_quoted_text_before_barline_binds_to_barline_position() {
 }
 
 #[test]
+fn orphan_chord_symbol_between_double_bars_anchors_to_its_note_less_measure() {
+    // tune_003874: an orphan chord symbol `"B"` sits in a note-less measure
+    // between two `||`. With no following note in its own measure, per
+    // §4.18/§4.19 it must anchor to that measure's bar line, not defer across it
+    // to the next note. Anchoring also un-empties the measure, so the second
+    // `||` emits its `light-light` right barline instead of being dropped.
+    let source = "X:1\nM:2/4\nL:1/8\nK:C\nGA Bc | DD EF ||\n\"B\"\n||\"Gm\"G4 |]\n";
+    let export = export_musicxml(source).expect("orphan chord should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2", "3", "4"]);
+    let m3 = measure_body(&export.musicxml, "3");
+    assert!(
+        m3.contains("<root-step>B</root-step>"),
+        "orphan `\"B\"` must anchor to its own measure m3: {m3}"
+    );
+    assert!(
+        has_barline(&measures[2], "right", Some("light-light"), None),
+        "the second `||` must emit light-light on the orphan measure: {}",
+        export.musicxml
+    );
+    let m4 = measure_body(&export.musicxml, "4");
+    assert!(
+        m4.contains("<root-step>G</root-step>"),
+        "the `\"Gm\"` chord stays on m4 with its note: {m4}"
+    );
+    assert_eq!(note_steps(&measures[3]), vec!['G']);
+}
+
+#[test]
+fn annotation_on_note_less_spacer_measure_stays_on_that_measure() {
+    // tune_003230: a `y`-spacer measure (`"Final."y8 |`) is note-less — the `y`
+    // spacer creates no rest (§6.1.2). Its only content is the annotation, which
+    // must anchor to that measure's bar line, not defer to the next note's
+    // measure.
+    let source = "X:1\nM:2/4\nL:1/8\nK:C\nGA Bc | cc dd |] \"Final.\"y8 | f4 |]\n";
+    let export = export_musicxml(source).expect("spacer annotation should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    let m3 = measure_body(&export.musicxml, "3");
+    let m4 = measure_body(&export.musicxml, "4");
+    assert!(
+        m3.contains("<words>Final.</words>"),
+        "annotation must stay on the note-less spacer measure m3: {m3}"
+    );
+    assert!(
+        !m4.contains("<words>Final.</words>"),
+        "annotation must NOT defer to the `f` measure m4: {m4}"
+    );
+    assert_eq!(note_steps(&measures[3]), vec!['F']);
+}
+
+#[test]
 fn chord_symbol_at_line_end_binds_to_note_on_next_line() {
     // A code line break is not a musical boundary (§6.1.1): `"Em7"` at the end
     // of one music line binds to the first note of the next line.
