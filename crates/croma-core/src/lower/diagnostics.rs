@@ -187,6 +187,19 @@ pub(crate) fn inline_field_ignored_warning(code: char, span: Span) -> Diagnostic
     ))
 }
 
+pub(crate) fn unterminated_tempo_quote_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.field.tempo.unterminated_quote",
+        "Unterminated quote in Q: tempo text",
+        span,
+    )
+    .with_spec_reference(abc_field_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The text after the opening quote was kept; close the quote to silence this.",
+    ))
+}
+
 pub(crate) fn compact_key_accidentals_ignored_warning(span: Span) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,
