@@ -439,13 +439,18 @@ would on a note. Test `orphan_chord_symbol_between_double_bars_anchors_to_its_no
 `||` and the `"B"` harmony now match abc2xml (m12). **Bug 19 (`tune_003230`) GRADUATED** by the same
 fix; `tune_003874` reduced 5→3 rows.
 
-**Residual (kept in worklist):** `tune_003874`'s remaining 3 rows are the section labels `"A1"`/`"A2"`/`"C"`
-that sit AFTER the last note of a measure-WITH-notes, before a section barline (`|`/`||`/`|:`). croma
-binds a chord-before-a-barline to the NEXT note (pinned by `chord_symbol_before_barline_binds_to_next_note`,
-§4.18 "left of the note it is sounded with"); abc2xml binds these to the CURRENT measure's bar line
-(§4.19 "following note, rest or bar line"). That is a deliberate-policy difference for a different
-construct (a note-bearing measure), not the note-less orphan fixed here — needs its own spec
-adjudication (chord-vs-annotation classification of non-chord text like `"A1"`). Original report below.
+**Residual — RESOLVED 2026-06-14 as DROP (`equivalence`):** `tune_003874`'s remaining 3 rows are the
+section labels `"A1"`/`"A2"`/`"C"` that sit AFTER the last note of a measure-WITH-notes, before a section
+barline (`|`/`||`/`|:`). croma binds a chord-before-a-barline FORWARD to the NEXT note (pinned by
+`chord_symbol_before_barline_binds_to_next_note`; §4.18 "left of the note it is sounded with", §4.20
+orders chord/annotation tokens before their note); abc2xml binds these to the CURRENT measure. §4.19's
+bar-line binding is gated on a `^_<>@` placement specifier that none of the three carry, so **no spec
+rule mandates abc2xml's placement** — croma's forward binding is the spec-favored reading. Adversarially
+verified: byte-identical inventory (129=129 notes, 49 harmonies, words `[A1,fine,d.C.]`), each label
+present once with the same words-vs-harmony class, only the host measure differs; and croma is internally
+consistent (the note-less `"B"` it now anchors to the bar line matches abc2xml). A "fix" to match abc2xml
+would REVERSE a tested, spec-favored policy, so it is **dropped as `equivalence`** (abc2xml-at-fault on an
+under-specified edge), not a croma bug. Original report below.
 
 > **Barline croma-bug cluster (the session's main fix lead).** Bugs 7, 8, 13, 14 (clean,
 > HIGH) plus the whitespace `| |` family (Bug 9, debatable) share two root themes worth one
@@ -500,16 +505,29 @@ comparator row, 50=50 notes (no music dropped). **Same family as Bugs 7/13/17** 
 measure/barline handling on a real note event and mishandles a note-less measure) → high
 regression risk, belongs in the focused barline/empty-measure session, **not a drive-by**.
 
-### Bug 20 — leading-space annotation `" >"` placement-glyph ambiguity (`tune_007910`) — UNDETERMINED (flagged for human)
+### Bug 20 — leading-space annotation `" >"` placement-glyph ambiguity (`tune_007910`) — RESOLVED 2026-06-14 as DROP (`abc2xml-drops-music`)
 
-`tune_007910` (`" >"G2 ...`, bytes `0x22 0x20 0x3e 0x22` = quote, space, `>`, quote): §4.19 is
-ambiguous whether a placement specifier (`>`) preceded by whitespace is consumed as placement
-(abc2xml → empty `<words/>`) or kept as literal text (croma → `<words>></words>`). Both render at
-identical note onsets; 95=95 notes. Strict reading (specifier must lead the string) favors croma;
-lenient reading favors abc2xml. Genuine spec edge case → kept, flagged for a human policy call
-(same class as Bugs 4/5/6/9/12), not droppable and not a clean croma fault.
+**Resolved (strict §4.19 reading favors croma):** `" >"` is quote, SPACE, `>`, quote — the `>` does NOT
+lead the quoted string, and §4.19 (KB line 1313) defines the placement specifier as the symbol the
+string "is preceded by", with "all text that follows the placement specifier … treated as a text
+string". So the leading SPACE means there is no specifier and the whole content (`>`) is literal text:
+croma's `<words>&gt;</words>` is spec-correct (well-formed XML, correct onsets, 99=99 notes), while
+abc2xml over-consumes the non-leading `>` as right-placement and **drops** the authored text to an empty
+`<words/>`. Two investigators (initial + adversarial refute) both rated croma not-at-fault (the second
+**high**). **Dropped as `abc2xml-drops-music`** (abc2xml loses authored annotation text croma preserves;
+0 whitelist change). Original report below.
 
-### Bug 21 — bare-accidental mid-tune key modification dropped (`K:^F` after `K:Gmin`) (`tune_005044`) — DEFERRED (key-composition + spec-ambiguity)
+### Bug 21 — bare-accidental mid-tune key modification dropped (`K:^F` after `K:Gmin`) (`tune_005044`) — DEFERRED (the SOLE remaining worklist file, undetermined/low)
+
+**Status 2026-06-14:** still kept, `undetermined`/low (re-confirmed by investigator). Correction to the
+earlier note: croma's key-MERGE logic already exists and is correct — the tonic-FUL form `K:Gm ^f` after
+`K:Gmin` composes to `fifths=-2` + F# (Eb/Bb/F#), matching abc2xml. The gap is *solely* recognizing the
+tonic-LESS spelling `K:^F`, which §3.1.14's grammar (`K:<tonic> <mode> <accidentals>`, every example with
+a tonic) does not document — so croma's reject is a defensible reading of an undocumented form, not a
+clean bug, and abc2xml's "modify the prevailing key" is an idiomatic extension beyond the literal grammar.
+This is the only barline/policy-worklist file left after the 2026-06-14 sweep (whitelist 9,392 / dropped
+542 / worklist 1); it needs a spec call on whether to accept tonic-less `K:`, not the key-merge work
+originally assumed. Original report below.
 
 `tune_005044` has header `K: Gmin` then a body `K:^F`. croma's `key_is_invalid_for_lowering`
 (`crates/croma-core/src/lower/mod.rs:1186`) flags a tonic-less, clef-less, default-Major K: as
