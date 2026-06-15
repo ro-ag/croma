@@ -3724,6 +3724,27 @@ fn nospace_inline_key_global_accidentals_preserve_base_key() {
 }
 
 #[test]
+fn body_key_none_resets_signature_and_is_not_rejected() {
+    // A mid-tune `K:none` cancels the key signature (ABC 2.1 §3.1.14: "K:none ...
+    // no key signature at all"). It is tonic-less but VALID, so
+    // `key_is_invalid_for_lowering` must NOT reject it (no `abc.field.invalid_k`)
+    // and it records a 0-fifths key change. This pins the `KeyMode::None` arm,
+    // which subsumes the redundant raw `is_empty()` / `eq("none")` guards the
+    // predicate cleanup removes.
+    let source = "X:1\nL:1/4\nK:D\nDEFG|\nK:none\nABcd|\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert!(
+        diagnostics.iter().all(|d| d.code != "abc.field.invalid_k"),
+        "K:none must not be rejected as an invalid key: {diagnostics:?}"
+    );
+    assert_eq!(
+        part_key_change_fifths(&tune.score, 0),
+        vec![0],
+        "K:none records a single 0-fifths key change"
+    );
+}
+
+#[test]
 fn supported_body_additive_meter_change_does_not_warn() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
     let (tune, diagnostics) = tune_for(source);
