@@ -101,7 +101,18 @@ bookkeeping.
 
 Branch: `feature/fmt-corpus-proof` (with Part 1).
 
-## Part 3 — Tier-2 loose-source curations
+## Part 3 — Tier-2 loose-source curations — **SKIPPED (evidence-driven)**
+
+> **Outcome (2026-06-15):** both candidates below occur **0× in the 10k corpus**
+> (`^Q:` lines with an unbalanced quote: 0; chord-internal leading tie `[-`: 0).
+> The spec's own bar — "kept only if its gate clears corpus-wide" — cannot be met
+> for a pattern that never appears, and the deliverable's catalogue floor
+> (`≥ reject-pairings + %%MIDI`) is already satisfied by the shipped
+> `BareTempoSuffix` and Part 4. Building them would be speculative (YAGNI); the
+> parser already *warns* on both, so no input is silently mishandled, and a
+> pairing is trivial to add later since each detector would just hook an existing
+> diagnostic code. **User decision: skip.** The candidate designs are retained
+> below for the record.
 
 Classes the strict parser warns on but does not repair. Two additions, each a new
 `FixKind` + a detector in `fixes.rs` hooking the parser's existing diagnostic
@@ -113,9 +124,12 @@ gate clears corpus-wide** (Part 1 re-run); otherwise it is dropped.
   inert tie removed must render identically. ABC 2.1 §4.11 (ties join two notes
   of the same pitch; a doubled or partnerless tie is malformed).
 - **`UnterminatedTempoQuote`** — hooks `abc.field.tempo.unterminated_quote`.
-  Closes an unterminated tempo string, `Q:"Allegro` → `Q:"Allegro"`. Gate
-  `Structure`: the tempo-text rendering must be unchanged. ABC 2.1 §3.1.8 (`Q:`
-  field accepts a quoted string).
+  Closes an unterminated tempo string, `Q:"Allegro` → `Q:"Allegro"`. ABC 2.1
+  §3.1.8 (`Q:` field accepts a quoted string). (Correction from investigation:
+  this would need `Gate::Pitch`, not `Structure` — a beat-less unterminated
+  quote renders raw `<words>"Allegro</words>`, and closing it recovers the
+  structured tempo text, a legitimate render change the structure gate would
+  wrongly revert.)
 
 Branch: `feature/fmt-tier2-curations`.
 
