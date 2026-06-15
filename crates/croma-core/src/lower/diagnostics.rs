@@ -174,6 +174,19 @@ pub(crate) fn compact_key_accidentals_ignored_warning(span: Span) -> Diagnostic 
     ))
 }
 
+pub(crate) fn key_tonic_trailing_junk_ignored_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.field.key.tonic_trailing_junk_ignored",
+        "Characters after the K: tonic were ignored",
+        span,
+    )
+    .with_spec_reference(abc_field_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The valid leading tonic was preserved and the trailing characters discarded.",
+    ))
+}
+
 pub(crate) fn abc_barline_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.8 repeat/bar symbols")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")

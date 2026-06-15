@@ -3745,6 +3745,45 @@ fn body_key_none_resets_signature_and_is_not_rejected() {
 }
 
 #[test]
+fn key_tonic_trailing_junk_recovery_warns() {
+    // Strict-spec-first: recovering the tonic from `K:Bb,` (a valid §3.1.14 tonic
+    // followed by ignored, non-alphabetic trailing junk) must ANNOUNCE the
+    // deviation, mirroring the no-space compact-accidental warning — silent
+    // recovery would bless malformed input. The tonic is still recovered (Bb =
+    // 2 flats), only flagged.
+    let source = "X:1\nL:1/4\nK:Bb,\nCDEF|\n";
+    let (tune, diagnostics) = tune_for(source);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d.code == "abc.field.key.tonic_trailing_junk_ignored")
+            .count(),
+        1,
+        "K:Bb, recovery must warn: {diagnostics:?}"
+    );
+    assert_eq!(
+        tune.score.metadata.key.as_ref().map(|k| k.fifths),
+        Some(-2),
+        "tonic Bb is still recovered despite the trailing junk"
+    );
+}
+
+#[test]
+fn clean_key_tonic_does_not_warn_trailing_junk() {
+    // The negative: well-formed keys recover nothing and must NOT emit the
+    // trailing-junk warning.
+    for source in ["X:1\nL:1/4\nK:Bb\nCDEF|\n", "X:1\nL:1/4\nK:C\nCDEF|\n"] {
+        let (_, diagnostics) = tune_for(source);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "abc.field.key.tonic_trailing_junk_ignored"),
+            "clean key must not warn trailing junk ({source:?}): {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
 fn supported_body_additive_meter_change_does_not_warn() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
     let (tune, diagnostics) = tune_for(source);
