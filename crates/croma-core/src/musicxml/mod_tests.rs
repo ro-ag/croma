@@ -1687,6 +1687,56 @@ fn repeat_end_after_invisible_barline_closes_previous_measure() {
 }
 
 #[test]
+fn leading_repeat_end_after_plain_bar_seam_closes_previous_measure() {
+    // tune_000205: a measure closes with a plain `|` at a line break, then the
+    // next line LEADS with `:|` (end-of-repeat). The `:|` opens an empty seam
+    // measure, so it is a *leading* RepeatEnd that matches neither barline filter
+    // and is dropped. Its backward repeat must instead retro-close the PREVIOUS
+    // real measure (like the `[|]:|` invisible case above, but after a plain bar).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:C D E F|\n:|G A B c|]\n";
+    let export = export_musicxml(source).expect("leading repeat-end seam should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(has_barline(
+        &measures[0],
+        "left",
+        Some("heavy-light"),
+        Some("forward")
+    ));
+    assert!(
+        has_barline(&measures[0], "right", Some("light-heavy"), Some("backward")),
+        "leading `:|` after a plain-bar seam must retro-close m1 with a backward repeat: {}",
+        export.musicxml
+    );
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+}
+
+#[test]
+fn leading_repeat_end_after_key_change_seam_closes_previous_measure() {
+    // tune_011411: a measure closes `|` at a line break, then a note-less key
+    // change (`K:G` on its own line) is the seam measure, then the next line
+    // LEADS with `:|`. A key-change-only measure is still "empty" (no timed
+    // notes), so the leading `:|`'s backward repeat must retro-close the PREVIOUS
+    // real measure — not be dropped on the seam (which left tune_011411's 2nd
+    // ending unterminated, leaking m34->m43).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n|:C D E F|\nK:G\n:|G A B c|]\n";
+    let export =
+        export_musicxml(source).expect("leading repeat-end after key-change seam should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(
+        has_barline(&measures[0], "right", Some("light-heavy"), Some("backward")),
+        "leading `:|` after a key-change seam must retro-close m1 with a backward repeat: {}",
+        export.musicxml
+    );
+    assert_eq!(note_steps(&measures[1]), vec!['G', 'A', 'B', 'C']);
+}
+
+#[test]
 fn direction_only_measure_preserves_trailing_invisible_barline() {
     let source = "X:1\nK:C\nC|\"^VAR:\"[|]\\\n\"a.\"A [|] y8\n";
     let export = export_musicxml(source).expect("direction-only invisible barline should export");

@@ -632,12 +632,30 @@ keeps `]|`/`]||`/`]|:` as one boundary (breaks after `]` only when a `|` does **
 `tune_004928`, and `tune_004475`** (the file deferred from Bug 24) — whitelist 9,388 → 9,392, barline
 worklist rows 59 → 24, **0 regressions**.
 
-**Still open** (`tune_010091`, `tune_011411`, `tune_000205`): these are a *different* root — a leading
-`:|` repeat-END at a line seam (and `tune_011411`'s bare `:|` on a note-less key-change measure). The
-`unique_barlines`/`is_leading_barline` filter drops a leading RepeatEnd instead of attaching its
-backward repeat to the preceding measure. abc2xml is **also** wrong on `tune_000205`/`tune_011411`
-(emits a *forward* repeat where the source has `:|` backward), so those will drop once croma is fixed
-to emit the backward repeat. Needs the harder leading-RepeatEnd-at-seam handling. Original report below.
+**Fixed (leading `:|` repeat-END at a line seam) 2026-06-14:** a `RepeatEnd`/`RepeatBoth` that LEADS a
+note-less seam measure (an empty measure, or one holding only a `K:`/`M:`/clef/tempo change) now
+retro-closes the previous real measure with its backward repeat, instead of being dropped by the
+`unique_barlines` leading-barline filter. The gate `repeat_end_closes_previous_measure`
+(`crates/croma-core/src/lower/timeline.rs`) was generalized two ways: (a) its prior-measure check
+`previous_measure_ends_with_invisible_barline` → `previous_measure_has_timed_content` (the seam may
+follow any closing bar `|`/`[|]`/…, not just an invisible one); (b) its current-measure check
+`events.is_empty()` → `is_empty_measure` (a note-less `K:` change measure is still an empty seam).
+Tests `leading_repeat_end_after_plain_bar_seam_closes_previous_measure`,
+`leading_repeat_end_after_key_change_seam_closes_previous_measure`
+(`crates/croma-core/src/musicxml/mod_tests.rs`); the existing `[|]:|` invisible-seam test still passes.
+**`tune_000205`** (`:|2` after `...^f|`) and **`tune_011411`** (bare `:|` after a note-less `K:D` line)
+are now spec-correct — m17/m34 close with `light-heavy` + backward + the ending stop, and the seam
+measure is absorbed; the 2nd ending no longer leaks (011411 m34→m43). Both adversarial-verified
+(152/222 notes byte-identical, no music lost). abc2xml is **also** wrong on both (forward repeat on a
+phantom empty seam measure), so each **dropped as `abc2xml-phantom-measure`** (0 whitelist regressions;
+worklist 10→8).
+
+**Still open** (`tune_010091`): a *different* root — the seam `...ecA A2: |` is colon-SPACE-pipe, so
+under the strict-spec policy (§4.9 KB line 1009: bar/repeat glyphs must be contiguous) croma is correct
+that m9's right is a plain bar (no backward repeat) and abc2xml over-reads `: |` as a `:|`. croma's real
+bug is narrower: the loose `:` normalizes into a measure boundary whose stray slot mis-places the
+following `|:` forward repeat onto m11 instead of the `a`-pickup m10. Separate fix; abc2xml is at fault on
+the residual `:` so the file drops regardless. Original report below.
 
 When `|:` opens a body line that follows a line ending in a closing/thick bar (`]|`) or a standalone
 inline-field line (`[K:Em]`, `K:Ddor`), croma leaves the first real measure barline-less and defers
