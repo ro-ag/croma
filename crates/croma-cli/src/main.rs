@@ -265,6 +265,9 @@ fn fix_detail(change: &Change) -> String {
             FixKind::BareTempoSuffix => "stripped a non-integer tempo suffix".to_string(),
             FixKind::RedundantBarline => "collapsed a redundant bar line".to_string(),
             FixKind::FieldSpacing => "removed space after a field colon".to_string(),
+            FixKind::MidiDirectiveSpacing => {
+                "collapsed whitespace in a %%MIDI directive".to_string()
+            }
         }
     } else {
         format!("`{}` -> `{}`", change.before, change.after)

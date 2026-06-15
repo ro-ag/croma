@@ -37,6 +37,9 @@ pub(crate) fn auto_fix(source: &str, options: FormatOptions) -> FixResult {
             // current state (which prior pitch fixes may legitimately have
             // altered), so compare `working` to `trial`, not to the original.
             Gate::Structure => structure_preserved(&working, &trial, options.parse),
+            // `%%MIDI` is not rendered, so it is gated on a textual invariant:
+            // only whitespace inside active directive argument regions may move.
+            Gate::DirectiveTokens => directive_tokens_preserved(&working, &trial),
         };
         if preserved {
             working = trial;
@@ -90,6 +93,7 @@ fn collect_candidates(source: &str, options: ParseOptions) -> Vec<Change> {
     bare_tempo_suffix(source, document, &mut candidates);
     redundant_barlines(source, document, &mut candidates);
     field_spacing(source, document, &mut candidates);
+    midi_directive_spacing(source, &mut candidates);
     candidates
 }
 
@@ -117,6 +121,54 @@ fn field_spacing(source: &str, document: &croma_core::AbcDocument, out: &mut Vec
             after: String::new(),
         });
     }
+}
+
+/// `%%MIDI beat 97 87  77 4` → `%%MIDI beat 97 87 77 4`: collapse whitespace runs
+/// inside the argument region of an active (column-0) `%%MIDI` directive. The
+/// comment tail is preserved verbatim and inert mid-line `%%MIDI` text (not at
+/// column 0, which abc2midi never honors) is ignored. `%%MIDI` is an abc2midi
+/// convention (not ABC 2.1) and croma renders no MusicXML for it, so this is
+/// gated by the textual directive-token invariant rather than by the score.
+fn midi_directive_spacing(source: &str, out: &mut Vec<Change>) {
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        if let Some((args, comment)) = active_midi(content) {
+            let canonical = format!("%%MIDI{}{comment}", collapse_whitespace(args));
+            if canonical != content {
+                out.push(Change {
+                    kind: FixKind::MidiDirectiveSpacing,
+                    span: Span {
+                        start: offset,
+                        end: offset + content.len(),
+                    },
+                    before: content.to_string(),
+                    after: canonical,
+                });
+            }
+        }
+        offset += line.len();
+    }
+}
+
+/// Collapse each maximal run of whitespace in `s` to a single space, keeping at
+/// most a single space at each edge — internal spacing is canonicalized without
+/// any run vanishing entirely.
+fn collapse_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_ws = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(ch);
+            in_ws = false;
+        }
+    }
+    out
 }
 
 /// `| |` → `|`, `]||:` → `|:`: collapse a run of bar-line tokens (contiguous or
@@ -420,6 +472,60 @@ fn structure_preserved(before: &str, trial: &str, options: ParseOptions) -> bool
     }
 }
 
+/// True if `before` and `trial` differ only in whitespace inside the argument
+/// region of active (column-0) `%%MIDI` directive lines. This is the gate for
+/// [`FixKind::MidiDirectiveSpacing`]: croma renders no MusicXML for `%%MIDI`, so
+/// the structure gate offers no protection; this textual invariant instead
+/// proves the edit changed no directive token, no comment, and no other line.
+fn directive_tokens_preserved(before: &str, trial: &str) -> bool {
+    directive_signature(before) == directive_signature(trial)
+}
+
+/// The content signature of `source` for the directive-tokens gate: each line is
+/// reduced to its meaning under `%%MIDI` whitespace normalization. Equal
+/// signatures imply the only byte differences are collapsible whitespace inside
+/// active `%%MIDI` argument regions.
+fn directive_signature(source: &str) -> Vec<DirectiveLine> {
+    source.lines().map(directive_line).collect()
+}
+
+/// A line's signature: an active `%%MIDI` directive carries its whitespace-
+/// normalized argument tokens and verbatim comment tail; any other line is kept
+/// verbatim.
+#[derive(PartialEq, Eq)]
+enum DirectiveLine {
+    Midi { args: String, comment: String },
+    Plain(String),
+}
+
+fn directive_line(line: &str) -> DirectiveLine {
+    match active_midi(line) {
+        Some((args, comment)) => DirectiveLine::Midi {
+            args: args.split_whitespace().collect::<Vec<_>>().join(" "),
+            comment: comment.to_string(),
+        },
+        None => DirectiveLine::Plain(line.to_string()),
+    }
+}
+
+/// If `line` is an active column-0 `%%MIDI` directive, split it into its
+/// argument region (after the `%%MIDI` keyword, before any `%` comment) and the
+/// verbatim comment tail (which includes the leading `%`, or is empty). Returns
+/// `None` for any other line — notably an inert mid-line `%%MIDI` tail, which
+/// does not begin at column 0 and which abc2midi never honors.
+fn active_midi(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("%%MIDI")?;
+    // Require a whitespace boundary after the keyword: `%%MIDIfoo` is not the
+    // directive, and bare `%%MIDI` has no argument region to normalize.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(match rest.find('%') {
+        Some(pos) => (&rest[..pos], &rest[pos..]),
+        None => (rest, ""),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,5 +772,91 @@ mod tests {
             musicxml_of("X:1\nL:1/4\nK:C\nCDE| |]\n", ParseOptions::default()),
             musicxml_of(&result.output, ParseOptions::default()),
         );
+    }
+
+    #[test]
+    fn collapses_internal_midi_directive_whitespace() {
+        // An active %%MIDI line with a multi-space argument run is canonicalized
+        // to single spaces; the tokens are preserved.
+        let result = auto_fix("X:1\n%%MIDI beat 97 87  77 4\nK:C\nCDE\n", opts());
+        assert!(
+            result.output.contains("%%MIDI beat 97 87 77 4"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(
+            result
+                .changes
+                .iter()
+                .any(|c| c.kind == FixKind::MidiDirectiveSpacing),
+            "changes: {:?}",
+            result.changes
+        );
+    }
+
+    #[test]
+    fn midi_spacing_preserves_comment_and_ignores_inert_tail() {
+        // The comment tail is kept; the run before it collapses to one space.
+        // An inert mid-line %%MIDI tail (not column 0) is never touched.
+        let result = auto_fix(
+            "X:1\n%%MIDI program 23  % Tango Accordion\nK:C %%MIDI gchordon\nCDE\n",
+            opts(),
+        );
+        assert!(
+            result
+                .output
+                .contains("%%MIDI program 23 % Tango Accordion"),
+            "got: {:?}",
+            result.output
+        );
+        assert!(
+            result.output.contains("K:C %%MIDI gchordon"),
+            "inert tail changed: {:?}",
+            result.output
+        );
+    }
+
+    #[test]
+    fn clean_midi_directive_is_untouched() {
+        let result = auto_fix("X:1\n%%MIDI program 72\nK:C\nCDE\n", opts());
+        assert!(
+            !result
+                .changes
+                .iter()
+                .any(|c| c.kind == FixKind::MidiDirectiveSpacing),
+            "should not fire on a clean directive: {:?}",
+            result.changes
+        );
+    }
+
+    #[test]
+    fn directive_tokens_gate_allows_only_midi_arg_whitespace() {
+        // Whitespace collapse inside an active %%MIDI argument region preserves
+        // the token signature — the gate accepts it.
+        assert!(directive_tokens_preserved(
+            "X:1\n%%MIDI beat 97 87  77 4\nK:C\n",
+            "X:1\n%%MIDI beat 97 87 77 4\nK:C\n",
+        ));
+        // A changed argument token is a content change — rejected.
+        assert!(!directive_tokens_preserved(
+            "X:1\n%%MIDI program 72\nK:C\n",
+            "X:1\n%%MIDI program 73\nK:C\n",
+        ));
+        // A changed comment tail is a content change — rejected.
+        assert!(!directive_tokens_preserved(
+            "X:1\n%%MIDI program 72 % piano\nK:C\n",
+            "X:1\n%%MIDI program 72 % organ\nK:C\n",
+        ));
+        // A change to a non-%%MIDI line is rejected (the fix only touches MIDI).
+        assert!(!directive_tokens_preserved(
+            "X:1\n%%MIDI program 72\nK:C\nCDE\n",
+            "X:1\n%%MIDI program 72\nK:C\nCDF\n",
+        ));
+        // An inert mid-line `%%MIDI` tail (not column 0) is treated as a plain
+        // line: collapsing whitespace around it is NOT permitted by this gate.
+        assert!(!directive_tokens_preserved(
+            "X:1\nK:C %%MIDI gchordon\n",
+            "X:1\nK:C %%MIDI  gchordon\n",
+        ));
     }
 }
