@@ -1060,33 +1060,34 @@ fn tempo_bare_number_uses_unit_note_length() {
 }
 
 #[test]
-fn tempo_bare_number_with_trailing_dot_emits_metronome() {
-    // `Q:400.` is the deprecated bare-number tempo (ABC 2.1 §10.1) with a
-    // trailing decimal point. abc2xml accepts it as 400; croma must too rather
-    // than degrading the whole field to literal <words>400.</words>.
+fn tempo_bare_number_with_trailing_dot_rejected_to_words() {
+    // `Q:400.` is NOT a valid bare-number tempo: ABC 2.1 §10.1's deprecated bare
+    // form is a bare INTEGER, and a trailing decimal tail is outside the grammar.
+    // The strict parser rejects it (keeps the field as verbatim <words>) rather
+    // than mining `400` to mimic abc2xml; `croma fmt --auto-fix` rewrites
+    // `Q:400.` -> `Q:400` so the strict parser then reads it.
     let source = "X:1\nM:4/4\nL:1/8\nQ:400.\nK:C\nC4|\n";
     let export = export_musicxml(source).expect("tempo score should export");
 
     assert_balanced_xml(&export.musicxml);
-    assert!(export.musicxml.contains("<beat-unit>eighth</beat-unit>"));
-    assert!(export.musicxml.contains("<per-minute>400</per-minute>"));
-    assert!(export.musicxml.contains("<sound tempo=\"200.00\""));
-    assert!(!export.musicxml.contains("<words>400.</words>"));
+    assert!(export.musicxml.contains("<words>400.</words>"));
+    assert_eq!(count(&export.musicxml, "<metronome>"), 0);
+    assert!(!export.musicxml.contains("<per-minute>"));
 }
 
 #[test]
-fn tempo_bare_number_with_legacy_suffix_emits_metronome() {
-    // `Q:320s` is the deprecated bare-number tempo (ABC 2.1 §10.1) with a legacy
-    // abc2mtex suffix letter. abc2xml strips the `s` and reads 320; croma must
-    // too rather than degrading the field to literal <words>320s</words>.
+fn tempo_bare_number_with_legacy_suffix_rejected_to_words() {
+    // `Q:320s` (legacy abc2mtex suffix letter) is likewise outside the §10.1
+    // bare-integer grammar: the strict parser rejects it to verbatim <words>
+    // instead of stripping the `s` to mimic abc2xml; `croma fmt --auto-fix`
+    // rewrites `Q:320s` -> `Q:320`.
     let source = "X:1\nM:4/4\nL:1/8\nQ:320s\nK:C\nC4|\n";
     let export = export_musicxml(source).expect("tempo score should export");
 
     assert_balanced_xml(&export.musicxml);
-    assert!(export.musicxml.contains("<beat-unit>eighth</beat-unit>"));
-    assert!(export.musicxml.contains("<per-minute>320</per-minute>"));
-    assert!(export.musicxml.contains("<sound tempo=\"160.00\""));
-    assert!(!export.musicxml.contains("<words>320s</words>"));
+    assert!(export.musicxml.contains("<words>320s</words>"));
+    assert_eq!(count(&export.musicxml, "<metronome>"), 0);
+    assert!(!export.musicxml.contains("<per-minute>"));
 }
 
 #[test]
