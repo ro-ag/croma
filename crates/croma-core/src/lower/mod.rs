@@ -458,6 +458,11 @@ impl MultiVoiceLowering {
                 if let Some(unit) = crate::parse::field::parse_unit_note_length(&inline.value.value)
                 {
                     self.apply_unit_change(&Spanned::new(unit, inline.value.span));
+                } else {
+                    // An unparseable inline `[L:..]` keeps the previous unit note
+                    // length; warn rather than drop it silently.
+                    self.diagnostics
+                        .push(invalid_unit_change_warning(inline.value.span));
                 }
             }
             'K' => {
@@ -471,6 +476,12 @@ impl MultiVoiceLowering {
                     self.apply_inline_key_change(&Spanned::new(key, inline.value.span));
                 } else if !key_is_invalid_for_lowering(&key) {
                     self.apply_inline_key_clef_properties(&key);
+                } else {
+                    // Invalid inline `[K:..]` that names no signature and no clef:
+                    // keep the prevailing key, but warn (mirrors the whole-line
+                    // invalid-K: path; the strict parser never recovers silently).
+                    self.diagnostics
+                        .push(invalid_key_change_warning(inline.value.span));
                 }
             }
             'Q' => {
@@ -493,7 +504,11 @@ impl MultiVoiceLowering {
                 self.diagnostics
                     .push(inline_instruction_ignored_warning(directive, inline.span));
             }
-            _ => {}
+            // Any other inline field code is not applied during lowering. Drop it,
+            // but warn — recovery is never silent.
+            code => self
+                .diagnostics
+                .push(inline_field_ignored_warning(code, inline.span)),
         }
     }
 

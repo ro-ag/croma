@@ -161,6 +161,32 @@ pub(crate) fn invalid_key_change_warning(span: Span) -> Diagnostic {
     ))
 }
 
+pub(crate) fn invalid_unit_change_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.field.invalid_l",
+        "Invalid inline [L:..] value was ignored during lowering",
+        span,
+    )
+    .with_spec_reference(abc_field_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "Lowering continued with the previous unit note length.",
+    ))
+}
+
+pub(crate) fn inline_field_ignored_warning(code: char, span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.field.inline_ignored",
+        format!("Inline [{code}:..] field was ignored during lowering"),
+        span,
+    )
+    .with_spec_reference(abc_field_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The inline field was preserved but did not change lowering state.",
+    ))
+}
+
 pub(crate) fn compact_key_accidentals_ignored_warning(span: Span) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,
