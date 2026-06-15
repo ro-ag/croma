@@ -449,6 +449,10 @@ pub struct KeySignature {
     pub accidentals: Vec<KeyAccidental>,
     pub explicit: bool,
     pub compact_accidentals_ignored: bool,
+    /// Set when a valid leading tonic was recovered from a token carrying trailing
+    /// non-alphabetic junk (`K:Bb,`); the junk was discarded (ABC 2.1 §3.1.14). The
+    /// lowering stage flags this with `abc.field.key.tonic_trailing_junk_ignored`.
+    pub tonic_trailing_junk_ignored: bool,
     /// Clef/octave/middle/transpose modifiers carried on the `K:` field
     /// (ABC 2.1 §4.6), e.g. `K:C treble+8` or `K: Dm octave=1`. Empty when the
     /// key field carries only tonic/mode/accidentals.

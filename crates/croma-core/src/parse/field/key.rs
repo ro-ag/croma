@@ -15,6 +15,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
             accidentals: Vec::new(),
             explicit: false,
             compact_accidentals_ignored: false,
+            tonic_trailing_junk_ignored: false,
             properties: VoiceProperties::default(),
         };
     }
@@ -31,6 +32,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
             accidentals: Vec::new(),
             explicit: false,
             compact_accidentals_ignored: false,
+            tonic_trailing_junk_ignored: false,
             properties: VoiceProperties::default(),
         };
     }
@@ -39,16 +41,18 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
     let mut tonic = None;
     let mut mode = KeyMode::Major;
     let mut explicit = false;
+    let mut tonic_trailing_junk_ignored = false;
     let mut token_start = 0;
 
     if let Some(first) = tokens.first()
-        && let Some((parsed_tonic, inline_mode)) = parse_tonic_token(&first.value)
+        && let Some((parsed_tonic, inline_mode, junk_ignored)) = parse_tonic_token(&first.value)
     {
         tonic = Some(parsed_tonic);
         if let Some(inline_mode) = inline_mode {
             mode = inline_mode;
             explicit = mode == KeyMode::Explicit;
         }
+        tonic_trailing_junk_ignored = junk_ignored;
         token_start = 1;
     }
 
@@ -88,6 +92,7 @@ pub(crate) fn parse_key(value: &str, value_span: Span) -> KeySignature {
         accidentals,
         explicit,
         compact_accidentals_ignored,
+        tonic_trailing_junk_ignored,
         properties,
     }
 }
@@ -165,7 +170,10 @@ fn compact_key_accidental_len(value: &str) -> Option<usize> {
     Some(sign_len + note.len_utf8())
 }
 
-fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
+/// Parse a leading key tonic. Returns the tonic, any inline mode suffix, and
+/// whether trailing non-alphabetic junk was discarded to recover it (`K:Bb,`),
+/// so the caller can flag that recovery.
+fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>, bool)> {
     let mut chars = token.char_indices();
     let (_, first) = chars.next()?;
     if !matches!(first.to_ascii_uppercase(), 'A'..='G') {
@@ -201,6 +209,7 @@ fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
     //     `K:Bb,`) -> it can be neither a mode nor a clef word, so keep the valid
     //     leading tonic and discard the junk. The joined form then parses like the
     //     already-valid spaced form (`K:Bb,` behaves as `K:Bb`).
+    let mut junk_ignored = false;
     let mode = if mode_start < token.len() {
         let remainder = &token[mode_start..];
         match parse_key_mode(remainder) {
@@ -208,7 +217,10 @@ fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
             None if remainder.starts_with(|c: char| c.is_ascii_alphabetic()) => {
                 return None;
             }
-            None => None,
+            None => {
+                junk_ignored = true;
+                None
+            }
         }
     } else {
         None
@@ -220,6 +232,7 @@ fn parse_tonic_token(token: &str) -> Option<(KeyTonic, Option<KeyMode>)> {
             accidental,
         },
         mode,
+        junk_ignored,
     ))
 }
 
