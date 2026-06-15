@@ -3838,6 +3838,33 @@ fn unhandled_inline_field_code_warns() {
 }
 
 #[test]
+fn unterminated_tempo_quote_warns() {
+    // A `Q:` field with an opening `"` and no close recovers the trailing text,
+    // but must warn — recovery is never silent.
+    let (_, diagnostics) = tune_for("X:1\nL:1/4\nK:C\nC4|\nQ:\"Allegro\nD4|\n");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == "abc.field.tempo.unterminated_quote"),
+        "expected unterminated_quote warning: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn line_leading_colon_repeat_start_warns() {
+    // A line-leading `:` glued to a note opens a repeat section (the author's `|:`
+    // with the pipe dropped). croma recovers it as a RepeatStart — a justified
+    // recovery, but it must warn (it was previously silent).
+    let (_, diagnostics) = tune_for("X:1\nL:1/4\nK:G\n:GABc:|\n");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == "abc.music.barline.recovered_repeat"),
+        "expected recovered_repeat warning: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn supported_body_additive_meter_change_does_not_warn() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nCDEF|\nM:3/4+4/4\nGABcdef|\n";
     let (tune, diagnostics) = tune_for(source);

@@ -315,6 +315,10 @@ impl MultiVoiceLowering {
     /// voice position so exporters reproduce the change in place.
     fn apply_tempo_change(&mut self, tempo: &Spanned<String>) {
         let unit = self.unit;
+        if crate::lower::tempo::has_unterminated_quote(&tempo.value) {
+            self.diagnostics
+                .push(unterminated_tempo_quote_warning(tempo.span));
+        }
         if let Some(model) = parse_tempo_model(&tempo.value, tempo.span, unit) {
             self.current_state()
                 .lowered
