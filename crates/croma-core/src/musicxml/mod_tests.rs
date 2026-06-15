@@ -1561,6 +1561,31 @@ fn repeat_end_double_after_notes_exports_right_repeat_and_new_measure() {
 }
 
 #[test]
+fn thick_thin_seam_barline_keeps_following_repeat_leading() {
+    // tune_007014: a measure closing `]|` (thick then thin) followed by a `|:`
+    // opening the next section. `]|` was tokenized as `]` (final) PLUS a stray `|`
+    // (regular); that stray bar consumed the next measure's leading slot, so the
+    // `|:` became non-leading and its forward repeat was deferred off the end
+    // (dropped). `]|` is one boundary, and the `|:` must lead the next measure.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F ]|\n|: G A B c :|\n";
+    let export = export_musicxml(source).expect("`]|` seam should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let measures = musicxml_measures(&export.musicxml);
+    assert_eq!(measure_numbers(&measures), vec!["1", "2"]);
+    assert!(
+        has_barline(&measures[0], "right", Some("light-heavy"), None),
+        "m1 must close with the `]|` boundary (no stray extra bar): {}",
+        export.musicxml
+    );
+    assert!(
+        has_barline(&measures[1], "left", Some("heavy-light"), Some("forward")),
+        "the `|:` must lead measure 2 with a forward repeat: {}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn repeat_both_between_sections_exports_right_then_left_repeat() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F :||: G A B c |]\n";
     let export = export_musicxml(source).expect("repeat-both barline should export");

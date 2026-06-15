@@ -30,9 +30,12 @@ impl<'line> MusicLineParser<'line> {
                 break;
             }
             let ch = self.bump_char();
-            if ch == Some(']')
-                && !(self.peek_char() == Some('|') && self.peek_next_char() == Some('|'))
-            {
+            // A thick `]` ends the run UNLESS a thin `|` follows it: `]|`
+            // (thick-thin), `]||`, `]|:` are one boundary, so keep scanning. A
+            // `]` followed by anything else (`]`, a note, whitespace, `:`) closes
+            // the run here. Splitting `]|` into `]` + a stray `|` would let the
+            // stray bar steal the next measure's leading slot (tune_007014).
+            if ch == Some(']') && self.peek_char() != Some('|') {
                 break;
             }
         }
