@@ -260,11 +260,12 @@ impl VoiceTimelineBuilder {
             && self.onset == Fraction::zero()
             && self.active_overlay.is_none()
             && self.measures.len() > 1
-            && self
-                .measures
-                .last()
-                .is_some_and(|measure| measure.events.is_empty() && measure.overlays.is_empty())
-            && self.previous_measure_ends_with_invisible_barline()
+            // The current (seam) measure carries no timed notes — it is either
+            // brand-new or note-less (a key/meter/clef change on its own line, as
+            // in tune_011411's `K:D` seam). Such a measure cannot host the
+            // backward repeat, so the `:|` retro-closes the previous real measure.
+            && self.measures.last().is_some_and(is_empty_measure)
+            && self.previous_measure_has_timed_content()
     }
 
     fn push_barline_to_previous_measure(&mut self, kind: BarlineKind, span: Span) {
@@ -288,14 +289,20 @@ impl VoiceTimelineBuilder {
         previous.span = extend_span(previous.span, span);
     }
 
-    fn previous_measure_ends_with_invisible_barline(&self) -> bool {
+    /// True when the measure before the current (empty) one carries real timed
+    /// content — a closed measure that a *leading* `:|`/`::` at a line seam must
+    /// retro-close with a backward repeat, instead of dropping the repeat on the
+    /// empty seam measure (a leading `RepeatEnd` matches neither barline filter
+    /// in `unique_barlines`). Generalizes the earlier invisible-barline-only
+    /// gate: the prior measure may be closed by any bar (`|`, `[|]`, ...), as in
+    /// tune_000205 (`...^f|` then `:|2 ...`). The invisible `[|]:|` case still
+    /// qualifies — its prior measure also holds notes.
+    fn previous_measure_has_timed_content(&self) -> bool {
         self.measures.iter().rev().nth(1).is_some_and(|measure| {
-            measure.events.iter().rev().any(|event| {
+            measure.events.iter().any(|event| {
                 matches!(
                     event.kind,
-                    TimelineEventKind::Barline {
-                        kind: BarlineKind::Invisible
-                    }
+                    TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
                 )
             })
         })
