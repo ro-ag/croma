@@ -222,6 +222,11 @@ impl MultiVoiceLowering {
                     .diagnostics
                     .push(compact_key_accidentals_ignored_warning(key.span));
             }
+            if key.value.tonic_trailing_junk_ignored {
+                lowering
+                    .diagnostics
+                    .push(key_tonic_trailing_junk_ignored_warning(key.span));
+            }
             let key_props = key_clef_properties_model(&key.value.properties);
             if key_props != VoicePropertiesModel::default() {
                 let state = lowering.current_state();
@@ -356,7 +361,7 @@ impl MultiVoiceLowering {
             self.diagnostics.push(invalid_key_change_warning(key.span));
             return;
         }
-        self.warn_if_compact_key_accidentals_ignored(key);
+        self.warn_if_key_field_recovered(key);
         // A clef-only K: line (`K: clef=treble`) changes no key signature —
         // mirror the inline `[K:..]` guard: merge its clef properties into the
         // current voice but leave the key (and the recorded events) untouched.
@@ -424,10 +429,18 @@ impl MultiVoiceLowering {
         merge_voice_properties(&mut voice.properties, key_props);
     }
 
-    fn warn_if_compact_key_accidentals_ignored(&mut self, key: &Spanned<KeySignature>) {
+    /// Flag any lenient recovery the strict K: parser performed on a body/inline
+    /// key field, so a recovered key never changes the signature silently:
+    /// dropped no-space global accidentals (`K:D^f`) and discarded trailing tonic
+    /// junk (`K:Bb,`). Both keep the valid base key; only the deviation is warned.
+    fn warn_if_key_field_recovered(&mut self, key: &Spanned<KeySignature>) {
         if key.value.compact_accidentals_ignored {
             self.diagnostics
                 .push(compact_key_accidentals_ignored_warning(key.span));
+        }
+        if key.value.tonic_trailing_junk_ignored {
+            self.diagnostics
+                .push(key_tonic_trailing_junk_ignored_warning(key.span));
         }
     }
 
@@ -1269,6 +1282,7 @@ fn merge_key_modification(prevailing: &KeySignature, body: &KeySignature) -> Key
         accidentals,
         explicit: prevailing.explicit,
         compact_accidentals_ignored: false,
+        tonic_trailing_junk_ignored: false,
         // The modifier carries its own clef/transpose props (usually none); the
         // prevailing clef stays active because applying empty props is a no-op.
         properties: body.properties.clone(),
