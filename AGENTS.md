@@ -78,6 +78,31 @@ on any host. Never hardcode an absolute toolchain path. Use `uv` for all Python.
 - **Formatter and LSP are gated** until parser quality is proven. Parser /
   corpus / music21 comparison work remains the priority.
 
+## Parser recovery policy
+
+The parser is **strict to ABC 2.1**. When it meets malformed input, it follows
+one three-tier rule (loose source is the formatter's job, not the parser's):
+
+1. **Default: reject.** Input that does not match the spec grammar is not
+   silently accepted.
+2. **Recover *and warn* — only for a clear intention spoiled by a minimal,
+   mechanical slip** (a stray space/comma, a missing space). Recover the obvious
+   intent and **always emit a diagnostic** — recovery is **never silent**. A
+   silent recovery is indistinguishable from mimicking `abc2xml`; the warning is
+   what makes recovery defensible as transparent strict-recognition.
+3. **Otherwise: strict reject.** If the intention is not unambiguous, or the
+   mistake is not a trivial slip, reject it. Repair belongs in
+   `croma fmt --auto-fix`, which sanitises loose source into canonical spelling
+   the strict parser then reads cleanly.
+
+Corpus impact: warnings are stderr diagnostics, so adding one is
+**whitelist-neutral** (the MusicXML is unchanged) and always safe to land.
+Converting a recovery into a reject **changes the MusicXML**, so it can drop
+files out of `whitelist.csv`; that is acceptable only as an **adjudicated** move
+to `dropped.csv` (croma is strict-correct, `abc2xml` is lenient — see
+[`spec-is-driver`](docs/comparison/abc2xml-divergences/README.md)), never a
+silent regression. Triage each such file with the divergence-triage process.
+
 ## Progress tracker
 
 The committed SQL snapshot at `docs/progress/croma-progress.sql` is the portable
