@@ -3821,20 +3821,24 @@ fn invalid_inline_key_change_warns() {
 }
 
 #[test]
-fn unhandled_inline_field_code_warns() {
-    // An inline field code lowering does not apply (e.g. `[P:..]`) is dropped, but
-    // with a diagnostic — never silently. Voice switches `[V:..]` are exempt
-    // (handled separately) and must NOT warn.
-    let (_, dropped) = tune_for("X:1\nL:1/4\nK:C\nC[P:A]D|\n");
-    assert!(
-        dropped.iter().any(|d| d.code == "abc.field.inline_ignored"),
-        "expected inline_ignored for inline [P:A]: {dropped:?}"
-    );
-    let (_, voice) = tune_for("X:1\nL:1/4\nK:C\nV:1\nC[V:1]D|\n");
-    assert!(
-        voice.iter().all(|d| d.code != "abc.field.inline_ignored"),
-        "voice switch [V:1] must not warn inline_ignored: {voice:?}"
-    );
+fn valid_unsupported_inline_field_is_silently_skipped() {
+    // A VALID inline field croma's lowering does not apply (`[P:..]`, `[w:..]`,
+    // `[r:..]`, ...) is an unsupported-feature no-op, NOT a recovery from
+    // malformed input — so it is skipped SILENTLY (no `abc.field.inline_ignored`).
+    // Warning on well-formed input would be noise (fired 781x / 359 files).
+    for source in [
+        "X:1\nL:1/4\nK:C\nC[P:A]D|\n",
+        "X:1\nL:1/4\nK:C\nC[r:a remark]D|\n",
+        "X:1\nL:1/4\nK:C\nC[w:la la]D|\n",
+    ] {
+        let (_, diagnostics) = tune_for(source);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "abc.field.inline_ignored"),
+            "valid unsupported inline field must be silent ({source:?}): {diagnostics:?}"
+        );
+    }
 }
 
 #[test]
