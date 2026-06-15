@@ -64,6 +64,12 @@ pub enum FixKind {
     /// Whitespace after an information field's colon removed, e.g. `K: C` → `K:C`
     /// (the ABC 2.1 spec's own field notation has no space after the colon).
     FieldSpacing,
+    /// Internal whitespace runs collapsed inside an active (column-0) `%%MIDI`
+    /// directive's argument region, e.g. `%%MIDI beat 97 87  77 4` →
+    /// `%%MIDI beat 97 87 77 4`. `%%MIDI` is an abc2midi convention (not ABC
+    /// 2.1); the canonical form follows its whitespace tokenization. The comment
+    /// tail and any inert mid-line `%%MIDI` text are left untouched.
+    MidiDirectiveSpacing,
 }
 
 impl FixKind {
@@ -76,6 +82,7 @@ impl FixKind {
             FixKind::BareTempoSuffix => "bare-tempo-suffix",
             FixKind::RedundantBarline => "redundant-barline",
             FixKind::FieldSpacing => "field-spacing",
+            FixKind::MidiDirectiveSpacing => "midi-directive-spacing",
         }
     }
 
@@ -93,6 +100,10 @@ impl FixKind {
             // reverts e.g. an alignment-sensitive `w:` lyric whose leading
             // whitespace turns out to matter.
             FixKind::RedundantBarline | FixKind::FieldSpacing => Gate::Structure,
+            // `%%MIDI` is not rendered into MusicXML, so neither the pitch nor
+            // the structure gate constrains it; a textual directive-token
+            // invariant proves the edit changed only collapsible whitespace.
+            FixKind::MidiDirectiveSpacing => Gate::DirectiveTokens,
         }
     }
 }
@@ -104,6 +115,10 @@ pub(crate) enum Gate {
     Pitch,
     /// The full MusicXML rendering must be unchanged.
     Structure,
+    /// Only whitespace inside active `%%MIDI` argument regions may differ — no
+    /// directive token, comment, or other line may change. Used for fixes to
+    /// `%%MIDI` directives, which croma does not render into MusicXML.
+    DirectiveTokens,
 }
 
 /// The result of [`auto_fix`]: the formatted output plus the curations that were
