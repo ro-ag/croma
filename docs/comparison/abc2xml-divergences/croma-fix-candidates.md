@@ -657,7 +657,20 @@ own Bug-18 convention that `| |` ≡ `||`).
 - **Files (kept):** `tune_014544`, `tune_014545`. Same whitespace-significance root as Bug 9; extend
   the Bug-18 merge to the same-line case (regression-test the `| [1` / empty-measure cases).
 
-### Bug 28 — `[|]` invisible bar dropped on a note-less EMPTY measure (multi-voice) — DEFERRED (Bug 7 family)
+### Bug 28 — `[|]` invisible bar dropped on a note-less EMPTY measure (multi-voice) — FIXED 2026-06-14 (Q2, Cluster C)
+
+**Fixed:** `closes_empty_measure_barline` (`crates/croma-core/src/lower/timeline.rs`) now returns true
+for `Invisible` as well as `Final`. On a note-less measure, only `Final` previously kept the measure's
+existing span start; every other closing bar fell through to `extend_span`, which collapsed the empty
+span onto the bar line itself, making it *leading* — so `unique_barlines` filtered it from both edges
+and dropped it. With `Invisible` added, a `[|]`-only measure keeps its span start, stays non-leading,
+and exports `<bar-style>none</bar-style>` like the already-working `|]` empty-final case. `Double` is
+deliberately **excluded** (a section-leading `||` on an empty measure must stay absorbed — guard
+`continued_section_leading_double_barline_does_not_close_empty_measure` — so Bug 17's orphan-`||`
+needs separate handling). Test `multi_voice_empty_measure_keeps_invisible_barline`. The five files
+(`tune_006755`, `tune_006759`, `tune_006758`, `tune_006750`, `tune_006753`) now emit `none`
+(spec-correct, Q2 decision); abc2xml renders some empty-`[|]` as `light-heavy` (wrong) so they do not
+graduate — **dropped as `abc2xml-barline-style`** (0 regressions). Original report below.
 
 Bug 7 was resolved for *annotation-only* measures, but a note-less **empty** measure in a multi-voice
 tune (`[V:1]  [|]`) still drops the `[|]` invisible bar: croma emits an empty `<measure>` with no

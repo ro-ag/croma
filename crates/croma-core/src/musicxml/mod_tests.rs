@@ -2077,6 +2077,32 @@ fn multi_voice_empty_final_measure_keeps_final_barline() {
 }
 
 #[test]
+fn multi_voice_empty_measure_keeps_invisible_barline() {
+    // tune_006759: a note-less measure whose only token is `[|]` (an invisible
+    // bar) in one voice must export <bar-style>none</bar-style>, exactly like the
+    // `|]` empty-final case — croma dropped it because only Final kept the empty
+    // measure's span start (the barline then led its measure). ABC 2.1 §4.8 line
+    // 999 (`[|]` invisible bar line → bar-style none).
+    let source = concat!(
+        "X:1\nM:2/4\nL:1/8\nK:C\n",
+        "[V:1] CDEF |\n[V:2] EFGA |\n",
+        "[V:1] GABc |\n[V:2] [|]\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice empty [|] should export");
+    assert_balanced_xml(&export.musicxml);
+
+    let parts = part_bodies(&export.musicxml);
+    let v2_measures = musicxml_measures(&parts[1]);
+    assert_eq!(v2_measures.len(), 2);
+    assert!(v2_measures[1].notes.is_empty());
+    assert!(
+        has_barline(&v2_measures[1], "right", Some("none"), None),
+        "V2 empty measure must retain its [|] none barline: {:?}",
+        v2_measures[1].barlines
+    );
+}
+
+#[test]
 fn words_containing_double_colon_pipe_do_not_emit_repeat_barlines() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F |]\nW::| Cross over two couples\n";
     let export = export_musicxml(source).expect("words field should not affect barlines");

@@ -592,8 +592,18 @@ fn starts_first_body_measure_barline(kind: BarlineKind) -> bool {
     )
 }
 
+/// A visible closing-style bar line that terminates an otherwise empty (note-
+/// less) measure keeps that measure's existing span start rather than collapsing
+/// the span onto the bar line itself. This keeps the bar line *non-leading* so it
+/// is emitted as the measure's right bar line instead of being filtered out — a
+/// note-less `|]`/`[|]` measure must still notate its boundary (§4.8; the `[|]`
+/// invisible bar exports `bar-style none`, line 999). `Double` is excluded: a
+/// section-leading `||` on an empty measure is absorbed, not emitted (see
+/// `continued_section_leading_double_barline_does_not_close_empty_measure`), so
+/// the orphan-`||` case needs separate handling. Repeat boundaries (`:|`) are
+/// excluded too — they attach to the preceding measure, not this one.
 fn closes_empty_measure_barline(kind: BarlineKind) -> bool {
-    kind == BarlineKind::Final
+    matches!(kind, BarlineKind::Final | BarlineKind::Invisible)
 }
 
 struct OverlayBuilder {
