@@ -621,7 +621,23 @@ the whole run as one `RepeatStart`, emitting only the forward repeat on the next
 - **Fix:** same as Bug 24 — split the fused run so `|]` closes the current measure before the
   repeat-start opens the next. Belongs in the focused barline session.
 
-### Bug 26 — `|:` forward-repeat placed one measure late after a line/inline-field seam — DEFERRED (Bug 24 family)
+### Bug 26 — `|:` forward-repeat placed one measure late after a line/inline-field seam — PARTIALLY FIXED 2026-06-14 (`]|` seam, Cluster C)
+
+**Fixed (thick-thin `]|` seam):** a measure closing `]|` (thick then thin) was tokenized as `]`
+(final) **plus a stray `|`** (regular) — the scan in `parse_barline` broke after `]` unless `]||`
+followed. That stray bar consumed the next measure's leading slot, so a following `|:` became
+**non-leading** and its forward repeat was deferred a measure (off the end → dropped). The scan now
+keeps `]|`/`]||`/`]|:` as one boundary (breaks after `]` only when a `|` does **not** follow). Test
+`thick_thin_seam_barline_keeps_following_repeat_leading`. **Graduated `tune_007014`, `tune_009389`,
+`tune_004928`, and `tune_004475`** (the file deferred from Bug 24) — whitelist 9,388 → 9,392, barline
+worklist rows 59 → 24, **0 regressions**.
+
+**Still open** (`tune_010091`, `tune_011411`, `tune_000205`): these are a *different* root — a leading
+`:|` repeat-END at a line seam (and `tune_011411`'s bare `:|` on a note-less key-change measure). The
+`unique_barlines`/`is_leading_barline` filter drops a leading RepeatEnd instead of attaching its
+backward repeat to the preceding measure. abc2xml is **also** wrong on `tune_000205`/`tune_011411`
+(emits a *forward* repeat where the source has `:|` backward), so those will drop once croma is fixed
+to emit the backward repeat. Needs the harder leading-RepeatEnd-at-seam handling. Original report below.
 
 When `|:` opens a body line that follows a line ending in a closing/thick bar (`]|`) or a standalone
 inline-field line (`[K:Em]`, `K:Ddor`), croma leaves the first real measure barline-less and defers
