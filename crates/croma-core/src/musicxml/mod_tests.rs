@@ -475,6 +475,26 @@ fn line_leading_colon_after_repeat_end_does_not_emit_phantom_measure() {
 }
 
 #[test]
+fn mid_line_spaced_colon_is_not_a_forward_repeat() {
+    // tune_003603: a lone `:` MID-LINE with a space before and a note after
+    // (`... A4 :D ...`) is a stray repeat dot, NOT a line-leading section-start
+    // `:`. croma fabricated a `heavy-light` forward repeat for it via the
+    // line-leading-colon path, which fired on "whitespace immediately before"
+    // rather than "truly at the line start". Only a `:` with nothing but
+    // whitespace before it on the line opens a repeat.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nC D E F :G A B c|]\n";
+    let export = export_musicxml(source).expect("mid-line colon should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<repeat direction=\"forward\"/>"),
+        0,
+        "a mid-line spaced `:` must not fabricate a forward repeat: {}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn line_leading_colon_after_section_final_does_not_emit_phantom_measure() {
     // tune_014930: a line-leading `:` after a section-final `|]` marks the
     // next repeated section. It must attach to the following notes, not emit

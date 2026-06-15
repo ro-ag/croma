@@ -747,6 +747,25 @@ not clear croma.)
 
 ### Bug 29 — bare `:` / `:[2` repeat-end mis-tokenized (direction inversion or drop) — FIXED 2026-06-14 (tune_013149); tune_003603 is the free-floating-`:` policy case
 
+**Cluster 3 (free-floating / bare `:`) — RESOLVED 2026-06-14 (all three DROPPED `abc2xml-barline-style`).**
+Per the strict-spec policy (§4.8 line 1001 liberal recognition is **contiguous-only**; §4.8 line 997 a
+dotted bar is `.|`, never a lone `:`), a non-contiguous `:` is not a bar line, so croma's skip is
+spec-correct and abc2xml's `dotted` is the over-read. All adversarially verified (no music lost):
+- **`tune_005539`** (Bug 5: three whitespace-flanked ` : ` in M:8/4) — croma strict-skips (warns
+  `invalid_barline`), one over-long lossless measure vs abc2xml's three invented `dotted` bars; 35 notes
+  + 1 rest byte-identical. Resolves the prior `undetermined` flag: **DROP**, not a parser bend (the loose
+  source is a `fmt --auto-fix` concern).
+- **`tune_008105`** (Bug 9 family: bare trailing `:` truncating a `:|`) — croma emits no glyph,
+  abc2xml's `dotted` unlicensed; 366 notes / 111 measures identical. **DROP**.
+- **`tune_003603`** (mid-line ` :D`, `D:d`) — needed a small croma fix first: `parse_colon`'s
+  line-leading-`:` branch fired on *whitespace-immediately-before* (`!adjacent_before`), so a mid-line
+  ` :D` fabricated a spurious `heavy-light` forward repeat. Now gated on TRULY line-leading
+  (`self.text[..index]` all whitespace), so a mid-line lone `:` falls through to a Liberal boundary (no
+  glyph) — matching the strict skip of its siblings. Test `mid_line_spaced_colon_is_not_a_forward_repeat`;
+  the line-leading `:gf|` / `:d d/e/` cases still open a forward repeat. With the fabrication gone the
+  residual is purely abc2xml's `dotted` over-read → **DROP** (0 whitelist regressions). Do NOT relax
+  case-5 `parse_colon` (the whitespace-both-sides `C : D` malformed-skip stance is untouched).
+
 **Fixed (`:[2`):** `parse_colon` now routes a bare `:` directly before a variant ending (`:[<digit>`)
 to a `RepeatEnd` boundary (`parse_bare_colon_repeat_end`), mirroring §4.9's `:|2` shorthand — it
 closes the open ending and repeats backward, then `[N` parses as the next ending. The branch is gated
