@@ -30,8 +30,8 @@ use crate::model::{
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
-    FieldState, KeyMode, KeySignature, KeyTonicAccidental, Meter, MeterKind, Spanned,
-    StemDirection, UnitNoteLength, VoiceDefinition, VoiceProperties,
+    FieldState, KeyAccidental, KeyMode, KeySignature, KeyTonicAccidental, Meter, MeterKind,
+    Spanned, StemDirection, UnitNoteLength, VoiceDefinition, VoiceProperties,
 };
 use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
@@ -333,6 +333,25 @@ impl MultiVoiceLowering {
     }
 
     fn apply_current_voice_key_change(&mut self, key: &Spanned<KeySignature>) {
+        // ABC 2.1 §3.1.14: a tonic-less `K:` carrying modifying accidentals
+        // (`K:^F`) MODIFIES the prevailing key rather than restating it. Inherit
+        // the active voice's tonic+mode and add the accidental, so `K:^F` over a
+        // `K:Gmin` header becomes `K:Gm ^f` (the Bb/Eb base is kept and F# added),
+        // not a tonic-less F#-only signature. A tonic-less `K:` with NO modifying
+        // accidental is genuine junk (`K:???`) and still falls through to the
+        // invalid-field reject below.
+        if key.value.tonic.is_none()
+            && !key.value.accidentals.is_empty()
+            && let Some(prevailing) = self
+                .current_state()
+                .current_key
+                .clone()
+                .filter(|prev| prev.tonic.is_some())
+        {
+            let merged = Spanned::new(merge_key_modification(&prevailing, &key.value), key.span);
+            self.apply_current_voice_key_change(&merged);
+            return;
+        }
         if key_is_invalid_for_lowering(&key.value) {
             self.diagnostics.push(invalid_key_change_warning(key.span));
             return;
@@ -1195,6 +1214,41 @@ fn key_is_invalid_for_lowering(key: &KeySignature) -> bool {
                 | KeyMode::HighlandPipes
                 | KeyMode::HighlandPipesMarked
         )
+}
+
+/// Build the effective key for a tonic-less modifying `K:^F` (ABC 2.1 §3.1.14
+/// "key signatures may be modified by adding accidentals"): inherit the
+/// prevailing key's tonic+mode (so `key_fifths` keeps the prevailing base — the
+/// Bb/Eb of `K:Gmin` — rather than collapsing to a tonic-less 0) and ADD the
+/// body's accidentals, an accidental on the same note letter overriding the
+/// inherited one. The result is equivalent to the tonic-ful spelling `K:Gm ^f`.
+fn merge_key_modification(prevailing: &KeySignature, body: &KeySignature) -> KeySignature {
+    let mut accidentals: Vec<KeyAccidental> = prevailing
+        .accidentals
+        .iter()
+        .filter(|base| {
+            !body
+                .accidentals
+                .iter()
+                .any(|added| added.note.value.eq_ignore_ascii_case(&base.note.value))
+        })
+        .cloned()
+        .collect();
+    accidentals.extend(body.accidentals.iter().cloned());
+    KeySignature {
+        // Reads as "prevailing key + modifier" so its display differs from the
+        // prevailing key and a mid-tune <key> is emitted (the dedupe keys on the
+        // display); also the form `croma fmt --auto-fix` would sanitise to.
+        raw: format!("{} {}", prevailing.raw.trim(), body.raw.trim()),
+        tonic: prevailing.tonic,
+        mode: prevailing.mode.clone(),
+        accidentals,
+        explicit: prevailing.explicit,
+        compact_accidentals_ignored: false,
+        // The modifier carries its own clef/transpose props (usually none); the
+        // prevailing clef stays active because applying empty props is a no-op.
+        properties: body.properties.clone(),
+    }
 }
 
 pub(crate) fn key_fifths(key: &KeySignature) -> i8 {

@@ -517,17 +517,31 @@ abc2xml over-consumes the non-leading `>` as right-placement and **drops** the a
 **high**). **Dropped as `abc2xml-drops-music`** (abc2xml loses authored annotation text croma preserves;
 0 whitelist change). Original report below.
 
-### Bug 21 — bare-accidental mid-tune key modification dropped (`K:^F` after `K:Gmin`) (`tune_005044`) — DEFERRED (the SOLE remaining worklist file, undetermined/low)
+### Bug 21 — bare-accidental mid-tune key modification dropped (`K:^F` after `K:Gmin`) (`tune_005044`) — FIXED 2026-06-14 (accidental recovered); barline residual DROPPED → worklist 0
 
-**Status 2026-06-14:** still kept, `undetermined`/low (re-confirmed by investigator). Correction to the
-earlier note: croma's key-MERGE logic already exists and is correct — the tonic-FUL form `K:Gm ^f` after
-`K:Gmin` composes to `fifths=-2` + F# (Eb/Bb/F#), matching abc2xml. The gap is *solely* recognizing the
-tonic-LESS spelling `K:^F`, which §3.1.14's grammar (`K:<tonic> <mode> <accidentals>`, every example with
-a tonic) does not document — so croma's reject is a defensible reading of an undocumented form, not a
-clean bug, and abc2xml's "modify the prevailing key" is an idiomatic extension beyond the literal grammar.
-This is the only barline/policy-worklist file left after the 2026-06-14 sweep (whitelist 9,392 / dropped
-542 / worklist 1); it needs a spec call on whether to accept tonic-less `K:`, not the key-merge work
-originally assumed. Original report below.
+**Fixed (the accidental defect):** an adversarial refute-check flipped the prior `undetermined` to
+`at_fault: croma` — rejecting `K:^F` is a §3.1.14 deviation ("key signatures may be modified by adding
+accidentals"), and it silently discarded an already-parsed valid `^F`, losing 9 author-intended F#. A
+spec-compliance review of the key code confirmed the accidental-resolution core
+(`key_accidental_policy` base+overlay merge, `key_fifths`, `set_key`'s §11.3 ledger) is spec-clean, so
+the fix is a small principled recovery: `apply_current_voice_key_change`
+(`crates/croma-core/src/lower/mod.rs`) now intercepts a tonic-LESS `K:` that carries modifying
+accidentals BEFORE the invalid-field reject and synthesises a merged key via `merge_key_modification` —
+inheriting the prevailing voice key's tonic+mode (tracked in the new `LoweringState.current_key`) and
+ADDING the body's accidentals, so `K:^F` ≡ `K:Gm ^f` (fifths=-2 keeps Gmin's Bb/Eb; F# added). The
+critical pitfall flagged by the review (a tonic-less synthesis would make `key_fifths` collapse to 0 →
+C-major+F#, losing Bb/Eb) is avoided by inheriting the tonic. A tonic-less `K:` with NO accidentals
+(`K:???`) still rejects. Test `tonic_less_key_accidental_modifies_prevailing_key`. **tune_005044's 9
+accidental rows resolved** (croma F# == abc2xml), 0 whitelist regressions.
+
+**Barline residual — DROPPED:** tune_005044's remaining 8 rows are the lone `:` after ending markers
+(`|1 :`, `:|2 :`): croma renders them as no-glyph Liberal boundaries and closes each ending at the real
+`:|` (§4.10 terminators are `||`/`:|`/`|]`/`[|`, not a lone `:`); abc2xml emits `dotted` and prematurely
+closes the ending at the stray `:`. Adversarially verified abc2xml-at-fault → **dropped as
+`abc2xml-barline-style`**. With this, the **barline/policy worklist reaches 0** (whitelist 9,392 /
+dropped 543 / worklist 0). The Bug-15 `parse_tonic_token` trailing-junk recovery and the
+`compact_accidentals_ignored` drop+warning are unrelated "sugar" flagged by the review for a separate
+strictness-vs-`--auto-fix` pass. Original report below.
 
 `tune_005044` has header `K: Gmin` then a body `K:^F`. croma's `key_is_invalid_for_lowering`
 (`crates/croma-core/src/lower/mod.rs:1186`) flags a tonic-less, clef-less, default-Major K: as

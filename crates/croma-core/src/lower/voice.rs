@@ -79,6 +79,12 @@ pub(crate) struct LoweringState {
     /// bind backward across it (ABC 2.1 §4.4).
     pub(crate) broken_left_available: bool,
     pub(crate) key_accidentals: Vec<KeyAccidentalPolicy>,
+    /// The full prevailing key for this voice (tonic/mode/accidentals), kept so a
+    /// tonic-less modifying `K:^F` (ABC 2.1 §3.1.14 "modified by adding
+    /// accidentals") can inherit the current tonic+mode and add its accidental
+    /// instead of being dropped. `key_accidentals` alone is the resolved policy
+    /// and cannot reconstruct the tonic for `key_fifths`.
+    pub(crate) current_key: Option<KeySignature>,
     pub(crate) accidental_state: Vec<MeasureAccidental>,
     pub(crate) pending_ties: Vec<PendingTie>,
     pub(crate) next_tie_id: u32,
@@ -171,6 +177,7 @@ impl LoweringState {
             pending_broken: None,
             broken_left_available: false,
             key_accidentals: key_accidental_policy(key),
+            current_key: key.cloned(),
             accidental_state: Vec::new(),
             pending_ties: Vec::new(),
             next_tie_id: 1,
@@ -679,6 +686,7 @@ impl LoweringState {
         // An open tie must keep its sounding pitch across the change.
         self.preserve_tie_pitches_for_key_change();
         self.key_accidentals = key_accidental_policy(key);
+        self.current_key = key.cloned();
     }
 
     pub(crate) fn finish_pending_broken_at_boundary(&mut self) {
