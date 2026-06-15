@@ -19,6 +19,11 @@ mod engine;
 mod fixes;
 mod verify;
 
+#[cfg(test)]
+mod corpus_proof;
+#[cfg(test)]
+mod fmt_first_demo;
+
 /// Options controlling how the formatter parses its input. Defaults to the same
 /// strict ABC 2.1 parse the rest of the toolkit uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
