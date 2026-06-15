@@ -1179,6 +1179,15 @@ fn effective_meter_display<'a>(
 
 fn key_signature_model(key: &Spanned<KeySignature>) -> KeySignatureModel {
     KeySignatureModel {
+        // `display` is the VERBATIM source spelling, on purpose — it is load-bearing,
+        // not a convenience. The ABC writer round-trips it (a `croma fmt` fixed point,
+        // see `to_abc`), so deriving it from tonic/mode would lose the author's
+        // spelling (`K:G minor` -> `K:Gm`, `K:C major` -> `K:C`). The mid-tune `<key>`
+        // dedupe (`effective_key_display`) keys on it deliberately: it collapses only
+        // exact-text no-op restatements, emitting one `<key>` per *distinct* source
+        // declaration — which is what abc2xml does, so deduping by signature identity
+        // instead would diverge (relative keys such as `K:G`/`K:Em` share `fifths`,
+        // and source respellings abc2xml preserves would be dropped).
         display: key.value.raw.clone(),
         fifths: key_fifths(&key.value),
         explicit_accidentals: key
@@ -1202,10 +1211,25 @@ fn meter_is_invalid_for_lowering(meter: &Meter) -> bool {
         && !meter.raw.contains('(')
 }
 
+/// Whether a `K:` change carries no usable key information and so must be ignored
+/// during lowering (the previous key stays in force, with an `abc.field.invalid_k`
+/// warning). A `K:` is junk only when it has NO `A-G` tonic, NO clef/transpose
+/// modifiers (ABC 2.1 §4.6), and is not one of the spec's tonic-less key *forms*:
+///
+/// - [`KeyMode::None`] — `K:` / `K:none`: explicitly "no key signature" (§3.1.14);
+/// - [`KeyMode::HighlandPipes`] / [`KeyMode::HighlandPipesMarked`] — `K:HP` / `K:Hp`,
+///   the bagpipe keys (§3.1.14);
+/// - [`KeyMode::Explicit`] — `K:<tonic> exp <accidentals>`: an explicit accidental
+///   list defines the signature even with no tonic step (§3.1.14).
+///
+/// A tonic-less `K:` that only *modifies* the prevailing key (`K:^F`) never reaches
+/// here — `apply_current_voice_key_change` rewrites it to a tonic-ful key first.
+///
+/// The `KeyMode::None` arm subsumes the empty-`raw` and literal-`none` spellings
+/// (`parse_key` maps both to that mode), so no separate `raw` string checks are
+/// needed.
 fn key_is_invalid_for_lowering(key: &KeySignature) -> bool {
-    !key.raw.is_empty()
-        && !key.raw.eq_ignore_ascii_case("none")
-        && key.tonic.is_none()
+    key.tonic.is_none()
         && key_clef_properties_model(&key.properties) == VoicePropertiesModel::default()
         && !matches!(
             key.mode,
