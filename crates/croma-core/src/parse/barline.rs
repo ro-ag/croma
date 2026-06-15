@@ -154,6 +154,10 @@ impl<'line> MusicLineParser<'line> {
         self.bump_char();
         let span = self.span(start, self.index);
         self.push_token(MusicTokenKind::Barline, span);
+        // The recovery is justified (a line-leading `:` opening a section is the
+        // author's `|:` with the pipe dropped) but must never be silent.
+        self.diagnostics
+            .push(line_leading_colon_repeat_warning(span));
         self.items.push(MusicItem::Barline(BarlineSyntax {
             span,
             kind: BarlineKind::RepeatStart,
@@ -326,6 +330,19 @@ fn invalid_repeat_ending_warning(span: Span) -> Diagnostic {
     .with_spec_reference(abc_barline_reference())
     .with_recovery_note(RecoveryNote::new(
         "The repeat ending syntax was preserved and skipped.",
+    ))
+}
+
+fn line_leading_colon_repeat_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.barline.recovered_repeat",
+        "A line-leading `:` was recovered as a repeat start (write `|:`)",
+        span,
+    )
+    .with_spec_reference(abc_barline_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "A repeat start is spelled `|:`; the bare `:` was treated as one.",
     ))
 }
 

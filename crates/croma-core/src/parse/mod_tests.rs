@@ -41,6 +41,38 @@ fn does_not_ignore_mid_file_bom_as_empty_content() {
 }
 
 #[test]
+fn multi_tune_missing_key_explains_the_cause() {
+    // Two adjacent `X:` with no blank-line separator (ABC 2.1 §2.2) is malformed.
+    // croma processes only the first tune (the K-less `X:1` shell) and rejects it
+    // with `missing_k`; a recovery note clarifies that K: IS present on a later
+    // tune, instead of the otherwise-confusing bare "missing K:" message.
+    let document = parse_document("X:1\nX:2\nT:Foo\nK:C\nabc|\n", ParseOptions::default());
+    let report = parse_tune_report_from_document(&document.value);
+    let multi = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "abc.file.missing_k")
+        .expect("expected missing_k for the K-less first tune");
+    assert!(
+        multi.recovery_note.is_some(),
+        "multi-tune missing_k should carry a clarifying recovery note"
+    );
+
+    // A genuine single-tune missing K: stays a plain message (no extra note).
+    let single = parse_document("X:1\nT:No Key\nabc\n", ParseOptions::default());
+    let single_report = parse_tune_report_from_document(&single.value);
+    let plain = single_report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "abc.file.missing_k")
+        .expect("expected missing_k for the single K-less tune");
+    assert!(
+        plain.recovery_note.is_none(),
+        "single-tune missing_k stays plain"
+    );
+}
+
+#[test]
 fn reports_missing_key_at_eof() {
     let source = SourceText::new("X:1\nT:No Key\n");
     let surface = SurfaceMap::default();

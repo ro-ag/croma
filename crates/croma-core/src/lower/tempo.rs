@@ -43,6 +43,16 @@ pub(crate) fn parse_tempo_model(
     })
 }
 
+/// Whether a `Q:` field has an opening `"` with no matching close — the same
+/// recovery `extract_quoted_text` performs (keep the trailing text). The caller
+/// warns so the lenient recovery is never silent.
+pub(crate) fn has_unterminated_quote(raw: &str) -> bool {
+    match raw.find('"') {
+        Some(open) => !raw[open + 1..].contains('"'),
+        None => false,
+    }
+}
+
 /// Split out the first double-quoted run as tempo text, returning the text and
 /// the source with that quoted run removed.
 fn extract_quoted_text(raw: &str) -> (Option<String>, String) {

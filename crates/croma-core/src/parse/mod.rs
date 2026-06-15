@@ -6,7 +6,7 @@ pub mod lyric;
 pub mod music;
 pub mod note;
 
-use crate::diagnostic::{Diagnostic, Severity, Span, SpecReference};
+use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::error::{CromaError, Result};
 use crate::lower::{ScoreModelInput, build_score_model, lower_tune_music};
 use crate::model::{Score, TextLine, Tune};
@@ -158,7 +158,7 @@ fn parse_tune_report_with_fields(
     let mut tune_field_state = None;
 
     let Some(tune) = surface.line_map.tunes.first() else {
-        diagnostics.push(missing_key_diagnostic(source));
+        diagnostics.push(missing_key_diagnostic(source, surface.line_map.tunes.len()));
         return ParseReport::new(None, diagnostics);
     };
 
@@ -242,7 +242,7 @@ fn parse_tune_report_with_fields(
     }
 
     if !has_key {
-        diagnostics.push(missing_key_diagnostic(source));
+        diagnostics.push(missing_key_diagnostic(source, surface.line_map.tunes.len()));
         return ParseReport::new(None, diagnostics);
     }
     if events.iter().all(|event| !event.is_time_bearing()) {
@@ -342,14 +342,25 @@ fn abc_file_structure_reference() -> SpecReference {
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
 }
 
-fn missing_key_diagnostic(source: &SourceText) -> Diagnostic {
-    Diagnostic::new(
+fn missing_key_diagnostic(source: &SourceText, tune_count: usize) -> Diagnostic {
+    let diagnostic = Diagnostic::new(
         Severity::Error,
         "abc.file.missing_k",
         "ABC source is missing a K: field",
         Span::new(source.len(), source.len()),
     )
-    .with_spec_reference(abc_file_structure_reference())
+    .with_spec_reference(abc_file_structure_reference());
+    if tune_count > 1 {
+        // Clarify the otherwise-confusing message when K: is plainly present on a
+        // LATER tune: croma processes a single tune per file, and the first one
+        // (the one missing K:) was selected (ABC 2.1 §2.2 separates tunes by blank
+        // lines — two adjacent `X:` with no blank line is malformed).
+        diagnostic.with_recovery_note(RecoveryNote::new(
+            "This file holds multiple tunes; croma processes only the first, which has no K: field. Separate tunes with a blank line.",
+        ))
+    } else {
+        diagnostic
+    }
 }
 
 fn no_music_diagnostic(source: &SourceText, body_start: Option<usize>) -> Diagnostic {
