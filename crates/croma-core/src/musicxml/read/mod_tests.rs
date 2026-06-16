@@ -2263,6 +2263,122 @@ fn harmony_and_lyric_on_same_note_round_trip() {
     assert_eq!(attachments_at(&score, 0).lyrics.len(), 1);
 }
 
+// --- Stage R3: demoted chord-symbol vs annotation channel ordering -----------
+//
+// A quoted string with no placement prefix (e.g. "tr") is an ABC *chord symbol*
+// that `write_chord_symbol` DEMOTES to a `<direction><words>` when
+// `parse_chord_symbol` rejects it — emitted via the SAME `chord_symbols` channel
+// as a real `<harmony>`, hence preserving their document order. When such a
+// demoted symbol precedes a real chord on the same event ("tr""G7"note), the
+// writer emits `<direction>tr` BEFORE `<harmony>G7`. The reader must read the
+// placement-less `<direction><words>` back into `chord_symbols` (not
+// `annotations`, which the writer always emits AFTER every chord symbol) so the
+// re-emission keeps that order. (This was the 19-file self-loop residual.)
+
+#[test]
+fn demoted_chord_symbol_before_harmony_preserves_order() {
+    // "tr" is not a parseable chord, so it demotes to a <direction><words>tr;
+    // "G7" is a real <harmony>. In document order the direction precedes the
+    // harmony, both before the note.
+    let abc = "X:1\nT:R3\nM:4/4\nL:1/4\nK:C\n\"tr\"\"G7\"C D E F |\n";
+    let x1 = export(abc);
+    let dir = x1
+        .find("<words>tr</words>")
+        .expect("a demoted tr direction");
+    let harm = x1.find("<kind text=\"G7\">").expect("a G7 harmony");
+    assert!(
+        dir < harm,
+        "precondition: the writer emits <direction>tr BEFORE <harmony>G7"
+    );
+    // Full-byte idempotence is the real assertion (X1 == X2).
+    let score = assert_idempotent_s5b(abc);
+    // The demoted symbol rides the chord_symbols channel, ahead of the real
+    // chord, so order is preserved on re-write.
+    let symbols = &attachments_at(&score, 0).chord_symbols;
+    assert_eq!(
+        symbols.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+        vec!["tr", "G7"],
+        "the placement-less direction reconstructs as a chord_symbols entry, in order"
+    );
+    assert!(
+        attachments_at(&score, 0).annotations.is_empty(),
+        "a placement-less demoted symbol is NOT a (placement-bearing) annotation"
+    );
+}
+
+#[test]
+fn harmony_before_demoted_chord_symbol_preserves_order() {
+    // The reverse order ("G7""tr"): the real harmony precedes the demoted symbol.
+    // This already round-tripped (harmony-then-direction is the canonical writer
+    // order); the fix must NOT regress it.
+    let abc = "X:1\nT:R3\nM:4/4\nL:1/4\nK:C\n\"G7\"\"tr\"C D E F |\n";
+    let x1 = export(abc);
+    let harm = x1.find("<kind text=\"G7\">").expect("a G7 harmony");
+    let dir = x1
+        .find("<words>tr</words>")
+        .expect("a demoted tr direction");
+    assert!(harm < dir, "precondition: <harmony>G7 BEFORE <direction>tr");
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(
+        attachments_at(&score, 0)
+            .chord_symbols
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["G7", "tr"],
+        "order is preserved with the real chord first"
+    );
+}
+
+#[test]
+fn placement_annotation_before_harmony_stays_annotation() {
+    // A placement-BEARING annotation ("^hi") is a genuine annotation (the writer's
+    // annotation channel, emitted AFTER every chord symbol), NOT a demoted chord
+    // symbol — even when it appears before the chord in the ABC. The writer emits
+    // <harmony>G7 first, then <direction placement="above">hi, and that order is
+    // the canonical one, so it round-trips with the annotation on its own channel.
+    let abc = "X:1\nT:R3\nM:4/4\nL:1/4\nK:C\n\"^hi\"\"G7\"C D E F |\n";
+    let x1 = export(abc);
+    let harm = x1.find("<kind text=\"G7\">").expect("a G7 harmony");
+    let dir = x1.find("<words>hi</words>").expect("an above hi direction");
+    assert!(
+        harm < dir && x1.contains("placement=\"above\""),
+        "precondition: the writer emits <harmony>G7 before the placed <direction>hi"
+    );
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(
+        attachments_at(&score, 0).chord_symbols.len(),
+        1,
+        "only the real chord is on the chord_symbols channel"
+    );
+    assert_eq!(
+        attachments_at(&score, 0).annotations.len(),
+        1,
+        "the placed annotation stays on the annotations channel"
+    );
+}
+
+#[test]
+fn demoted_chord_symbol_before_harmony_in_note_less_measure_round_trips() {
+    // The note-LESS variant: a measure whose only content is a demoted symbol then
+    // a real chord ("tr""G7" with no following note), flushed by the writer onto a
+    // zero-duration Spacer. The Spacer emits its whole chord_symbols vec in order,
+    // so the demoted symbol must again ride the chord_symbols channel for the
+    // <direction>tr-then-<harmony>G7 order to survive.
+    let abc = "X:1\nT:R3\nM:4/4\nL:1/4\nK:C\nC D E F |\n\"tr\"\"G7\"|\n";
+    let x1 = export(abc);
+    let dir = x1
+        .find("<words>tr</words>")
+        .expect("a demoted tr direction");
+    let harm = x1.find("<kind text=\"G7\">").expect("a G7 harmony");
+    assert!(
+        dir < harm,
+        "precondition: <direction>tr BEFORE <harmony>G7 on the note-less measure"
+    );
+    // Full-byte idempotence across the whole document, Spacer included.
+    assert_idempotent_s5b(abc);
+}
+
 // --- Stage S6a: <barline> + <repeat> + <ending> ------------------------------
 
 /// Assert FULL-byte idempotence on an S6a single-voice fixture. By S6a the writer
