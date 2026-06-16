@@ -3174,6 +3174,349 @@ fn read_multiple_rest(attributes: Node<'_, '_>) -> Option<u32> {
     (count > 1).then_some(count)
 }
 
+/// R1b: complete a Score reconstructed by [`read_musicxml`] for the **ABC
+/// projection only** (`croma read --format abc` / `croma musicxml2abc`).
+///
+/// `read_musicxml` is the byte-exact inverse of [`write_musicxml`], so it
+/// populates only the fields the *MusicXML* writer reads: per-measure barlines
+/// live in [`Measure::barlines`] / [`Measure::repeat_endings`] (consumed by
+/// `unique_barlines` / `unique_endings`), and the key is driven by
+/// `fifths` + explicit accidentals (consumed by `write_key_element`). The **ABC**
+/// writer ([`crate::write_abc`]) reads a different projection: it emits `|`
+/// glyphs ONLY from [`TimedEventKind::Barline`] events in `voice.events` (and
+/// volta brackets from [`TimedEventKind::RepeatEnding`] events), and it emits
+/// `K:{key.display}` from the key's `display` string. A reader-built Score leaves
+/// `voice.events` barline-free and `display` empty, so the ABC projection
+/// collapses to one barline-less line with an empty `K:`.
+///
+/// This pass fills exactly those two ABC-only gaps, IN PLACE, mirroring the
+/// canonical shapes forward lowering produces (`lower::semantic`):
+///
+/// 1. **Barline / ending events.** For each voice, splice synthesized
+///    [`TimedEventKind::Barline`] / [`TimedEventKind::RepeatEnding`] events into
+///    `voice.events` around each measure's existing note/rest events, reproducing
+///    the order `semantic_events_for_measure` emits (a measure's leading barline,
+///    then its repeat-ending opens, then its content, then its trailing
+///    barlines). The split-token re-join (`||:`/`[|:`) and left/right placement in
+///    `write_abc` then round-trip these events to the same ABC.
+/// 2. **Key display.** When `metadata.key` is present with an empty `display`,
+///    set the canonical circle-of-fifths MAJOR spelling for its `fifths` (e.g.
+///    `-3 -> "Eb"`, `+2 -> "D"`, `0 -> "C"`). Mode and original spelling are
+///    unrecoverable from XML and irrelevant to the structural gate: a canonical
+///    major spelling re-parses to the same `fifths`, so the same key accidentals
+///    are applied and the pitch sequence survives. `None` is left untouched
+///    (`write_abc` defaults to `K:C`).
+///
+/// This is applied ONLY on the ABC path; the `--format xml` projection keeps the
+/// pure-inverse `write_musicxml(read_musicxml(xml))` it depends on, and the XML
+/// idempotence gate (which calls `write_musicxml` directly) never sees it. The
+/// mutation is structurally invisible to MusicXML re-emission: `write_musicxml`
+/// reads barlines from `Measure.barlines` (not the events) and the key from
+/// `fifths` (not `display`), so the spliced events and the filled `display` are
+/// inert there.
+#[cfg(feature = "musicxml-reader")]
+pub fn complete_score_for_abc(score: &mut Score) {
+    if let Some(key) = score.metadata.key.as_mut()
+        && key.display.is_empty()
+    {
+        key.display = canonical_major_key_display(key.fifths);
+    }
+    for part in &mut score.parts {
+        for voice in &mut part.voices {
+            renumber_voice_tuplet_pair_ids(voice);
+            synthesize_voice_barline_events(voice);
+            // A mid-tune `[K:..]` is reconstructed as a `KeyChange` event whose
+            // `display` is empty for the same reason the header key's is (the
+            // writer drives `<key>` from `fifths`, never `display`). `write_abc`
+            // emits `[K:{display}]`, so an empty display re-parses to `fifths 0`
+            // and drops the change. Fill the canonical major spelling — the same
+            // clean fix as the header key — so the mid-tune change survives.
+            for event in &mut voice.events {
+                if let TimedEventKind::KeyChange(key) = &mut event.kind
+                    && key.display.is_empty()
+                {
+                    key.display = canonical_major_key_display(key.fifths);
+                }
+            }
+        }
+    }
+}
+
+/// Renumber every tuplet attachment's `pair_id` to be globally unique across a
+/// whole voice, preserving each tuplet's grouping.
+///
+/// **Why.** The reader assigns tuplet `pair_id`s FRESH per measure (its
+/// [`OpenTuplets::next_pair_id`] resets each measure). That is correct for
+/// [`super::write_score_partwise`], which re-derives the MusicXML `number` from
+/// an active-set discipline, never from the `pair_id` *value*. But `write_abc`'s
+/// `tuplet_layout` (and its overlay sibling `overlay_tuplet_layout`) group tuplet
+/// attachments by `pair_id` GLOBALLY across the entire `voice.events`, taking the
+/// group span as `min(index)..=max(index)`. So when the reader reuses e.g.
+/// `pair_id = 0` for a triplet in measure 1 AND another in measure 2, `write_abc`
+/// merges them into ONE group spanning the whole line and multiplies the tuplet
+/// ratio across everything between — producing an absurd span count and
+/// compounded (`9/4`, `27/4`, …) durations.
+///
+/// **The key.** The reader's `pair_id`s are unique WITHIN a measure and reset per
+/// measure, so `(event.measure.index, old_pair_id)` uniquely identifies one
+/// tuplet. We allocate a fresh monotonic global id per distinct key, in
+/// first-occurrence order over `voice.events`, and rewrite every
+/// [`TupletAttachment`] (a tuplet's Start/Continue/Stop attachments share one key,
+/// so they keep one shared new id and their roles stay consistent). Chord-member
+/// attachments ([`ChordMemberEvent::attachments`]) are renumbered with the same
+/// map under the owning event's measure index, since a member can carry tuplet
+/// attachments too.
+///
+/// **Isolation.** This runs ONLY on the ABC-projection Score (the
+/// [`complete_score_for_abc`] pass, applied on the `read --format abc` /
+/// `musicxml2abc` path). The `write_musicxml` view re-derives `number` from the
+/// active set, not the `pair_id` value, so renumbering is invisible there — the
+/// `--format xml` pure inverse is untouched.
+#[cfg(feature = "musicxml-reader")]
+fn renumber_voice_tuplet_pair_ids(voice: &mut Voice) {
+    use std::collections::HashMap;
+
+    // (measure_index, old_pair_id) -> fresh globally-unique pair_id, allocated in
+    // first-occurrence order over the voice's events (and chord members).
+    let mut remap: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut next_id: u32 = 0;
+
+    // Rewrite one tuplet list's `pair_id`s through the shared map, allocating a
+    // fresh global id the first time a `(measure, old_pair_id)` key is seen.
+    fn renumber(
+        tuplets: &mut [TupletAttachment],
+        measure_index: u32,
+        remap: &mut HashMap<(u32, u32), u32>,
+        next_id: &mut u32,
+    ) {
+        for tuplet in tuplets {
+            tuplet.pair_id = *remap
+                .entry((measure_index, tuplet.pair_id))
+                .or_insert_with(|| {
+                    let id = *next_id;
+                    *next_id = next_id.saturating_add(1);
+                    id
+                });
+        }
+    }
+
+    for event in &mut voice.events {
+        let measure_index = event.measure.index;
+        renumber(
+            &mut event.attachments.tuplets,
+            measure_index,
+            &mut remap,
+            &mut next_id,
+        );
+        // A `<chord/>` member can carry its own tuplet attachments; renumber them
+        // under the SAME (measure, old_pair_id) namespace so a tuplet straddling a
+        // chord member keeps one shared new id.
+        if let TimedEventKind::Chord(chord) = &mut event.kind {
+            for member in &mut chord.members {
+                renumber(
+                    &mut member.attachments.tuplets,
+                    measure_index,
+                    &mut remap,
+                    &mut next_id,
+                );
+            }
+        }
+    }
+}
+
+/// Rebuild `voice.events` with synthesized barline/ending events interleaved at
+/// measure boundaries. The existing `voice.events` carry no barline/ending events
+/// (the reader stored those in `Measure.barlines`/`repeat_endings`); they DO carry
+/// the per-measure note/rest/chord/mid-tune-change events, already in document
+/// order and tagged with `event.measure.index`. We group those by measure index
+/// and, walking `voice.measures` in order, emit per measure:
+///
+/// 1. the **leading** barline (the one whose reader span is `start == 0`, the
+///    `is_leading_barline` marker), as a `Barline` event at the measure start;
+/// 2. each `RepeatEnding` (volta `[N` open) on the measure;
+/// 3. the measure's existing content events, unchanged;
+/// 4. each **trailing** barline (reader span `start >= 1`), in document order,
+///    as a `Barline` event closing the measure.
+///
+/// **The plain-`|` problem.** A plain `Regular` barline emits NO `<barline>`
+/// element in MusicXML, so the reader has no record of it in `Measure.barlines`.
+/// Yet every internal measure boundary needs exactly one barline glyph in ABC, or
+/// the two measures fuse into one (`write_abc` segments measures by these events).
+/// We therefore synthesize a trailing `Regular` between measure `i` and `i+1`
+/// **iff** the boundary carries no explicit barline from either side — i.e. `i`
+/// has no explicit trailing barline AND `i+1` has no leading barline (a leading
+/// `|:` on `i+1`, or a trailing `:|`/`|]` on `i`, already marks the boundary). The
+/// LAST measure gets no synthesized trailing `|`: a tune may end without a bar, and
+/// a plain trailing `|` there is structurally inert (the parser coalesces it).
+/// This reproduces exactly the `Regular` events forward lowering emits (verified:
+/// `C D | E F | G A` lowers to 2 barline events, one per internal boundary).
+///
+/// A measure with no `Measure` entry for this voice (extra voices only carry
+/// content measures) keeps its events spliced in index order with no synthesized
+/// barlines, exactly as forward lowering would for a content-only overlay voice.
+#[cfg(feature = "musicxml-reader")]
+fn synthesize_voice_barline_events(voice: &mut Voice) {
+    use std::collections::BTreeMap;
+
+    // Existing content events, grouped by measure index in stable document order.
+    let mut events_by_measure: BTreeMap<u32, Vec<TimedEvent>> = BTreeMap::new();
+    for event in std::mem::take(&mut voice.events) {
+        events_by_measure
+            .entry(event.measure.index)
+            .or_default()
+            .push(event);
+    }
+
+    let mut rebuilt: Vec<TimedEvent> = Vec::new();
+    let mut emitted_measures: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+
+    // Walk the authoritative measure list (carries the barlines/endings). The
+    // primary voice has a Measure per index; extra voices only for content bars.
+    let count = voice.measures.len();
+    for (position, measure) in voice.measures.iter().enumerate() {
+        let index = measure.id.index;
+        emitted_measures.insert(index);
+        // The boundary to the NEXT measure needs a synthesized plain `|` only
+        // when neither this measure's trailing barlines nor the next measure's
+        // leading barline already marks it.
+        let next_has_leading_barline = voice
+            .measures
+            .get(position + 1)
+            .is_some_and(|next| next.barlines.iter().any(is_leading_reader_barline));
+        let synthesize_trailing_regular = position + 1 < count
+            && !measure.barlines.iter().any(is_trailing_reader_barline)
+            && !next_has_leading_barline;
+        emit_measure_with_barlines(
+            measure,
+            measure.id,
+            events_by_measure.remove(&index).unwrap_or_default(),
+            synthesize_trailing_regular,
+            &mut rebuilt,
+        );
+    }
+
+    // Defensive: any content event whose measure index had no `Measure` entry
+    // (should not happen for reader output, but keeps the pass total and never
+    // drops an event). Emit them in index order with no synthesized barlines.
+    for (index, events) in events_by_measure {
+        if emitted_measures.contains(&index) {
+            continue;
+        }
+        rebuilt.extend(events);
+    }
+
+    voice.events = rebuilt;
+}
+
+/// Emit one measure's events into `out`: leading barline, repeat-ending opens,
+/// the measure's content events, then trailing barlines — the order
+/// `lower::semantic::semantic_events_for_measure` produces so `write_abc`
+/// round-trips them. `synthesize_trailing_regular` appends a plain `Regular`
+/// closing barline (the internal-boundary glyph the XML never recorded) when the
+/// caller determined the boundary to the next measure needs one.
+#[cfg(feature = "musicxml-reader")]
+fn emit_measure_with_barlines(
+    measure: &Measure,
+    measure_id: MeasureId,
+    content: Vec<TimedEvent>,
+    synthesize_trailing_regular: bool,
+    out: &mut Vec<TimedEvent>,
+) {
+    // A barline "leads" its measure when its reader span starts at 0 (matching
+    // the measure's READER_SPAN), exactly the writer's `is_leading_barline`
+    // predicate. Leading barlines open the measure; the rest close it.
+    for barline in &measure.barlines {
+        if is_leading_reader_barline(barline) {
+            out.push(barline_event(*barline, measure_id));
+        }
+    }
+    for ending in &measure.repeat_endings {
+        out.push(TimedEvent {
+            measure: measure_id,
+            onset: Fraction::zero(),
+            duration: Fraction::zero(),
+            source: ending.span,
+            kind: TimedEventKind::RepeatEnding(ending.clone()),
+            attachments: EventAttachments::default(),
+        });
+    }
+    out.extend(content);
+    for barline in &measure.barlines {
+        if is_trailing_reader_barline(barline) {
+            out.push(barline_event(*barline, measure_id));
+        }
+    }
+    if synthesize_trailing_regular {
+        out.push(barline_event(
+            MeasureBarline {
+                kind: BarlineKind::Regular,
+                // A non-zero span keeps `is_leading_barline` false, matching a
+                // real trailing barline; the writer never emits spans, so the
+                // exact value is invisible.
+                span: Span { start: 1, end: 1 },
+            },
+            measure_id,
+        ));
+    }
+}
+
+/// A reader-reconstructed barline trails its measure iff it is not leading.
+#[cfg(feature = "musicxml-reader")]
+fn is_trailing_reader_barline(barline: &MeasureBarline) -> bool {
+    !is_leading_reader_barline(barline)
+}
+
+/// A reader-reconstructed barline leads its measure iff its synthetic span starts
+/// at 0 (see [`Reader::read_barline`]: leading=left keeps `start == 0`, trailing=
+/// right gets `start >= 1`). Mirrors `musicxml::score::is_leading_barline` against
+/// the measure's `READER_SPAN` (`start == 0`).
+#[cfg(feature = "musicxml-reader")]
+fn is_leading_reader_barline(barline: &MeasureBarline) -> bool {
+    barline.span.start == READER_SPAN.start
+}
+
+/// A `TimedEventKind::Barline` event mirroring `non_note_event_from_timeline`'s
+/// barline shape (zero duration, the barline's own span as `source`).
+#[cfg(feature = "musicxml-reader")]
+fn barline_event(barline: MeasureBarline, measure_id: MeasureId) -> TimedEvent {
+    TimedEvent {
+        measure: measure_id,
+        onset: Fraction::zero(),
+        duration: Fraction::zero(),
+        source: barline.span,
+        kind: TimedEventKind::Barline(barline),
+        attachments: EventAttachments::default(),
+    }
+}
+
+/// Canonical ABC `K:` display for a major key with the given circle-of-fifths
+/// value, the inverse spelling `write_abc` re-parses to the same `fifths`. Covers
+/// the standard -7..=+7 range; an out-of-range value (never croma's output, since
+/// the writer clamps `<fifths>` to a real key) falls back to `"C"`, which
+/// re-parses to `fifths == 0` rather than panicking.
+#[cfg(feature = "musicxml-reader")]
+fn canonical_major_key_display(fifths: i8) -> String {
+    let name = match fifths {
+        -7 => "Cb",
+        -6 => "Gb",
+        -5 => "Db",
+        -4 => "Ab",
+        -3 => "Eb",
+        -2 => "Bb",
+        -1 => "F",
+        0 => "C",
+        1 => "G",
+        2 => "D",
+        3 => "A",
+        4 => "E",
+        5 => "B",
+        6 => "F#",
+        7 => "C#",
+        _ => "C",
+    };
+    name.to_owned()
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;

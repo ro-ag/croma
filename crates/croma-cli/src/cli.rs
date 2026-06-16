@@ -30,6 +30,18 @@ pub enum Command {
     Dump(DumpArgs),
     /// Format an ABC file (canonical formatting, in the style of rustfmt/gofmt).
     Fmt(FmtArgs),
+    /// Read a MusicXML file back into a Score and project it (experimental).
+    ///
+    /// Inverts croma's own MusicXML writer. Gated behind the `musicxml-reader`
+    /// feature; absent from the default build.
+    #[cfg(feature = "musicxml-reader")]
+    Read(ReadArgs),
+    /// Convert a MusicXML file to ABC (read MusicXML -> Score -> write ABC).
+    ///
+    /// A discoverable alias for `read --format abc`. Gated behind the
+    /// `musicxml-reader` feature; absent from the default build.
+    #[cfg(feature = "musicxml-reader")]
+    Musicxml2abc(Musicxml2abcArgs),
 }
 
 /// Options shared by every subcommand that feed the parser and diagnostics.
@@ -135,6 +147,45 @@ pub struct FmtArgs {
     pub auto_fix: bool,
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+/// Arguments for `croma read`: read a MusicXML file and project the
+/// reconstructed `Score` per `--format`.
+#[cfg(feature = "musicxml-reader")]
+#[derive(Debug, Args)]
+pub struct ReadArgs {
+    /// The MusicXML file to read.
+    pub file: PathBuf,
+    /// Write the projection to this path instead of stdout.
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<PathBuf>,
+    /// How to project the reconstructed Score (default: MusicXML re-emission).
+    #[arg(long, value_enum, default_value_t = ReadFormat::Xml)]
+    pub format: ReadFormat,
+}
+
+/// Arguments for `croma musicxml2abc`: read a MusicXML file and write ABC.
+#[cfg(feature = "musicxml-reader")]
+#[derive(Debug, Args)]
+pub struct Musicxml2abcArgs {
+    /// The MusicXML file to convert.
+    pub file: PathBuf,
+    /// Write the ABC to this path instead of stdout.
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<PathBuf>,
+}
+
+/// The projection of a Score reconstructed from MusicXML, selected by
+/// `croma read --format`.
+#[cfg(feature = "musicxml-reader")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReadFormat {
+    /// Re-emit MusicXML from the reconstructed Score (the writer's inverse-image).
+    Xml,
+    /// Write ABC from the reconstructed Score.
+    Abc,
+    /// Pretty-print the reconstructed `Score` debug representation.
+    Dump,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

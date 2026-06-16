@@ -42,6 +42,14 @@ pub use to_abc::{AbcWriteOptions, write_abc};
 #[cfg(feature = "musicxml-reader")]
 pub use musicxml::read::read_musicxml;
 
+/// Complete a reader-built [`Score`] for the ABC projection only (synthesize
+/// `voice.events` barline/ending events + a canonical key `display`). Applied on
+/// the `croma read --format abc` / `musicxml2abc` paths, NOT on `--format xml`
+/// (which must stay the pure `write_musicxml` inverse). See
+/// [`musicxml::read::complete_score_for_abc`].
+#[cfg(feature = "musicxml-reader")]
+pub use musicxml::read::complete_score_for_abc;
+
 #[cfg(test)]
 pub(crate) mod test_support;
 

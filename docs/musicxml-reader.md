@@ -11,6 +11,47 @@ default build never compiles it nor its sole optional dependency (`roxmltree`).
 - The writer is the spec. The reader inverts croma's dialect **exactly** and
   never mirrors an abc2xml-ism.
 
+## CLI surface (R1, gated)
+
+Built with `cargo build -p croma-cli --features musicxml-reader`, the reader is
+reachable from two subcommands (both `#[cfg(feature = "musicxml-reader")]`;
+absent from the default zero-dep build):
+
+- `croma read <file.musicxml> [-o out] [--format xml|abc|dump]` — read XML →
+  `Score`, print reader diagnostics to stderr, project per `--format` (default
+  `xml` = `write_musicxml`, `abc` = `write_abc`, `dump` = the `Score` debug).
+  `--format xml` is the **pure inverse** `write_musicxml(read_musicxml(xml))`
+  (used by the reverse music21 comparator, R2).
+- `croma musicxml2abc <file.musicxml> [-o out.abc]` — read XML → `Score` → ABC
+  (`= read --format abc`), the headline conversion.
+
+The croma-cli feature `musicxml-reader = ["croma-core/musicxml-reader"]` pulls
+`roxmltree` only when enabled; the default `cargo build -p croma-cli` stays
+dep-free and exposes neither subcommand.
+
+### ABC projection completion (`complete_score_for_abc`)
+
+The reader was built+proven as the inverse of **`write_musicxml`**, so it
+populates that writer's view (per-`<measure>` boundaries + `Measure.barlines`).
+`write_abc` consumes a *different* slice of `Score` (`TimedEventKind::Barline`
+events in `voice.events`, `KeySignatureModel.display`). The `--format abc` /
+`musicxml2abc` paths therefore run a gated, **ABC-path-only** completion pass
+(`read::complete_score_for_abc`) that synthesizes the `voice.events`
+barline/ending events from the reconstructed measure structure, fills a
+canonical-major `K:` display from `<fifths>`, and renumbers tuplet `pair_id`s
+globally-unique-per-voice (the reader numbers them per-measure for
+`write_musicxml`, but `write_abc`'s `tuplet_layout` groups globally). The pass is
+**never** applied on `--format xml` nor in the XML idempotence gate, so it
+cannot perturb the write_musicxml inverse.
+
+**Structural round-trip evidence** (`tools/prove_reader_abc_roundtrip.py`,
+LOCAL-ONLY: `croma xml`→X1, `croma read X1 --format abc`→ABC', `croma xml ABC'`
+→X2, compare the normalized musical projection X1≡X2): **9,514 / 9,933 in-scope
+round-trip structurally (95.8%)**. The 419 residual is categorized (empty-measure
+/`y`-spacer length, multi-voice `V:`-vs-`&`, key/barline ordering, slur-drop) and
+logged for the consolidated residual pass — a valid-but-different Score that the
+lossy XML intermediate cannot always render back to byte-faithful ABC.
+
 ## Verification gate
 
 The primary gate is **XML re-emission idempotence**:
