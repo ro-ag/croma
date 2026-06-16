@@ -56,21 +56,30 @@
 //! the `placement` attribute), `<dynamics>` / `<coda>` / `<segno>` / `<wedge>` ->
 //! the [`DecorationAttachment`]s whose names re-emit the identical direction.
 //!
-//! Mid-measure `<attributes>` changes (`KeyChange`/`MeterChange`/`ClefChange`),
-//! `<harmony>`, `<lyric>`, multi-voice, repeats, grace and chords are **later
-//! stages** and are intentionally not reconstructed yet — files that use them
-//! simply do not round-trip idempotently yet, which the corpus gate measures.
+//! **S6b (mid-measure attributes):** a NON-leading `<attributes>` block (a second
+//! block after notes in a measure, or the first block of a non-leading measure)
+//! is reconstructed into the zero-duration change events the lowering places at a
+//! voice's current onset: `<key>` -> [`TimedEventKind::KeyChange`], `<time>` ->
+//! [`TimedEventKind::MeterChange`], `<clef>` -> [`TimedEventKind::ClefChange`]
+//! (reusing the S2 sub-element parsers). The leading header `<attributes>` is
+//! still read only by S2 ([`Reader::read_header_key_meter`] +
+//! `read_clef`/`read_transpose`); see [`Reader::read_mid_measure_attributes`].
+//!
+//! Multi-voice (`<voice>`/`<backup>`), grace (`<grace>`), chords (`<chord/>`) and
+//! `<measure-style><multiple-rest>` are the remaining **later-stage** work and are
+//! intentionally not reconstructed yet — files that use them do not round-trip
+//! idempotently yet, which the corpus gate measures.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
-    AnnotationPlacementModel, BarlineKind, DecorationAttachment, DecorationSourceKind,
-    EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LyricControl, Measure,
-    MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part, PartId, Pitch,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment, TextLine,
-    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
-    VoiceId, VoicePropertiesModel,
+    AnnotationPlacementModel, BarlineKind, ClefChangeModel, DecorationAttachment,
+    DecorationSourceKind, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel,
+    LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent,
+    Part, PartId, Pitch, RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility,
+    Score, ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel,
+    TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment,
+    TupletRole, Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -621,7 +630,18 @@ impl Reader {
             // change. (`capture_header_tempo` is the part-1 flag; `measures` is
             // empty only for this part's first measure.)
             let capture_header = capture_header_tempo && measures.is_empty();
-            let outcome = self.read_measure(measure_node, divisions, measure_id, capture_header);
+            // The writer emits the header `<attributes>` (`write_attributes`)
+            // ONLY in the part's first measure; that single leading block is the
+            // score key/time/clef, not a mid-tune change (S6b). `measures` is
+            // empty exactly for this part's first measure.
+            let is_part_first_measure = measures.is_empty();
+            let outcome = self.read_measure(
+                measure_node,
+                divisions,
+                measure_id,
+                capture_header,
+                is_part_first_measure,
+            );
             if header_tempo.is_none() {
                 header_tempo = outcome.header_tempo;
             }
@@ -695,6 +715,7 @@ impl Reader {
         divisions: u32,
         measure_id: MeasureId,
         capture_header_tempo: bool,
+        is_part_first_measure: bool,
     ) -> MeasureOutcome {
         let mut events = Vec::new();
         // The writer reconstructs onsets with a per-sequence cursor that
@@ -722,6 +743,15 @@ impl Reader {
         // captured, later tempo directions are mid-tune `TempoChange` events.
         let mut header_tempo: Option<TempoModel> = None;
         let mut seen_note = false;
+        // S6b: the part's first measure opens with the header `<attributes>`
+        // (`write_attributes`: `<divisions>` + score `<key>`/`<time>`/`<clef>` +
+        // `<transpose>`), already read into `metadata`/`initial_properties`. Skip
+        // exactly that ONE leading block; every other `<attributes>` (a second
+        // block after notes, or the first block of a non-leading measure) is a
+        // mid-tune `KeyChange`/`MeterChange`/`ClefChange`. Off the first measure
+        // there is no header block, so this stays `true` and every `<attributes>`
+        // is treated as a mid-tune change.
+        let mut header_attributes_consumed = !is_part_first_measure;
         // S6a: the `<barline>` blocks reconstructed into the measure's
         // `barlines`/`repeat_endings`. `next_right_span_start` gives every
         // *trailing* (right) barline a distinct, non-zero `span.start` so the
@@ -850,8 +880,32 @@ impl Reader {
                     // a tempo with no preceding barline is unaffected.)
                     seen_note = true;
                 }
-                // <attributes> (divisions/key/time/clef/transpose), <harmony>,
-                // <lyric> etc. are read in later stages.
+                "attributes" => {
+                    // The header `<attributes>` (the part's first measure's first
+                    // block) is read elsewhere into `metadata`/`initial_properties`;
+                    // skip it once. Any OTHER `<attributes>` is a mid-tune change.
+                    if !header_attributes_consumed {
+                        header_attributes_consumed = true;
+                    } else {
+                        self.read_mid_measure_attributes(
+                            child,
+                            measure_id,
+                            cursor,
+                            &mut events,
+                            &mut pending,
+                        );
+                        // S6b×S5a: the writer emits a true HEADER tempo
+                        // (`write_initial_directions`) BEFORE any measure-sequence
+                        // event, so a mid-measure `<attributes>` change always
+                        // precedes it. A tempo direction seen *after* a mid-tune
+                        // change is therefore a body-position `Q:` `TempoChange`
+                        // (sorted by onset behind this change), NOT the header
+                        // tempo. Mark content started so the header-tempo capture
+                        // does not wrongly promote it (cf. the barline arm above).
+                        seen_note = true;
+                    }
+                }
+                // <harmony>/<lyric> etc. are read in their own arms / later stages.
                 _ => {}
             }
         }
@@ -901,6 +955,98 @@ impl Reader {
                 repeat_endings,
                 overlays: Vec::new(),
             },
+        }
+    }
+
+    /// S6b: invert a NON-leading `<attributes>` block — a mid-tune
+    /// `KeyChange`/`MeterChange`/`ClefChange`. The writer emits each such change
+    /// as its OWN minimal `<attributes>` wrapper at the event's cursor position
+    /// ([`MusicXmlWriter::write_mid_tune_key`] / `write_mid_tune_meter` /
+    /// `write_mid_tune_clef`, dispatched from `write_event` for the
+    /// [`TimedEventKind::KeyChange`]/`MeterChange`/`ClefChange` variants). A single
+    /// croma-emitted mid-tune block therefore holds exactly one of `<key>`/
+    /// `<time>`/`<clef>`; to stay robust the reader walks every child in document
+    /// order and emits one zero-duration event per recognised sub-element.
+    ///
+    /// **Onset and ordering.** Each event is placed at the current `cursor` (the
+    /// position the preceding notes advanced to) with `Fraction::zero()` duration,
+    /// exactly as the lowering creates these events (`lower::timeline`). The event
+    /// is pushed onto `events` in document order; `measure_sequences` sorts by
+    /// `(onset, source.start)` with a STABLE sort, and the reconstructed event's
+    /// `source` is [`READER_SPAN`] (`start == 0`) like the surrounding notes, so a
+    /// change at onset N re-sorts after the notes already emitted at earlier onsets
+    /// and before the following note at onset N — reproducing the writer's
+    /// interleaving. The change is zero-duration, so it never advances the cursor.
+    ///
+    /// A buffered direction/harmony in `pending` is left untouched (it flushes onto
+    /// the next note): croma's lowering gives these change events empty
+    /// attachments, so a direction preceding an inline change attaches to the
+    /// following note, not the change.
+    fn read_mid_measure_attributes(
+        &mut self,
+        attributes: Node<'_, '_>,
+        measure_id: MeasureId,
+        cursor: Fraction,
+        events: &mut Vec<TimedEvent>,
+        pending: &mut EventAttachments,
+    ) {
+        for child in element_children(attributes) {
+            let kind = match child.tag_name().name() {
+                "key" => Some(TimedEventKind::KeyChange(self.read_key(child))),
+                "time" => self.read_meter(child).map(TimedEventKind::MeterChange),
+                "clef" => Some(TimedEventKind::ClefChange(self.read_clef_change(child))),
+                // `<divisions>` never appears in a croma mid-tune block (the writer
+                // only emits it in the header `write_attributes`); other children
+                // are not croma's output. Ignore with a diagnostic so a hand-edited
+                // file does not silently lose data.
+                "divisions" => {
+                    self.warn(
+                        "musicxml.read.mid_measure_divisions",
+                        "<divisions> inside a mid-measure <attributes> is not reconstructed",
+                    );
+                    None
+                }
+                other => {
+                    self.warn(
+                        "musicxml.read.unsupported_mid_measure_attribute",
+                        format!(
+                            "<attributes> child <{other}> mid-measure has no Score event inverse; skipped"
+                        ),
+                    );
+                    None
+                }
+            };
+            if let Some(kind) = kind {
+                events.push(TimedEvent {
+                    measure: measure_id,
+                    onset: cursor,
+                    duration: Fraction::zero(),
+                    source: READER_SPAN,
+                    kind,
+                    attachments: EventAttachments::default(),
+                });
+            }
+        }
+        // `pending` is intentionally not consumed here; it flushes onto the next
+        // note (the change events carry no attachments, matching the lowering).
+        let _ = pending;
+    }
+
+    /// S6b: reconstruct a [`ClefChangeModel`] from a mid-tune `<clef>` element.
+    /// Unlike the header clef ([`Reader::read_clef`]), a mid-tune clef ALWAYS
+    /// re-emits a `<clef>` (the writer's `write_mid_tune_clef` is unconditional),
+    /// so a default treble clef maps to the explicit canonical `"treble"` text
+    /// rather than `None` — `clef_model` re-maps `"treble"` to the same G/2 element.
+    fn read_clef_change(&mut self, clef_node: Node<'_, '_>) -> ClefChangeModel {
+        let sign = child_text(clef_node, "sign").unwrap_or("G");
+        let line = child_text(clef_node, "line").unwrap_or("2");
+        let octave_change = child_text(clef_node, "clef-octave-change")
+            .and_then(|text| self.parse_i8(text, "clef-octave-change"))
+            .unwrap_or(0);
+        let text = clef_text_from(sign, line, octave_change).unwrap_or_else(|| "treble".to_owned());
+        ClefChangeModel {
+            clef: text_line(text),
+            source_span: READER_SPAN,
         }
     }
 
