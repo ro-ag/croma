@@ -49,7 +49,8 @@ at documented defaults and is invisible to the gate.
 | **S2** | header `<attributes>`: `<divisions>`, `<key>`/`<fifths>` (+ explicit `<key-step>`/`<key-alter>`/`<key-accidental>`), `<time>` (incl. `symbol="common"`/`"cut"`, compound, free), `<clef>`, `<transpose>` → `midi_transpose`. Mid-measure `<attributes>` changes (key/meter/clef) deferred. | **done** |
 | **S3** | `<part-list>` MIDI: `<midi-instrument>` (`<midi-channel>`, 1-based `<midi-program>`, `<volume>`, `<pan>`) → `MidiInstrumentModel` on the owning voice. **Closes the forward/reverse `%%MIDI` loop.** | **done** |
 | **S4** | per-`<note>` `<notations>` + `<time-modification>`: `<tied>`/`<tie>` → ties, `<slur>` → slurs, `<tuplet>`+`<time-modification>` → tuplets, and the `<articulations>`/`<ornaments>`/`<technical>`/`<fermata>`/`<arpeggiate>` decoration groups → `DecorationAttachment`. Beams are derived (no model field, no `<beam>` emitted) and round-trip via S1. | **done** |
-| S5 | `<direction>` (incl. dynamics, wedges, coda/segno), `<harmony>`, `<lyric>` | planned |
+| **S5a** | `<direction>`: tempo `<metronome>`/`<words>`+`<sound>` → header `tempo_model` or mid-tune `TempoChange`; `<dynamics>` (`p`..`fff`,`mp`/`mf`/`sfz`), `<wedge>` (crescendo/diminuendo/stop), `<coda>`/`<segno>` → `DecorationAttachment`; annotation `<words>` (+placement) → `TextAttachment`. Trailing/pre-barline directions reconstruct on a zero-duration `Spacer`. | **done** |
+| S5b | `<harmony>`, `<lyric>` | planned |
 | S6 | multi-voice (`<voice>`/`<backup>`), repeats/endings/barlines, grace, chords (`<chord/>`) | planned |
 
 ### S1 reconstruction notes
@@ -203,13 +204,66 @@ reader code.
     `inverted-turn`), technical (`up-bow`, `down-bow`, `open-string`,
     `thumb-position`, `snap-pizzicato`, `stopped`, `fingering` 0–5), `fermata`
     (upright/inverted), and `arpeggiate`.
-  - **Out of S4 scope (handled by the `<direction>` writer, so deferred to S5):**
-    dynamics (`p`..`fff`, `mp`/`mf`/`sfz`), hairpin wedges (`crescendo`/
-    `diminuendo`), and `coda`/`segno` — the writer emits these as `<direction>`
-    elements, **not** inside `<notations>`. The suppressed-decoration set (e.g. the
-    Irish roll `~`) emits nothing on either side and needs no inverse.
+  - **Handled by the `<direction>` writer (S5a, not S4):** dynamics (`p`..`fff`,
+    `mp`/`mf`/`sfz`), hairpin wedges (`crescendo`/`diminuendo`), and `coda`/`segno`
+    — the writer emits these as `<direction>` elements, **not** inside
+    `<notations>`; the reader reconstructs them in S5a (see the S5a notes). The
+    suppressed-decoration set (e.g. the Irish roll `~`) emits nothing on either
+    side and needs no inverse.
 
-### S1/S2/S3/S4 corpus metric (10k zenodo set)
+### S5a reconstruction notes — `<direction>`
+
+S5a inverts `write_initial_directions`, `write_tempo_direction`,
+`write_harmony_and_directions`, `write_direction_words`, `write_dynamic`,
+`write_direction_type` (coda/segno) and `write_wedge`. The writer emits a (timed)
+event's `<direction>`s **immediately before** the event (`write_event` calls
+`write_harmony_and_directions` first), so the reader buffers each voice-bearing
+direction and flushes the buffer onto the **next** timed event (note, rest, or
+`TempoChange`).
+
+- **Tempo** directions are **voice-less** and always carry a `<sound tempo=...>`,
+  which is exactly what distinguishes them from a voice-bearing annotation
+  `<words>` direction:
+  - *numeric* (`<metronome>`): `<beat-unit>` (+ optional `<beat-unit-dot/>`) →
+    `TempoBeat` (plain unit `1/d`; dotted `3/(2d)`, the exact inverse of the
+    writer's `3/(2^k)` → dotted), `<per-minute>` → `bpm`, the non-metronome
+    `<words>` → `tempo.text`.
+  - *text-only* (no `<metronome>`, just `<words>` + `<sound>`): reconstructs a
+    `TempoModel { text: Some(..), beat: None }` so the writer re-emits the words
+    plus the default `<sound tempo="120.00"/>`.
+  - **Header vs mid-tune:** the first voice-less tempo direction **before part 1's
+    first note** is the score header `tempo_model` (`write_initial_directions`);
+    every other tempo direction becomes a mid-tune `TimedEventKind::TempoChange`
+    at its onset. A `TempoChange` carries any directions buffered just before it
+    (the writer emits an event's attachments before its metronome).
+- **Dynamics / coda / segno / wedge** → `DecorationAttachment`, inverting each
+  element-name map exactly. The reconstructed **canonical** name re-emits the
+  identical element regardless of the original ABC shorthand: `crescendo`/
+  `diminuendo` → `crescendo(`/`diminuendo(`, `<wedge type="stop">` → `crescendo)`
+  (the writer maps every close form to `stop`), each `<dynamics>` child → its
+  same-named ABC dynamic, `<coda>`/`<segno>` → `coda`/`segno`.
+- **Annotation `<words>`** → `TextAttachment`. The writer strips a leading
+  placement prefix (`^`/`_`/`<`/`>`/`@`) from the model text when the annotation
+  has a placement, then prints the bare words + a `placement="above"|"below"`
+  attribute. The inverse rebuilds the model text by re-attaching the **canonical**
+  prefix for that placement (`^` above, `_` below) so the writer's `annotation_text`
+  strips it back to the same words — byte-identical even when the words themselves
+  begin with a prefix character. `placement="above"` is the canonical inverse for
+  the writer's collapse of left/right/free onto `above` (all print as `above` with
+  the prefix stripped). A direction with no `placement` attribute reconstructs a
+  placement-less annotation whose text is the words verbatim.
+- **Trailing / pre-barline directions** (a `!segno!` before a bar line, or a
+  note-less measure carrying only an annotation) have no following note; the
+  writer flushes them onto a zero-duration `Spacer` whose `write_event` emits the
+  directions then nothing. The reader reconstructs that `Spacer` at the end of the
+  measure so the directions re-emit in place.
+- **Writer-derived, no reader code:** the `<sound>` tempo value, the `<voice>`/
+  `<staff>` routing, and the per-category re-grouping are all derived by the
+  writer from the reconstructed fields, so recovering the model field reproduces
+  them. Anything with no model-backed inverse (rehearsal marks, pedal, …) is left
+  unread with a diagnostic, never an invented mapping.
+
+### S1/S2/S3/S4/S5a corpus metric (10k zenodo set)
 
 - **S1** strict full-byte idempotence was **0 / 9,935** exported files (every ABC
   tune carries a `K:`, so a `<key>` block S1 did not read always diverged first);
@@ -245,6 +299,17 @@ reader code.
   files are heavily multi-voice (`<note>` vs `<backup>` ordering) — pre-existing
   multi-voice incompleteness now surfaced as the first divergence; it is **S6
   scope** (multi-voice `<voice>`/`<backup>`), unrelated to S4.
+- **S5a** strict full-byte idempotence: **606 / 9,935** (**+65** vs S4's 541). The
+  self-policing signal fires exactly as designed: the **`direction` first-diverging
+  tag collapses from 3,467 (S4) → 0**, and the text-only-tempo `sound` tag (190,
+  which appeared transiently mid-stage) is also fully cleared — S5a reads back
+  every `<direction>` wherever it was the first divergence. The strict delta is
+  honest: most files using directions also use `barline`/`harmony`/`lyric`, which
+  diverge earlier and mask the fix. The new top first-diverging tags are `barline`
+  (7,051, S6), `harmony` (1,137, S5b), `lyric` (505, S5b), `grace` (440, S6),
+  `attributes` (181, deferred mid-measure changes), `note` (12, S6 multi-voice),
+  `score-instrument` (2, S6 multi-voice) and `voice` (1, S6). These name S5b/S6's
+  work lists.
 
 Re-run the measurement with:
 

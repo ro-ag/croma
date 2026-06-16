@@ -43,20 +43,32 @@
 //! `<beam>` element (beaming is recomputed from durations), so the S1 note
 //! reconstruction already round-trips them with no beam-specific reader code.
 //!
+//! **S5a:** the `<direction>` block — the inverse of
+//! [`MusicXmlWriter::write_initial_directions`],
+//! [`MusicXmlWriter::write_tempo_direction`] and
+//! [`MusicXmlWriter::write_harmony_and_directions`]. A voice-less tempo
+//! `<direction>` (`<metronome>` and/or tempo `<words>` + `<sound>`) before the
+//! first note of part 1 -> the header [`TempoModel`] (`metadata.tempo_model`);
+//! any other tempo direction -> a mid-tune [`TimedEventKind::TempoChange`] event
+//! at its onset. A voice-bearing `<direction>` attaches to the FOLLOWING note's
+//! [`EventAttachments`] (the writer emits an event's directions before the
+//! event): `<words>` -> [`TextAttachment`] annotations (placement inverted from
+//! the `placement` attribute), `<dynamics>` / `<coda>` / `<segno>` / `<wedge>` ->
+//! the [`DecorationAttachment`]s whose names re-emit the identical direction.
+//!
 //! Mid-measure `<attributes>` changes (`KeyChange`/`MeterChange`/`ClefChange`),
-//! directions/dynamics, harmony, lyrics, multi-voice, repeats, grace and chords
-//! are **later stages** and are intentionally not reconstructed yet — files that
-//! use them simply do not round-trip idempotently yet, which the corpus gate
-//! measures.
+//! `<harmony>`, `<lyric>`, multi-voice, repeats, grace and chords are **later
+//! stages** and are intentionally not reconstructed yet — files that use them
+//! simply do not round-trip idempotently yet, which the corpus gate measures.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, DecorationAttachment,
-    DecorationSourceKind, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel,
-    Measure, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part, PartId, Pitch, RestEvent,
-    RestVisibility, Score, ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TextLine,
-    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
-    VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AnnotationPlacementModel,
+    DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, KeyAccidentalModel,
+    KeySignatureModel, Measure, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part,
+    PartId, Pitch, RestEvent, RestVisibility, Score, ScoreMetadata, SlurAttachment, SlurRole,
+    Staff, StaffId, TempoBeat, TempoModel, TextAttachment, TextLine, TieAttachment, TieRole,
+    TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -179,9 +191,17 @@ impl Reader {
         // <part-list>; the music comes from the sibling <part> elements. The
         // writer keys them by matching `id`.
         let part_list = self.read_part_list(root);
-        for part_node in children_named(root, "part") {
-            let part = self.read_part(part_node, score.divisions, &part_list);
-            score.parts.push(part);
+        // The header tempo direction (the writer's `write_initial_directions`)
+        // belongs to the score once, emitted only in part 1; reconstruct it into
+        // `metadata.tempo_model`. `read_part` reports the captured header tempo so
+        // a voice-less tempo direction before part 1's first note becomes the
+        // header model rather than a mid-tune `TempoChange`.
+        for (part_index, part_node) in children_named(root, "part").enumerate() {
+            let outcome = self.read_part(part_node, score.divisions, &part_list, part_index == 0);
+            if let Some(tempo) = outcome.header_tempo {
+                score.metadata.tempo_model.get_or_insert(tempo);
+            }
+            score.parts.push(outcome.part);
         }
 
         score.diagnostics = self.diagnostics.clone();
@@ -557,7 +577,8 @@ impl Reader {
         part_node: Node<'_, '_>,
         divisions: u32,
         part_list: &[PartListEntry],
-    ) -> Part {
+        capture_header_tempo: bool,
+    ) -> PartOutcome {
         let id = part_node.attribute("id").unwrap_or_default().to_owned();
         let entry = part_list.iter().find(|entry| entry.id == id);
         let name = entry
@@ -586,10 +607,22 @@ impl Reader {
         // so both are populated consistently.
         let mut events: Vec<TimedEvent> = Vec::new();
         let mut measures: Vec<Measure> = Vec::new();
+        // The header tempo direction (if any) is captured from the FIRST measure,
+        // before its first note, and only in part 1. Once captured it is never
+        // overwritten, and later tempo directions become `TempoChange` events.
+        let mut header_tempo: Option<TempoModel> = None;
 
         for measure_node in children_named(part_node, "measure") {
             let measure_id = self.read_measure_id(measure_node, measures.len());
-            let outcome = self.read_measure(measure_node, divisions, measure_id);
+            // Only part 1's first measure may yield the score header tempo; in
+            // every other measure a voice-less tempo direction is a mid-tune
+            // change. (`capture_header_tempo` is the part-1 flag; `measures` is
+            // empty only for this part's first measure.)
+            let capture_header = capture_header_tempo && measures.is_empty();
+            let outcome = self.read_measure(measure_node, divisions, measure_id, capture_header);
+            if header_tempo.is_none() {
+                header_tempo = outcome.header_tempo;
+            }
             events.extend(outcome.events);
             measures.push(outcome.measure);
         }
@@ -621,19 +654,22 @@ impl Reader {
             source_span: READER_SPAN,
         };
 
-        Part {
-            id: PartId {
-                value: id,
-                span: READER_SPAN,
-            },
-            name,
-            staves: vec![Staff {
-                id: staff_id,
-                voices: vec![voice_id],
+        PartOutcome {
+            part: Part {
+                id: PartId {
+                    value: id,
+                    span: READER_SPAN,
+                },
+                name,
+                staves: vec![Staff {
+                    id: staff_id,
+                    voices: vec![voice_id],
+                    source_span: READER_SPAN,
+                }],
+                voices: vec![voice],
                 source_span: READER_SPAN,
-            }],
-            voices: vec![voice],
-            source_span: READER_SPAN,
+            },
+            header_tempo,
         }
     }
 
@@ -656,6 +692,7 @@ impl Reader {
         measure_node: Node<'_, '_>,
         divisions: u32,
         measure_id: MeasureId,
+        capture_header_tempo: bool,
     ) -> MeasureOutcome {
         let mut events = Vec::new();
         // The writer reconstructs onsets with a per-sequence cursor that
@@ -672,6 +709,17 @@ impl Reader {
         // notes: a `<tuplet type="start">` opens one, a middle note with only a
         // `<time-modification>` continues it, and `type="stop"` closes it.
         let mut open_tuplets = OpenTuplets::default();
+        // S5a: the writer emits a (timed) event's `<direction>`s immediately
+        // BEFORE the event (`write_harmony_and_directions` runs first in
+        // `write_event`). Inverting it means buffering each voice-bearing
+        // direction's reconstructed attachments and flushing them onto the next
+        // timed event (note, rest, or `TempoChange`).
+        let mut pending = EventAttachments::default();
+        // The header tempo (`write_initial_directions`) is the FIRST voice-less
+        // tempo direction before the first note of part 1's first measure; once
+        // captured, later tempo directions are mid-tune `TempoChange` events.
+        let mut header_tempo: Option<TempoModel> = None;
+        let mut seen_note = false;
 
         for child in element_children(measure_node) {
             match child.tag_name().name() {
@@ -679,6 +727,7 @@ impl Reader {
                     let Some(parsed) = self.read_note(child, divisions) else {
                         continue;
                     };
+                    seen_note = true;
                     let onset = if parsed.chord_member {
                         // A `<chord/>` member shares the previous note's onset
                         // and does not advance the cursor. (Chords are fully a
@@ -700,7 +749,11 @@ impl Reader {
                     // the timed event, so attaching to every note here is the
                     // exact inverse for the single-note (non-chord) shapes S4
                     // proves, and is harmless for chord members until S6.
-                    let attachments = self.read_note_attachments(child, &mut open_tuplets);
+                    let mut attachments = self.read_note_attachments(child, &mut open_tuplets);
+                    // S5a: prepend any buffered direction attachments (the writer
+                    // emitted them just before this note). Prepending preserves
+                    // the model field order the lowering uses.
+                    prepend_attachments(&mut attachments, std::mem::take(&mut pending));
 
                     events.push(TimedEvent {
                         measure: measure_id,
@@ -717,6 +770,36 @@ impl Reader {
                         max_cursor = max_fraction(max_cursor, cursor);
                     }
                 }
+                "direction" => {
+                    match self.read_direction(child) {
+                        // A voice-less tempo direction: the header tempo when it
+                        // precedes part 1's first note, else a mid-tune change.
+                        ParsedDirection::Tempo(tempo) => {
+                            if capture_header_tempo && !seen_note && header_tempo.is_none() {
+                                header_tempo = Some(tempo);
+                            } else {
+                                // The writer emits a TempoChange's own attachments
+                                // (any directions right before it) before the
+                                // metronome, so the buffered directions belong to
+                                // this zero-duration event.
+                                events.push(TimedEvent {
+                                    measure: measure_id,
+                                    onset: cursor,
+                                    duration: Fraction::zero(),
+                                    source: READER_SPAN,
+                                    kind: TimedEventKind::TempoChange(tempo),
+                                    attachments: std::mem::take(&mut pending),
+                                });
+                            }
+                        }
+                        // A voice-bearing direction (annotation words, dynamics,
+                        // coda/segno, wedge): buffer it for the next event.
+                        ParsedDirection::Event(attachments) => {
+                            pending.extend(attachments);
+                        }
+                        ParsedDirection::Ignored => {}
+                    }
+                }
                 "forward" => {
                     if let Some(duration) = self.read_duration(child, divisions) {
                         cursor = cursor.checked_add(duration);
@@ -729,9 +812,25 @@ impl Reader {
                     }
                 }
                 // <attributes> (divisions/key/time/clef/transpose), <barline>,
-                // <direction>, <harmony> etc. are read in later stages.
+                // <harmony>, <lyric> etc. are read in later stages.
                 _ => {}
             }
+        }
+
+        // S5a: directions with no following note in this measure (e.g. a
+        // pre-barline `!segno!`, or a note-less measure carrying only an
+        // annotation) are emitted by the writer on a zero-duration `Spacer` event
+        // whose `write_event` emits its directions then nothing. Reconstruct that
+        // Spacer so the trailing directions re-emit at the end of the measure.
+        if !pending.annotations.is_empty() || !pending.decorations.is_empty() {
+            events.push(TimedEvent {
+                measure: measure_id,
+                onset: cursor,
+                duration: Fraction::zero(),
+                source: READER_SPAN,
+                kind: TimedEventKind::Spacer,
+                attachments: std::mem::take(&mut pending),
+            });
         }
 
         // A measure rest forces `expected_duration == actual_duration ==
@@ -746,6 +845,7 @@ impl Reader {
 
         MeasureOutcome {
             events,
+            header_tempo,
             measure: Measure {
                 id: measure_id,
                 source_span: READER_SPAN,
@@ -888,6 +988,189 @@ impl Reader {
         }
 
         attachments
+    }
+
+    /// S5a: classify one `<direction>` and reconstruct its model contribution,
+    /// inverting [`MusicXmlWriter::write_tempo_direction`],
+    /// [`MusicXmlWriter::write_direction_words`], [`MusicXmlWriter::write_dynamic`],
+    /// [`MusicXmlWriter::write_direction_type`] (coda/segno) and
+    /// [`MusicXmlWriter::write_wedge`].
+    ///
+    /// A **tempo** direction carries a `<metronome>` (and/or a tempo `<words>` +
+    /// `<sound>`) and is voice-less; it becomes a [`TempoModel`] the caller routes
+    /// to the header or to a `TempoChange`. Every other direction is voice-bearing
+    /// and reconstructs an [`EventAttachments`] fragment (annotation words, or a
+    /// dynamics/coda/segno/wedge decoration) for the following event.
+    fn read_direction(&mut self, direction: Node<'_, '_>) -> ParsedDirection {
+        // A `<metronome>` (or a tempo `<words>` accompanied by a `<sound>` and no
+        // `<voice>`) is a tempo direction. Detect the metronome first; a bare
+        // tempo-words direction is handled by the words branch below only when it
+        // is NOT a tempo (i.e. it has a `<voice>`).
+        if let Some(tempo) = self.read_tempo_direction(direction) {
+            return ParsedDirection::Tempo(tempo);
+        }
+
+        let mut attachments = EventAttachments::default();
+        let placement = direction.attribute("placement");
+        for direction_type in children_named(direction, "direction-type") {
+            for element in element_children(direction_type) {
+                match element.tag_name().name() {
+                    "words" => {
+                        attachments
+                            .annotations
+                            .push(annotation_from_words(element, placement));
+                    }
+                    "dynamics" => {
+                        for dynamic in element_children(element) {
+                            match dynamic_decoration_name(dynamic.tag_name().name()) {
+                                Some(name) => {
+                                    attachments.decorations.push(named_decoration(name));
+                                }
+                                None => self.warn(
+                                    "musicxml.read.unsupported_dynamic",
+                                    format!(
+                                        "<dynamics> child <{}> has no ABC decoration inverse; skipped",
+                                        dynamic.tag_name().name()
+                                    ),
+                                ),
+                            }
+                        }
+                    }
+                    "wedge" => {
+                        if let Some(name) = wedge_decoration_name(element.attribute("type")) {
+                            attachments.decorations.push(named_decoration(name));
+                        } else {
+                            self.warn(
+                                "musicxml.read.unsupported_wedge",
+                                format!(
+                                    "<wedge type={:?}> has no ABC decoration inverse; skipped",
+                                    element.attribute("type").unwrap_or("")
+                                ),
+                            );
+                        }
+                    }
+                    "coda" => attachments.decorations.push(named_decoration("coda")),
+                    "segno" => attachments.decorations.push(named_decoration("segno")),
+                    // Other direction-type children (rehearsal, pedal, …) have no
+                    // model-backed inverse the writer emits; left for later work.
+                    other => self.warn(
+                        "musicxml.read.unsupported_direction_type",
+                        format!("<direction-type> child <{other}> is not reconstructed; skipped"),
+                    ),
+                }
+            }
+        }
+
+        if attachments.annotations.is_empty() && attachments.decorations.is_empty() {
+            ParsedDirection::Ignored
+        } else {
+            ParsedDirection::Event(attachments)
+        }
+    }
+
+    /// Invert [`MusicXmlWriter::write_tempo_direction`]: reconstruct a
+    /// [`TempoModel`] from a tempo `<direction>`. Returns `None` when the
+    /// direction is not a tempo (so the caller treats it as a plain words /
+    /// decoration direction).
+    ///
+    /// The writer emits two tempo shapes, both **voice-less** and always carrying
+    /// a `<sound tempo=...>`:
+    /// - a **numeric** tempo: an optional tempo `<words>` (`tempo.text`) then a
+    ///   `<metronome>` (`<beat-unit>` + optional `<beat-unit-dot/>` +
+    ///   `<per-minute>`). The reader recovers `text` from the words and `beat`
+    ///   from the metronome.
+    /// - a **text-only** tempo (no numeric beat): just a tempo `<words>` + the
+    ///   `<sound>` (the `tempo.text`-only `TempoModel`, beat `None`). The reader
+    ///   recovers `text` and leaves `beat = None`.
+    ///
+    /// The voice-less + `<sound>` shape is what distinguishes a tempo direction
+    /// from a regular annotation `<words>` direction (which is voice-bearing and
+    /// has no `<sound>`). A `<metronome>` whose `<beat-unit>`/`<per-minute>`
+    /// cannot be parsed yields `None`.
+    fn read_tempo_direction(&mut self, direction: Node<'_, '_>) -> Option<TempoModel> {
+        // A voice-bearing direction is never a tempo (tempo directions carry no
+        // `<voice>`); bail so it is reconstructed as an annotation/decoration.
+        if child_element(direction, "voice").is_some() {
+            return None;
+        }
+        // The tempo words (if any) are the `<words>` of a direction-type that does
+        // NOT contain the metronome. Shared by both shapes.
+        let words = || {
+            children_named(direction, "direction-type")
+                .filter(|dt| child_element(*dt, "metronome").is_none())
+                .find_map(|dt| child_element(dt, "words"))
+                .map(|words| raw_text(words).to_owned())
+        };
+
+        if let Some(metronome) = descendants_named(direction, "metronome").next() {
+            let beat = self.read_tempo_beat(metronome)?;
+            return Some(TempoModel {
+                text: words(),
+                beat: Some(beat),
+                source_span: READER_SPAN,
+            });
+        }
+
+        // No metronome: a text-only tempo is a voice-less words direction WITH a
+        // `<sound>` (the writer's `tempo.text`-only fallback). Without a `<sound>`
+        // it is an ordinary words annotation, not a tempo.
+        if child_element(direction, "sound").is_some()
+            && let Some(text) = words()
+        {
+            return Some(TempoModel {
+                text: Some(text),
+                beat: None,
+                source_span: READER_SPAN,
+            });
+        }
+        None
+    }
+
+    /// Invert the writer's `beat_unit_model`: reconstruct a [`TempoBeat`] from a
+    /// `<metronome>`'s `<beat-unit>` (+ optional `<beat-unit-dot/>`) and
+    /// `<per-minute>`. A plain unit maps to `1/denominator`; a dotted unit to
+    /// `3/(2*denominator)` (the exact inverse of `3/(2^k)` -> dotted). Returns
+    /// `None` for an unrecognised beat-unit name or a non-numeric per-minute.
+    fn read_tempo_beat(&mut self, metronome: Node<'_, '_>) -> Option<TempoBeat> {
+        let unit = child_text(metronome, "beat-unit")?;
+        let base_denominator: u32 = match unit {
+            "whole" => 1,
+            "half" => 2,
+            "quarter" => 4,
+            "eighth" => 8,
+            "16th" => 16,
+            "32nd" => 32,
+            "64th" => 64,
+            other => {
+                self.warn(
+                    "musicxml.read.unknown_beat_unit",
+                    format!("<beat-unit> `{other}` is not a recognised note type; tempo ignored"),
+                );
+                return None;
+            }
+        };
+        let dotted = child_element(metronome, "beat-unit-dot").is_some();
+        let (beat_numerator, beat_denominator) = if dotted {
+            // A dotted unit is 3/(2*base): e.g. dotted quarter = 3/8.
+            (3, base_denominator.saturating_mul(2))
+        } else {
+            (1, base_denominator)
+        };
+        let bpm = match child_text(metronome, "per-minute").map(|t| t.parse::<u32>()) {
+            Some(Ok(bpm)) => bpm,
+            _ => {
+                self.warn(
+                    "musicxml.read.invalid_per_minute",
+                    "<per-minute> is missing or not a non-negative integer; tempo ignored",
+                );
+                return None;
+            }
+        };
+        Some(TempoBeat {
+            beat_numerator,
+            beat_denominator,
+            bpm,
+        })
     }
 
     /// Invert one `<tied>` (or `<note>`-level `<tie>`): `type` -> [`TieRole`],
@@ -1142,9 +1425,33 @@ struct PartListEntry {
     instruments: Vec<MidiInstrumentModel>,
 }
 
+/// One `<part>` reconstructed, plus the header [`TempoModel`] (S5a) captured from
+/// a voice-less tempo direction before its first note. Only part 1 yields a
+/// header tempo; for every other part it is `None`.
+struct PartOutcome {
+    part: Part,
+    header_tempo: Option<TempoModel>,
+}
+
 struct MeasureOutcome {
     events: Vec<TimedEvent>,
     measure: Measure,
+    /// The header tempo (S5a) when this measure was the header-eligible first
+    /// measure of part 1 and a voice-less tempo direction preceded its first
+    /// note. `None` otherwise.
+    header_tempo: Option<TempoModel>,
+}
+
+/// S5a: the classification of one `<direction>` by the reader.
+enum ParsedDirection {
+    /// A voice-less tempo direction (`<metronome>`); the caller routes it to the
+    /// header `tempo_model` or a mid-tune `TempoChange`.
+    Tempo(TempoModel),
+    /// A voice-bearing direction reconstructed into attachments (annotation
+    /// words, dynamics, coda/segno, wedge) for the following event.
+    Event(EventAttachments),
+    /// A direction with no model-backed inverse the writer emits.
+    Ignored,
 }
 
 struct ParsedNote {
@@ -1331,6 +1638,85 @@ fn decoration_for_notation_element(element: &str) -> Option<&'static str> {
         "stopped" => "plus",
         _ => return None,
     })
+}
+
+/// S5a: reconstruct a [`TextAttachment`] from a `<direction-type><words>` plus the
+/// direction's `placement` attribute, inverting
+/// [`MusicXmlWriter::write_direction_words`] + `annotation_text`.
+///
+/// The writer strips a leading placement prefix (`^`/`_`/`<`/`>`/`@`) from the
+/// model text whenever the annotation has a placement, then emits the bare text
+/// and a `placement="above"|"below"` attribute. The exact inverse rebuilds the
+/// model text by re-attaching the **canonical** prefix for that placement (`^`
+/// for above, `_` for below), so `annotation_text` strips it back to the emitted
+/// words and `placement_name` re-emits the same attribute — byte-identical even
+/// when the words themselves start with a prefix character. A direction with no
+/// `placement` attribute reconstructs a placement-less annotation whose text is
+/// the words verbatim (the writer does not strip a prefix in that case).
+///
+/// `placement="above"` is the canonical inverse for the writer's collapse of
+/// left/right/free placements onto `above`; re-emission is byte-identical because
+/// those placements all print as `above` with the prefix stripped.
+fn annotation_from_words(words: Node<'_, '_>, placement: Option<&str>) -> TextAttachment {
+    let text = raw_text(words);
+    let (placement_model, prefix) = match placement {
+        Some("below") => (Some(AnnotationPlacementModel::Below), "_"),
+        Some(_) => (Some(AnnotationPlacementModel::Above), "^"),
+        None => (None, ""),
+    };
+    TextAttachment {
+        text: format!("{prefix}{text}"),
+        span: READER_SPAN,
+        placement: placement_model,
+    }
+}
+
+/// Inverse of the writer's `dynamic_decoration`: map a `<dynamics>` child element
+/// name back to the ABC decoration name that re-emits the identical element.
+/// Returns `None` for an element croma's writer never emits as a dynamic.
+fn dynamic_decoration_name(element: &str) -> Option<&'static str> {
+    Some(match element {
+        "p" => "p",
+        "pp" => "pp",
+        "ppp" => "ppp",
+        "f" => "f",
+        "ff" => "ff",
+        "fff" => "fff",
+        "mp" => "mp",
+        "mf" => "mf",
+        "sfz" => "sfz",
+        _ => return None,
+    })
+}
+
+/// Inverse of the writer's `wedge_decoration`: map a `<wedge type=...>` back to a
+/// canonical ABC hairpin decoration name. `crescendo`/`diminuendo` map to the
+/// long-form open names (`crescendo(` / `diminuendo(`); `stop` maps to
+/// `crescendo)` (the writer's `wedge_decoration` emits `stop` for every close
+/// form, so the canonical close name re-emits the identical `type="stop"`).
+fn wedge_decoration_name(wedge_type: Option<&str>) -> Option<&'static str> {
+    Some(match wedge_type {
+        Some("crescendo") => "crescendo(",
+        Some("diminuendo") => "diminuendo(",
+        Some("stop") => "crescendo)",
+        _ => return None,
+    })
+}
+
+/// Prepend `head`'s annotation/decoration channels before `target`'s existing
+/// ones (S5a buffered directions precede the note's own notations). Only the
+/// channels the direction reader populates are merged; the rest of `head` is
+/// always empty.
+fn prepend_attachments(target: &mut EventAttachments, head: EventAttachments) {
+    if head.annotations.is_empty() && head.decorations.is_empty() {
+        return;
+    }
+    let mut annotations = head.annotations;
+    annotations.append(&mut target.annotations);
+    target.annotations = annotations;
+    let mut decorations = head.decorations;
+    decorations.append(&mut target.decorations);
+    target.decorations = decorations;
 }
 
 fn text_line(text: impl Into<String>) -> TextLine {
