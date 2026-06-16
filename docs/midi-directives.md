@@ -31,13 +31,14 @@ last-declared voice, crashing on a bare `%%MIDI channel 10`, and writing a
 literal `<instrument-name>no name</instrument-name>` filler. croma follows
 genuine abc2midi/MusicXML semantics and does **not** mimic those quirks.
 
-## What translates today (MusicXML `<part-list>`)
+## What translates today
 
 | Sub-directive | MusicXML | Notes |
 |---|---|---|
-| `%%MIDI program <prog>` | `<score-instrument><instrument-name>` + `<midi-instrument><midi-program>` | `<midi-program>` is **1-based** (`prog + 1`); abc2midi/GM programs are 0-based. Instrument name = General MIDI Level 1 name (`GM_PROGRAM_NAMES`, abc2xml `inst_tb` spelling). |
+| `%%MIDI program <prog>` | `<part-list>` `<score-instrument><instrument-name>` + `<midi-instrument><midi-program>` | `<midi-program>` is **1-based** (`prog + 1`); abc2midi/GM programs are 0-based. Instrument name = General MIDI Level 1 name (`GM_PROGRAM_NAMES`, abc2xml `inst_tb` spelling). |
 | `%%MIDI program <chan> <prog>` | adds `<midi-channel>` | The two-integer form (the dominant multi-voice corpus shape). |
 | `%%MIDI channel <n>` *alongside a program* in the same voice | adds `<midi-channel>` | Merged into the voice's one instrument. |
+| `%%MIDI transpose <n>` | `<attributes><transpose><chromatic>n` | A signed semitone shift declaring written-vs-sounding pitch; emitted in the scoped part's first-measure `<attributes>` and does **not** shift the written notes. The ABC `transpose=` voice property (ABC 2.1) takes precedence when both are present. `n` parsed as `i16`. |
 
 **Per-voice scoping is load-bearing** (`project_voice_midi` in `lower/mod.rs`): a
 directive attaches to the voice of the nearest preceding `V:` declaration
@@ -60,7 +61,6 @@ out-of-range values are skipped.
 
 | Item | Status | Why |
 |---|---|---|
-| `%%MIDI transpose <n>` | **next (Scope 2)** | Genuine `<attributes><transpose><chromatic>`. Affects written-vs-sounding pitch, so it is the one `%%MIDI` translation visible to the structural comparator — and the one that can perturb whitelist pitch facts. Landed and measured in isolation on its own branch. |
 | `%%MIDI channel <n>` with **no** program | deferred | No instrument identity ⇒ no GM name; MusicXML `<score-instrument>` requires an `<instrument-name>`. abc2xml writes `no name`, which the oracle probe flags as not-to-imitate. 12 corpus files; comparator-invisible. |
 | Inline `[I: MIDI=program N]` | deferred | Currently dropped with `warning[abc.field.inline_ignored]` (a round-trip loss distinct from the line-start form). 5 occurrences in 2 files. |
 | Mid-tune program change → visible `<words>prog: N</words>` | **not emitted** | abc2xml renders a raw MIDI program number as visible staff text; this is an abc2xml-ism, not standard notation. The affected corpus files are already adjudicated as `dropped.csv` "equivalence" (croma correctly ignores the optional directive). croma emits the part-list instrument identity but not the visible `prog:` words. |
@@ -69,15 +69,24 @@ out-of-range values are skipped.
 ## Verification & a known gap
 
 The raw structural comparator (`tools/music21_polars_corpus_compare.py`)
-extracts **no** instrument / program / channel facts from music21 — it compares
-part counts, measures, notes/pitch, voices, barlines, slurs, repeat endings,
-harmony, and directions. So the part-list translation above is
-**comparator-invisible**: it produces **0 whitelist graduations and 0
-regressions** by construction (verified over the full 10k: 9390 matches, 0
-mismatches, whitelist set-diff = 0). Correctness is therefore verified by
-targeted `croma-core` unit tests plus byte-level parity spot-checks against
-abc2xml's `<part-list>`, not by the whitelist. `%%MIDI transpose` (Scope 2) is
-the translation that *does* move comparator pitch facts.
+extracts **no** instrument / program / channel facts from music21, and it
+compares **written** pitch (`note.pitch.alter` is the accidental alteration; it
+never calls `.toSoundingPitch()`), so `<transpose>` is invisible to it too. It
+compares part counts, measures, written notes/pitch, voices, barlines, slurs,
+repeat endings, harmony, and directions. So **every** translation above is
+**comparator-invisible**: each produces **0 whitelist graduations and 0
+regressions** by construction.
+
+This was verified over the full 10k for both changes (9390 matches, 0
+mismatches, whitelist set-diff = 0 each). The transpose case is also confirmed
+empirically: 56 of the 60 `%%MIDI transpose` corpus files were **already
+whitelisted** with croma emitting *no* `<transpose>` while abc2xml emitted it —
+which only holds if the comparator ignores `<transpose>` entirely (the other 4
+are dropped for unrelated `duration` reasons). The prompt anticipated transpose
+as a risky, comparator-visible "graduation lever"; the evidence shows it is
+neither risky nor a lever. Correctness is therefore verified by targeted
+`croma-core` unit tests plus byte-level parity spot-checks against abc2xml, not
+by the whitelist — these are output-fidelity features, not match-rate movers.
 
 **Projection-coverage gap (writer side):** the ABC writer re-emits `%%MIDI`
 verbatim from `preserved_directives`; it has no inverse of the MusicXML

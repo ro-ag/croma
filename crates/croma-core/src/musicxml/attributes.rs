@@ -131,12 +131,21 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn write_transpose_if_available(&mut self, part: &Part) {
         for voice in &part.voices {
-            let Some(transpose) = voice.properties.transpose.as_ref() else {
-                continue;
-            };
-            let Ok(chromatic) = transpose.text.trim().parse::<i32>() else {
-                self.diagnostics
-                    .push(unsupported_transpose_warning(transpose.span));
+            // The ABC `transpose=` voice property (ABC 2.1) takes precedence; a
+            // `%%MIDI transpose` projection (abc2midi convention) is the fallback
+            // when no native property is present.
+            let chromatic = if let Some(transpose) = voice.properties.transpose.as_ref() {
+                match transpose.text.trim().parse::<i32>() {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.diagnostics
+                            .push(unsupported_transpose_warning(transpose.span));
+                        continue;
+                    }
+                }
+            } else if let Some(transpose) = voice.midi_transpose {
+                i32::from(transpose)
+            } else {
                 continue;
             };
             self.xml.start("transpose", &[]);

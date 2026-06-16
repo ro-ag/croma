@@ -1305,6 +1305,64 @@ fn midi_playback_only_directives_emit_no_instrument() {
 }
 
 #[test]
+fn midi_transpose_emits_transpose_attribute_without_shifting_pitch() {
+    // `%%MIDI transpose <n>` is an abc2midi playback transpose that abc2xml maps
+    // to MusicXML `<attributes><transpose><chromatic>n` (written-vs-sounding
+    // pitch). It must NOT shift the written notes — only declare the transpose.
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI transpose -12\nK:C\nCDEF GABc |\n";
+    let export = export_musicxml(source).expect("transpose directive should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<transpose>"));
+    assert!(export.musicxml.contains("<chromatic>-12</chromatic>"));
+    // Written pitch is unchanged: the first note is still C (no octave shift).
+    let first_step = export
+        .musicxml
+        .split("<step>")
+        .nth(1)
+        .and_then(|tail| tail.split("</step>").next());
+    assert_eq!(first_step, Some("C"));
+    // It is not visible staff text.
+    assert!(!export.musicxml.contains("<words>"));
+}
+
+#[test]
+fn midi_transpose_scopes_to_the_declaring_voice() {
+    // Per-voice scoping: each voice's `%%MIDI transpose` lands in its own part's
+    // first-measure <attributes>.
+    let source = concat!(
+        "X:1\nT:T\nL:1/8\n",
+        "V:1\n%%MIDI transpose -12\n",
+        "V:2\n%%MIDI transpose -24\n",
+        "K:C\n",
+        "V:1\nCDEF|\n",
+        "V:2\nC,2C,2|\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice transpose should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let (p1, p2) = export
+        .musicxml
+        .split_once("<part id=\"P2\"")
+        .expect("two parts");
+    assert!(p1.contains("<chromatic>-12</chromatic>"));
+    assert!(!p1.contains("<chromatic>-24"));
+    assert!(p2.contains("<chromatic>-24</chromatic>"));
+}
+
+#[test]
+fn midi_transpose_coexists_with_program_in_one_voice() {
+    // A voice with both a program and a transpose emits the part-list instrument
+    // (program) AND the <attributes> transpose.
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI program 40\n%%MIDI transpose -12\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("program + transpose should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<midi-program>41</midi-program>"));
+    assert!(export.musicxml.contains("<chromatic>-12</chromatic>"));
+}
+
+#[test]
 fn placement_prefixed_annotations_remain_words() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"^slow\"C \"_soft\"D|\n";
     let export = export_musicxml(source).expect("annotations should export");
