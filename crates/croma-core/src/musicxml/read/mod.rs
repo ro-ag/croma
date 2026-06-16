@@ -920,6 +920,9 @@ impl Reader {
                     // the finalised before-grace groups (emitted between the
                     // directions and the note).
                     prepend_attachments(&mut attachments, std::mem::take(&mut state.pending));
+                    // S6e: the pending run bound to this note, so it no longer needs
+                    // a trailing Spacer anchor.
+                    state.pending_insert_index = None;
                     attachments
                         .grace_groups
                         .extend(std::mem::take(&mut state.pending_graces));
@@ -945,10 +948,12 @@ impl Reader {
                     // the next event. A `<harmony>` carries no `<voice>`; it
                     // belongs to the active region's voice.
                     if let Some(symbol) = self.read_harmony(child) {
-                        voice_state(&mut voices, &current_voice)
-                            .pending
-                            .chord_symbols
-                            .push(symbol);
+                        let state = voice_state(&mut voices, &current_voice);
+                        // S6e: anchor a new pending run at the current event index
+                        // (document order) before buffering, so a surviving run
+                        // becomes a Spacer in the right place vs same-onset changes.
+                        state.mark_pending_position();
+                        state.pending.chord_symbols.push(symbol);
                     }
                 }
                 "direction" => {
@@ -974,6 +979,8 @@ impl Reader {
                                     kind: TimedEventKind::TempoChange(tempo),
                                     attachments: std::mem::take(&mut state.pending),
                                 });
+                                // S6e: this tempo change consumed the pending run.
+                                state.pending_insert_index = None;
                             }
                         }
                         // A voice-bearing direction (annotation words, dynamics,
@@ -983,7 +990,11 @@ impl Reader {
                             let voice = direction_voice_number(child)
                                 .unwrap_or_else(|| current_voice.clone());
                             current_voice = voice.clone();
-                            voice_state(&mut voices, &voice).pending.extend(attachments);
+                            let state = voice_state(&mut voices, &voice);
+                            // S6e: anchor a new pending run at the current event
+                            // index before buffering (see the harmony arm).
+                            state.mark_pending_position();
+                            state.pending.extend(attachments);
                         }
                         ParsedDirection::Ignored => {}
                     }
@@ -1081,12 +1092,37 @@ impl Reader {
                     ),
                 }
             }
-            // `pending_graces` always drains onto the first following main note in
-            // the loop, so it is empty here.
-            debug_assert!(
-                state.pending_graces.is_empty(),
-                "before-grace groups must drain onto their following note"
-            );
+            // `pending_graces` always drains onto the first following main note
+            // for clean croma output, so it is normally empty here. It can only be
+            // non-empty for input the writer never emits — e.g. a `<grace>` run
+            // immediately followed by a `<chord/>` member note (the member folds
+            // into the previous event and `continue`s before the buffered before-
+            // grace groups flush). Totality (design §2.2/§6) forbids a panic even in
+            // debug/test builds, so instead of a `debug_assert!` the reader degrades
+            // gracefully: re-bind the orphaned groups to the most recent main event
+            // as BEFORE-grace groups (preserving their content and order — they did
+            // precede that event's chord), or drop them with a diagnostic when there
+            // is no main event to host them. Either way it never panics and never
+            // changes behaviour on clean input (where the loop below is a no-op).
+            if !state.pending_graces.is_empty() {
+                let groups = std::mem::take(&mut state.pending_graces);
+                match state
+                    .last_main_event
+                    .and_then(|index| state.events.get_mut(index))
+                {
+                    Some(event) => {
+                        // Prepend so the orphaned before-grace groups keep their
+                        // original position ahead of any already on the event.
+                        let mut merged = groups;
+                        merged.append(&mut event.attachments.grace_groups);
+                        event.attachments.grace_groups = merged;
+                    }
+                    None => self.warn(
+                        "musicxml.read.orphan_before_grace",
+                        "a <grace> run had no following note to bind as a before-grace group; dropped",
+                    ),
+                }
+            }
 
             // S5a/S5b: directions or chord symbols with no following note in this
             // voice's region (a pre-barline `!segno!`, a trailing `"C"` chord, or a
@@ -1094,18 +1130,40 @@ impl Reader {
             // writer on a zero-duration `Spacer` whose `write_event` emits its
             // harmony/directions then nothing. Reconstruct that Spacer so the
             // trailing attachments re-emit at the region's end.
-            if !state.pending.chord_symbols.is_empty()
-                || !state.pending.annotations.is_empty()
-                || !state.pending.decorations.is_empty()
-            {
-                state.events.push(TimedEvent {
+            if !state.pending_is_empty() {
+                let spacer = TimedEvent {
                     measure: measure_id,
                     onset: state.cursor,
                     duration: Fraction::zero(),
                     source: READER_SPAN,
                     kind: TimedEventKind::Spacer,
                     attachments: std::mem::take(&mut state.pending),
-                });
+                };
+                // S6e ordering fix. The Spacer must keep its DOCUMENT-ORDER position
+                // relative to any same-onset mid-tune change events. The writer's
+                // `write_event` emits an event's attachments before its body, and
+                // `measure_sequences` stable-sorts by `(onset, source.start)`; with
+                // both the Spacer and the change events at the same READER_SPAN
+                // onset/start, insertion order is the only tiebreaker the sort sees.
+                // `pending_insert_index` recorded `events.len()` at the moment this
+                // run's first attachment was buffered, so it sits exactly where the
+                // direction/harmony appeared in the XML walk:
+                //   - `"Trio"[K:F]|` (direction THEN change, no note) → index 0,
+                //     before the KeyChange pushed afterwards → `<direction>` then
+                //     `<attributes>` (matches the writer).
+                //   - `[K:..]"E"|` (change THEN harmony, no note) → index after the
+                //     KeyChange → `<attributes>` then `<harmony>` (also matches).
+                //   - a pre-barline `!segno!` after notes → index past the notes
+                //     (= append), unchanged.
+                // The `"^hi"[K:G] E` case (direction before change THEN a note)
+                // never reaches here: the run drained onto that note during the walk
+                // (clearing the index), so the annotation stays on the note.
+                match state.pending_insert_index {
+                    Some(index) if index <= state.events.len() => {
+                        state.events.insert(index, spacer);
+                    }
+                    _ => state.events.push(spacer),
+                }
             }
 
             // A measure rest forces `expected == actual == rest.duration` at onset
@@ -2409,6 +2467,15 @@ struct VoiceMeasureState {
     max_cursor: Fraction,
     measure_rest_duration: Option<Fraction>,
     pending: EventAttachments,
+    /// S6e: the index in `events` at which a surviving `pending` run (one with no
+    /// following note to bind to) must materialise as a trailing `Spacer`, so the
+    /// Spacer keeps its DOCUMENT-ORDER position relative to the same-onset mid-tune
+    /// change events pushed during the walk. Set to `Some(events.len())` the moment
+    /// a direction/harmony is buffered into an *empty* `pending` (the Spacer belongs
+    /// right there, ahead of any change pushed afterwards); cleared whenever
+    /// `pending` is drained onto a note or a tempo change. `None` ⇒ append (no
+    /// surviving pending, or the empty→non-empty transition was never recorded).
+    pending_insert_index: Option<usize>,
     open_tuplets: OpenTuplets,
     grace_builder: Option<GraceGroupBuilder>,
     pending_graces: Vec<GraceGroupAttachment>,
@@ -2424,6 +2491,7 @@ impl Default for VoiceMeasureState {
             max_cursor: Fraction::zero(),
             measure_rest_duration: None,
             pending: EventAttachments::default(),
+            pending_insert_index: None,
             open_tuplets: OpenTuplets::default(),
             grace_builder: None,
             pending_graces: Vec::new(),
@@ -2435,6 +2503,29 @@ impl Default for VoiceMeasureState {
             // at the same onset). Voices never share a span comparison, so each
             // voice's chord spans starting at the same base is safe.
             next_chord_span_start: 1_000_000,
+        }
+    }
+}
+
+impl VoiceMeasureState {
+    /// S5a/S5b: whether the buffered `pending` attachments carry any
+    /// writer-emitted channel (chord symbols, annotations, or decorations). The
+    /// other `EventAttachments` channels are never buffered into `pending`.
+    fn pending_is_empty(&self) -> bool {
+        self.pending.chord_symbols.is_empty()
+            && self.pending.annotations.is_empty()
+            && self.pending.decorations.is_empty()
+    }
+
+    /// S6e: record where a NEW `pending` run begins in the event stream, so a
+    /// surviving run (no following note) re-materialises as a trailing `Spacer` at
+    /// its document-order position relative to the same-onset mid-tune change
+    /// events. Call this immediately BEFORE buffering a direction/harmony; it only
+    /// captures the index on the empty→non-empty transition (the first attachment
+    /// of the run), leaving an in-progress run's anchor intact.
+    fn mark_pending_position(&mut self) {
+        if self.pending_is_empty() {
+            self.pending_insert_index = Some(self.events.len());
         }
     }
 }
