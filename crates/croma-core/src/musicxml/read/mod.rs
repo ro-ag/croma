@@ -438,6 +438,41 @@ impl Reader {
         }
     }
 
+    /// Parse a `<alter>`-family field. The MusicXML spec types `<alter>` (and the
+    /// `<root-alter>`/`<bass-alter>`/`<degree-alter>` chord-symbol variants) as
+    /// `decimal`, and abc2xml / music21 / MuseScore / Finale all emit it as a
+    /// FLOAT (`<alter>1.0</alter>`, `<alter>-1.0</alter>`). A bare-integer parse of
+    /// `"1.0"` fails, silently dropping the accidental and corrupting the sounding
+    /// pitch — so parse an `f64` and round to the nearest whole semitone (croma's
+    /// model has no sub-semitone alter). A genuine quarter-tone (non-zero
+    /// fractional part, e.g. `0.5`) is unrepresentable: keep the rounded value but
+    /// emit a diagnostic rather than panic or drop. The rounded magnitude is
+    /// clamped into `i8` range defensively (real accidentals are tiny).
+    fn parse_alter(&mut self, text: &str, label: &str) -> Option<i8> {
+        let trimmed = text.trim();
+        let value = match trimmed.parse::<f64>() {
+            Ok(value) if value.is_finite() => value,
+            _ => {
+                self.warn(
+                    "musicxml.read.invalid_alter",
+                    format!("<{label}> `{trimmed}` is not a finite decimal alter; ignored"),
+                );
+                return None;
+            }
+        };
+        let rounded = value.round();
+        if (value - rounded).abs() > f64::EPSILON {
+            self.warn(
+                "musicxml.read.fractional_alter",
+                format!(
+                    "<{label}> `{trimmed}` is a non-integer (microtonal) alter; \
+                     rounded to {rounded} semitone(s) (croma has no sub-semitone model)"
+                ),
+            );
+        }
+        Some(rounded.clamp(f64::from(i8::MIN), f64::from(i8::MAX)) as i8)
+    }
+
     /// Parse an unsigned integer that fits in `u8` (`<midi-channel>`), warning
     /// and yielding `None` otherwise.
     fn parse_u8(&mut self, text: &str, label: &str) -> Option<u8> {
@@ -2087,7 +2122,7 @@ impl Reader {
             return None;
         };
         let root_alter = child_text(root_node, "root-alter")
-            .and_then(|text| self.parse_i8(text, "root-alter"))
+            .and_then(|text| self.parse_alter(text, "root-alter"))
             .unwrap_or(0);
 
         let mut symbol = String::new();
@@ -2144,7 +2179,7 @@ impl Reader {
             && let Some(bass_step) = child_text(bass_node, "bass-step").and_then(first_upper_letter)
         {
             let bass_alter = child_text(bass_node, "bass-alter")
-                .and_then(|text| self.parse_i8(text, "bass-alter"))
+                .and_then(|text| self.parse_alter(text, "bass-alter"))
                 .unwrap_or(0);
             symbol.push('/');
             symbol.push(bass_step);
@@ -2167,7 +2202,7 @@ impl Reader {
             return;
         };
         let alter = child_text(degree, "degree-alter")
-            .and_then(|text| self.parse_i8(text, "degree-alter"))
+            .and_then(|text| self.parse_alter(text, "degree-alter"))
             .unwrap_or(0);
         symbol.push_str(degree_accidental(alter));
         symbol.push_str(value.trim());
@@ -2456,9 +2491,10 @@ impl Reader {
                 );
                 None
             })?;
-        // `<alter>` is optional; the writer omits it when zero.
+        // `<alter>` is optional; the writer omits it when zero. The spec types it
+        // as `decimal` (`<alter>1.0</alter>`), so parse via `parse_alter`.
         let alter = child_text(pitch_node, "alter")
-            .and_then(|text| text.trim().parse::<i8>().ok())
+            .and_then(|text| self.parse_alter(text, "alter"))
             .unwrap_or(0);
         Some(Pitch {
             step,

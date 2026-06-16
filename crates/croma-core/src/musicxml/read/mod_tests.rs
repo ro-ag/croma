@@ -265,6 +265,142 @@ fn altered_pitch_reconstructs_alter_and_written_accidental() {
     assert!(written.explicit);
 }
 
+// --- Stage R2d: decimal `<alter>` parsing -----------------------------------
+//
+// The MusicXML spec types `<alter>` (and the `<*-alter>` family) as `decimal`,
+// and abc2xml / music21 / MuseScore / Finale all emit it as a FLOAT
+// (`<alter>1.0</alter>`). The reader must parse the decimal and round to the
+// nearest whole semitone; a bare-integer parse drops every float-encoded
+// accidental, silently corrupting the sounding pitch. These cases feed a raw,
+// hand-authored foreign-dialect `<pitch>` so the alter text is arbitrary.
+
+/// A one-measure foreign score whose single quarter note carries `alter_xml`
+/// verbatim inside its `<pitch>` (e.g. `<alter>1.0</alter>`, or `""` for none).
+fn foreign_pitch_score(alter_xml: &str) -> crate::parse::ParseReport<Score> {
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <pitch><step>C</step>{alter_xml}<octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#
+    );
+    read_musicxml(&xml)
+}
+
+/// The reconstructed `alter` of the foreign score's first note.
+fn foreign_pitch_alter(alter_xml: &str) -> i8 {
+    let score = foreign_pitch_score(alter_xml).value;
+    first_note_pitch(&score).alter
+}
+
+#[test]
+fn float_alter_sharp_reconstructs_as_one() {
+    // abc2xml/music21 emit `<alter>1.0</alter>`; a bare-i8 parse drops it and the
+    // note reads natural. The decimal parse must recover the +1 semitone.
+    assert_eq!(
+        foreign_pitch_alter("<alter>1.0</alter>"),
+        1,
+        "<alter>1.0</alter> must reconstruct a +1 (sharp) sounding alter"
+    );
+}
+
+#[test]
+fn float_alter_flat_reconstructs_as_negative_one() {
+    assert_eq!(
+        foreign_pitch_alter("<alter>-1.0</alter>"),
+        -1,
+        "<alter>-1.0</alter> must reconstruct a -1 (flat) sounding alter"
+    );
+}
+
+#[test]
+fn float_alter_double_sharp_reconstructs_as_two() {
+    assert_eq!(
+        foreign_pitch_alter("<alter>2.0</alter>"),
+        2,
+        "<alter>2.0</alter> must reconstruct a +2 (double-sharp) sounding alter"
+    );
+}
+
+#[test]
+fn integer_alter_still_reconstructs_without_regression() {
+    // croma's OWN writer emits a bare integer `<alter>`; the decimal parse of "1"
+    // must still yield exactly 1 (the f64 round-trip is exact for small integers).
+    assert_eq!(
+        foreign_pitch_alter("<alter>1</alter>"),
+        1,
+        "integer <alter>1</alter> must still reconstruct as +1"
+    );
+}
+
+#[test]
+fn quarter_tone_alter_rounds_and_diagnoses_without_panic() {
+    // A genuine quarter-tone `<alter>0.5</alter>` is unrepresentable in croma's
+    // whole-semitone model: keep the rounded value (0 or 1) AND emit a diagnostic,
+    // never panic, never silently drop.
+    let report = foreign_pitch_score("<alter>0.5</alter>");
+    let alter = first_note_pitch(&report.value).alter;
+    assert!(
+        alter == 0 || alter == 1,
+        "a 0.5 quarter-tone alter must round to the nearest semitone (0 or 1), got {alter}"
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "musicxml.read.fractional_alter"),
+        "a non-integer (quarter-tone) alter must emit a diagnostic"
+    );
+}
+
+#[test]
+fn float_alter_note_round_trips_to_integer_alter_and_is_stable() {
+    // Reading a float-alter note then re-emitting must produce an INTEGER
+    // `<alter>` (croma's writer never emits a decimal), and re-reading that is
+    // stable at the same +1 alter.
+    let x1 = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <pitch><step>C</step><alter>1.0</alter><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let score = read_musicxml(x1).value;
+    let x2 = write_score_partwise(&score).value;
+    assert!(
+        x2.contains("<alter>1</alter>"),
+        "re-emission must carry an INTEGER <alter>1</alter>, got:\n{x2}"
+    );
+    assert!(
+        !x2.contains("<alter>1.0</alter>"),
+        "the writer must never emit a decimal <alter>"
+    );
+    let reread = read_musicxml(&x2).value;
+    assert_eq!(
+        first_note_pitch(&reread).alter,
+        1,
+        "the re-read float-alter note must stay +1"
+    );
+}
+
 #[test]
 fn rest_round_trips_and_reconstructs_kind() {
     let score = assert_idempotent("X:1\nT:Rest\nL:1/4\nK:C\nz\n");
@@ -1786,6 +1922,32 @@ fn textless_harmony_sharp_root_minor_seventh_synthesises() {
         "<harmony><root><root-step>F</root-step><root-alter>1</root-alter></root><kind>minor-seventh</kind></harmony>",
     );
     assert_eq!(text, "F#m7", "F#-rooted minor-seventh synthesises to F#m7");
+}
+
+#[test]
+fn textless_harmony_float_root_alter_synthesises_sharp_root() {
+    // R2d: abc2xml/music21 emit `<root-alter>1.0</root-alter>` (decimal). A bare-i8
+    // parse drops it, demoting the sharp root to a natural; the decimal parse must
+    // recover the '#'.
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>F</root-step><root-alter>1.0</root-alter></root><kind>minor-seventh</kind></harmony>",
+    );
+    assert_eq!(
+        text, "F#m7",
+        "a float <root-alter>1.0</root-alter> must synthesise a sharp root"
+    );
+}
+
+#[test]
+fn textless_harmony_float_bass_alter_synthesises_sharp_bass() {
+    // R2d: a decimal `<bass-alter>` on the slash bass must also be recovered.
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>G</root-step></root><kind>dominant</kind><bass><bass-step>F</bass-step><bass-alter>1.0</bass-alter></bass></harmony>",
+    );
+    assert_eq!(
+        text, "G7/F#",
+        "a float <bass-alter>1.0</bass-alter> must synthesise a sharp slash bass"
+    );
 }
 
 #[test]
