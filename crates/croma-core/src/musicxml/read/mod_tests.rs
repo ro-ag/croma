@@ -1785,6 +1785,263 @@ fn harmony_and_lyric_on_same_note_round_trip() {
     assert_eq!(attachments_at(&score, 0).lyrics.len(), 1);
 }
 
+// --- Stage S6a: <barline> + <repeat> + <ending> ------------------------------
+
+/// Assert FULL-byte idempotence on an S6a single-voice fixture. By S6a the writer
+/// also emits the `<barline>` block (`<bar-style>`, `<repeat>`, `<ending>`) on the
+/// left/right of measures; nothing in a single-voice barline/repeat/ending fixture
+/// is deferred, so the whole document must be byte-identical. Returns the
+/// reconstructed score for direct model-field assertions.
+fn assert_idempotent_s6a(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S6a barlines)"
+    );
+    score
+}
+
+/// The `Measure` at `index` of the first part's first voice.
+fn measure_at(score: &Score, index: usize) -> &crate::model::Measure {
+    &score.parts[0].voices[0].measures[index]
+}
+
+#[test]
+fn final_barline_reconstructs_kind() {
+    use crate::model::BarlineKind;
+    // `|]` -> <barline location="right"><bar-style>light-heavy</bar-style></barline>
+    // with NO <repeat>; the reader must reconstruct a trailing Final barline.
+    let abc = "X:1\nT:F\nM:4/4\nL:1/4\nK:C\nC D E F |]\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<bar-style>light-heavy</bar-style>") && !x1.contains("<repeat"),
+        "precondition: |] emits light-heavy with no repeat"
+    );
+    let score = assert_idempotent_s6a(abc);
+    let barlines = &measure_at(&score, 0).barlines;
+    assert_eq!(barlines.len(), 1, "one reconstructed right barline");
+    assert_eq!(barlines[0].kind, BarlineKind::Final);
+}
+
+#[test]
+fn double_barline_reconstructs_kind() {
+    use crate::model::BarlineKind;
+    // `||` -> <bar-style>light-light</bar-style> on the right of the first measure.
+    let abc = "X:1\nT:D\nM:4/4\nL:1/4\nK:C\nC D E F || G A B c |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<bar-style>light-light</bar-style>"));
+    let score = assert_idempotent_s6a(abc);
+    assert_eq!(measure_at(&score, 0).barlines[0].kind, BarlineKind::Double);
+}
+
+#[test]
+fn dotted_barline_reconstructs_kind() {
+    use crate::model::BarlineKind;
+    let abc = "X:1\nT:Dt\nM:4/4\nL:1/4\nK:C\nC D E F .| G A B c |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<bar-style>dotted</bar-style>"));
+    let score = assert_idempotent_s6a(abc);
+    assert_eq!(measure_at(&score, 0).barlines[0].kind, BarlineKind::Dotted);
+}
+
+#[test]
+fn invisible_barline_reconstructs_kind() {
+    use crate::model::BarlineKind;
+    // `[|]` -> <bar-style>none</bar-style> (an invisible barline).
+    let abc = "X:1\nT:Inv\nM:4/4\nL:1/4\nK:C\nC D E F [|] G A B c |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<bar-style>none</bar-style>"));
+    let score = assert_idempotent_s6a(abc);
+    assert_eq!(
+        measure_at(&score, 0).barlines[0].kind,
+        BarlineKind::Invisible
+    );
+}
+
+#[test]
+fn initial_thick_thin_barline_reconstructs_kind() {
+    use crate::model::BarlineKind;
+    // A mid-tune `[|` (thick-thin) emits <bar-style>heavy-light</bar-style> on the
+    // RIGHT with NO <repeat>; this is the Initial kind (distinct from a left
+    // RepeatStart, which is heavy-light + <repeat direction="forward">).
+    let abc = "X:1\nT:I\nM:4/4\nL:1/4\nK:C\nC D E F [| G A B c |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<bar-style>heavy-light</bar-style>") && !x1.contains("<repeat"),
+        "precondition: a mid-tune [| emits heavy-light with no repeat"
+    );
+    let score = assert_idempotent_s6a(abc);
+    assert_eq!(measure_at(&score, 0).barlines[0].kind, BarlineKind::Initial);
+}
+
+#[test]
+fn repeat_start_reconstructs_leading_barline() {
+    use crate::model::BarlineKind;
+    // `|:` -> <barline location="left"><bar-style>heavy-light</bar-style>
+    // <repeat direction="forward"/></barline>. The reader must reconstruct a
+    // LEADING RepeatStart (span.start == measure.source_span.start) so the writer
+    // re-emits it on the left.
+    let abc = "X:1\nT:R\nM:4/4\nL:1/4\nK:C\n|: C D E F :|\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<repeat direction=\"forward\"/>")
+            && x1.contains("<repeat direction=\"backward\"/>"),
+        "precondition: |: ... :| emits a forward and a backward repeat"
+    );
+    let score = assert_idempotent_s6a(abc);
+    let barlines = &measure_at(&score, 0).barlines;
+    assert!(
+        barlines.iter().any(|b| b.kind == BarlineKind::RepeatStart),
+        "the first measure carries a leading RepeatStart"
+    );
+    // The closing `:|` is a RepeatEnd on the (single) measure's right.
+    assert!(
+        barlines.iter().any(|b| b.kind == BarlineKind::RepeatEnd),
+        "the measure also carries the closing RepeatEnd"
+    );
+}
+
+#[test]
+fn repeat_start_end_across_measures_reconstructs() {
+    use crate::model::BarlineKind;
+    // |: in measure 1, body across two bars, :| at the end of measure 2.
+    let abc = "X:1\nT:R2\nM:4/4\nL:1/4\nK:C\n|: C D E F | G A B c :|\n";
+    let score = assert_idempotent_s6a(abc);
+    assert!(
+        measure_at(&score, 0)
+            .barlines
+            .iter()
+            .any(|b| b.kind == BarlineKind::RepeatStart),
+        "measure 1 opens the repeat"
+    );
+    assert!(
+        measure_at(&score, 1)
+            .barlines
+            .iter()
+            .any(|b| b.kind == BarlineKind::RepeatEnd),
+        "measure 2 closes the repeat"
+    );
+}
+
+#[test]
+fn repeat_both_decomposes_and_round_trips() {
+    use crate::model::BarlineKind;
+    // `::` (a combined back-then-forward repeat) emits the SAME XML as a
+    // RepeatEnd immediately followed by a leading RepeatStart: measure 2's right
+    // is light-heavy + repeat-backward, measure 3's left is heavy-light +
+    // repeat-forward. The reader decomposes it into RepeatEnd + RepeatStart (it
+    // never needs to materialise a RepeatBoth), which re-emits byte-identically.
+    let abc = "X:1\nT:RB\nM:4/4\nL:1/4\nK:C\n|: C D E F :: G A B c :|\n";
+    let score = assert_idempotent_s6a(abc);
+    // Two measures. The `::` seam sits between them: measure 0's RIGHT is the
+    // RepeatEnd (the `::` back half), measure 1's LEFT is the leading RepeatStart
+    // (the `::` forward half). Measure 0 also opens with `|:` (RepeatStart) and
+    // measure 1 closes with `:|` (RepeatEnd), so both measures carry one of each.
+    assert!(
+        measure_at(&score, 0)
+            .barlines
+            .iter()
+            .any(|b| b.kind == BarlineKind::RepeatEnd),
+        "the `::` seam's back half is a RepeatEnd on measure 0's right"
+    );
+    assert!(
+        measure_at(&score, 1)
+            .barlines
+            .iter()
+            .any(|b| b.kind == BarlineKind::RepeatStart),
+        "the `::` seam's forward half is a leading RepeatStart on measure 1"
+    );
+    // No RepeatBoth is ever reconstructed.
+    assert!(
+        score.parts[0].voices[0]
+            .measures
+            .iter()
+            .all(|m| m.barlines.iter().all(|b| b.kind != BarlineKind::RepeatBoth)),
+        "the reader decomposes `::` rather than materialising RepeatBoth"
+    );
+}
+
+#[test]
+fn first_and_second_endings_reconstruct() {
+    use crate::model::{BarlineKind, RepeatEndingPartModel};
+    // |: ... |1 ... :|2 ... |] : the 1st ending opens on the left of one measure
+    // and the 2nd ending opens on the left of the next; the reader reconstructs a
+    // RepeatEndingModel { Single(1) } / { Single(2) } at each OPEN measure. The
+    // <ending type="stop"> closers are regenerated by the writer's schedule from
+    // the open positions + barline kinds, so they are not stored.
+    let abc = "X:1\nT:E\nM:4/4\nL:1/4\nK:C\n|: C D E F |1 G A B c :|2 c B A G |]\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<ending number=\"1\" type=\"start\"/>")
+            && x1.contains("<ending number=\"2\" type=\"start\"/>"),
+        "precondition: 1st/2nd endings emit numbered starts"
+    );
+    let score = assert_idempotent_s6a(abc);
+    let first = score.parts[0].voices[0]
+        .measures
+        .iter()
+        .find_map(|m| m.repeat_endings.first())
+        .expect("a 1st-ending RepeatEndingModel is reconstructed");
+    assert_eq!(first.endings, vec![RepeatEndingPartModel::Single(1)]);
+    let second_count: usize = score.parts[0].voices[0]
+        .measures
+        .iter()
+        .map(|m| m.repeat_endings.len())
+        .sum();
+    assert_eq!(second_count, 2, "exactly two ending brackets open");
+    // The 2nd ending's bracket closes on the |] (Final) of the last measure.
+    assert!(
+        score.parts[0].voices[0]
+            .measures
+            .iter()
+            .any(|m| m.barlines.iter().any(|b| b.kind == BarlineKind::Final)),
+        "the final |] is reconstructed (it closes the 2nd ending via the schedule)"
+    );
+}
+
+#[test]
+fn ending_range_reconstructs_parts() {
+    use crate::model::RepeatEndingPartModel;
+    // `|1,2` (or `[1,2`) is a single bracket covering passes 1 and 2 -> the writer
+    // emits <ending number="1,2" type="start">; the reader splits the comma list
+    // back into two Single parts.
+    let abc = "X:1\nT:Rng\nM:4/4\nL:1/4\nK:C\n|: C D E F |1,2 G A B c :|\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("type=\"start\""),
+        "precondition: the combined ending emits a start, got:\n{x1}"
+    );
+    let score = assert_idempotent_s6a(abc);
+    let ending = score.parts[0].voices[0]
+        .measures
+        .iter()
+        .find_map(|m| m.repeat_endings.first())
+        .expect("a combined-ending RepeatEndingModel is reconstructed");
+    assert_eq!(
+        ending.endings,
+        vec![
+            RepeatEndingPartModel::Single(1),
+            RepeatEndingPartModel::Single(2)
+        ],
+        "the `1,2` number list reconstructs two Single parts"
+    );
+}
+
+#[test]
+fn no_barline_directives_leave_measure_lists_empty() {
+    // A plain two-bar tune with only ordinary `|` measure boundaries emits NO
+    // <barline> blocks (Regular barlines are implicit). The reader must not
+    // fabricate any MeasureBarline or RepeatEndingModel.
+    let score = assert_idempotent_s6a("X:1\nT:Plain\nM:4/4\nL:1/4\nK:C\nC D E F | G A B c |\n");
+    assert!(
+        score.parts[0].voices[0]
+            .measures
+            .iter()
+            .all(|m| m.barlines.is_empty() && m.repeat_endings.is_empty()),
+        "plain `|` boundaries reconstruct no barline/ending model entries"
+    );
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.

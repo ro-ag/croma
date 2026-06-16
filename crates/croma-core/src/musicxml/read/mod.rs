@@ -64,12 +64,13 @@
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
-    AnnotationPlacementModel, DecorationAttachment, DecorationSourceKind, EventAttachments,
-    Fraction, KeyAccidentalModel, KeySignatureModel, LyricControl, Measure, MeasureId, MeterModel,
-    MidiInstrumentModel, NoteEvent, Part, PartId, Pitch, RestEvent, RestVisibility, Score,
-    ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment,
-    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
-    Voice, VoiceId, VoicePropertiesModel,
+    AnnotationPlacementModel, BarlineKind, DecorationAttachment, DecorationSourceKind,
+    EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LyricControl, Measure,
+    MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part, PartId, Pitch,
+    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score, ScoreMetadata,
+    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment, TextLine,
+    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
+    VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -721,6 +722,16 @@ impl Reader {
         // captured, later tempo directions are mid-tune `TempoChange` events.
         let mut header_tempo: Option<TempoModel> = None;
         let mut seen_note = false;
+        // S6a: the `<barline>` blocks reconstructed into the measure's
+        // `barlines`/`repeat_endings`. `next_right_span_start` gives every
+        // *trailing* (right) barline a distinct, non-zero `span.start` so the
+        // writer's `is_leading_barline` classifies it as a right barline (and so
+        // `unique_barlines` keeps document order via the span sort); a *leading*
+        // (left) barline keeps `span.start == 0` to match the measure's
+        // `READER_SPAN` source span. See [`Reader::read_barline`].
+        let mut barlines: Vec<MeasureBarline> = Vec::new();
+        let mut repeat_endings: Vec<RepeatEndingModel> = Vec::new();
+        let mut next_right_span_start: usize = 1;
 
         for child in element_children(measure_node) {
             match child.tag_name().name() {
@@ -822,8 +833,25 @@ impl Reader {
                         cursor = subtract_fraction(cursor, duration);
                     }
                 }
-                // <attributes> (divisions/key/time/clef/transpose), <barline>,
-                // <harmony>, <lyric> etc. are read in later stages.
+                "barline" => {
+                    self.read_barline(
+                        child,
+                        &mut barlines,
+                        &mut repeat_endings,
+                        &mut next_right_span_start,
+                    );
+                    // S6a×S5a: a leading barline (e.g. an opening `|:`) precedes
+                    // the measure's content. The writer emits a true HEADER tempo
+                    // (`write_initial_directions`) BEFORE any left barline, so a
+                    // tempo direction seen *after* a barline cannot be the header
+                    // tempo — it is a body-position `Q:`/`[Q:..]` TempoChange at the
+                    // measure start. Mark content as started so the header-tempo
+                    // capture below does not wrongly promote it. (Idempotence-only:
+                    // a tempo with no preceding barline is unaffected.)
+                    seen_note = true;
+                }
+                // <attributes> (divisions/key/time/clef/transpose), <harmony>,
+                // <lyric> etc. are read in later stages.
                 _ => {}
             }
         }
@@ -869,11 +897,172 @@ impl Reader {
                 multiple_rest: None,
                 pickup: false,
                 complete: true,
-                barlines: Vec::new(),
-                repeat_endings: Vec::new(),
+                barlines,
+                repeat_endings,
                 overlays: Vec::new(),
             },
         }
+    }
+
+    /// S6a: invert one `<barline>` block — the inverse of
+    /// [`MusicXmlWriter::write_barline`] / [`MusicXmlWriter::write_ending_barline`]
+    /// and the left/right placement in [`MusicXmlWriter::write_part`].
+    ///
+    /// A `<barline>` carries up to three things the writer emits, in order:
+    /// `<bar-style>`, `<ending>`(s), `<repeat>`. The reader reconstructs:
+    ///
+    /// - the **bar-style + repeat** into a [`MeasureBarline`] whose `kind` is the
+    ///   exact inverse of the writer's forward map *disambiguated by `location` and
+    ///   the `<repeat>` direction* (see [`barline_kind_from`]). The combined
+    ///   `RepeatBoth` is **decomposed**: a `light-heavy` + `repeat="backward"`
+    ///   right barline is read as a plain [`BarlineKind::RepeatEnd`] and the
+    ///   matching `heavy-light` + `repeat="forward"` left barline of the next
+    ///   measure as a leading [`BarlineKind::RepeatStart`]. The writer re-emits a
+    ///   `RepeatEnd`-then-`RepeatStart` pair byte-identically to a `RepeatBoth`
+    ///   (verified: `::` and `:|` `|:` produce the same XML), so the reader never
+    ///   needs to materialise `RepeatBoth` and avoids the trailing/deferred-repeat
+    ///   ambiguity entirely.
+    /// - an `<ending type="start">` into a [`RepeatEndingModel`] on this measure.
+    ///   The `<ending type="stop">` / `"discontinue">` closers are **not** stored:
+    ///   the writer regenerates them from the open-bracket positions plus barline
+    ///   kinds (`ending_stop_schedule`), both of which the reader reconstructs from
+    ///   the same XML, so re-emission reproduces the identical stop placement.
+    ///
+    /// **Span discipline (placement, idempotence-invisible).** The writer chooses a
+    /// barline's side via `is_leading_barline` = `measure.source_span.start ==
+    /// barline.span.start`. The measure's reconstructed `source_span` is
+    /// [`READER_SPAN`] (`start == 0`), so a `location="left"` barline is given
+    /// `span.start == 0` (leading → emitted left) and each `location="right"`
+    /// barline a distinct non-zero `span.start` (trailing → emitted right, in
+    /// document order via the writer's span sort). The writer never emits spans, so
+    /// these synthetic spans are invisible to the idempotence gate; they exist only
+    /// to drive the left/right placement the gate then verifies.
+    fn read_barline(
+        &mut self,
+        barline: Node<'_, '_>,
+        barlines: &mut Vec<MeasureBarline>,
+        repeat_endings: &mut Vec<RepeatEndingModel>,
+        next_right_span_start: &mut usize,
+    ) {
+        let is_left = barline.attribute("location") == Some("left");
+        let bar_style = child_text(barline, "bar-style");
+        let repeat_direction = child_element(barline, "repeat")
+            .and_then(|repeat| repeat.attribute("direction"))
+            .map(str::to_owned);
+
+        // An `<ending type="start">` opens a volta bracket on this measure. The
+        // stop/discontinue closers are schedule-regenerated, so only starts are
+        // reconstructed.
+        for ending in children_named(barline, "ending") {
+            if ending.attribute("type") == Some("start")
+                && let Some(model) = self.read_ending(ending)
+            {
+                repeat_endings.push(model);
+            }
+        }
+
+        // The bar-style + repeat together name the `MeasureBarline` kind. A
+        // barline with neither (an ending-only `<barline>`) contributes no
+        // `MeasureBarline` — the ending alone was reconstructed above.
+        if bar_style.is_none() && repeat_direction.is_none() {
+            return;
+        }
+        let Some(kind) = barline_kind_from(bar_style, repeat_direction.as_deref(), is_left) else {
+            self.warn(
+                "musicxml.read.unsupported_barline",
+                format!(
+                    "<barline location={:?}> bar-style {:?} / repeat {:?} has no BarlineKind inverse; ignored",
+                    barline.attribute("location").unwrap_or(""),
+                    bar_style.unwrap_or(""),
+                    repeat_direction.as_deref().unwrap_or(""),
+                ),
+            );
+            return;
+        };
+
+        // Leading (left) barlines keep span.start == 0 to match the measure's
+        // READER_SPAN; trailing (right) barlines get a distinct non-zero start so
+        // `is_leading_barline` is false and the writer's span sort preserves order.
+        let span = if is_left {
+            READER_SPAN
+        } else {
+            let start = *next_right_span_start;
+            *next_right_span_start = next_right_span_start.saturating_add(1);
+            Span { start, end: start }
+        };
+        barlines.push(MeasureBarline { kind, span });
+    }
+
+    /// S6a: invert one `<ending type="start" number="...">` into a
+    /// [`RepeatEndingModel`]. Inverse of the writer's `ending_display` +
+    /// `unique_endings`:
+    ///
+    /// - a text-bearing `<ending>` (the writer emits the source label as element
+    ///   text, with `number="33"`) → a single [`RepeatEndingPartModel::Text`]; the
+    ///   `number` is regenerated from the `Text` variant on re-write, so it is not
+    ///   read.
+    /// - otherwise the `number` attribute is a comma-separated pass list: each
+    ///   `"s-e"` token → [`RepeatEndingPartModel::Range`], each plain `"n"` token →
+    ///   [`RepeatEndingPartModel::Single`]. An unparsable list warns and yields
+    ///   `None` (no bracket is fabricated).
+    fn read_ending(&mut self, ending: Node<'_, '_>) -> Option<RepeatEndingModel> {
+        // A non-empty text body is a `["label"` ending; the label is the source.
+        if let Some(text) = node_text(ending) {
+            return Some(RepeatEndingModel {
+                span: READER_SPAN,
+                endings: vec![RepeatEndingPartModel::Text(text.to_owned())],
+            });
+        }
+
+        let number = match ending.attribute("number") {
+            Some(number) => number.trim(),
+            None => {
+                self.warn(
+                    "musicxml.read.ending_without_number",
+                    "<ending type=\"start\"> has no number and no text; not reconstructed",
+                );
+                return None;
+            }
+        };
+        let mut parts = Vec::new();
+        for token in number.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if let Some((start, end)) = token.split_once('-') {
+                match (start.trim().parse::<u32>(), end.trim().parse::<u32>()) {
+                    (Ok(start), Ok(end)) => {
+                        parts.push(RepeatEndingPartModel::Range { start, end });
+                    }
+                    _ => {
+                        self.warn(
+                            "musicxml.read.invalid_ending_range",
+                            format!("<ending number> range `{token}` is not `start-end`; skipped"),
+                        );
+                    }
+                }
+            } else {
+                match token.parse::<u32>() {
+                    Ok(value) => parts.push(RepeatEndingPartModel::Single(value)),
+                    Err(_) => self.warn(
+                        "musicxml.read.invalid_ending_number",
+                        format!("<ending number> token `{token}` is not a u32; skipped"),
+                    ),
+                }
+            }
+        }
+        if parts.is_empty() {
+            self.warn(
+                "musicxml.read.empty_ending_number",
+                format!("<ending number=\"{number}\"> yielded no pass numbers; not reconstructed"),
+            );
+            return None;
+        }
+        Some(RepeatEndingModel {
+            span: READER_SPAN,
+            endings: parts,
+        })
     }
 
     /// Read one `<note>` into the data a [`TimedEvent`] needs. Returns `None`
@@ -1885,6 +2074,48 @@ fn accidental_from_alter(alter: i8) -> Option<Accidental> {
         2 => Some(Accidental::DoubleSharp),
         _ => None,
     }
+}
+
+/// S6a: the inverse of [`MusicXmlWriter::write_barline`]'s `bar-style` map,
+/// disambiguated by `location` and the `<repeat>` direction. The forward map is
+/// many-to-one on `bar-style` alone (`heavy-light` ← both `Initial` and
+/// `RepeatStart`; `light-heavy` ← `Final`, `RepeatEnd`, and `RepeatBoth`), so the
+/// inverse must consult the repeat element and the side:
+///
+/// | location | bar-style     | repeat   | → kind         |
+/// |----------|---------------|----------|----------------|
+/// | left     | heavy-light   | forward  | `RepeatStart`  |
+/// | right    | heavy-light   | (none)   | `Initial`      |
+/// | right    | light-heavy   | backward | `RepeatEnd`    |
+/// | right    | light-heavy   | (none)   | `Final`        |
+/// | right    | light-light   | —        | `Double`       |
+/// | right    | dotted        | —        | `Dotted`       |
+/// | right    | none          | —        | `Invisible`    |
+///
+/// `RepeatBoth` is intentionally never produced: it is decomposed into a
+/// `RepeatEnd` (the `light-heavy` + backward right barline) plus a `RepeatStart`
+/// (the next measure's leading `heavy-light` + forward left barline), which the
+/// writer re-emits byte-identically. A combination the writer never emits (e.g. a
+/// `light-light` with a repeat, or a `forward` repeat on the right) yields `None`
+/// so the caller can warn rather than invent a kind.
+fn barline_kind_from(
+    bar_style: Option<&str>,
+    repeat_direction: Option<&str>,
+    is_left: bool,
+) -> Option<BarlineKind> {
+    Some(match (bar_style, repeat_direction, is_left) {
+        // Forward repeat: a leading `|:` (always a left barline in the writer).
+        (Some("heavy-light"), Some("forward"), true) => BarlineKind::RepeatStart,
+        // Backward repeat: a `:|` close (right). RepeatBoth is decomposed to this.
+        (Some("light-heavy"), Some("backward"), _) => BarlineKind::RepeatEnd,
+        // Plain bar-styles with no repeat (all right barlines).
+        (Some("light-light"), None, _) => BarlineKind::Double,
+        (Some("light-heavy"), None, _) => BarlineKind::Final,
+        (Some("heavy-light"), None, _) => BarlineKind::Initial,
+        (Some("dotted"), None, _) => BarlineKind::Dotted,
+        (Some("none"), None, _) => BarlineKind::Invisible,
+        _ => return None,
+    })
 }
 
 /// Inverse of the writer's `clef_model`: build a canonical ABC clef text from the
