@@ -2413,6 +2413,74 @@ fn mid_measure_meter_change_before_body_tempo_round_trips() {
     );
 }
 
+#[test]
+fn annotation_then_inline_change_in_noteless_measure_round_trips() {
+    // S6e ordering edge (the documented 22-file residual). A standalone chord
+    // symbol/annotation immediately followed by an inline key change in a measure
+    // with NO following note: `"Trio"[K:F]` alone in its bar, the next note past a
+    // `|:` in the following bar. The writer emits the `<direction>` (the buffered
+    // attachment) BEFORE the change's `<attributes>` — its Spacer's source predates
+    // the change's, so the stable (onset, source.start) sort orders it first. With
+    // no following note to host the annotation, the reader builds a trailing Spacer;
+    // it must insert that Spacer BEFORE the same-onset KeyChange so the re-emission
+    // keeps `<direction>` ahead of `<attributes>`.
+    let abc = "X:1\nT:Trio test\nM:4/4\nL:1/8\nK:C\nA2 B2 c2 d2 |\"Trio\"[K:F]|: A2 B2 c2 d2 |\n";
+    let x1 = export(abc);
+    // Precondition: the writer emits the direction before the key-change attributes
+    // inside the note-less measure.
+    let dir_pos = x1.find("<words>Trio</words>").expect("the Trio direction");
+    let key_pos = x1
+        .find("<fifths>-1</fifths>")
+        .expect("the inline key change");
+    assert!(
+        dir_pos < key_pos,
+        "precondition: writer emits the <direction> before the key-change <attributes>"
+    );
+    // The fix: full-byte idempotence (the order is preserved on re-write).
+    let score = assert_idempotent_s6b(abc);
+    assert_eq!(key_changes(&score).len(), 1, "one KeyChange event");
+    // The note-less measure has both a KeyChange and a Spacer at onset 0, and the
+    // Spacer (carrying the Trio chord symbol) precedes the KeyChange in the event
+    // stream so the stable sort emits them in writer order.
+    let measure2: Vec<_> = score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter(|event| event.measure.index == 1)
+        .collect();
+    let spacer_idx = measure2
+        .iter()
+        .position(|event| matches!(event.kind, TimedEventKind::Spacer));
+    let key_idx = measure2
+        .iter()
+        .position(|event| matches!(event.kind, TimedEventKind::KeyChange(_)));
+    assert!(
+        matches!((spacer_idx, key_idx), (Some(s), Some(k)) if s < k),
+        "the trailing Spacer must precede the same-onset KeyChange (got spacer={spacer_idx:?}, key={key_idx:?})"
+    );
+}
+
+#[test]
+fn trailing_decoration_after_notes_still_appends_after_them() {
+    // Guard the OTHER branch of the S6e Spacer insertion: a trailing decoration
+    // with notes BEFORE it and NO mid-tune change at its onset must still append
+    // after the notes (the pre-existing pre-barline `!segno!` case), not jump
+    // ahead of anything. `A2 B2 c2 d2 !segno!|` puts the segno after the 4 notes.
+    let abc = "X:1\nT:Seg\nM:4/4\nL:1/8\nK:C\nA2 B2 c2 d2 !segno!|\n";
+    let score = assert_idempotent_s6b(abc);
+    // The last event is the Spacer carrying the segno decoration, after the notes.
+    let events = &score.parts[0].voices[0].events;
+    let last = events.last().expect("at least one event");
+    assert!(
+        matches!(last.kind, TimedEventKind::Spacer),
+        "the trailing decoration lands on a Spacer appended after the notes"
+    );
+    assert_eq!(
+        last.attachments.decorations.len(),
+        1,
+        "the Spacer carries the segno decoration"
+    );
+}
+
 // --- Stage S6c: grace notes (<grace>) + chords (<chord/>) --------------------
 
 /// Assert FULL-byte idempotence on an S6c single-voice fixture. By S6c the writer
@@ -2665,6 +2733,110 @@ fn after_grace_at_measure_end_binds_to_preceding_note() {
             .grace_groups
             .is_empty(),
         "the trailing grace is an after-grace, not a before-grace"
+    );
+}
+
+/// Hand-crafted MusicXML the writer never emits: a `<grace>` note immediately
+/// followed by a `<chord/>` member note (no plain main note between to drain the
+/// open grace run). The chord member folds into the previous event and `continue`s
+/// before the buffered before-grace groups flush, so `pending_graces` reaches the
+/// measure-end finalisation non-empty. This is the path the removed `debug_assert!`
+/// guarded; totality (design §2.2/§6) requires a graceful degrade, not a panic.
+/// Here a preceding `G` note hosts the orphaned group as a before-grace group.
+#[test]
+fn grace_before_chord_member_degrades_without_panic() {
+    use crate::model::TimedEventKind;
+    // G (main) ; {a} (grace, opens the run) ; [chord member c] carrying <chord/>
+    // with no plain note between. roxmltree DOM is fed directly — there is no ABC
+    // that lowers to this shape, so it must be authored by hand.
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <pitch><step>G</step><octave>4</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+      <note>
+        <grace/>
+        <pitch><step>A</step><octave>5</octave></pitch>
+        <voice>1</voice>
+        <type>eighth</type>
+      </note>
+      <note>
+        <chord/>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    // Totality: must return, never panic.
+    let report = read_musicxml(xml);
+    let score = report.value;
+    // The G note was promoted to a chord (the <chord/> member folded into it),
+    // and the orphaned before-grace group was re-bound to that event rather than
+    // dropped or panicking on.
+    let event = &score.parts[0].voices[0].events[0];
+    assert!(
+        matches!(event.kind, TimedEventKind::Chord(_)),
+        "the <chord/> member folds the leading G note into a chord"
+    );
+    assert_eq!(
+        event.attachments.grace_groups.len(),
+        1,
+        "the orphaned before-grace group is re-bound to the hosting event, not lost"
+    );
+    // No panic occurred (we reached here); the degrade need not emit a diagnostic
+    // on this arm because the group was preserved, not dropped.
+}
+
+/// The other fallback arm: a `<grace>` run followed by a `<chord/>` member note
+/// with NO preceding main event at all. The grace run drains to `pending_graces`,
+/// the chord member finds no head to fold onto (warned), and the orphaned before-
+/// grace groups reach finalisation with `last_main_event == None`. The reader must
+/// drop them with a diagnostic — and, crucially, not panic.
+#[test]
+fn orphan_before_grace_with_no_host_is_dropped_with_diagnostic() {
+    // {a} (grace) then [chord member c] as the very first elements of the measure.
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <grace/>
+        <pitch><step>A</step><octave>5</octave></pitch>
+        <voice>1</voice>
+        <type>eighth</type>
+      </note>
+      <note>
+        <chord/>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    // Totality: must return, never panic.
+    let report = read_musicxml(xml);
+    // The orphaned before-grace run was dropped with the documented diagnostic
+    // (no host note existed); the chord member without a head also warns.
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "musicxml.read.orphan_before_grace"),
+        "the host-less before-grace run must be dropped with a diagnostic, not panic"
     );
 }
 
@@ -3069,6 +3241,11 @@ fn corpus_idempotence_measurement() {
     let mut idempotent = 0usize;
     let mut idempotent_supported = 0usize;
     let mut divergences: BTreeMap<String, usize> = BTreeMap::new();
+    // When `READER_IDEMPOTENT_LIST` names a path, the sorted list of strictly
+    // idempotent files is written there. Two runs (baseline vs a change) can then
+    // be set-diffed to prove "0 regressions" for a fix — exactly the gate the S6e
+    // ordering edge required.
+    let mut idempotent_names: Vec<String> = Vec::new();
 
     for path in &files {
         let Ok(bytes) = fs::read(path) else { continue };
@@ -3087,6 +3264,9 @@ fn corpus_idempotence_measurement() {
 
         if x1 == x2 {
             idempotent += 1;
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                idempotent_names.push(name.to_owned());
+            }
         } else if let Some(tag) = first_diverging_tag(&x1, &x2) {
             *divergences.entry(tag).or_default() += 1;
         } else {
@@ -3100,6 +3280,15 @@ fn corpus_idempotence_measurement() {
         if strip_deferred_blocks(&x1) == strip_deferred_blocks(&x2) {
             idempotent_supported += 1;
         }
+    }
+
+    if let Ok(list_path) = std::env::var("READER_IDEMPOTENT_LIST") {
+        idempotent_names.sort();
+        let _ = fs::write(&list_path, idempotent_names.join("\n"));
+        eprintln!(
+            "wrote {} idempotent file names to {list_path}",
+            idempotent_names.len()
+        );
     }
 
     let mut top: Vec<(String, usize)> = divergences.into_iter().collect();
@@ -3119,4 +3308,220 @@ fn corpus_idempotence_measurement() {
     // No hard count for S1 — most files use later-stage elements. We only
     // require the loop to be total (no panic) over the whole corpus.
     assert!(exported > 0, "expected at least one corpus file to export");
+}
+
+// --- Totality fuzz (design §6: read_musicxml must not panic on any file) -----
+
+/// Collect every file with one of `exts` directly under `dir`, sorted. Used to
+/// gather the abc2xml reference `.musicxml`/`.xml` set for the fuzz arm.
+fn files_with_ext(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| exts.contains(&ext))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    files.sort();
+    files
+}
+
+/// Run `read_musicxml(input)` under `catch_unwind` and return `true` when it
+/// completed without panicking. Totality (design §2.2/§6) requires this to be
+/// `true` for every input — well-formed croma output, the abc2xml dialect, and
+/// hand-crafted garbage alike.
+fn reads_without_panic(input: &str) -> bool {
+    // `&str` is unwind-safe; `AssertUnwindSafe` wraps the closure capturing it so
+    // a panic anywhere in the reader becomes a caught error rather than aborting
+    // the test binary. The reader holds no `&mut` across the boundary.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = read_musicxml(input);
+    }))
+    .is_ok()
+}
+
+/// Design §6 (REQUIRED): `read_musicxml` must not panic on any file in croma's
+/// own 10k exports OR the abc2xml reference set, plus a handful of hand-crafted
+/// malformed inputs. Each arm reports how many files it actually exercised; the
+/// reference arm SAYS SO when `REF_ROOT`/the reference dir is absent. A panic in
+/// any arm is collected (naming the file) and fails the test rather than aborting.
+#[test]
+fn totality_fuzz_read_musicxml_never_panics() {
+    // Quiet the default panic hook so a *caught* panic does not spew a backtrace
+    // for every offending file; we report offenders ourselves. Restored at the end.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    // --- Arm 1: croma's own exports (always available via ABC_ROOT). ----------
+    let mut own_exercised = 0usize;
+    let mut own_panics: Vec<String> = Vec::new();
+    match std::env::var("ABC_ROOT") {
+        Ok(root) => {
+            for path in abc_files(&PathBuf::from(&root)) {
+                let Ok(bytes) = fs::read(&path) else { continue };
+                let source = String::from_utf8_lossy(&bytes);
+                // Only files that export cleanly produce XML to feed back.
+                let Ok(export) = export_musicxml(&source) else {
+                    continue;
+                };
+                own_exercised += 1;
+                if !reads_without_panic(&export.musicxml) {
+                    own_panics.push(path.display().to_string());
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("totality fuzz: ABC_ROOT unset — own-exports arm skipped");
+        }
+    }
+
+    // --- Arm 2: the abc2xml reference set (raw bytes; via REF_ROOT). ----------
+    // These are the abc2xml/music21 dialect — elements croma's writer never
+    // emits — so this arm exercises totality on foreign input, not idempotence.
+    let mut ref_exercised = 0usize;
+    let mut ref_panics: Vec<String> = Vec::new();
+    let mut ref_available = false;
+    if let Ok(ref_root) = std::env::var("REF_ROOT") {
+        let dir = PathBuf::from(&ref_root);
+        let files = files_with_ext(&dir, &["musicxml", "xml"]);
+        if files.is_empty() {
+            eprintln!(
+                "totality fuzz: REF_ROOT={ref_root} has no .musicxml/.xml files — reference arm skipped"
+            );
+        } else {
+            ref_available = true;
+            for path in files {
+                let Ok(bytes) = fs::read(&path) else { continue };
+                let source = String::from_utf8_lossy(&bytes);
+                ref_exercised += 1;
+                if !reads_without_panic(&source) {
+                    ref_panics.push(path.display().to_string());
+                }
+            }
+        }
+    } else {
+        eprintln!("totality fuzz: REF_ROOT unset — abc2xml reference arm UNAVAILABLE (skipped)");
+    }
+
+    // --- Arm 3: hand-crafted malformed inputs (always run). -------------------
+    // Two classes, both of which must NEVER panic:
+    //
+    // `must_diagnose` — genuinely malformed / unsupported documents (un-parseable
+    //   XML, a non-MusicXML or timewise root, out-of-spec numbers). These degrade
+    //   to a minimal Score PLUS at least one reader diagnostic.
+    //
+    // `no_panic_only` — well-formed-but-degenerate documents the reader is
+    //   designed to accept silently: an empty-but-valid `<score-partwise>` and a
+    //   tree sprinkled with unknown elements. Per design §2.2 unknown elements are
+    //   "ignored (+ OPTIONAL diagnostic)", so these are asserted not to panic but
+    //   are NOT required to warn.
+    let must_diagnose: &[&str] = &[
+        // Truncated / not well-formed XML (roxmltree parse error).
+        "<score-partwise><part></broken>",
+        "not xml at all <<< >>>",
+        "<?xml version=\"1.0\"?>",
+        // Well-formed XML whose root is not a partwise score.
+        "<?xml version=\"1.0\"?><html><body>nope</body></html>",
+        "<?xml version=\"1.0\"?><score-timewise></score-timewise>",
+        // Bad numbers everywhere the reader parses an integer/float.
+        "<score-partwise><part-list><score-part id=\"P1\"><midi-instrument id=\"x\">\
+         <midi-channel>NaN</midi-channel><midi-program>-7</midi-program>\
+         <volume>lots</volume><pan>left</pan></midi-instrument></score-part></part-list>\
+         <part id=\"P1\"><measure number=\"one\">\
+         <attributes><divisions>zero</divisions><key><fifths>sharp</fifths></key>\
+         <time><beats>x</beats><beat-type>y</beat-type></time>\
+         <transpose><chromatic>lots</chromatic></transpose></attributes>\
+         <note><pitch><step>H</step><octave>nine</octave><alter>up</alter></pitch>\
+         <duration>long</duration><voice>v</voice></note>\
+         <forward><duration>bad</duration></forward>\
+         <backup><duration>bad</duration></backup>\
+         </measure></part></score-partwise>",
+        // A grace run with no following note and no host (the S6e fallback arm).
+        "<score-partwise><part id=\"P1\"><measure number=\"1\">\
+         <note><grace/><pitch><step>A</step><octave>5</octave></pitch><voice>1</voice>\
+         <notations><tuplet type=\"stop\" number=\"9\"/></notations></note>\
+         <note><chord/><pitch><step>C</step><octave>5</octave></pitch>\
+         <duration>8</duration><voice>1</voice></note>\
+         </measure></part></score-partwise>",
+    ];
+    // Inputs that must merely NOT panic (silent acceptance is in spec).
+    let no_panic_only: &[&str] = &[
+        "",
+        "   \n\t  ",
+        // Empty but well-formed partwise score (no parts) — legitimately empty.
+        "<score-partwise></score-partwise>",
+        // Unknown elements scattered through an otherwise-valid tree.
+        "<score-partwise><part id=\"P1\"><measure number=\"1\">\
+         <quux><frob/></quux><note><blarg/><pitch><step>C</step><octave>4</octave></pitch>\
+         <duration>8</duration><voice>1</voice><notations><wibble/></notations></note>\
+         </measure></part></score-partwise>",
+    ];
+    let mut malformed_panics: Vec<String> = Vec::new();
+    let mut malformed_without_diagnostic: Vec<String> = Vec::new();
+    for (i, input) in must_diagnose.iter().enumerate() {
+        let caught =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_musicxml(input)));
+        match caught {
+            Ok(report) => {
+                if report.diagnostics.is_empty() {
+                    malformed_without_diagnostic.push(format!("must_diagnose #{i}: {input:.60?}"));
+                }
+            }
+            Err(_) => malformed_panics.push(format!("must_diagnose #{i}: {input:.60?}")),
+        }
+    }
+    for (i, input) in no_panic_only.iter().enumerate() {
+        if !reads_without_panic(input) {
+            malformed_panics.push(format!("no_panic_only #{i}: {input:.60?}"));
+        }
+    }
+    let malformed_total = must_diagnose.len() + no_panic_only.len();
+
+    // Restore the panic hook before asserting (so a genuine test-framework panic
+    // still prints normally).
+    std::panic::set_hook(previous_hook);
+
+    eprintln!(
+        "totality fuzz: own-exports exercised {own_exercised} files ({} panicked); \
+         abc2xml-reference {} ({ref_exercised} files, {} panicked); \
+         malformed cases {} ({} panicked, {} missing diagnostic)",
+        own_panics.len(),
+        if ref_available {
+            "available"
+        } else {
+            "UNAVAILABLE"
+        },
+        ref_panics.len(),
+        malformed_total,
+        malformed_panics.len(),
+        malformed_without_diagnostic.len(),
+    );
+
+    // Totality assertions: ZERO panics anywhere, and every malformed input
+    // produced a diagnostic.
+    assert!(
+        own_panics.is_empty(),
+        "read_musicxml panicked on {} own-export file(s); first few: {:?}",
+        own_panics.len(),
+        own_panics.iter().take(5).collect::<Vec<_>>()
+    );
+    assert!(
+        ref_panics.is_empty(),
+        "read_musicxml panicked on {} abc2xml-reference file(s); first few: {:?}",
+        ref_panics.len(),
+        ref_panics.iter().take(5).collect::<Vec<_>>()
+    );
+    assert!(
+        malformed_panics.is_empty(),
+        "read_musicxml panicked on malformed input(s): {malformed_panics:?}"
+    );
+    assert!(
+        malformed_without_diagnostic.is_empty(),
+        "malformed input(s) produced NO diagnostic (must degrade with a warning): {malformed_without_diagnostic:?}"
+    );
 }

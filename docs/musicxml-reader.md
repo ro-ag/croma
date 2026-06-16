@@ -33,13 +33,45 @@ the next stage's work list.
 
 ## Totality
 
-`read_musicxml` is **total and non-panicking**. A malformed document yields a
-minimal `Score` plus an error diagnostic; unknown elements are ignored (with an
-optional warning). There is no `unwrap`/`expect`/`panic`/`todo` and no index that
-can panic in the reader module tree. Unreconstructable `Span`s use the documented
-sentinel `READER_SPAN` (= `Span::new(0, 0)`); ABC-only model state not present in
-the XML (`preserved_directives`, voice clef/transpose text, `reference`) is left
-at documented defaults and is invisible to the gate.
+`read_musicxml` is **total and non-panicking** (design §2.2 / §6). A malformed
+document yields a minimal `Score` plus an error diagnostic; unknown elements are
+ignored (with an optional warning). There is no
+`unwrap`/`expect`/`panic`/`todo`/`unreachable`/`debug_assert` and no index that
+can panic anywhere in the reader module tree — **not even in debug/test builds**
+(S6e removed the last `debug_assert!`, the grace-drain invariant guard, in favour
+of a graceful degrade: an orphaned before-grace run is re-bound to the most recent
+main event, or dropped with a diagnostic when there is no host — never a panic).
+Unreconstructable `Span`s use the documented sentinel `READER_SPAN`
+(= `Span::new(0, 0)`); ABC-only model state not present in the XML
+(`preserved_directives`, voice clef/transpose text, `reference`) is left at
+documented defaults and is invisible to the gate.
+
+### Totality fuzz evidence (S6e)
+
+A feature-gated fuzz test (`totality_fuzz_read_musicxml_never_panics`) asserts the
+reader **never panics** across three arms, each `read_musicxml` call wrapped in
+`std::panic::catch_unwind` so a panic becomes a named test failure, not an abort:
+
+- **croma's own 10k exports** (via `ABC_ROOT`): every corpus ABC that exports
+  cleanly is fed back through the reader. **9,935 files exercised, 0 panics.**
+- **abc2xml reference set** (via `REF_ROOT`): the raw bytes of every reference
+  `.musicxml`/`.xml` — the abc2xml/music21 dialect, full of elements croma's
+  writer never emits — are read directly. **10,000 files exercised, 0 panics.**
+  (The arm reports "UNAVAILABLE" and is skipped if `REF_ROOT`/the directory is
+  absent.)
+- **hand-crafted malformed inputs** (always run): truncated/ill-formed XML, a
+  non-MusicXML or timewise root, out-of-range numbers everywhere the reader parses
+  one, an empty-but-valid score, unknown elements, and the S6e grace fallback.
+  **11 cases, 0 panics**; the genuinely-malformed subset also each surfaces a
+  diagnostic.
+
+Run it with both corpora:
+
+```sh
+ABC_ROOT=/abs/path/to/abc REF_ROOT=/abs/path/to/musicxml \
+  cargo test -p croma-core --release --features musicxml-reader \
+  totality_fuzz_read_musicxml_never_panics -- --nocapture
+```
 
 ## Staging
 
@@ -55,6 +87,7 @@ at documented defaults and is invisible to the gate.
 | **S6b (mid-measure attrs)** | mid-measure `<attributes>` changes: a NON-leading `<attributes>` block → zero-duration `KeyChange`/`MeterChange`/`ClefChange` events at the current onset (`<key>`→`KeyChange`, `<time>`→`MeterChange`, `<clef>`→`ClefChange`), reusing the S2 sub-element parsers. | **done** |
 | **S6c (grace + chords)** | `<grace>` notes → `GraceGroupAttachment` on the following note (before-grace) or the preceding note (after-grace at measure end): slash (`slash="yes"`), grace rests, grace chords (`<chord/>`-joined grace notes), grace slurs, and per-note `length_multiplier` recovered from `<type>`/`<dots>` ÷ count-based base unit. `<chord/>` members → one `TimedEventKind::Chord` per onset, with per-member pitch/duration/written-accidental/attachments. | **done** |
 | **S6d (multi-voice + multiple-rest)** | multi-voice: a measure's `<note>`s (and the directions/harmony/notations emitted just before them) are partitioned by `<voice>` and each reconstructed as a separate `Part.voices` entry (a `TimedEvent` voice reusing the full S1–S6c machinery), so the writer's `measure_sequences` re-emits the identical `<voice>1` .. `<backup>` .. `<voice>2`. `<measure-style><multiple-rest>N` → `Measure.multiple_rest`. | **done** |
+| **S6e (hardening + totality)** | closeout: removed the last `debug_assert!` (grace-drain) in favour of a non-panicking graceful degrade; added the totality fuzz over own-exports + abc2xml-reference + malformed inputs (above); closed the clean subset of the annotation-before-inline-change ordering edge (trailing `Spacer` placed at its document-order position vs same-onset mid-tune changes via `pending_insert_index`). Additive only — no forward behaviour change. | **done** |
 
 ### S1 reconstruction notes
 
@@ -492,27 +525,36 @@ divergences are unrelated single-voice issues — see the metric below).
 
 #### Unsupported residual (documented per design "stop where coverage flattens")
 
-After S6d the corpus idempotent count is **9,912 / 9,935**; the **23 remaining
-non-idempotent files are all single-voice** (`<backup>`-free) and are
-**pre-existing issues unrelated to multi-voice / multiple-rest** — verified by a
-set-diff against the pre-S6d HEAD (0 regressions, 43 new wins). They are:
+**Final state (after S6e): the corpus idempotent count is `9,915 / 9,935`** — the
+20 remaining non-idempotent files are all single-voice (`<backup>`-free) and are
+documented as the reader's residual. (S6d reached `9,912 / 9,935`; S6e's clean
+ordering fix added **+3 with 0 regressions** — verified by a corpus set-diff of the
+strictly-idempotent file set, HEAD vs the fix: 0 previously-passing files break, 3
+new wins. See the corpus metric below.) The residual:
 
-- **22 files, first-diverging tag `direction`:** a standalone annotation
-  immediately followed by an inline mid-tune change in a **note-less** measure
-  (e.g. `"Trio"[K:F]` with the next note past a `|:` in the following bar). The
-  writer emits the annotation's `<direction>` **before** the change's
-  `<attributes>`; the reader buffers the direction and reconstructs it on a
-  trailing `Spacer` that sorts **after** the zero-duration change event at the
-  same onset, reversing the two. This is an S5a/S6b ordering interaction in
-  single-voice input, **out of S6d scope**.
+- **19 files, first-diverging tag `direction`:** a **note-less** measure carrying
+  *both* a standalone annotation (`<direction><words>`) **and** a chord symbol
+  (`<harmony>`) with no note to host them. The writer emits them in their original
+  ABC document order, but the reader buffers both onto one trailing `Spacer` whose
+  attachment channels re-emit in a fixed order (chord symbols before annotations),
+  reversing the pair. Recovering the cross-channel document order within a single
+  Spacer would need per-attachment source tracking through the `pending` buffer —
+  a deeper change with its own regression surface — so it is **left documented**,
+  not forced. (S6e's `pending_insert_index` fix addresses the *adjacent* sub-case,
+  annotation-or-harmony **before an inline key/meter/clef change** in a note-less
+  measure — e.g. `"Trio"[K:F]` — by placing the trailing Spacer at its
+  document-order position relative to the same-onset change event; that subset, 3
+  files, now round-trips.)
 - **1 file, first-diverging tag `type`:** a deeply nested tuplet (a 21:16
   composite from two stacked `<tuplet type="start">`) whose first note's `<type>`
-  spelling the reader does not reproduce. An S4 tuplet/note-spelling edge case,
-  single-voice, **out of S6d scope**.
+  spelling the reader does not reproduce (the reader recovers the composite
+  `21/16` ratio as the writer's reduced `441/256`, an S4 tuplet/note-spelling edge
+  case). Single-voice, **left documented**.
 
 Every multi-voice (`<backup>`/`<voice>`) and every `<multiple-rest>` file in the
-corpus now round-trips byte-for-byte; **zero** files first-diverge on `note`,
-`backup`, `voice`, `multiple-rest`, `score-instrument`, `pitch`, or `step`.
+corpus round-trips byte-for-byte; **zero** files first-diverge on `note`,
+`backup`, `voice`, `multiple-rest`, `score-instrument`, `pitch`, `step`, or (after
+S6e) on `attributes` (no mid-tune key/meter/clef change ordering remains).
 
 ### S1/S2/S3/S4/S5a/S5b/S6a/S6b/S6c/S6d corpus metric (10k zenodo set)
 
@@ -631,11 +673,33 @@ corpus now round-trips byte-for-byte; **zero** files first-diverge on `note`,
   reader's residual under "Unsupported residual" above; they are out of S6d's
   multi-voice / multiple-rest scope and left for a future single-voice pass.
   **Coverage has flattened — this closes the structural staging (S1–S6d).**
+- **S6e (hardening + totality)** strict full-byte idempotence: **9,915 / 9,935**
+  (**+3** vs S6d's 9,912). S6e is a closeout, not a structural stage: its corpus
+  delta is the small, clean ordering subset only. The `pending_insert_index` fix
+  places a note-less measure's trailing direction/harmony `Spacer` at its
+  **document-order position** relative to same-onset mid-tune changes, so an
+  annotation/chord-symbol **before** an inline `[K:]`/`[M:]`/clef change (e.g.
+  `"Trio"[K:F]`) re-emits the `<direction>`/`<harmony>` ahead of the
+  `<attributes>` — clearing `direction` from 22 → 19 (the `attributes`-adjacency
+  cases) and removing every mid-tune-change ordering divergence. A **corpus
+  set-diff of the strictly-idempotent file set (HEAD vs the fix) confirms 0
+  regressions and 3 new wins**, satisfying the closeout's "byte-idempotent, zero
+  regressions" gate. The 20 residual files (19 `direction` annotation/harmony
+  co-ordering on one Spacer; 1 `type` nested 21:16 tuplet) are documented under
+  "Unsupported residual" above — not forced, per the design's "stop where coverage
+  flattens." The totality work (debug_assert removal + the fuzz over 9,935 own
+  exports + 10,000 abc2xml-reference files + 11 malformed cases, all 0 panics) is
+  the stage's primary deliverable; see **Totality** above.
 
-Re-run the measurement with:
+Re-run the measurement with (note: pass an **absolute** `ABC_ROOT` — the test
+runs with the crate dir as its working directory):
 
 ```sh
-ABC_ROOT=docs/untracked/corpus/zenodo-10k/abc \
+ABC_ROOT=/abs/path/to/docs/untracked/corpus/zenodo-10k/abc \
   cargo test -p croma-core --release --features musicxml-reader \
   corpus_idempotence_measurement -- --nocapture
 ```
+
+Set `READER_IDEMPOTENT_LIST=/tmp/idem.txt` to additionally dump the sorted list of
+strictly-idempotent file names; two runs (baseline vs a change) can then be
+`comm`-diffed to prove a fix has zero regressions, as S6e did.
