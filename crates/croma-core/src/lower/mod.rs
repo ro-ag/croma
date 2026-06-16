@@ -19,14 +19,16 @@ use crate::lower::accidental::accidental_from_field_sign;
 use crate::lower::align::{align_lyrics, align_symbols};
 use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
+use std::collections::BTreeMap;
+
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
     AccidentalPolicy, AccidentalScope, BarlineKind, ClefChangeModel, Event, EventAttachments,
     Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind,
-    MeterModel, Part, PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
-    StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline,
-    lcm,
+    MeterModel, MidiInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
+    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
+    Staff, StaffId, StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel,
+    VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -108,6 +110,7 @@ pub(crate) fn lower_tune_music(
     let mut voices = lowering.into_voice_timelines(meter_duration, &mut diagnostics);
     align_lyrics(&mut voices, &lyric_lines, &mut diagnostics);
     align_symbols(&mut voices, &symbol_lines, &mut diagnostics);
+    project_voice_midi(&mut voices, tune_music, field_state);
     let score_directives = tune_music
         .score_directives
         .iter()
@@ -1394,6 +1397,126 @@ fn preserved_directive_model(syntax: &PreservedDirectiveSyntax) -> PreservedDire
         },
         span: syntax.span,
     }
+}
+
+/// Forward-translate `%%MIDI program` / `%%MIDI channel` directives into a
+/// per-voice [`MidiInstrumentModel`] on each timeline, respecting per-voice
+/// scoping: a directive attaches to the voice of the nearest preceding `V:`
+/// declaration (header or body) by source position, or the first/default voice
+/// if it precedes every `V:`.
+///
+/// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; only the
+/// score-meaningful program (instrument identity) and channel are projected.
+/// Every directive (including the raw text of the translated ones) still
+/// survives verbatim in `preserved_directives` for round-trip and the formatter.
+fn project_voice_midi(
+    voices: &mut [VoiceTimeline],
+    tune_music: &ParsedTuneMusic,
+    field_state: &FieldState,
+) {
+    if tune_music.preserved_directives.is_empty() || voices.is_empty() {
+        return;
+    }
+
+    // Ordered voice-switch points (source position -> voice id) across the
+    // header (`field_state.voices`) and the body (`V:` field lines).
+    let mut switches: Vec<(usize, &str)> = field_state
+        .voices
+        .iter()
+        .map(|voice| (voice.span.start, voice.value.id.value.as_str()))
+        .collect();
+    for field in &tune_music.body_fields {
+        if let MusicFieldLineKind::Voice(voice) = &field.kind {
+            switches.push((field.line_span.start, voice.value.id.value.as_str()));
+        }
+    }
+    switches.sort_by_key(|(position, _)| *position);
+
+    let default_voice = voices[0].id.value.clone();
+    let voice_at = |position: usize| -> &str {
+        switches
+            .iter()
+            .rev()
+            .find(|(switch_position, _)| *switch_position <= position)
+            .map_or(default_voice.as_str(), |(_, id)| *id)
+    };
+
+    let mut by_voice: BTreeMap<&str, MidiInstrumentModel> = BTreeMap::new();
+    for directive in &tune_music.preserved_directives {
+        if !directive.name.value.eq_ignore_ascii_case("MIDI") {
+            continue;
+        }
+        let voice_id = voice_at(directive.span.start);
+        let model = by_voice.entry(voice_id).or_insert(MidiInstrumentModel {
+            program: None,
+            channel: None,
+            span: directive.span,
+        });
+        apply_midi_instrument_directive(&directive.value.value, directive.span, model);
+    }
+
+    for voice in voices.iter_mut() {
+        if let Some(model) = by_voice
+            .get(voice.id.value.as_str())
+            .filter(|model| model.program.is_some() || model.channel.is_some())
+        {
+            voice.midi_instrument = Some(*model);
+        }
+    }
+}
+
+/// Update `model` from one `%%MIDI` directive value, parsing only the
+/// score-translatable `program` / `channel` sub-directives. A trailing `%`
+/// comment and any non-numeric trailing words are ignored, matching abc2midi's
+/// lenient leading-integer parse; out-of-range values are skipped. Last write
+/// wins, so a later directive in the same voice overrides an earlier one.
+fn apply_midi_instrument_directive(value: &str, span: Span, model: &mut MidiInstrumentModel) {
+    let head = value.split('%').next().unwrap_or(value);
+    let mut tokens = head.split_whitespace();
+    let Some(sub_directive) = tokens.next() else {
+        return;
+    };
+    match sub_directive {
+        // `program <prog>` or `program <channel> <prog>` (both 0-based GM for
+        // the program, 1-16 for the channel).
+        "program" => {
+            let integers: Vec<u8> = tokens.map_while(leading_u8).collect();
+            let (channel, program) = match integers.as_slice() {
+                [program] => (None, Some(*program)),
+                [channel, program, ..] => (Some(*channel), Some(*program)),
+                [] => (None, None),
+            };
+            if let Some(program) = program.filter(|program| *program <= 127) {
+                model.program = Some(program);
+                if let Some(channel) = channel.filter(|channel| (1..=16).contains(channel)) {
+                    model.channel = Some(channel);
+                }
+                model.span = span;
+            }
+        }
+        // Standalone `channel <n>`; the program (instrument identity) may be set
+        // by a sibling `program` directive in the same voice.
+        "channel" => {
+            if let Some(channel) = tokens
+                .next()
+                .and_then(leading_u8)
+                .filter(|channel| (1..=16).contains(channel))
+            {
+                model.channel = Some(channel);
+                model.span = span;
+            }
+        }
+        // Every other sub-directive is playback-only: not score-translated.
+        _ => {}
+    }
+}
+
+/// Parse the leading ASCII-digit run of `token` as a `u8` (abc2midi accepts
+/// e.g. `program 0/`); returns `None` when there is no leading digit or it
+/// overflows a `u8`.
+fn leading_u8(token: &str) -> Option<u8> {
+    let digits: String = token.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<u8>().ok()
 }
 
 pub(crate) fn music_code_span(line: &crate::syntax::tune::ClassifiedLine) -> Span {

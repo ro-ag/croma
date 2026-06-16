@@ -217,3 +217,11 @@ normalization candidates rather than active Croma parser/export bugs.
 - A tuplet straddling an overlay `&` re-parses with the `<tuplet>` stop
   notation migrated from the overlay note to the last main-voice member
   (durations identical). Pre-existing; no in-scope corpus tune hits it.
+- **`%%MIDI` directive handling** is documented in
+  [`docs/midi-directives.md`](midi-directives.md): the score-meaningful
+  `%%MIDI program`/`channel` are forward-translated to MusicXML `<part-list>`
+  `<score-instrument>`/`<midi-instrument>` (per-voice scoped), while all
+  directives stay preserved verbatim for round-trip/`croma fmt`. Deferred
+  items (transpose, channel-only, inline `[I:MIDI]`) and the abc2xml-isms not
+  mimicked (visible `prog:` words, drummap percussion) are tabled there, along
+  with the writer-side projection-coverage gap.
