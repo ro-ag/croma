@@ -1062,6 +1062,401 @@ fn notation_and_tuplet_combine_round_trip() {
     );
 }
 
+// --- Stage S5a: <direction> (tempo / dynamics / wedge / coda / segno / words) -
+
+/// Assert FULL-byte idempotence on an S5a single-voice fixture. By S5a the writer
+/// also emits the `<direction>` block (tempo `<metronome>`/`<words>`,
+/// `<dynamics>`, `<wedge>`, `<coda>`/`<segno>`, and plain annotation `<words>`);
+/// nothing in a single-voice direction fixture is deferred, so the whole document
+/// must be byte-identical. Returns the reconstructed score for direct field
+/// assertions.
+fn assert_idempotent_s5(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S5a directions)"
+    );
+    score
+}
+
+#[test]
+fn header_tempo_numeric_reconstructs_tempo_model() {
+    use crate::model::TempoBeat;
+    // Q:1/4=90 -> a header <metronome> (quarter / 90) before the first note; the
+    // reader must reconstruct metadata.tempo_model so write_initial_directions
+    // re-emits the identical direction.
+    let abc = "X:1\nT:Tempo\nQ:1/4=90\nM:4/4\nL:1/4\nK:C\nC D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<beat-unit>quarter</beat-unit>") && x1.contains("<per-minute>90</per-minute>"),
+        "precondition: Q:1/4=90 emits a quarter metronome at 90"
+    );
+    let score = assert_idempotent_s5(abc);
+    let tempo = score
+        .metadata
+        .tempo_model
+        .as_ref()
+        .expect("S5a must reconstruct the header <metronome> into metadata.tempo_model");
+    assert_eq!(tempo.text, None, "a bare numeric tempo carries no words");
+    assert_eq!(
+        tempo.beat,
+        Some(TempoBeat {
+            beat_numerator: 1,
+            beat_denominator: 4,
+            bpm: 90,
+        }),
+        "the reconstructed beat must drive the same <beat-unit>/<per-minute>"
+    );
+}
+
+#[test]
+fn header_tempo_dotted_beat_unit_reconstructs() {
+    use crate::model::TempoBeat;
+    // Q:3/8=60 -> a DOTTED quarter metronome (<beat-unit>quarter</beat-unit>
+    // <beat-unit-dot/>); the 3/(2^k) inverse must recover beat 3/8.
+    let abc = "X:1\nT:Dotted\nQ:3/8=60\nM:6/8\nL:1/8\nK:C\nC2C2C2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<beat-unit-dot/>"),
+        "precondition: Q:3/8=60 emits a dotted beat unit"
+    );
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(
+        score.metadata.tempo_model.as_ref().and_then(|t| t.beat),
+        Some(TempoBeat {
+            beat_numerator: 3,
+            beat_denominator: 8,
+            bpm: 60,
+        })
+    );
+}
+
+#[test]
+fn header_tempo_with_text_reconstructs_words_and_beat() {
+    // Q:"Allegro" 1/4=120 -> a <words>Allegro</words> direction-type plus the
+    // <metronome>; the reader must reconstruct BOTH tempo.text and tempo.beat so
+    // the words and metronome direction-types re-emit in order.
+    let abc = "X:1\nT:WithText\nQ:\"Allegro\" 1/4=120\nM:4/4\nL:1/4\nK:C\nC D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<words>Allegro</words>") && x1.contains("<per-minute>120</per-minute>"),
+        "precondition: text+numeric tempo emits words AND metronome"
+    );
+    let score = assert_idempotent_s5(abc);
+    let tempo = score.metadata.tempo_model.as_ref().expect("tempo_model");
+    assert_eq!(tempo.text.as_deref(), Some("Allegro"));
+    assert_eq!(tempo.beat.map(|b| b.bpm), Some(120));
+}
+
+#[test]
+fn header_text_only_tempo_reconstructs_words_no_beat() {
+    // Q:"Andante" with NO numeric tempo -> a voice-less <words> + <sound> header
+    // direction (no <metronome>). The reader must reconstruct a tempo_model with
+    // text and beat=None so write_tempo_direction re-emits the words + the default
+    // <sound tempo="120.00"/>, NOT a voice-bearing annotation direction.
+    let abc = "X:1\nT:TextTempo\nQ:\"Andante\"\nM:4/4\nL:1/4\nK:C\nC D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<words>Andante</words>")
+            && x1.contains("<sound tempo=\"120.00\"/>")
+            && !x1.contains("<metronome>"),
+        "precondition: a text-only tempo emits words + sound, no metronome"
+    );
+    let score = assert_idempotent_s5(abc);
+    let tempo = score
+        .metadata
+        .tempo_model
+        .as_ref()
+        .expect("a text-only tempo must reconstruct metadata.tempo_model");
+    assert_eq!(tempo.text.as_deref(), Some("Andante"));
+    assert_eq!(
+        tempo.beat, None,
+        "a text-only tempo carries no numeric beat"
+    );
+}
+
+#[test]
+fn mid_tune_tempo_change_reconstructs_event() {
+    use crate::model::TimedEventKind;
+    // A mid-tune [Q:1/4=160] becomes a TempoChange event emitted as a voice-less
+    // tempo <direction> BETWEEN notes; the reader must reconstruct a
+    // TimedEventKind::TempoChange at that onset (NOT the header tempo_model) so it
+    // re-emits in the same inter-note position.
+    let abc = "X:1\nT:MidTempo\nM:4/4\nL:1/4\nK:C\nC D [Q:1/4=160] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<per-minute>160</per-minute>"),
+        "precondition: the inline [Q:] emits a 160 metronome"
+    );
+    let score = assert_idempotent_s5(abc);
+    assert!(
+        score.metadata.tempo_model.is_none(),
+        "no header Q: -> tempo_model stays None; the inline tempo is an event"
+    );
+    let tempo_changes: Vec<_> = score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, TimedEventKind::TempoChange(_)))
+        .collect();
+    assert_eq!(
+        tempo_changes.len(),
+        1,
+        "the inline [Q:] reconstructs exactly one TempoChange event"
+    );
+    let bpm = match &tempo_changes[0].kind {
+        TimedEventKind::TempoChange(model) => model.beat.map(|b| b.bpm),
+        _ => None,
+    };
+    assert_eq!(bpm, Some(160), "the TempoChange carries the 160 bpm");
+}
+
+#[test]
+fn header_and_mid_tune_tempo_both_round_trip() {
+    use crate::model::TimedEventKind;
+    // Header Q: AND an inline [Q:] coexist: the leading metronome (before the
+    // first note) is the header tempo_model; the inter-note one is a TempoChange.
+    // Both must reconstruct so the two metronome directions re-emit in place.
+    let abc = "X:1\nT:Both\nQ:1/4=90\nM:4/4\nL:1/4\nK:C\nC D [Q:1/4=160] E F |\n";
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(
+        score
+            .metadata
+            .tempo_model
+            .as_ref()
+            .and_then(|t| t.beat)
+            .map(|b| b.bpm),
+        Some(90),
+        "the leading tempo is the header tempo_model (90)"
+    );
+    let mid: Vec<_> = score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter(|e| matches!(e.kind, TimedEventKind::TempoChange(_)))
+        .collect();
+    assert_eq!(mid.len(), 1, "exactly one inline TempoChange (160)");
+}
+
+#[test]
+fn dynamic_forte_reconstructs_decoration() {
+    use crate::model::DecorationSourceKind;
+    // !f! -> a <direction placement="below"><dynamics><f/></dynamics> direction
+    // (NOT a <notations> element); the reader must reconstruct a "f" decoration on
+    // the following note so the dynamics direction re-emits.
+    let abc = "X:1\nT:Forte\nM:4/4\nL:1/4\nK:C\n!f!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<dynamics>") && x1.contains("<f/>"),
+        "precondition: !f! emits a <dynamics><f/> direction"
+    );
+    let score = assert_idempotent_s5(abc);
+    let decos = &attachments_at(&score, 0).decorations;
+    assert_eq!(decos.len(), 1, "one dynamic decoration on the first note");
+    assert_eq!(decos[0].name, "f", "the reconstructed name re-emits <f/>");
+    assert_eq!(decos[0].source_kind, DecorationSourceKind::Named);
+}
+
+#[test]
+fn dynamic_pianissimo_reconstructs() {
+    let abc = "X:1\nT:PP\nM:4/4\nL:1/4\nK:C\n!pp!C D E F |\n";
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "pp");
+}
+
+#[test]
+fn dynamic_sforzando_reconstructs() {
+    // !sfz! is the one dynamic whose ABC name differs from its <sfz/> element by
+    // case only; ensure the inverse maps the element back to "sfz".
+    let abc = "X:1\nT:SF\nM:4/4\nL:1/4\nK:C\n!sfz!C D E F |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<sfz/>"), "precondition: !sfz! emits <sfz/>");
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "sfz");
+}
+
+#[test]
+fn crescendo_wedge_reconstructs_open_and_close() {
+    // !<(! opens a crescendo wedge, !<)! closes it: two voice-bearing
+    // <direction><wedge> elements. The reader must reconstruct a "crescendo("
+    // decoration on the open note and a "crescendo)" on the close note so both
+    // <wedge type="crescendo"/> and <wedge type="stop"/> re-emit.
+    let abc = "X:1\nT:Cresc\nM:4/4\nL:1/4\nK:C\n!<(!C D!<)! E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<wedge type=\"crescendo\"/>") && x1.contains("<wedge type=\"stop\"/>"),
+        "precondition: a crescendo hairpin emits crescendo + stop wedges"
+    );
+    let score = assert_idempotent_s5(abc);
+    // The open wedge attaches to the first note. In ABC a decoration binds to the
+    // FOLLOWING note, so `D!<)! E` places the close wedge before E (event 2): the
+    // writer emits its <wedge type="stop"/> direction just before E's <note>.
+    let open = &attachments_at(&score, 0).decorations;
+    assert!(
+        open.iter().any(|d| d.name == "crescendo("),
+        "the open note carries a crescendo( decoration, got {:?}",
+        open.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+    let close = &attachments_at(&score, 2).decorations;
+    assert!(
+        close.iter().any(|d| d.name == "crescendo)"),
+        "the note after the close marker carries a crescendo) decoration"
+    );
+}
+
+#[test]
+fn diminuendo_wedge_reconstructs() {
+    let abc = "X:1\nT:Dim\nM:4/4\nL:1/4\nK:C\n!>(!C D!>)! E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<wedge type=\"diminuendo\"/>"),
+        "precondition: !>(! emits a diminuendo wedge"
+    );
+    let score = assert_idempotent_s5(abc);
+    assert!(
+        attachments_at(&score, 0)
+            .decorations
+            .iter()
+            .any(|d| d.name == "diminuendo(")
+    );
+}
+
+#[test]
+fn coda_reconstructs_decoration() {
+    // !coda! -> a <direction placement="above"><coda/> (voice-bearing); the reader
+    // reconstructs a "coda" decoration so write_direction_type re-emits <coda/>.
+    let abc = "X:1\nT:Coda\nM:4/4\nL:1/4\nK:C\n!coda!C D E F |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<coda/>"), "precondition: !coda! emits <coda/>");
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "coda");
+}
+
+#[test]
+fn segno_reconstructs_decoration() {
+    let abc = "X:1\nT:Segno\nM:4/4\nL:1/4\nK:C\n!segno!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<segno/>"),
+        "precondition: !segno! emits <segno/>"
+    );
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "segno");
+}
+
+#[test]
+fn pre_barline_segno_reconstructs_on_trailing_spacer() {
+    use crate::model::TimedEventKind;
+    // `d4 !segno!|` puts the !segno! before the barline with NO following note:
+    // the writer flushes it onto a zero-duration Spacer event whose directions
+    // emit after the last note. The reader must reconstruct that Spacer so the
+    // trailing <segno/> direction re-emits at the end of the measure.
+    let abc = "X:1\nT:Trail\nM:4/4\nL:1/4\nK:C\nC D E F !segno!|\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<segno/>"),
+        "precondition: a pre-barline !segno! still emits <segno/>"
+    );
+    let score = assert_idempotent_s5(abc);
+    // The last reconstructed event is a zero-duration Spacer carrying the segno.
+    let events = &score.parts[0].voices[0].events;
+    let last = events.last().expect("at least one event");
+    assert!(
+        matches!(last.kind, TimedEventKind::Spacer),
+        "the trailing segno reconstructs on a Spacer event, got {:?}",
+        last.kind
+    );
+    assert_eq!(
+        last.duration,
+        Fraction::zero(),
+        "the Spacer is zero-duration"
+    );
+    assert!(
+        last.attachments
+            .decorations
+            .iter()
+            .any(|d| d.name == "segno"),
+        "the trailing Spacer carries the segno decoration"
+    );
+}
+
+#[test]
+fn annotation_above_reconstructs_text_and_placement() {
+    use crate::model::AnnotationPlacementModel;
+    // "^Andante" is an above-placed annotation -> a <direction placement="above">
+    // <words>Andante</words> (the writer strips the ^ prefix). The reader must
+    // reconstruct a TextAttachment whose (text, placement) re-emits BOTH the
+    // stripped words and the placement attribute.
+    let abc = "X:1\nT:Anno\nM:4/4\nL:1/4\nK:C\n\"^Andante\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("placement=\"above\"") && x1.contains("<words>Andante</words>"),
+        "precondition: ^Andante emits an above words direction"
+    );
+    let score = assert_idempotent_s5(abc);
+    let annotations = &attachments_at(&score, 0).annotations;
+    assert_eq!(annotations.len(), 1, "one annotation on the first note");
+    assert_eq!(
+        annotations[0].placement,
+        Some(AnnotationPlacementModel::Above),
+        "the above placement must reconstruct"
+    );
+    // The reconstructed text re-emits the stripped <words>Andante</words> via the
+    // writer's annotation_text (which strips the canonical ^ prefix again).
+    assert!(
+        annotations[0].text.ends_with("Andante"),
+        "reconstructed annotation text re-emits Andante, got {:?}",
+        annotations[0].text
+    );
+}
+
+#[test]
+fn annotation_below_reconstructs_placement() {
+    use crate::model::AnnotationPlacementModel;
+    let abc = "X:1\nT:Below\nM:4/4\nL:1/4\nK:C\n\"_sotto\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("placement=\"below\"") && x1.contains("<words>sotto</words>"),
+        "precondition: _sotto emits a below words direction"
+    );
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(
+        attachments_at(&score, 0).annotations[0].placement,
+        Some(AnnotationPlacementModel::Below)
+    );
+}
+
+#[test]
+fn dynamic_and_annotation_on_same_note_round_trip() {
+    // A note can carry BOTH a dynamic and an annotation: the writer emits the
+    // annotation <words> direction THEN the <dynamics> direction (annotations
+    // before decorations in write_harmony_and_directions). The reader must
+    // reconstruct both, on the right channels, so the two directions re-emit in
+    // order before the note.
+    let abc = "X:1\nT:Mix\nM:4/4\nL:1/4\nK:C\n\"^cresc.\"!f!C D E F |\n";
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(
+        attachments_at(&score, 0).annotations.len(),
+        1,
+        "the annotation reconstructs"
+    );
+    assert!(
+        attachments_at(&score, 0)
+            .decorations
+            .iter()
+            .any(|d| d.name == "f"),
+        "the dynamic reconstructs"
+    );
+}
+
+#[test]
+fn no_direction_leaves_attachments_empty() {
+    // A plain note with no directions must not fabricate annotations/decorations
+    // or a tempo_model (the writer emits no <direction> for it).
+    let score = assert_idempotent_s5("X:1\nT:Plain\nM:4/4\nL:1/4\nK:C\nC D E F |\n");
+    assert!(score.metadata.tempo_model.is_none());
+    assert!(attachments_at(&score, 0).annotations.is_empty());
+    assert!(attachments_at(&score, 0).decorations.is_empty());
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.
