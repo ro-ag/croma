@@ -3525,3 +3525,110 @@ fn totality_fuzz_read_musicxml_never_panics() {
         "malformed input(s) produced NO diagnostic (must degrade with a warning): {malformed_without_diagnostic:?}"
     );
 }
+
+// --- R1: ABC -> XML -> Score -> ABC re-emission measurement ------------------
+
+/// Companion to [`corpus_idempotence_measurement`], but closing the loop in ABC
+/// space instead of XML space. For each corpus `.abc` that lowers cleanly,
+/// `s1 = lower(parse(abc))`, then we compare
+/// `write_abc(read_musicxml(write_musicxml(&s1).xml).value)` against
+/// `write_abc(&s1)`. A match proves the `ABC -> XML -> Score -> ABC` round-trip
+/// is a fixed point for that file: routing the Score through croma's own
+/// MusicXML and back reproduces the same canonical ABC.
+///
+/// **Report-only**, mirroring the XML measurement's discipline: it prints
+/// `N/total` plus a first-divergence note for a few failures and asserts no hard
+/// count (full ABC-document identity through the reader's subset is strictly
+/// stronger than the proven XML re-emission idempotence, so the number is a
+/// measurement, not a gate). Env-gated on `ABC_ROOT`; a no-op when unset, exactly
+/// like the sibling measurement.
+#[test]
+fn corpus_abc_reemission_through_xml() {
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+
+    let Ok(root) = std::env::var("ABC_ROOT") else {
+        eprintln!("ABC_ROOT unset — skipping R1 ABC-reemission-through-XML measurement");
+        return;
+    };
+    let files = abc_files(&PathBuf::from(&root));
+    if files.is_empty() {
+        eprintln!("no .abc files under {root} — skipping");
+        return;
+    }
+
+    let mut total = 0usize;
+    let mut lowered = 0usize;
+    let mut idempotent = 0usize;
+    let mut first_divergences: Vec<String> = Vec::new();
+
+    for path in &files {
+        let Ok(bytes) = fs::read(path) else { continue };
+        let source = String::from_utf8_lossy(&bytes);
+        total += 1;
+
+        // Only files that export cleanly have an X1 to invert; that same set is
+        // the one that lowers to a Score, so `export_musicxml` is the gate.
+        let Ok(export) = export_musicxml(&source) else {
+            continue;
+        };
+        lowered += 1;
+        let x1 = export.musicxml;
+
+        // s1 = lower(parse(abc)); its canonical ABC is the reference.
+        let document = crate::parse_document(&source, crate::ParseOptions::default()).value;
+        let Some(s1) = crate::lower_score(&document, crate::LowerOptions).value else {
+            continue;
+        };
+        let expected_abc = write_abc(&s1, AbcWriteOptions::default());
+
+        let reconstructed = read_musicxml(&x1).value;
+        let round_trip_abc = write_abc(&reconstructed, AbcWriteOptions::default());
+
+        if round_trip_abc == expected_abc {
+            idempotent += 1;
+        } else if first_divergences.len() < 5 {
+            let line = first_diverging_line(&expected_abc, &round_trip_abc);
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<unknown>");
+            first_divergences.push(format!("{name}: {line}"));
+        }
+    }
+
+    eprintln!(
+        "ABC re-emission through XML (ABC -> XML -> Score -> ABC): {idempotent}/{lowered} files round-trip identically ({total} total .abc)"
+    );
+    if !first_divergences.is_empty() {
+        eprintln!("first ABC divergences (up to 5):");
+        for note in &first_divergences {
+            eprintln!("  {note}");
+        }
+    }
+
+    // No hard count: full ABC-document identity is strictly stronger than the
+    // proven XML re-emission idempotence. Require only that the loop is total
+    // over the corpus (no panic) and that at least one file was measured.
+    assert!(
+        lowered > 0,
+        "expected at least one corpus file to lower and export"
+    );
+}
+
+/// The first line at which two ABC documents diverge, rendered as
+/// `` `<expected>` != `<actual>` ``. `None`-free: returns a sentinel when one is
+/// a prefix of the other. Used only for the human-readable divergence note.
+fn first_diverging_line(expected: &str, actual: &str) -> String {
+    for (line_e, line_a) in expected.lines().zip(actual.lines()) {
+        if line_e != line_a {
+            return format!("`{line_e}` != `{line_a}`");
+        }
+    }
+    let expected_lines = expected.lines().count();
+    let actual_lines = actual.lines().count();
+    if expected_lines == actual_lines {
+        "<equal-lines-unequal-bytes>".to_owned()
+    } else {
+        format!("<line-count differs: expected {expected_lines}, actual {actual_lines}>")
+    }
+}
