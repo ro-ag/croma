@@ -34,6 +34,14 @@ pub use syntax::{
 };
 pub use to_abc::{AbcWriteOptions, write_abc};
 
+/// Experimental MusicXML -> [`Score`] reader (the inverse of [`write_musicxml`]).
+///
+/// Feature-gated behind `musicxml-reader`; the default build never compiles it
+/// nor its sole optional dependency (`roxmltree`). See
+/// [`musicxml::read::read_musicxml`].
+#[cfg(feature = "musicxml-reader")]
+pub use musicxml::read::read_musicxml;
+
 #[cfg(test)]
 pub(crate) mod test_support;
 

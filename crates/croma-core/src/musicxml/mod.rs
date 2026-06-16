@@ -14,6 +14,8 @@ mod harmony;
 mod lyric;
 mod notation;
 mod note;
+#[cfg(feature = "musicxml-reader")]
+pub mod read;
 mod score;
 
 pub fn write_score_partwise(score: &Score) -> ParseReport<String> {

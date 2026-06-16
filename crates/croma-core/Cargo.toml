@@ -16,4 +16,11 @@ path = "src/lib.rs"
 [lints]
 workspace = true
 
+[features]
+# Experimental, gated MusicXML -> Score reader (inverse of the writer). Pulls in
+# the only optional dependency (roxmltree); the default build stays dep-free and
+# crates.io-publishable.
+musicxml-reader = ["dep:roxmltree"]
+
 [dependencies]
+roxmltree = { version = "0.20", optional = true }
