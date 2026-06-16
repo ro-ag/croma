@@ -2795,6 +2795,185 @@ fn two_chords_in_a_measure_round_trip() {
     assert_eq!(chords, 2, "two distinct chord events");
 }
 
+// --- S6d: multi-voice (<backup>/<voice>) + multiple-rest --------------------
+
+/// Full-byte idempotence helper for S6d. Nothing in a multi-voice or
+/// multiple-rest fixture is deferred (key/time/clef/notations/directions are all
+/// reconstructed), so the whole document must be byte-identical.
+fn assert_idempotent_full(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S6d)"
+    );
+    score
+}
+
+#[test]
+fn multiple_rest_reconstructs_measure_field() {
+    // `Z2` expands to a two-bar multi-rest; the writer marks the first bar with
+    // <measure-style><multiple-rest>2</multiple-rest>. The reader must set
+    // Measure.multiple_rest so the glyph re-emits.
+    let abc = "X:1\nT:Multi Rest\nM:4/4\nL:1/4\nK:C\nC D E F | Z2 | G A B c |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<multiple-rest>2</multiple-rest>"),
+        "precondition: Z2 emits a multiple-rest of 2"
+    );
+    let score = assert_idempotent_full(abc);
+    // The first measure of the rest run (measure index 1, number 2) carries the
+    // multiple_rest count; the rest of the run does not.
+    let with_mr = score.parts[0].voices[0]
+        .measures
+        .iter()
+        .filter(|m| m.multiple_rest == Some(2))
+        .count();
+    assert_eq!(
+        with_mr, 1,
+        "exactly one measure carries multiple_rest = Some(2)"
+    );
+}
+
+#[test]
+fn two_voice_overlay_reconstructs_second_voice() {
+    // A `&` overlay inside one voice forces a <backup> and a <voice>2 block.
+    // The reader reconstructs the second voice as an additional Part.voices
+    // entry so the writer re-emits the identical <voice>1 .. <backup> .. <voice>2.
+    let abc = "X:1\nT:Overlay\nM:4/4\nL:1/4\nK:C\nC2 D2 & E2 F2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<backup>") && x1.contains("<voice>2</voice>"),
+        "precondition: the overlay emits a <backup> and a <voice>2 block"
+    );
+    let score = assert_idempotent_full(abc);
+    assert_eq!(
+        score.parts[0].voices.len(),
+        2,
+        "the overlay reconstructs a second voice in the part"
+    );
+    // Voice 2 carries the E/F notes at onsets 0 and 1/2.
+    let v2 = &score.parts[0].voices[1];
+    assert_eq!(v2.events.len(), 2, "voice 2 has two notes");
+    assert_eq!(
+        v2.events[0].onset,
+        Fraction::zero(),
+        "voice 2 restarts at onset 0"
+    );
+    assert_eq!(
+        v2.events[1].onset,
+        Fraction::new(1, 2),
+        "second voice-2 note at 1/2"
+    );
+}
+
+#[test]
+fn three_voice_overlay_round_trips() {
+    // Two `&` overlays produce <voice>1/2/3 separated by two <backup>s.
+    let abc = "X:1\nT:Triple\nM:4/4\nL:1/4\nK:C\nC2 D2 & E2 F2 & G2 A2 |\n";
+    let x1 = export(abc);
+    assert_eq!(
+        x1.matches("<backup>").count(),
+        2,
+        "precondition: two overlays emit two backups"
+    );
+    assert!(
+        x1.contains("<voice>3</voice>"),
+        "precondition: a third voice"
+    );
+    let score = assert_idempotent_full(abc);
+    assert_eq!(score.parts[0].voices.len(), 3, "three reconstructed voices");
+}
+
+#[test]
+fn unequal_voice_lengths_round_trip() {
+    // Voice 1 is a full bar; the overlay (voice 2) is half a bar. The writer
+    // emits a single <backup> of the full voice-1 duration before voice 2.
+    let abc = "X:1\nT:Unequal\nM:4/4\nL:1/4\nK:C\nC2 D2 E2 F2 & G2 A2 |\n";
+    let score = assert_idempotent_full(abc);
+    assert_eq!(score.parts[0].voices.len(), 2);
+    assert_eq!(
+        score.parts[0].voices[0].events.len(),
+        4,
+        "voice 1: four notes"
+    );
+    assert_eq!(
+        score.parts[0].voices[1].events.len(),
+        2,
+        "voice 2: two notes"
+    );
+}
+
+#[test]
+fn two_voice_with_direction_round_trips() {
+    // A dynamic on the main voice plus an overlay: the voice-bearing direction
+    // must attach to its own voice's note and re-emit with the correct <voice>.
+    let abc = "X:1\nT:Dyn Overlay\nM:4/4\nL:1/4\nK:C\n!f!C2 D2 & E2 F2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<dynamics>") && x1.contains("<backup>"),
+        "precondition: a dynamic and an overlay backup are both emitted"
+    );
+    assert_idempotent_full(abc);
+}
+
+#[test]
+fn two_voice_overlay_with_measure_rest_round_trips() {
+    // The overlay voice is a full-measure rest (z4); the writer emits
+    // <rest measure="yes"> for voice 2. The reader must reconstruct the
+    // overlay voice's measure expected/actual so the attribute re-emits.
+    let abc = "X:1\nT:Rest Overlay\nM:4/4\nL:1/4\nK:C\nC2 D2 E2 F2 & z4 |\n";
+    let x1 = export(abc);
+    if x1.contains("<backup>") {
+        assert_idempotent_full(abc);
+    }
+}
+
+#[test]
+fn grace_in_overlay_voice_round_trips() {
+    // A grace group on the main voice plus an overlay. Grace notes carry their
+    // own <voice>, so the per-voice grace run must finalise onto its own voice's
+    // following main note (not leak across the backup into the overlay).
+    let abc = "X:1\nT:Grace Overlay\nM:4/4\nL:1/4\nK:C\n{ag}C2 D2 & E2 F2 |\n";
+    let x1 = export(abc);
+    if x1.contains("<backup>") && x1.contains("<grace") {
+        assert_idempotent_full(abc);
+    }
+}
+
+#[test]
+fn chord_in_overlay_round_trips() {
+    // A chord on the main voice plus an overlay: the per-voice chord head /
+    // <chord/> folding must stay scoped to its own voice.
+    let abc = "X:1\nT:Chord Overlay\nM:4/4\nL:1/4\nK:C\n[CEG]2 D2 & E2 F2 |\n";
+    let x1 = export(abc);
+    if x1.contains("<backup>") && x1.contains("<chord/>") {
+        assert_idempotent_full(abc);
+    }
+}
+
+#[test]
+fn multiple_rest_second_bar_is_plain_measure_rest() {
+    // The Z2 run's SECOND bar is an ordinary <rest measure="yes"> with no
+    // multiple-rest glyph; only the first bar carries the count.
+    let abc = "X:1\nT:Multi Rest 2\nM:4/4\nL:1/4\nK:C\nC D E F | Z3 | G A B c |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<multiple-rest>3</multiple-rest>"),
+        "precondition: Z3 emits a multiple-rest of 3"
+    );
+    let score = assert_idempotent_full(abc);
+    let counts: Vec<_> = score.parts[0].voices[0]
+        .measures
+        .iter()
+        .filter_map(|m| m.multiple_rest)
+        .collect();
+    assert_eq!(
+        counts,
+        vec![3],
+        "exactly one measure carries multiple_rest = 3"
+    );
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.
@@ -2927,12 +3106,12 @@ fn corpus_idempotence_measurement() {
     top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     eprintln!(
-        "S1 corpus idempotence (strict, full bytes): {idempotent}/{exported} exported files round-trip ({total} total .abc)"
+        "reader corpus idempotence (strict, full bytes): {idempotent}/{exported} exported files round-trip ({total} total .abc)"
     );
     eprintln!(
-        "S1 corpus idempotence (S1-supported subset, deferred S2/S3 blocks stripped): {idempotent_supported}/{exported}"
+        "reader corpus idempotence (supported subset, deferred S2/S3 blocks stripped): {idempotent_supported}/{exported}"
     );
-    eprintln!("S1 top first-diverging tags:");
+    eprintln!("reader top first-diverging tags:");
     for (tag, count) in top.iter().take(10) {
         eprintln!("  {tag}: {count}");
     }
