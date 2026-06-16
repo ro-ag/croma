@@ -79,10 +79,20 @@
 //! /per-member attachments); each chord gets a distinct synthetic `source_span` so
 //! the writer's first-member attachment lookup resolves correctly.
 //!
-//! Multi-voice (`<voice>`/`<backup>`) and `<measure-style><multiple-rest>` are the
-//! remaining **later-stage** work and are intentionally not reconstructed yet —
-//! files that use them do not round-trip idempotently yet, which the corpus gate
-//! measures.
+//! **S6d (multi-voice + multiple-rest):** the writer interleaves a part's
+//! multiple voices with `<backup>` and a per-sequence `<voice>` number. The
+//! reader partitions each measure's `<note>`s (and the directions/harmony/
+//! notations emitted just before them) by `<voice>` ([`note_voice_number`] /
+//! [`voice_state`]) and reconstructs each as a separate `Part.voices` entry — a
+//! `TimedEvent` voice reusing the full S1–S6c per-note machinery — so the
+//! writer's `measure_sequences` re-emits the identical `<voice>1` .. `<backup>`
+//! .. `<voice>2` interleaving (`part.voices[i]` is numbered `i + 1`). Extra
+//! voices share the single staff (so no `<staff>` is emitted) and carry their own
+//! independent onset cursor (each `<backup>` returns to onset 0 for the next
+//! voice). `<measure-style><multiple-rest>N` ([`read_multiple_rest`]) is the
+//! inverse of `write_multiple_rest_measure_style`, reconstructed into
+//! `Measure.multiple_rest` (attached to voice 1, the voice the writer reads it
+//! from). See `docs/musicxml-reader.md` for the small documented residual.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
@@ -611,45 +621,36 @@ impl Reader {
             .and_then(|entry| entry.name.clone())
             .filter(|name| !name.is_empty())
             .map(text_line);
-        // S3: the writer emits one `<midi-instrument>` per voice that carried
-        // `%%MIDI` sound metadata, in voice order. S1–S3 reconstruct a single
-        // voice per part, so the first recovered instrument is this voice's; any
-        // further instruments belong to additional voices reconstructed in the
-        // multi-voice stage (S6) and are left for then. The common corpus shape
-        // (one voice = one part = one instrument) round-trips now.
-        let midi_instrument = entry.and_then(|entry| entry.instruments.first().copied());
-
+        // S3/S6d: the writer emits one `<midi-instrument>` per voice that carried
+        // `%%MIDI` sound metadata, in voice order; each is attached to the voice
+        // at the same index during voice assembly below.
         let staff_id = StaffId {
             value: 1,
             span: READER_SPAN,
         };
-        let voice_id = VoiceId {
-            value: id.clone(),
-            span: READER_SPAN,
-        };
 
-        // S1 reconstructs a single voice per part; the writer reads back both
-        // `voice.events` (the timed sequence) and `voice.measures` (durations),
-        // so both are populated consistently.
-        let mut events: Vec<TimedEvent> = Vec::new();
-        let mut measures: Vec<Measure> = Vec::new();
+        // S6d: the writer interleaves a part's voices with `<backup>` and a
+        // per-sequence `<voice>` number. The reader reconstructs each `<voice>`
+        // as a separate `Part.voices` entry (a `TimedEvent` voice, reusing the
+        // full per-note machinery) so the writer's `measure_sequences` re-emits
+        // the identical `<voice>1` .. `<backup>` .. `<voice>2` interleaving:
+        // `part.voices[i]` is numbered `i + 1`, matching the `<voice>` we read.
+        // `voice_accumulators` is ordered by first appearance and sorted by voice
+        // number at the end so `<voice>1` becomes `part.voices[0]`.
+        let mut voice_accumulators: Vec<VoiceAccumulator> = Vec::new();
         // The header tempo direction (if any) is captured from the FIRST measure,
         // before its first note, and only in part 1. Once captured it is never
         // overwritten, and later tempo directions become `TempoChange` events.
         let mut header_tempo: Option<TempoModel> = None;
 
-        for measure_node in children_named(part_node, "measure") {
-            let measure_id = self.read_measure_id(measure_node, measures.len());
+        for (position, measure_node) in children_named(part_node, "measure").enumerate() {
+            let measure_id = self.read_measure_id(measure_node, position);
             // Only part 1's first measure may yield the score header tempo; in
             // every other measure a voice-less tempo direction is a mid-tune
-            // change. (`capture_header_tempo` is the part-1 flag; `measures` is
-            // empty only for this part's first measure.)
-            let capture_header = capture_header_tempo && measures.is_empty();
-            // The writer emits the header `<attributes>` (`write_attributes`)
-            // ONLY in the part's first measure; that single leading block is the
-            // score key/time/clef, not a mid-tune change (S6b). `measures` is
-            // empty exactly for this part's first measure.
-            let is_part_first_measure = measures.is_empty();
+            // change. (`capture_header_tempo` is the part-1 flag; the first
+            // measure is position 0.)
+            let is_part_first_measure = position == 0;
+            let capture_header = capture_header_tempo && is_part_first_measure;
             let outcome = self.read_measure(
                 measure_node,
                 divisions,
@@ -660,8 +661,51 @@ impl Reader {
             if header_tempo.is_none() {
                 header_tempo = outcome.header_tempo;
             }
-            events.extend(outcome.events);
-            measures.push(outcome.measure);
+
+            // The PRIMARY voice (`"1"`) is canonical: it gets a [`Measure`] for
+            // EVERY `<measure>` element — including a content-less trailing bar —
+            // so the part's measure list (and thus the writer's measure count) is
+            // preserved exactly. It also carries the measure skeleton
+            // (barlines/endings/multiple-rest), which the writer reads from any
+            // voice's measure via a deduping union; attaching it to one voice
+            // avoids double-emission. Extra voices get a minimal measure only in
+            // the measures where they actually have content.
+            const PRIMARY_VOICE: &str = "1";
+            let mut primary_measure: Option<VoiceMeasure> = None;
+            for (voice, voice_measure) in outcome.voices {
+                if voice == PRIMARY_VOICE {
+                    primary_measure = Some(voice_measure);
+                    continue;
+                }
+                let accumulator = voice_accumulator(&mut voice_accumulators, &voice);
+                accumulator.events.extend(voice_measure.events);
+                accumulator.measures.push(Measure {
+                    id: measure_id,
+                    source_span: READER_SPAN,
+                    expected_duration: voice_measure.expected_duration,
+                    actual_duration: voice_measure.actual_duration,
+                    multiple_rest: None,
+                    pickup: false,
+                    complete: true,
+                    barlines: Vec::new(),
+                    repeat_endings: Vec::new(),
+                    overlays: Vec::new(),
+                });
+            }
+            // Primary voice: push its events (if any) and the skeleton measure
+            // (empty when the bar had no voice-1 content, e.g. a trailing barline
+            // bar that the writer still emits as `<measure></measure>`).
+            let (events, expected, actual) = match primary_measure {
+                Some(vm) => (vm.events, vm.expected_duration, vm.actual_duration),
+                None => (Vec::new(), None, Fraction::zero()),
+            };
+            let primary = voice_accumulator(&mut voice_accumulators, PRIMARY_VOICE);
+            primary.events.extend(events);
+            primary.measures.push(Measure {
+                expected_duration: expected,
+                actual_duration: actual,
+                ..outcome.measure.clone()
+            });
         }
 
         // S2: reconstruct the part's header `<clef>` and `<transpose>` from the
@@ -679,17 +723,56 @@ impl Reader {
             midi_transpose = self.read_transpose(attributes);
         }
 
-        let voice = Voice {
-            id: voice_id.clone(),
-            staff: staff_id,
-            initial_properties: initial_properties.clone(),
-            properties: initial_properties,
-            measures,
-            events,
-            midi_instrument,
-            midi_transpose,
-            source_span: READER_SPAN,
-        };
+        // Order voices by their numeric `<voice>` value so `<voice>1` ->
+        // `part.voices[0]` (numbered `0 + 1` on re-write). A part with no notes at
+        // all still reconstructs a single empty voice so the writer emits a part.
+        voice_accumulators.sort_by_key(|accumulator| parse_voice_number(&accumulator.voice));
+        if voice_accumulators.is_empty() {
+            voice_accumulators.push(VoiceAccumulator {
+                voice: "1".to_owned(),
+                events: Vec::new(),
+                measures: Vec::new(),
+            });
+        }
+
+        let voices: Vec<Voice> = voice_accumulators
+            .into_iter()
+            .enumerate()
+            .map(|(index, accumulator)| {
+                // S3: the writer emits one `<midi-instrument>` per voice that
+                // carried `%%MIDI` sound metadata, in voice order; attach each
+                // recovered instrument to the voice at the same index. A voice
+                // with no instrument keeps `None` (no extra `<midi-instrument>`).
+                let midi_instrument = entry.and_then(|entry| entry.instruments.get(index).copied());
+                // Only the first (staff) voice carries the header clef/transpose
+                // and its ABC `transpose=` property; extra voices share the staff
+                // but the writer reads clef/transpose from the FIRST qualifying
+                // voice per part, so leaving extras default reproduces the single
+                // `<clef>`/`<transpose>` emission.
+                let (init_props, transpose) = if index == 0 {
+                    (initial_properties.clone(), midi_transpose)
+                } else {
+                    (VoicePropertiesModel::default(), None)
+                };
+                let voice_id = VoiceId {
+                    value: voice_id_value(&id, &accumulator.voice, index),
+                    span: READER_SPAN,
+                };
+                Voice {
+                    id: voice_id,
+                    staff: staff_id,
+                    initial_properties: init_props.clone(),
+                    properties: init_props,
+                    measures: accumulator.measures,
+                    events: accumulator.events,
+                    midi_instrument,
+                    midi_transpose: transpose,
+                    source_span: READER_SPAN,
+                }
+            })
+            .collect();
+
+        let staff_voice_ids: Vec<VoiceId> = voices.iter().map(|voice| voice.id.clone()).collect();
 
         PartOutcome {
             part: Part {
@@ -700,10 +783,10 @@ impl Reader {
                 name,
                 staves: vec![Staff {
                     id: staff_id,
-                    voices: vec![voice_id],
+                    voices: staff_voice_ids,
                     source_span: READER_SPAN,
                 }],
-                voices: vec![voice],
+                voices,
                 source_span: READER_SPAN,
             },
             header_tempo,
@@ -732,26 +815,19 @@ impl Reader {
         capture_header_tempo: bool,
         is_part_first_measure: bool,
     ) -> MeasureOutcome {
-        let mut events = Vec::new();
-        // The writer reconstructs onsets with a per-sequence cursor that
-        // <forward> advances and <backup> rewinds; inverting it means tracking
-        // the same cursor across the measure's children in document order.
-        let mut cursor = Fraction::zero();
-        let mut max_cursor = Fraction::zero();
-        // Detect a full-measure rest (`<rest measure="yes">`) so re-emission
-        // reproduces the `measure="yes"` attribute (the writer gates it on
-        // `expected_duration == duration == actual_duration` at onset 0).
-        let mut measure_rest_duration: Option<Fraction> = None;
-        // S4 tuplet reconstruction tracks tuplets open across the measure's
-        // notes: a `<tuplet type="start">` opens one, a middle note with only a
-        // `<time-modification>` continues it, and `type="stop"` closes it.
-        let mut open_tuplets = OpenTuplets::default();
-        // S5a: the writer emits a (timed) event's `<direction>`s immediately
-        // BEFORE the event (`write_harmony_and_directions` runs first in
-        // `write_event`). Inverting it means buffering each voice-bearing
-        // direction's reconstructed attachments and flushing them onto the next
-        // timed event (note, rest, or `TempoChange`).
-        let mut pending = EventAttachments::default();
+        // S6d: the writer interleaves a part's multiple voices with `<backup>`
+        // and a per-sequence `<voice>` number. Each voice's notes (and the
+        // directions/harmony/notations emitted just before them) form a
+        // contiguous region; the reader partitions the measure by `<voice>` into
+        // independent [`VoiceMeasureState`]s, each replicating the single-voice
+        // reconstruction (its own onset cursor, buffered directions, grace run,
+        // chord head, open tuplets, and measure-rest bookkeeping). `voices`
+        // preserves first-seen order; it is sorted numerically at assembly so
+        // `<voice>1` maps to `part.voices[0]`. `current_voice` selects the active
+        // region's state, switched by each note's `<voice>` (a direction/harmony
+        // uses its own `<voice>` when present, else the active one).
+        let mut voices: Vec<(String, VoiceMeasureState)> = Vec::new();
+        let mut current_voice: String = "1".to_owned();
         // The header tempo (`write_initial_directions`) is the FIRST voice-less
         // tempo direction before the first note of part 1's first measure; once
         // captured, later tempo directions are mid-tune `TempoChange` events.
@@ -762,49 +838,43 @@ impl Reader {
         // `<transpose>`), already read into `metadata`/`initial_properties`. Skip
         // exactly that ONE leading block; every other `<attributes>` (a second
         // block after notes, or the first block of a non-leading measure) is a
-        // mid-tune `KeyChange`/`MeterChange`/`ClefChange`. Off the first measure
-        // there is no header block, so this stays `true` and every `<attributes>`
-        // is treated as a mid-tune change.
+        // mid-tune `KeyChange`/`MeterChange`/`ClefChange` (or, S6d, a
+        // `<measure-style><multiple-rest>`). Off the first measure there is no
+        // header block, so this stays `true` and every `<attributes>` is treated
+        // as a mid-tune change.
         let mut header_attributes_consumed = !is_part_first_measure;
         // S6a: the `<barline>` blocks reconstructed into the measure's
-        // `barlines`/`repeat_endings`. `next_right_span_start` gives every
-        // *trailing* (right) barline a distinct, non-zero `span.start` so the
-        // writer's `is_leading_barline` classifies it as a right barline (and so
-        // `unique_barlines` keeps document order via the span sort); a *leading*
-        // (left) barline keeps `span.start == 0` to match the measure's
-        // `READER_SPAN` source span. See [`Reader::read_barline`].
+        // `barlines`/`repeat_endings` (measure-level — they belong to voice 1).
+        // `next_right_span_start` gives every *trailing* (right) barline a
+        // distinct, non-zero `span.start` so the writer's `is_leading_barline`
+        // classifies it as a right barline (and so `unique_barlines` keeps
+        // document order via the span sort); a *leading* (left) barline keeps
+        // `span.start == 0` to match the measure's `READER_SPAN` source span.
         let mut barlines: Vec<MeasureBarline> = Vec::new();
         let mut repeat_endings: Vec<RepeatEndingModel> = Vec::new();
         let mut next_right_span_start: usize = 1;
-        // S6c: a run of consecutive `<grace>` notes is collected into one
-        // [`GraceGroupAttachment`] (a grace chord is grace notes joined by
-        // `<chord/>`). The run is BEFORE-grace when a main `<note>` follows it
-        // directly (the writer emits a note's grace groups just before the note),
-        // and AFTER-grace when it instead runs to the end of the measure with no
-        // following main note (the writer emits after-grace notes after the owner
-        // note). `pending_graces` holds finalised before-grace groups awaiting
-        // their following main note; `grace_builder` is the run currently open;
-        // `last_main_event` indexes the most recent main (note/chord) event so an
-        // after-grace run can bind to it.
-        let mut grace_builder: Option<GraceGroupBuilder> = None;
-        let mut pending_graces: Vec<GraceGroupAttachment> = Vec::new();
-        let mut last_main_event: Option<usize> = None;
-        // S6c: each reconstructed chord needs a DISTINCT `source_span` (== its
-        // `TimedEvent.source`) so the writer's `write_chord` first-member
-        // attachment lookup (`timed.source == chord.source_span`) resolves to
-        // THIS chord, not the first same-onset event. A monotonic high base keeps
-        // these spans clear of the zero-duration change events (which keep
-        // `start == 0` and must sort BEFORE a note at the same onset).
-        let mut next_chord_span_start: usize = 1_000_000;
+        // S6d: `<measure-style><multiple-rest>N` (the writer's
+        // `write_multiple_rest_measure_style`) is its own `<attributes>` wrapper.
+        // It is a measure-level glyph hint (`Measure.multiple_rest`), not a
+        // key/meter/clef change.
+        let mut multiple_rest: Option<u32> = None;
 
         for child in element_children(measure_node) {
             match child.tag_name().name() {
                 "note" => {
+                    // The note's `<voice>` selects (and switches to) its region's
+                    // state. The writer emits `<voice>` on every note, so this is
+                    // present for croma output; missing → the active voice.
+                    let voice = note_voice_number(child).unwrap_or_else(|| current_voice.clone());
+                    current_voice = voice.clone();
+                    let state = voice_state(&mut voices, &voice);
                     // S6c: a `<grace>` note joins the open grace run (starting one
                     // if needed) and produces NO timed event. It is finalised when
                     // the following main note or the measure end is reached.
                     if child_element(child, "grace").is_some() {
-                        let builder = grace_builder.get_or_insert_with(GraceGroupBuilder::default);
+                        let builder = state
+                            .grace_builder
+                            .get_or_insert_with(GraceGroupBuilder::default);
                         self.push_grace_note(builder, child);
                         seen_note = true;
                         continue;
@@ -812,8 +882,8 @@ impl Reader {
                     // A main note terminates any open grace run as a BEFORE-grace
                     // group bound to THIS note (the writer emits a note's grace
                     // groups immediately before it, with nothing in between).
-                    if let Some(builder) = grace_builder.take() {
-                        pending_graces.push(builder.finish());
+                    if let Some(builder) = state.grace_builder.take() {
+                        state.pending_graces.push(builder.finish());
                     }
 
                     let Some(parsed) = self.read_note(child, divisions) else {
@@ -822,12 +892,13 @@ impl Reader {
                     seen_note = true;
 
                     if parsed.measure_rest {
-                        measure_rest_duration = Some(parsed.duration);
+                        state.measure_rest_duration = Some(parsed.duration);
                     }
 
                     // S4: reconstruct this note's `<notations>` +
                     // `<time-modification>` into its `EventAttachments`.
-                    let mut attachments = self.read_note_attachments(child, &mut open_tuplets);
+                    let mut attachments =
+                        self.read_note_attachments(child, &mut state.open_tuplets);
 
                     if parsed.chord_member {
                         // S6c: a `<chord/>` member folds into the previous main
@@ -835,11 +906,11 @@ impl Reader {
                         // extending an existing Chord). It carries its own
                         // per-member attachments and never advances the cursor.
                         self.fold_chord_member(
-                            &mut events,
-                            last_main_event,
+                            &mut state.events,
+                            state.last_main_event,
                             parsed,
                             attachments,
-                            &mut next_chord_span_start,
+                            &mut state.next_chord_span_start,
                         );
                         continue;
                     }
@@ -848,32 +919,36 @@ impl Reader {
                     // (the writer emitted them just before this note), then attach
                     // the finalised before-grace groups (emitted between the
                     // directions and the note).
-                    prepend_attachments(&mut attachments, std::mem::take(&mut pending));
+                    prepend_attachments(&mut attachments, std::mem::take(&mut state.pending));
                     attachments
                         .grace_groups
-                        .extend(std::mem::take(&mut pending_graces));
+                        .extend(std::mem::take(&mut state.pending_graces));
 
-                    last_main_event = Some(events.len());
-                    events.push(TimedEvent {
+                    state.last_main_event = Some(state.events.len());
+                    state.events.push(TimedEvent {
                         measure: measure_id,
-                        onset: cursor,
+                        onset: state.cursor,
                         duration: parsed.duration,
                         source: READER_SPAN,
                         kind: parsed.kind,
                         attachments,
                     });
 
-                    cursor = cursor.checked_add(parsed.duration);
-                    max_cursor = max_fraction(max_cursor, cursor);
+                    state.cursor = state.cursor.checked_add(parsed.duration);
+                    state.max_cursor = max_fraction(state.max_cursor, state.cursor);
                 }
                 "harmony" => {
                     // S5b: the writer emits a chord symbol's `<harmony>` from
                     // `write_harmony_and_directions`, BEFORE the event's
-                    // `<direction>`s and `<note>`. Buffer it onto `pending` so it
-                    // flushes (chord_symbols first) onto the next event, exactly
-                    // as the writer emits chord symbols before annotations.
+                    // `<direction>`s and `<note>`. Buffer it onto the owning
+                    // voice's `pending` so it flushes (chord_symbols first) onto
+                    // the next event. A `<harmony>` carries no `<voice>`; it
+                    // belongs to the active region's voice.
                     if let Some(symbol) = self.read_harmony(child) {
-                        pending.chord_symbols.push(symbol);
+                        voice_state(&mut voices, &current_voice)
+                            .pending
+                            .chord_symbols
+                            .push(symbol);
                     }
                 }
                 "direction" => {
@@ -887,34 +962,48 @@ impl Reader {
                                 // The writer emits a TempoChange's own attachments
                                 // (any directions right before it) before the
                                 // metronome, so the buffered directions belong to
-                                // this zero-duration event.
-                                events.push(TimedEvent {
+                                // this zero-duration event. A tempo is voice-less
+                                // but lowers within a voice's sequence; route it to
+                                // the active region's voice.
+                                let state = voice_state(&mut voices, &current_voice);
+                                state.events.push(TimedEvent {
                                     measure: measure_id,
-                                    onset: cursor,
+                                    onset: state.cursor,
                                     duration: Fraction::zero(),
                                     source: READER_SPAN,
                                     kind: TimedEventKind::TempoChange(tempo),
-                                    attachments: std::mem::take(&mut pending),
+                                    attachments: std::mem::take(&mut state.pending),
                                 });
                             }
                         }
                         // A voice-bearing direction (annotation words, dynamics,
-                        // coda/segno, wedge): buffer it for the next event.
+                        // coda/segno, wedge): buffer it for the next event of its
+                        // `<voice>` (falling back to the active region's voice).
                         ParsedDirection::Event(attachments) => {
-                            pending.extend(attachments);
+                            let voice = direction_voice_number(child)
+                                .unwrap_or_else(|| current_voice.clone());
+                            current_voice = voice.clone();
+                            voice_state(&mut voices, &voice).pending.extend(attachments);
                         }
                         ParsedDirection::Ignored => {}
                     }
                 }
                 "forward" => {
                     if let Some(duration) = self.read_duration(child, divisions) {
-                        cursor = cursor.checked_add(duration);
-                        max_cursor = max_fraction(max_cursor, cursor);
+                        let state = voice_state(&mut voices, &current_voice);
+                        state.cursor = state.cursor.checked_add(duration);
+                        state.max_cursor = max_fraction(state.max_cursor, state.cursor);
                     }
                 }
                 "backup" => {
+                    // A `<backup>` rewinds the active region's cursor; the writer
+                    // emits it to return to onset 0 before the next voice. The next
+                    // note's `<voice>` switches state, and that voice's cursor
+                    // already starts at 0, so the rewind only affects the region it
+                    // closes (harmless), keeping each voice's onsets relative to 0.
                     if let Some(duration) = self.read_duration(child, divisions) {
-                        cursor = subtract_fraction(cursor, duration);
+                        let state = voice_state(&mut voices, &current_voice);
+                        state.cursor = subtract_fraction(state.cursor, duration);
                     }
                 }
                 "barline" => {
@@ -935,18 +1024,26 @@ impl Reader {
                     seen_note = true;
                 }
                 "attributes" => {
+                    // S6d: a `<measure-style><multiple-rest>N>` is a measure-level
+                    // glyph hint regardless of header status; capture it first.
+                    if let Some(count) = read_multiple_rest(child) {
+                        multiple_rest = Some(count);
+                    }
                     // The header `<attributes>` (the part's first measure's first
                     // block) is read elsewhere into `metadata`/`initial_properties`;
-                    // skip it once. Any OTHER `<attributes>` is a mid-tune change.
+                    // skip it once. Any OTHER `<attributes>` is a mid-tune change
+                    // (its key/meter/clef children) routed to the active voice.
                     if !header_attributes_consumed {
                         header_attributes_consumed = true;
                     } else {
+                        let cursor = voice_state(&mut voices, &current_voice).cursor;
+                        let state = voice_state(&mut voices, &current_voice);
                         self.read_mid_measure_attributes(
                             child,
                             measure_id,
                             cursor,
-                            &mut events,
-                            &mut pending,
+                            &mut state.events,
+                            &mut state.pending,
                         );
                         // S6b×S5a: the writer emits a true HEADER tempo
                         // (`write_initial_directions`) BEFORE any measure-sequence
@@ -959,75 +1056,91 @@ impl Reader {
                         seen_note = true;
                     }
                 }
-                // <harmony>/<lyric> etc. are read in their own arms / later stages.
+                // <lyric> etc. are read in their own arms / later stages.
                 _ => {}
             }
         }
 
-        // S6c: a grace run still open at the END of the measure had no following
-        // main note, so it is an AFTER-grace group bound to the most recent main
-        // (note/chord) event — the writer emits after-grace notes right after the
-        // owner note, which lands them at the measure tail. With no preceding main
-        // event (a measure of only grace notes — croma never emits this) the group
-        // is dropped with a diagnostic rather than fabricated onto nothing.
-        if let Some(builder) = grace_builder.take() {
-            let group = builder.finish();
-            match last_main_event.and_then(|index| events.get_mut(index)) {
-                Some(event) => event.attachments.after_grace_groups.push(group),
-                None => self.warn(
-                    "musicxml.read.orphan_grace",
-                    "a trailing <grace> run has no preceding note to bind as an after-grace; dropped",
-                ),
+        // Finalise each voice's region: drain an open after-grace run and a
+        // trailing direction/harmony Spacer, then compute the measure durations.
+        let mut voice_measures: Vec<(String, VoiceMeasure)> = Vec::new();
+        for (voice, mut state) in voices {
+            // S6c: a grace run still open at the END of the measure had no
+            // following main note, so it is an AFTER-grace group bound to the most
+            // recent main (note/chord) event — the writer emits after-grace notes
+            // right after the owner note, landing them at the measure tail. With no
+            // preceding main event the group is dropped with a diagnostic rather
+            // than fabricated onto nothing.
+            if let Some(builder) = state.grace_builder.take() {
+                let group = builder.finish();
+                match state.last_main_event.and_then(|index| state.events.get_mut(index)) {
+                    Some(event) => event.attachments.after_grace_groups.push(group),
+                    None => self.warn(
+                        "musicxml.read.orphan_grace",
+                        "a trailing <grace> run has no preceding note to bind as an after-grace; dropped",
+                    ),
+                }
             }
-        }
-        // `pending_graces` is always drained onto the first following main note in
-        // the loop, so it is empty here; assert that invariant for the reader's own
-        // robustness rather than fabricating a binding.
-        debug_assert!(
-            pending_graces.is_empty(),
-            "before-grace groups must drain onto their following note"
-        );
-        let _ = pending_graces;
+            // `pending_graces` always drains onto the first following main note in
+            // the loop, so it is empty here.
+            debug_assert!(
+                state.pending_graces.is_empty(),
+                "before-grace groups must drain onto their following note"
+            );
 
-        // S5a/S5b: directions or chord symbols with no following note in this
-        // measure (e.g. a pre-barline `!segno!` or a trailing `"C"` chord, or a
-        // note-less measure carrying only an annotation) are emitted by the writer
-        // on a zero-duration `Spacer` event whose `write_event` emits its
-        // harmony/directions then nothing. Reconstruct that Spacer so the trailing
-        // attachments re-emit at the end of the measure.
-        if !pending.chord_symbols.is_empty()
-            || !pending.annotations.is_empty()
-            || !pending.decorations.is_empty()
-        {
-            events.push(TimedEvent {
-                measure: measure_id,
-                onset: cursor,
-                duration: Fraction::zero(),
-                source: READER_SPAN,
-                kind: TimedEventKind::Spacer,
-                attachments: std::mem::take(&mut pending),
-            });
-        }
+            // S5a/S5b: directions or chord symbols with no following note in this
+            // voice's region (a pre-barline `!segno!`, a trailing `"C"` chord, or a
+            // note-less measure carrying only an annotation) are emitted by the
+            // writer on a zero-duration `Spacer` whose `write_event` emits its
+            // harmony/directions then nothing. Reconstruct that Spacer so the
+            // trailing attachments re-emit at the region's end.
+            if !state.pending.chord_symbols.is_empty()
+                || !state.pending.annotations.is_empty()
+                || !state.pending.decorations.is_empty()
+            {
+                state.events.push(TimedEvent {
+                    measure: measure_id,
+                    onset: state.cursor,
+                    duration: Fraction::zero(),
+                    source: READER_SPAN,
+                    kind: TimedEventKind::Spacer,
+                    attachments: std::mem::take(&mut state.pending),
+                });
+            }
 
-        // A measure rest forces `expected_duration == actual_duration ==
-        // rest.duration` at onset 0; otherwise leave `expected_duration` unset
-        // so ordinary rests stay plain (the writer's measure-rest predicate is
-        // `expected_duration.is_some_and(...)`). `actual_duration` is the
-        // furthest cursor reached.
-        let (expected_duration, actual_duration) = match measure_rest_duration {
-            Some(duration) => (Some(duration), duration),
-            None => (None, max_cursor),
-        };
+            // A measure rest forces `expected == actual == rest.duration` at onset
+            // 0; otherwise leave `expected` unset so ordinary rests stay plain (the
+            // writer's measure-rest predicate is `expected.is_some_and(...)`).
+            // `actual` is the furthest cursor reached.
+            let (expected_duration, actual_duration) = match state.measure_rest_duration {
+                Some(duration) => (Some(duration), duration),
+                None => (None, state.max_cursor),
+            };
+            voice_measures.push((
+                voice,
+                VoiceMeasure {
+                    events: state.events,
+                    expected_duration,
+                    actual_duration,
+                },
+            ));
+        }
+        // Order voices by their numeric `<voice>` value so `"1"` maps to
+        // `part.voices[0]` (the writer numbers `part.voices[i]` as `i + 1`).
+        voice_measures.sort_by_key(|(voice, _)| parse_voice_number(voice));
 
         MeasureOutcome {
-            events,
+            voices: voice_measures,
             header_tempo,
             measure: Measure {
                 id: measure_id,
                 source_span: READER_SPAN,
-                expected_duration,
-                actual_duration,
-                multiple_rest: None,
+                // The measure skeleton's own duration belongs to voice 1; the
+                // per-voice durations are carried in `VoiceMeasure` and applied at
+                // assembly (`read_part`). Defaults here are overwritten there.
+                expected_duration: None,
+                actual_duration: Fraction::zero(),
+                multiple_rest,
                 pickup: false,
                 complete: true,
                 barlines,
@@ -1085,6 +1198,10 @@ impl Reader {
                     );
                     None
                 }
+                // S6d: `<measure-style><multiple-rest>` is read in the caller's
+                // `<attributes>` arm into `Measure.multiple_rest`; it is not a
+                // key/meter/clef change, so ignore it silently here.
+                "measure-style" => None,
                 other => {
                     self.warn(
                         "musicxml.read.unsupported_mid_measure_attribute",
@@ -2194,6 +2311,52 @@ struct PartListEntry {
     instruments: Vec<MidiInstrumentModel>,
 }
 
+/// S6d: accumulates one voice's reconstruction across a part's measures — its
+/// `<voice>` string (for ordering and `slur_voice_key` derivation), its full
+/// `TimedEvent` stream, and one [`Measure`] per measure where it has content.
+struct VoiceAccumulator {
+    voice: String,
+    events: Vec<TimedEvent>,
+    measures: Vec<Measure>,
+}
+
+/// S6d: borrow the [`VoiceAccumulator`] for `voice`, creating it (preserving
+/// first-seen order) when absent.
+fn voice_accumulator<'a>(
+    accumulators: &'a mut Vec<VoiceAccumulator>,
+    voice: &str,
+) -> &'a mut VoiceAccumulator {
+    let index = match accumulators
+        .iter()
+        .position(|accumulator| accumulator.voice == voice)
+    {
+        Some(index) => index,
+        None => {
+            accumulators.push(VoiceAccumulator {
+                voice: voice.to_owned(),
+                events: Vec::new(),
+                measures: Vec::new(),
+            });
+            accumulators.len() - 1
+        }
+    };
+    &mut accumulators[index]
+}
+
+/// S6d: the `VoiceId.value` for a reconstructed voice. The first (index 0) voice
+/// keeps the part id (matching the single-voice reconstruction and preserving its
+/// `slur_voice_key`); each additional voice gets a distinct key derived from the
+/// part id and its `<voice>` number, so the writer's per-voice `SlurNumbers`
+/// (keyed on `slur_voice_key`) numbers each voice's slurs independently — exactly
+/// as the original multi-voice lowering did.
+fn voice_id_value(part_id: &str, voice: &str, index: usize) -> String {
+    if index == 0 {
+        part_id.to_owned()
+    } else {
+        format!("{part_id}#{}", voice.trim())
+    }
+}
+
 /// One `<part>` reconstructed, plus the header [`TempoModel`] (S5a) captured from
 /// a voice-less tempo direction before its first note. Only part 1 yields a
 /// header tempo; for every other part it is `None`.
@@ -2202,13 +2365,78 @@ struct PartOutcome {
     header_tempo: Option<TempoModel>,
 }
 
+/// S6d: the reconstruction of one `<measure>` across ALL its `<voice>`s. The
+/// writer interleaves multiple voices of one part with `<backup>` and a
+/// per-sequence `<voice>` number; the reader inverts that by partitioning the
+/// measure's `<note>`s (and their directions/harmony/notations) by `<voice>`,
+/// reconstructing each voice's [`TimedEvent`] stream independently.
+///
+/// - `voices` is ordered by the numeric `<voice>` value (so `"1"` comes first).
+///   Each entry is one voice's [`VoiceMeasure`] for THIS measure.
+/// - `measure` is the structural skeleton (id, barlines, endings, multiple_rest)
+///   that belongs to the **measure** (voice 1). Extra voices reuse the id but
+///   carry empty structure; the writer reads barlines/endings/multiple-rest from
+///   any voice's measure via a deduping union, so attaching them to voice 1 is
+///   sufficient and avoids double-emission.
 struct MeasureOutcome {
-    events: Vec<TimedEvent>,
+    voices: Vec<(String, VoiceMeasure)>,
     measure: Measure,
     /// The header tempo (S5a) when this measure was the header-eligible first
     /// measure of part 1 and a voice-less tempo direction preceded its first
     /// note. `None` otherwise.
     header_tempo: Option<TempoModel>,
+}
+
+/// One voice's reconstruction within a single measure: its [`TimedEvent`] stream
+/// plus the `expected`/`actual` measure durations that drive the writer's
+/// measure-rest predicate ([`MeasureSequence::is_full_measure_rest`]).
+struct VoiceMeasure {
+    events: Vec<TimedEvent>,
+    expected_duration: Option<Fraction>,
+    actual_duration: Fraction,
+}
+
+/// S6d: the per-voice transient state threaded through one measure's
+/// document-order walk. Each `<voice>` region (the writer emits them
+/// contiguously, separated by `<backup>`) accumulates into its own state: an
+/// independent onset `cursor`, the buffered `pending` directions/harmony, the
+/// open grace run, the most recent main event (for chord folding / after-grace),
+/// the open-tuplet set, and the measure-rest / furthest-cursor bookkeeping. This
+/// mirrors the single-voice reader exactly, replicated per voice.
+struct VoiceMeasureState {
+    events: Vec<TimedEvent>,
+    cursor: Fraction,
+    max_cursor: Fraction,
+    measure_rest_duration: Option<Fraction>,
+    pending: EventAttachments,
+    open_tuplets: OpenTuplets,
+    grace_builder: Option<GraceGroupBuilder>,
+    pending_graces: Vec<GraceGroupAttachment>,
+    last_main_event: Option<usize>,
+    next_chord_span_start: usize,
+}
+
+impl Default for VoiceMeasureState {
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            cursor: Fraction::zero(),
+            max_cursor: Fraction::zero(),
+            measure_rest_duration: None,
+            pending: EventAttachments::default(),
+            open_tuplets: OpenTuplets::default(),
+            grace_builder: None,
+            pending_graces: Vec::new(),
+            last_main_event: None,
+            // S6c: each reconstructed chord needs a DISTINCT `source_span` so the
+            // writer's `write_chord` first-member lookup resolves to it; a high
+            // monotonic base keeps these clear of the zero-duration mid-tune
+            // change events (which keep `start == 0` and must sort BEFORE a note
+            // at the same onset). Voices never share a span comparison, so each
+            // voice's chord spans starting at the same base is safe.
+            next_chord_span_start: 1_000_000,
+        }
+    }
 }
 
 /// S5a: the classification of one `<direction>` by the reader.
@@ -2803,6 +3031,56 @@ fn parse_u32(reader: &mut Reader, node: Node<'_, '_>, label: &str) -> Option<u32
             None
         }
     }
+}
+
+/// S6d: the `<voice>` text of a `<note>` (the writer emits one on every note), or
+/// `None` when absent. Used to partition a measure's notes by voice.
+fn note_voice_number(note_node: Node<'_, '_>) -> Option<String> {
+    child_text(note_node, "voice").map(str::to_owned)
+}
+
+/// S6d: the `<voice>` text of a `<direction>` (the writer emits one on every
+/// voice-bearing direction), or `None` when absent (e.g. a voice-less tempo
+/// direction, handled separately).
+fn direction_voice_number(direction: Node<'_, '_>) -> Option<String> {
+    child_text(direction, "voice").map(str::to_owned)
+}
+
+/// S6d: the numeric value of a `<voice>` string for ordering. A non-numeric
+/// voice (never croma's output) sorts last so it does not displace `"1"`.
+fn parse_voice_number(voice: &str) -> u32 {
+    voice.trim().parse::<u32>().unwrap_or(u32::MAX)
+}
+
+/// S6d: borrow the [`VoiceMeasureState`] for `voice`, creating it (preserving
+/// first-seen order) when absent. Computing the index before borrowing keeps the
+/// borrow checker happy for the create-then-return path.
+fn voice_state<'a>(
+    voices: &'a mut Vec<(String, VoiceMeasureState)>,
+    voice: &str,
+) -> &'a mut VoiceMeasureState {
+    let index = match voices.iter().position(|(name, _)| name == voice) {
+        Some(index) => index,
+        None => {
+            voices.push((voice.to_owned(), VoiceMeasureState::default()));
+            voices.len() - 1
+        }
+    };
+    &mut voices[index].1
+}
+
+/// S6d: read a `<measure-style><multiple-rest>N</multiple-rest>` count from an
+/// `<attributes>` block, the inverse of
+/// [`MusicXmlWriter::write_multiple_rest_measure_style`]. Only `N > 1` is a real
+/// multi-rest glyph (the writer's `unique_multiple_rest` re-emits only `> 1`), so
+/// a `0`/`1`/unparsable value yields `None`.
+fn read_multiple_rest(attributes: Node<'_, '_>) -> Option<u32> {
+    let measure_style = child_element(attributes, "measure-style")?;
+    let count = child_text(measure_style, "multiple-rest")?
+        .trim()
+        .parse::<u32>()
+        .ok()?;
+    (count > 1).then_some(count)
 }
 
 #[cfg(test)]
