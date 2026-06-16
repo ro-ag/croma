@@ -3525,3 +3525,503 @@ fn totality_fuzz_read_musicxml_never_panics() {
         "malformed input(s) produced NO diagnostic (must degrade with a warning): {malformed_without_diagnostic:?}"
     );
 }
+
+// --- R1b: complete_score_for_abc (the ABC-projection completion pass) ---------
+
+#[cfg(feature = "musicxml-reader")]
+mod abc_completion {
+    use super::*;
+    use crate::model::BarlineKind;
+    use crate::musicxml::read::complete_score_for_abc;
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    use crate::{LowerOptions, ParseOptions, lower_score, parse_document};
+
+    /// Reconstruct a Score from `abc`'s forward MusicXML and run the ABC
+    /// completion pass — exactly what `croma read --format abc` does.
+    fn completed_from_abc(abc: &str) -> Score {
+        let x1 = export(abc);
+        let mut score = read_musicxml(&x1).value;
+        complete_score_for_abc(&mut score);
+        score
+    }
+
+    /// Lower an ABC fixture to a Score (panicking on a lower failure).
+    fn lower(abc: &str) -> Score {
+        let document = parse_document(abc, ParseOptions::default()).value;
+        lower_score(&document, LowerOptions)
+            .value
+            .expect("fixture ABC should lower cleanly")
+    }
+
+    /// Every barline kind in `voice.events`, in event order.
+    fn event_barline_kinds(score: &Score) -> Vec<BarlineKind> {
+        let mut kinds = Vec::new();
+        for part in &score.parts {
+            for voice in &part.voices {
+                for event in &voice.events {
+                    if let TimedEventKind::Barline(b) = &event.kind {
+                        kinds.push(b.kind);
+                    }
+                }
+            }
+        }
+        kinds
+    }
+
+    /// The flat (step, alter, octave) pitch sequence of voice 0 of every part.
+    fn pitch_sequence(score: &Score) -> Vec<(char, i32, i32)> {
+        let mut pitches = Vec::new();
+        for part in &score.parts {
+            for voice in &part.voices {
+                for event in &voice.events {
+                    if let TimedEventKind::Note(note) = &event.kind {
+                        pitches.push((
+                            note.pitch.step,
+                            i32::from(note.pitch.alter),
+                            i32::from(note.pitch.octave),
+                        ));
+                    }
+                }
+            }
+        }
+        pitches
+    }
+
+    /// Measure count = number of `Measure`s in voice 0 of part 0.
+    fn measure_count(score: &Score) -> usize {
+        score.parts[0].voices[0].measures.len()
+    }
+
+    /// The flat played-duration sequence of voice 0 of every part: the
+    /// `event.duration` of every Note/Rest/Chord, in event order. This is the
+    /// already-tuplet-scaled (sounding) duration the lowering carries — the
+    /// quantity the ABC projection must preserve through XML -> ABC -> Score.
+    fn played_duration_sequence(score: &Score) -> Vec<crate::model::Rational> {
+        let mut durations = Vec::new();
+        for part in &score.parts {
+            for voice in &part.voices {
+                for event in &voice.events {
+                    if matches!(
+                        event.kind,
+                        TimedEventKind::Note(_)
+                            | TimedEventKind::Rest(_)
+                            | TimedEventKind::Chord(_)
+                    ) {
+                        durations.push(event.duration);
+                    }
+                }
+            }
+        }
+        durations
+    }
+
+    #[test]
+    fn completion_synthesizes_voice_barline_events_from_measure_structure() {
+        // Before the pass, the reader leaves voice.events barline-free.
+        let x1 = export("X:1\nL:1/4\nK:C\nC D E F | G A B c |\n");
+        let raw = read_musicxml(&x1).value;
+        assert!(
+            event_barline_kinds(&raw).is_empty(),
+            "the raw reader output must carry NO barline events (they live in Measure.barlines)"
+        );
+        // After the pass, the INTERNAL boundary `|` is materialised as a Barline
+        // event. Both `|` are plain Regular so neither produced a `<barline>`
+        // element; the final trailing `|` on the LAST measure is structurally
+        // inert and unrecoverable, so only the internal boundary is synthesized
+        // (forward lowering of this tune also yields exactly one event per
+        // internal boundary in the round-tripped projection).
+        let mut completed = raw;
+        complete_score_for_abc(&mut completed);
+        assert_eq!(
+            event_barline_kinds(&completed),
+            vec![BarlineKind::Regular],
+            "the completion pass must synthesize the internal measure boundary `|`"
+        );
+        // The structural gate is measure count, which must be preserved exactly.
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        assert_eq!(
+            measure_count(&lower(&projected)),
+            2,
+            "both measures must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn completed_abc_reparses_to_same_measure_count_and_barline_kinds() {
+        // A multi-measure tune with a leading repeat, a backward repeat, and a
+        // final barline. The completed ABC must carry the right glyphs and
+        // re-parse to the same measure count + barline kinds.
+        let abc = "X:1\nL:1/4\nK:C\n|: C D E F | G A B c :| c B A G |]\n";
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+
+        // Glyph spot-check: every special barline survives into the ABC text.
+        assert!(projected.contains("|:"), "leading repeat: {projected:?}");
+        assert!(projected.contains(":|"), "backward repeat: {projected:?}");
+        assert!(projected.contains("|]"), "final barline: {projected:?}");
+
+        // Structural: re-parsing the projected ABC yields the same measure count
+        // and the same barline-kind sequence as lowering the original ABC.
+        let reference = lower(abc);
+        let reparsed = lower(&projected);
+        assert_eq!(
+            measure_count(&reparsed),
+            measure_count(&reference),
+            "measure count must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        assert_eq!(
+            event_barline_kinds(&reparsed),
+            event_barline_kinds(&reference),
+            "barline kinds must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn completion_sets_canonical_major_key_display_from_fifths() {
+        // fifths = -3 (E-flat major). The raw reader leaves display empty; the
+        // pass must fill the canonical major spelling so `K:` is non-empty.
+        let x1 = export("X:1\nL:1/4\nK:Eb\nE F G A | B c d e |\n");
+        let raw = read_musicxml(&x1).value;
+        assert_eq!(
+            raw.metadata.key.as_ref().map(|k| k.display.as_str()),
+            Some(""),
+            "the raw reader leaves the key display empty"
+        );
+        let mut completed = raw;
+        complete_score_for_abc(&mut completed);
+        assert_eq!(
+            completed.metadata.key.as_ref().map(|k| k.display.as_str()),
+            Some("Eb"),
+            "fifths -3 must spell as the canonical major key Eb"
+        );
+        // And the projected ABC carries that `K:Eb`.
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        assert!(
+            projected.contains("\nK:Eb\n"),
+            "completed ABC must emit K:Eb, got {projected:?}"
+        );
+    }
+
+    #[test]
+    fn non_c_key_pitch_sequence_survives_xml_to_abc_to_score() {
+        // The empty-K: bug dropped the key fifths (-3 -> 0) and re-applied
+        // accidentals wrongly. With the canonical display, the sounding pitch
+        // sequence must survive ABC -> XML -> Score -> ABC -> Score.
+        let abc = "X:1\nL:1/8\nK:Eb\nE F G A B c d e |\n";
+        let reference = lower(abc);
+        let completed = completed_from_abc(abc);
+        // The reconstructed Score already carries the source sounding pitches.
+        assert_eq!(
+            pitch_sequence(&completed),
+            pitch_sequence(&reference),
+            "reconstruction must preserve the sounding pitch sequence in a non-C key"
+        );
+        // ...and the projected ABC re-parses to that same sequence.
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            pitch_sequence(&reference),
+            "completed ABC must reparse to the same pitches in a non-C key; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn mid_tune_key_change_display_is_filled_canonically() {
+        // A mid-tune `[K:F]` (fifths 1) is reconstructed as a KeyChange event
+        // with empty display, which write_abc would emit as `[K:]` -> fifths 0,
+        // dropping the change. The pass must fill the canonical major spelling so
+        // the inline change re-parses to the same fifths.
+        let abc = "X:1\nL:1/4\nK:C\nC D E F | [K:F] G A B c |\n";
+        let mut score = read_musicxml(&export(abc)).value;
+        complete_score_for_abc(&mut score);
+        let change_displays: Vec<String> = score.parts[0].voices[0]
+            .events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                TimedEventKind::KeyChange(k) => Some(k.display.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            change_displays,
+            vec!["F".to_string()],
+            "mid-tune KeyChange display must be the canonical major spelling for fifths 1"
+        );
+        let projected = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            projected.contains("[K:F]"),
+            "completed ABC must carry the inline [K:F], got {projected:?}"
+        );
+        // Structural: the inline change survives a re-parse (same fifths sequence).
+        let reference = lower(abc);
+        let reparsed = lower(&projected);
+        let key_fifths = |s: &Score| -> Vec<i8> {
+            let mut v = Vec::new();
+            for p in &s.parts {
+                for voice in &p.voices {
+                    for e in &voice.events {
+                        if let TimedEventKind::KeyChange(k) = &e.kind {
+                            v.push(k.fifths);
+                        }
+                    }
+                }
+            }
+            v
+        };
+        assert_eq!(
+            key_fifths(&reparsed),
+            key_fifths(&reference),
+            "mid-tune key fifths must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn first_and_second_endings_round_trip_through_completed_abc() {
+        // A volta bracket: `[1 ... :| [2 ... |]`. The completion pass must
+        // synthesize the RepeatEnding events so write_abc emits the brackets.
+        let abc = "X:1\nL:1/4\n K:C\n|: C D E F |1 G A B c :|2 c B A G |]\n";
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        assert!(projected.contains("[1"), "first ending: {projected:?}");
+        assert!(projected.contains("[2"), "second ending: {projected:?}");
+        // Structural: same measure count + barline kinds after a re-parse.
+        let reference = lower(abc);
+        let reparsed = lower(&projected);
+        assert_eq!(measure_count(&reparsed), measure_count(&reference));
+        assert_eq!(
+            event_barline_kinds(&reparsed),
+            event_barline_kinds(&reference),
+            "ending barline kinds must survive; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn format_xml_inverse_is_byte_identical_with_and_without_completion() {
+        // The load-bearing isolation invariant: the completion pass must NOT
+        // perturb the `write_musicxml` view. For several fixtures, the XML
+        // re-emission must be byte-identical whether or not the pass ran.
+        for abc in [
+            "X:1\nL:1/4\nK:C\nC D E F | G A B c |\n",
+            "X:1\nL:1/4\nK:Eb\n|: E F G A :| B c d e |]\n",
+            "X:1\nL:1/4\nK:D\n|: A B c d |1 e f g a :|2 a g f e |]\n",
+        ] {
+            let x1 = export(abc);
+            let mut score = read_musicxml(&x1).value;
+            let xml_before = write_musicxml(&score).musicxml;
+            complete_score_for_abc(&mut score);
+            let xml_after = write_musicxml(&score).musicxml;
+            assert_eq!(
+                xml_before, xml_after,
+                "completion must not change the write_musicxml inverse for {abc:?}"
+            );
+            // And both equal the original forward XML (the pure inverse holds).
+            assert_eq!(
+                xml_after, x1,
+                "the XML inverse must stay byte-identical to the forward XML for {abc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn key_display_is_left_untouched_when_metadata_key_is_none() {
+        // A reconstructed Score with no key must keep `metadata.key == None`
+        // (write_abc defaults to K:C); the pass must not synthesize one.
+        let mut score = read_musicxml(&export("X:1\nL:1/4\nK:C\nC D E F |\n")).value;
+        score.metadata.key = None;
+        complete_score_for_abc(&mut score);
+        assert!(
+            score.metadata.key.is_none(),
+            "the pass must not synthesize a key when none is present"
+        );
+        let projected = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            projected.contains("\nK:C\n"),
+            "write_abc must default a key-less Score to K:C, got {projected:?}"
+        );
+    }
+
+    #[test]
+    fn tuplets_in_separate_measures_do_not_merge_in_abc_projection() {
+        // R1c regression. The reader assigns tuplet pair_ids FRESH per measure
+        // (correct for write_musicxml, which re-derives the MusicXML number from
+        // an active-set discipline). But write_abc's tuplet_layout groups tuplet
+        // attachments by pair_id GLOBALLY across the whole voice.events, spanning
+        // min..=max. With a triplet in EACH of two measures, both reuse pair_id 0,
+        // so the un-renumbered projection merged them into ONE group spanning the
+        // whole line: an absurd `(3:2:6...`-style span and compounded durations.
+        // The completion pass must renumber pair_ids globally-unique per voice so
+        // each triplet stays its own `(3:2:3` group.
+        let abc = "X:1\nT:TwoMeasureTrips\nM:4/4\nL:1/8\nK:C\n(3CDE A2 z2 | (3FGA c2 z2 |\n";
+
+        // Sanity: the forward XML emits two triplets, both re-numbered `number=1`.
+        let x1 = export(abc);
+        assert_eq!(
+            x1.matches("<tuplet type=\"start\"").count(),
+            2,
+            "precondition: two triplets, one per measure"
+        );
+
+        // The pure reader Score (the per-event sounding durations + pitches the
+        // projection must reproduce).
+        let direct = read_musicxml(&x1).value;
+
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+
+        // The marker must be the clean 3-note triplet form `(3:2:3`, never a
+        // merged super-span like `(3:2:6` (or larger), and there must be exactly
+        // two such markers — one per measure.
+        assert_eq!(
+            projected.matches("(3:2:3").count(),
+            2,
+            "each triplet must project as its own (3:2:3 group; abc {projected:?}"
+        );
+        assert!(
+            !projected.contains("(3:2:4")
+                && !projected.contains("(3:2:5")
+                && !projected.contains("(3:2:6"),
+            "no merged super-span tuplet marker may appear; abc {projected:?}"
+        );
+
+        // Structural: XML -> ABC -> Score reproduces the same per-event sounding
+        // durations AND pitch sequence as reading the XML directly. (A merged
+        // tuplet group compounded the durations, so this is the load-bearing
+        // assertion; the marker check above guards the surface symptom.)
+        let reparsed = lower(&projected);
+        assert_eq!(
+            played_duration_sequence(&reparsed),
+            played_duration_sequence(&direct),
+            "sounding durations must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            pitch_sequence(&direct),
+            "pitch sequence must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+}
+
+// --- R1: ABC -> XML -> Score -> ABC re-emission measurement ------------------
+
+/// Totality arm for the ABC re-emission loop, run over the whole corpus. For
+/// each corpus `.abc` that lowers cleanly, `s1 = lower(parse(abc))`, then we
+/// drive `write_abc(read_musicxml(write_musicxml(&s1).xml).value)` against
+/// `write_abc(&s1)` and count byte-identical full-document matches.
+///
+/// **This arm asserts TOTALITY ONLY (0 panics over ~10k files); the reported
+/// byte-identity count is expected to be near-zero and is NOT a gate.** Full
+/// ABC-*document* byte equality is the wrong bar here: `write_abc` emits
+/// ABC-only state — the `X:` reference number, `W:` post-tune lyrics, `V:` ids,
+/// an empty display `K:` — that the lossy MusicXML round-trip legitimately
+/// drops, so the documents differ by construction even when every structural
+/// musical fact is preserved. The byte count therefore measures nothing useful
+/// and the test makes no hard count assertion on it; it exists to prove the
+/// reader is *total* over the corpus (it never panics). The **real** R1 metric
+/// — a normalized STRUCTURAL projection that ignores this ABC-only state — lives
+/// in `tools/prove_reader_abc_roundtrip.py` (the structural sibling of
+/// `tools/prove_abc_roundtrip.py`), which is where the round-trip *correctness*
+/// proof belongs.
+///
+/// **Report-only**, mirroring the XML measurement's discipline: it prints
+/// `N/total` plus a first-divergence note for a few non-matches and asserts no
+/// hard count. Env-gated on `ABC_ROOT`; a no-op when unset, exactly like the
+/// sibling measurement.
+#[test]
+fn corpus_abc_reemission_through_xml() {
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+
+    let Ok(root) = std::env::var("ABC_ROOT") else {
+        eprintln!("ABC_ROOT unset — skipping R1 ABC-reemission-through-XML measurement");
+        return;
+    };
+    let files = abc_files(&PathBuf::from(&root));
+    if files.is_empty() {
+        eprintln!("no .abc files under {root} — skipping");
+        return;
+    }
+
+    let mut total = 0usize;
+    let mut lowered = 0usize;
+    let mut idempotent = 0usize;
+    let mut first_divergences: Vec<String> = Vec::new();
+
+    for path in &files {
+        let Ok(bytes) = fs::read(path) else { continue };
+        let source = String::from_utf8_lossy(&bytes);
+        total += 1;
+
+        // Only files that export cleanly have an X1 to invert; that same set is
+        // the one that lowers to a Score, so `export_musicxml` is the gate.
+        let Ok(export) = export_musicxml(&source) else {
+            continue;
+        };
+        lowered += 1;
+        let x1 = export.musicxml;
+
+        // s1 = lower(parse(abc)); its canonical ABC is the reference.
+        let document = crate::parse_document(&source, crate::ParseOptions::default()).value;
+        let Some(s1) = crate::lower_score(&document, crate::LowerOptions).value else {
+            continue;
+        };
+        let expected_abc = write_abc(&s1, AbcWriteOptions::default());
+
+        let reconstructed = read_musicxml(&x1).value;
+        let round_trip_abc = write_abc(&reconstructed, AbcWriteOptions::default());
+
+        if round_trip_abc == expected_abc {
+            idempotent += 1;
+        } else if first_divergences.len() < 5 {
+            let line = first_diverging_line(&expected_abc, &round_trip_abc);
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<unknown>");
+            first_divergences.push(format!("{name}: {line}"));
+        }
+    }
+
+    eprintln!(
+        "ABC re-emission through XML (ABC -> XML -> Score -> ABC): {idempotent}/{lowered} \
+         files are BYTE-identical full documents ({total} total .abc). NOTE: this byte \
+         count is EXPECTED to be near-zero and is not a metric — write_abc emits \
+         ABC-only state (X:/W:/V: ids, empty display K:) that the lossy XML round-trip \
+         legitimately drops, so the documents differ by construction. This arm asserts \
+         TOTALITY ONLY (0 panics). The real structural round-trip proof lives in \
+         tools/prove_reader_abc_roundtrip.py."
+    );
+    if !first_divergences.is_empty() {
+        eprintln!("first ABC divergences (up to 5):");
+        for note in &first_divergences {
+            eprintln!("  {note}");
+        }
+    }
+
+    // No hard count on the byte-identity tally: full ABC-document byte equality
+    // is expected to be near-zero (write_abc emits ABC-only state absent from
+    // the lossy XML round-trip), so it is not a gate. The structural proof is
+    // tools/prove_reader_abc_roundtrip.py. Here we require only that the loop is
+    // total over the corpus (no panic) and that at least one file was measured.
+    assert!(
+        lowered > 0,
+        "expected at least one corpus file to lower and export"
+    );
+}
+
+/// The first line at which two ABC documents diverge, rendered as
+/// `` `<expected>` != `<actual>` ``. `None`-free: returns a sentinel when one is
+/// a prefix of the other. Used only for the human-readable divergence note.
+fn first_diverging_line(expected: &str, actual: &str) -> String {
+    for (line_e, line_a) in expected.lines().zip(actual.lines()) {
+        if line_e != line_a {
+            return format!("`{line_e}` != `{line_a}`");
+        }
+    }
+    let expected_lines = expected.lines().count();
+    let actual_lines = actual.lines().count();
+    if expected_lines == actual_lines {
+        "<equal-lines-unequal-bytes>".to_owned()
+    } else {
+        format!("<line-count differs: expected {expected_lines}, actual {actual_lines}>")
+    }
+}
