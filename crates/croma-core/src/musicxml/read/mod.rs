@@ -63,12 +63,13 @@
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AnnotationPlacementModel,
-    DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, KeyAccidentalModel,
-    KeySignatureModel, Measure, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part,
-    PartId, Pitch, RestEvent, RestVisibility, Score, ScoreMetadata, SlurAttachment, SlurRole,
-    Staff, StaffId, TempoBeat, TempoModel, TextAttachment, TextLine, TieAttachment, TieRole,
-    TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice, VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
+    AnnotationPlacementModel, DecorationAttachment, DecorationSourceKind, EventAttachments,
+    Fraction, KeyAccidentalModel, KeySignatureModel, LyricControl, Measure, MeasureId, MeterModel,
+    MidiInstrumentModel, NoteEvent, Part, PartId, Pitch, RestEvent, RestVisibility, Score,
+    ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment,
+    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
+    Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -770,6 +771,16 @@ impl Reader {
                         max_cursor = max_fraction(max_cursor, cursor);
                     }
                 }
+                "harmony" => {
+                    // S5b: the writer emits a chord symbol's `<harmony>` from
+                    // `write_harmony_and_directions`, BEFORE the event's
+                    // `<direction>`s and `<note>`. Buffer it onto `pending` so it
+                    // flushes (chord_symbols first) onto the next event, exactly
+                    // as the writer emits chord symbols before annotations.
+                    if let Some(symbol) = self.read_harmony(child) {
+                        pending.chord_symbols.push(symbol);
+                    }
+                }
                 "direction" => {
                     match self.read_direction(child) {
                         // A voice-less tempo direction: the header tempo when it
@@ -817,12 +828,16 @@ impl Reader {
             }
         }
 
-        // S5a: directions with no following note in this measure (e.g. a
-        // pre-barline `!segno!`, or a note-less measure carrying only an
-        // annotation) are emitted by the writer on a zero-duration `Spacer` event
-        // whose `write_event` emits its directions then nothing. Reconstruct that
-        // Spacer so the trailing directions re-emit at the end of the measure.
-        if !pending.annotations.is_empty() || !pending.decorations.is_empty() {
+        // S5a/S5b: directions or chord symbols with no following note in this
+        // measure (e.g. a pre-barline `!segno!` or a trailing `"C"` chord, or a
+        // note-less measure carrying only an annotation) are emitted by the writer
+        // on a zero-duration `Spacer` event whose `write_event` emits its
+        // harmony/directions then nothing. Reconstruct that Spacer so the trailing
+        // attachments re-emit at the end of the measure.
+        if !pending.chord_symbols.is_empty()
+            || !pending.annotations.is_empty()
+            || !pending.decorations.is_empty()
+        {
             events.push(TimedEvent {
                 measure: measure_id,
                 onset: cursor,
@@ -986,6 +1001,9 @@ impl Reader {
         if let Some(notations) = notations {
             self.read_decorations(notations, &mut attachments.decorations);
         }
+
+        // S5b: the per-`<note>` `<lyric>` block (emitted last in `write_note`).
+        self.read_lyrics(note_node, &mut attachments.lyrics);
 
         attachments
     }
@@ -1171,6 +1189,114 @@ impl Reader {
             beat_denominator,
             bpm,
         })
+    }
+
+    /// S5b: invert [`MusicXmlWriter::write_harmony`]. The writer emits a chord
+    /// symbol's `<harmony>` (`<root>`, `<kind text="…">`, optional `<bass>`,
+    /// `<degree>`s) from the ABC chord-symbol *string*, and crucially preserves
+    /// that exact original string as the `<kind text="…">` attribute. The reader
+    /// therefore reconstructs the [`TextAttachment`] directly from `text`: re-parsing
+    /// it through `parse_chord_symbol` reproduces the identical `<root>`/`<kind>`/
+    /// `<bass>`/`<degree>` tree byte-for-byte, so no kind-value→suffix inversion is
+    /// needed. (The writer only ever emits `<harmony>` when the string parses as a
+    /// chord; a non-chord string is emitted as a `<direction><words>` instead, which
+    /// the S5a direction reader already round-trips as an annotation.)
+    ///
+    /// A `<kind>` with no `text` attribute is not croma's own output (the writer
+    /// always sets it); it has no recoverable ABC source, so it warns and is
+    /// skipped rather than inventing a chord spelling from the kind value.
+    fn read_harmony(&mut self, harmony: Node<'_, '_>) -> Option<TextAttachment> {
+        let text = match child_element(harmony, "kind").and_then(|kind| kind.attribute("text")) {
+            Some(text) => text,
+            None => {
+                self.warn(
+                    "musicxml.read.harmony_without_kind_text",
+                    "<harmony> has no <kind text=...>; chord symbol not reconstructed",
+                );
+                return None;
+            }
+        };
+        Some(TextAttachment {
+            text: text.to_owned(),
+            span: READER_SPAN,
+            // A chord symbol carries no placement (the writer's `<harmony>` has no
+            // placement attribute); the lowering's chord_symbols are placement-less.
+            placement: None,
+        })
+    }
+
+    /// S5b: invert [`MusicXmlWriter::write_lyrics`] + `syllabic_for_lyric` for one
+    /// `<note>`. Each `<lyric number=N>` reconstructs one (or two) [`AlignedLyric`]:
+    ///
+    /// - `<syllabic>` + `<text>` -> an [`LyricControl::Syllable`] carrying the text,
+    ///   plus — when the syllabic is `begin` or `middle` — a trailing
+    ///   [`LyricControl::Hyphen`] on the SAME note. This is the exact inverse of the
+    ///   writer's state machine: it emits `begin`/`middle` precisely when the note's
+    ///   model lyrics contain a `Hyphen` after the syllable (`continues`), and
+    ///   `single`/`end` when they do not, so a trailing model `Hyphen` ⇔ a
+    ///   begin/middle syllabic. (`single`/`end` therefore reconstruct a lone
+    ///   `Syllable`; the begin/middle "open hyphen" cross-note state the writer
+    ///   tracks is fully re-derivable from these per-note encodings, so no reader
+    ///   state is needed.)
+    /// - `<extend/>` (no syllabic/text) -> an [`LyricControl::Extender`] with empty
+    ///   text (the writer emits `<extend/>` only and reads back empty-text Extenders).
+    ///
+    /// `number` -> `verse`. Verses are pushed in document order, reproducing the
+    /// writer's per-note `verse` emission order. The writer never emits a `<lyric>`
+    /// for a `Skip` or a (standalone) `Hyphen` control, so neither is reconstructed
+    /// here; the `Hyphen` is recovered only as the trailing companion of a
+    /// begin/middle syllable above.
+    fn read_lyrics(&mut self, note_node: Node<'_, '_>, out: &mut Vec<AlignedLyric>) {
+        for lyric in children_named(note_node, "lyric") {
+            let verse = lyric
+                .attribute("number")
+                .and_then(|raw| raw.trim().parse::<u32>().ok())
+                .unwrap_or(1);
+
+            let text_node = child_element(lyric, "text");
+            if text_node.is_none() && child_element(lyric, "extend").is_some() {
+                out.push(AlignedLyric {
+                    verse,
+                    text: String::new(),
+                    span: READER_SPAN,
+                    control: LyricControl::Extender,
+                });
+                continue;
+            }
+
+            let Some(text_node) = text_node else {
+                // No <text> and no <extend>: nothing the writer emits maps here.
+                self.warn(
+                    "musicxml.read.lyric_without_text",
+                    "<lyric> has neither <text> nor <extend>; not reconstructed",
+                );
+                continue;
+            };
+            // Use the RAW (untrimmed) text: the writer emits `lyric.text` verbatim,
+            // so a syllable with a trailing/leading space (common in the corpus)
+            // must round-trip byte-for-byte; trimming would drop it.
+            out.push(AlignedLyric {
+                verse,
+                text: raw_text(text_node).to_owned(),
+                span: READER_SPAN,
+                control: LyricControl::Syllable,
+            });
+            // A begin/middle syllabic is the writer's signal that the note's model
+            // lyrics carry a trailing Hyphen; reconstruct it so the same syllabic
+            // is re-derived. The Hyphen's text is never emitted (the writer skips
+            // Hyphen controls), so the canonical "-" is idempotence-invisible.
+            if matches!(
+                child_text(lyric, "syllabic"),
+                Some("begin") | Some("middle")
+            ) {
+                out.push(AlignedLyric {
+                    verse,
+                    text: "-".to_owned(),
+                    span: READER_SPAN,
+                    control: LyricControl::Hyphen,
+                });
+            }
+        }
     }
 
     /// Invert one `<tied>` (or `<note>`-level `<tie>`): `type` -> [`TieRole`],
@@ -1703,14 +1829,18 @@ fn wedge_decoration_name(wedge_type: Option<&str>) -> Option<&'static str> {
     })
 }
 
-/// Prepend `head`'s annotation/decoration channels before `target`'s existing
-/// ones (S5a buffered directions precede the note's own notations). Only the
-/// channels the direction reader populates are merged; the rest of `head` is
-/// always empty.
+/// Prepend `head`'s chord-symbol/annotation/decoration channels before
+/// `target`'s existing ones (S5a/S5b buffered harmony + directions precede the
+/// note's own notations, and the writer emits chord symbols before annotations
+/// before decorations). Only the channels the harmony/direction readers populate
+/// are merged; the rest of `head` is always empty.
 fn prepend_attachments(target: &mut EventAttachments, head: EventAttachments) {
-    if head.annotations.is_empty() && head.decorations.is_empty() {
+    if head.chord_symbols.is_empty() && head.annotations.is_empty() && head.decorations.is_empty() {
         return;
     }
+    let mut chord_symbols = head.chord_symbols;
+    chord_symbols.append(&mut target.chord_symbols);
+    target.chord_symbols = chord_symbols;
     let mut annotations = head.annotations;
     annotations.append(&mut target.annotations);
     target.annotations = annotations;

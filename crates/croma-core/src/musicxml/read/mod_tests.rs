@@ -1457,6 +1457,334 @@ fn no_direction_leaves_attachments_empty() {
     assert!(attachments_at(&score, 0).decorations.is_empty());
 }
 
+// --- Stage S5b: <harmony> + <lyric> ------------------------------------------
+
+/// Assert FULL-byte idempotence on an S5b single-voice fixture. By S5b the writer
+/// also emits `<harmony>` (chord symbols) and the per-`<note>` `<lyric>` block;
+/// nothing in a single-voice harmony/lyric fixture is deferred, so the whole
+/// document must be byte-identical. Returns the reconstructed score for direct
+/// attachment-field assertions.
+fn assert_idempotent_s5b(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S5b harmony + lyrics)"
+    );
+    score
+}
+
+#[test]
+fn harmony_major_reconstructs_chord_symbol_text() {
+    // A bare "C" major triad emits <harmony><root><root-step>C</root-step></root>
+    // <kind text="C">major</kind>. The reader must reconstruct a chord_symbols
+    // TextAttachment whose text re-emits the identical <harmony>.
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"C\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<kind text=\"C\">major</kind>"),
+        "precondition: a bare C chord emits a major <harmony>"
+    );
+    let score = assert_idempotent_s5b(abc);
+    let symbols = &attachments_at(&score, 0).chord_symbols;
+    assert_eq!(symbols.len(), 1, "one chord symbol on the first note");
+    assert_eq!(
+        symbols[0].text, "C",
+        "the reconstructed chord text is the <kind text=...> attribute"
+    );
+}
+
+#[test]
+fn harmony_minor_reconstructs() {
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"Dm\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<kind text=\"Dm\">minor</kind>"));
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(attachments_at(&score, 0).chord_symbols[0].text, "Dm");
+}
+
+#[test]
+fn harmony_seventh_reconstructs() {
+    // A maj7 exercises the longest-token quality match; the text attribute (not
+    // the inverted kind value) is what the reader recovers, so round-trip is direct.
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"Cmaj7\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(x1.contains("<kind text=\"Cmaj7\">major-seventh</kind>"));
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(attachments_at(&score, 0).chord_symbols[0].text, "Cmaj7");
+}
+
+#[test]
+fn harmony_slash_bass_reconstructs() {
+    // "G7/B" emits a <bass><bass-step>B</bass-step></bass> in addition to the
+    // dominant <kind>. The text attribute still carries the whole "G7/B" string.
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"G7/B\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<kind text=\"G7/B\">dominant</kind>")
+            && x1.contains("<bass-step>B</bass-step>"),
+        "precondition: a slash chord emits a <bass> and preserves the text"
+    );
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(attachments_at(&score, 0).chord_symbols[0].text, "G7/B");
+}
+
+#[test]
+fn harmony_altered_root_reconstructs() {
+    // "F#m7b5" exercises a sharp root (<root-alter>1) plus a half-diminished kind
+    // plus a flatted-fifth degree; the text attribute carries it all verbatim.
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"F#m7b5\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<root-alter>1</root-alter>")
+            && x1.contains("<kind text=\"F#m7b5\">half-diminished</kind>"),
+        "precondition: a sharp-root altered chord emits root-alter and the text"
+    );
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(attachments_at(&score, 0).chord_symbols[0].text, "F#m7b5");
+}
+
+#[test]
+fn harmony_with_added_degree_reconstructs() {
+    // "C7b9" emits a <degree> block; the reader recovers only the text, and the
+    // writer re-derives the identical <degree> on re-emission.
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"C7b9\"C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<degree-value>9</degree-value>"),
+        "precondition: C7b9 emits an added 9th degree"
+    );
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(attachments_at(&score, 0).chord_symbols[0].text, "C7b9");
+}
+
+#[test]
+fn harmony_then_annotation_round_trip_in_order() {
+    // The writer emits <harmony> BEFORE annotation <words> for the same event.
+    // A chord plus an above-annotation on the same note must reconstruct both
+    // (chord_symbols then annotations) so they re-emit in the same order.
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"C\"\"^Slow\"C D E F |\n";
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(
+        attachments_at(&score, 0).chord_symbols.len(),
+        1,
+        "the chord reconstructs into chord_symbols"
+    );
+    assert_eq!(
+        attachments_at(&score, 0).annotations.len(),
+        1,
+        "the annotation reconstructs into annotations"
+    );
+}
+
+#[test]
+fn two_chords_before_one_note_round_trip_in_order() {
+    // `"C""Am"D` puts two chord symbols on the same note: the writer emits two
+    // <harmony> blocks in order. The reader must buffer and flush them in the same
+    // order so both re-emit (C then Am).
+    let abc = "X:1\nT:H\nM:4/4\nL:1/4\nK:C\n\"C\"\"Am\"D E F G |\n";
+    let x1 = export(abc);
+    assert_eq!(
+        x1.matches("<harmony>").count(),
+        2,
+        "precondition: two chords emit two <harmony> blocks"
+    );
+    let score = assert_idempotent_s5b(abc);
+    let symbols = &attachments_at(&score, 0).chord_symbols;
+    assert_eq!(
+        symbols.len(),
+        2,
+        "both chords reconstruct on the first note"
+    );
+    assert_eq!(symbols[0].text, "C", "first chord stays first");
+    assert_eq!(symbols[1].text, "Am", "second chord stays second");
+}
+
+#[test]
+fn harmony_before_rest_reconstructs_on_rest_event() {
+    use crate::model::TimedEventKind;
+    // A chord symbol binds to the FOLLOWING event even when that event is a rest
+    // (a rest is still a `<note>` element, so the writer emits the `<harmony>`
+    // before it). The reader must flush the buffered chord onto the rest event so
+    // the `<harmony>` re-emits in place. (A chord with no following note at all,
+    // e.g. before a barline, is dropped on the forward path — there is no
+    // `<harmony>` to read back, so it is not a round-trip case.)
+    let abc = "X:1\nT:Trail\nM:4/4\nL:1/4\nK:C\nC D E F | \"C\" z4 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<harmony>"),
+        "precondition: a chord before a rest emits <harmony>"
+    );
+    let score = assert_idempotent_s5b(abc);
+    // The chord attaches to the first event of the second measure (the rest).
+    let rest_event = score.parts[0].voices[0]
+        .events
+        .iter()
+        .find(|e| matches!(e.kind, TimedEventKind::Rest(_)))
+        .expect("a rest event");
+    assert_eq!(
+        rest_event.attachments.chord_symbols.len(),
+        1,
+        "the chord reconstructs onto the following rest event"
+    );
+    assert_eq!(rest_event.attachments.chord_symbols[0].text, "C");
+}
+
+#[test]
+fn lyric_single_syllable_reconstructs() {
+    use crate::model::LyricControl;
+    // A one-syllable lyric "la" on a note emits <lyric number="1"><syllabic>single
+    // </syllabic><text>la</text></lyric>. The reader reconstructs a Syllable.
+    let abc = "X:1\nT:L\nM:4/4\nL:1/4\nK:C\nC D E F |\nw: la la la la\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<syllabic>single</syllabic>") && x1.contains("<text>la</text>"),
+        "precondition: a stand-alone syllable emits single"
+    );
+    let score = assert_idempotent_s5b(abc);
+    let lyrics = &attachments_at(&score, 0).lyrics;
+    assert_eq!(lyrics.len(), 1, "one lyric on the first note");
+    assert_eq!(lyrics[0].verse, 1);
+    assert_eq!(lyrics[0].text, "la");
+    assert_eq!(lyrics[0].control, LyricControl::Syllable);
+}
+
+#[test]
+fn lyric_hyphenated_word_reconstructs_begin_end() {
+    use crate::model::LyricControl;
+    // "Twin-kle" splits across two notes: the writer emits begin/Twin then
+    // end/kle. The reader must reconstruct [Syllable, Hyphen] on the first note
+    // and [Syllable] on the second so the syllabic state machine re-derives
+    // begin/end exactly.
+    let abc = "X:1\nT:L\nM:4/4\nL:1/4\nK:C\nC D E F |\nw: Twin-kle star light\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<syllabic>begin</syllabic>") && x1.contains("<syllabic>end</syllabic>"),
+        "precondition: a two-syllable word emits begin then end"
+    );
+    let score = assert_idempotent_s5b(abc);
+    let first = &attachments_at(&score, 0).lyrics;
+    assert_eq!(
+        first.len(),
+        2,
+        "the begin syllable note carries a Syllable AND a trailing Hyphen"
+    );
+    assert_eq!(first[0].control, LyricControl::Syllable);
+    assert_eq!(first[0].text, "Twin");
+    assert_eq!(
+        first[1].control,
+        LyricControl::Hyphen,
+        "a begin syllabic reconstructs a following Hyphen on the same note"
+    );
+    let second = &attachments_at(&score, 1).lyrics;
+    assert_eq!(
+        second.len(),
+        1,
+        "the end syllable note carries only a Syllable"
+    );
+    assert_eq!(second[0].control, LyricControl::Syllable);
+    assert_eq!(second[0].text, "kle");
+}
+
+#[test]
+fn lyric_three_syllable_word_reconstructs_middle() {
+    use crate::model::LyricControl;
+    // "ho-li-day" exercises the middle syllabic: begin/ho, middle/li, end/day.
+    // The middle note must also reconstruct [Syllable, Hyphen] so it re-emits
+    // middle (it both follows an open hyphen and opens another).
+    let abc = "X:1\nT:L\nM:4/4\nL:1/4\nK:C\nC D E F |\nw: ho-li-day now\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<syllabic>middle</syllabic>"),
+        "precondition: a three-syllable word emits a middle syllabic"
+    );
+    let score = assert_idempotent_s5b(abc);
+    let middle = &attachments_at(&score, 1).lyrics;
+    assert_eq!(
+        middle.len(),
+        2,
+        "the middle syllable carries Syllable + Hyphen"
+    );
+    assert_eq!(middle[0].text, "li");
+    assert_eq!(middle[1].control, LyricControl::Hyphen);
+}
+
+#[test]
+fn lyric_melisma_extender_reconstructs() {
+    use crate::model::LyricControl;
+    // "yes_" extends "yes" over the next note via <extend/> on that next note.
+    // The reader reconstructs an Extender (empty text) on the following note.
+    let abc = "X:1\nT:L\nM:4/4\nL:1/4\nK:C\nC D E F |\nw: yes_ no end\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<extend/>"),
+        "precondition: a melisma emits <extend/>"
+    );
+    let score = assert_idempotent_s5b(abc);
+    // Event 0 is "yes" (single); event 1 carries the extender.
+    assert_eq!(attachments_at(&score, 0).lyrics[0].text, "yes");
+    let extend = &attachments_at(&score, 1).lyrics;
+    assert_eq!(
+        extend.len(),
+        1,
+        "the extended note carries one Extender lyric"
+    );
+    assert_eq!(extend[0].control, LyricControl::Extender);
+    assert!(extend[0].text.is_empty(), "an extender carries no text");
+}
+
+#[test]
+fn lyric_multiple_verses_reconstruct_numbers() {
+    use crate::model::LyricControl;
+    // Two w: lines -> two verses; each note carries number="1" then number="2".
+    // The reader must reconstruct both verses in order on every note.
+    let abc = "X:1\nT:L\nM:4/4\nL:1/4\nK:C\nC D E F |\nw: one two three four\nw: ay bee cee dee\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<lyric number=\"1\">") && x1.contains("<lyric number=\"2\">"),
+        "precondition: two w: lines emit two numbered verses"
+    );
+    let score = assert_idempotent_s5b(abc);
+    let lyrics = &attachments_at(&score, 0).lyrics;
+    assert_eq!(lyrics.len(), 2, "the first note carries both verses");
+    assert_eq!(lyrics[0].verse, 1);
+    assert_eq!(lyrics[0].text, "one");
+    assert_eq!(lyrics[0].control, LyricControl::Syllable);
+    assert_eq!(lyrics[1].verse, 2);
+    assert_eq!(lyrics[1].text, "ay");
+    assert_eq!(lyrics[1].control, LyricControl::Syllable);
+}
+
+#[test]
+fn lyric_text_with_trailing_space_round_trips_verbatim() {
+    // The writer emits `lyric.text` verbatim, so a syllable that carries a
+    // trailing space (the corpus produces these, e.g. via the `~` lyric space)
+    // must round-trip byte-for-byte. The reader must NOT trim the <text> content.
+    // `la~` is a syllable whose `~` lowers to a trailing space -> `<text>la </text>`.
+    let abc = "X:1\nT:L\nM:4/4\nL:1/4\nK:C\nC D E F |\nw: la~ lo me fa\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<text>la </text>"),
+        "precondition: a `la~` syllable keeps its trailing space in the <text>, got:\n{x1}"
+    );
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(
+        attachments_at(&score, 0).lyrics[0].text,
+        "la ",
+        "the reconstructed lyric text preserves the trailing space verbatim"
+    );
+}
+
+#[test]
+fn harmony_and_lyric_on_same_note_round_trip() {
+    // A note can carry a chord symbol (emitted before the note) AND a lyric
+    // (emitted inside the note). Both must reconstruct so the whole event
+    // re-emits byte-identically.
+    let abc = "X:1\nT:Both\nM:4/4\nL:1/4\nK:C\n\"C\"C D E F |\nw: la la la la\n";
+    let score = assert_idempotent_s5b(abc);
+    assert_eq!(attachments_at(&score, 0).chord_symbols.len(), 1);
+    assert_eq!(attachments_at(&score, 0).lyrics.len(), 1);
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.
