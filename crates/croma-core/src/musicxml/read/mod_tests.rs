@@ -694,6 +694,374 @@ fn float_cc_round_trip_is_stable_for_every_value() {
     }
 }
 
+// --- Stage S4: <notations> + <time-modification> -----------------------------
+
+/// Assert FULL-byte idempotence on an S4 single-voice fixture. By S4 the writer
+/// emits `<tied>`/`<tie>`, `<slur>`, `<tuplet>`/`<time-modification>` and the
+/// `<notations>` decoration groups; nothing in a single-voice notation fixture
+/// is deferred, so the whole document must be byte-identical. Returns the
+/// reconstructed score for direct attachment-field assertions.
+fn assert_idempotent_s4(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S4 notations)"
+    );
+    score
+}
+
+/// The `EventAttachments` of the first part's first voice's event at `index`.
+fn attachments_at(score: &Score, index: usize) -> &crate::model::EventAttachments {
+    &score.parts[0].voices[0].events[index].attachments
+}
+
+#[test]
+fn tie_round_trips_and_reconstructs_attachment() {
+    // C2-C2 ties two quarters: the first note carries a TieRole::Start, the
+    // second a TieRole::Stop. Both <tie> (pre-<voice>) and <tied> (in
+    // <notations>) re-emit from the single reconstructed `ties` list.
+    use crate::model::TieRole;
+    let abc = "X:1\nT:Tie\nM:4/4\nL:1/4\nK:C\nC2- C2 z4 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<tie type=\"start\"/>") && x1.contains("<tied type=\"start\" number=\"1\"/>"),
+        "precondition: a tie emits both <tie> and <tied>"
+    );
+    let score = assert_idempotent_s4(abc);
+    let start = &attachments_at(&score, 0).ties;
+    assert_eq!(start.len(), 1, "tie start note has one TieAttachment");
+    assert_eq!(start[0].role, TieRole::Start);
+    assert!(!start[0].dotted);
+    let stop = &attachments_at(&score, 1).ties;
+    assert_eq!(stop.len(), 1);
+    assert_eq!(stop[0].role, TieRole::Stop);
+}
+
+#[test]
+fn dotted_tie_reconstructs_line_type() {
+    // `.-` is a dotted tie -> <tied ... line-type="dotted"/>; the reader must
+    // recover `dotted = true` so the attribute re-emits.
+    let abc = "X:1\nT:DotTie\nM:4/4\nL:1/4\nK:C\nC.-C z2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("line-type=\"dotted\""),
+        "precondition: dotted tie emits line-type=\"dotted\""
+    );
+    let score = assert_idempotent_s4(abc);
+    assert!(
+        attachments_at(&score, 0).ties[0].dotted,
+        "a dotted tie reconstructs dotted = true"
+    );
+}
+
+#[test]
+fn slur_round_trips_and_reconstructs_attachment() {
+    use crate::model::SlurRole;
+    let abc = "X:1\nT:Slur\nM:4/4\nL:1/4\nK:C\n(C D) z2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<slur type=\"start\" number=\"1\"/>"),
+        "precondition: a slur emits number=1"
+    );
+    let score = assert_idempotent_s4(abc);
+    let start = &attachments_at(&score, 0).slurs;
+    assert_eq!(start.len(), 1);
+    assert_eq!(start[0].role, SlurRole::Start);
+    let stop = &attachments_at(&score, 1).slurs;
+    assert_eq!(stop[0].role, SlurRole::Stop);
+    // pair_id is chosen so the writer's SlurNumbers re-derives number=1.
+    assert_eq!(
+        start[0].pair_id, stop[0].pair_id,
+        "a slur pair shares pair_id"
+    );
+}
+
+#[test]
+fn nested_slurs_reconstruct_distinct_numbers() {
+    // (C (D E) F): outer slur is number 1, inner is number 2. The reader must
+    // assign distinct pair_ids so the writer re-derives 1 (outer) and 2 (inner).
+    let abc = "X:1\nT:Nest\nM:4/4\nL:1/4\nK:C\n(C (D E) F) |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<slur type=\"start\" number=\"1\"/>")
+            && x1.contains("<slur type=\"start\" number=\"2\"/>"),
+        "precondition: nested slurs emit numbers 1 and 2"
+    );
+    let score = assert_idempotent_s4(abc);
+    // The outer start (note 0) and inner start (note 1) must have different
+    // pair_ids, else they would collide on re-emission.
+    let outer = attachments_at(&score, 0).slurs[0].pair_id;
+    let inner = attachments_at(&score, 1).slurs[0].pair_id;
+    assert_ne!(
+        outer, inner,
+        "overlapping slurs must reconstruct distinct pair_ids"
+    );
+}
+
+#[test]
+fn dotted_slur_reconstructs_line_type() {
+    let abc = "X:1\nT:DotSlur\nM:4/4\nL:1/4\nK:C\n.(C D.) z2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<slur type=\"start\" number=\"1\" line-type=\"dotted\"/>"),
+        "precondition: dotted slur emits line-type=\"dotted\""
+    );
+    let score = assert_idempotent_s4(abc);
+    assert!(attachments_at(&score, 0).slurs[0].dotted);
+}
+
+#[test]
+fn triplet_round_trips_and_reconstructs_tuplet() {
+    // (3CDE is a 3:2 triplet of eighths under L:1/8: the first note carries a
+    // TupletRole::Start, the middle a Continue (only <time-modification>, no
+    // <tuplet>), the last a Stop. Every member emits <time-modification>.
+    use crate::model::TupletRole;
+    let abc = "X:1\nT:Trip\nM:4/4\nL:1/8\nK:C\n(3CDE A2 z2 |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<tuplet type=\"start\" number=\"1\"/>")
+            && x1.contains("<actual-notes>3</actual-notes>")
+            && x1.contains("<normal-notes>2</normal-notes>"),
+        "precondition: triplet emits start tuplet + 3:2 time-modification"
+    );
+    let score = assert_idempotent_s4(abc);
+    let start = &attachments_at(&score, 0).tuplets;
+    assert_eq!(start.len(), 1, "the first triplet note has one tuplet");
+    assert_eq!(start[0].role, TupletRole::Start);
+    assert_eq!(start[0].actual_notes, 3);
+    assert_eq!(start[0].normal_notes, 2);
+    // The middle note carries a Continue (time-modification only).
+    assert_eq!(
+        attachments_at(&score, 1).tuplets[0].role,
+        TupletRole::Continue
+    );
+    assert_eq!(attachments_at(&score, 2).tuplets[0].role, TupletRole::Stop);
+}
+
+#[test]
+fn quintuplet_reconstructs_ratio() {
+    // (5 under 4/4, L:1/8: a 5:2 tuplet (abc2xml's default q for 5 in simple
+    // time). The exact ratio must reconstruct from <time-modification>.
+    let abc = "X:1\nT:Quint\nM:4/4\nL:1/8\nK:C\n(5CDEFG z3 |\n";
+    let x1 = export(abc);
+    let score = assert_idempotent_s4(abc);
+    let start = &attachments_at(&score, 0).tuplets[0];
+    // Whatever ratio the writer chose, the reconstruction reproduces it.
+    let actual = start.actual_notes;
+    let normal = start.normal_notes;
+    assert!(
+        x1.contains(&format!("<actual-notes>{actual}</actual-notes>"))
+            && x1.contains(&format!("<normal-notes>{normal}</normal-notes>")),
+        "reconstructed tuplet ratio {actual}:{normal} must match the emitted time-modification"
+    );
+}
+
+#[test]
+fn two_separate_tuplets_in_a_measure_round_trip() {
+    // Two consecutive triplets: both re-emit as number=1 (the second reuses the
+    // freed number after the first stops). The reader must give them distinct
+    // pair_ids so the active-set re-derivation reproduces number=1 each.
+    let abc = "X:1\nT:TwoTrip\nM:4/4\nL:1/8\nK:C\n(3CDE (3FGA z2 |\n";
+    let score = assert_idempotent_s4(abc);
+    let first = attachments_at(&score, 0).tuplets[0].pair_id;
+    let second = attachments_at(&score, 3).tuplets[0].pair_id;
+    assert_ne!(first, second, "separate tuplets get distinct pair_ids");
+}
+
+#[test]
+fn staccato_articulation_round_trips() {
+    use crate::model::DecorationSourceKind;
+    let abc = "X:1\nT:Stac\nM:4/4\nL:1/4\nK:C\n.C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<articulations>") && x1.contains("<staccato/>"),
+        "precondition: . emits <staccato/>"
+    );
+    let score = assert_idempotent_s4(abc);
+    let decos = &attachments_at(&score, 0).decorations;
+    assert_eq!(decos.len(), 1, "one decoration on the first note");
+    // The reconstructed name must re-map to <staccato/> via decoration_notation.
+    assert_eq!(decos[0].name, "staccato");
+    assert_eq!(decos[0].source_kind, DecorationSourceKind::Named);
+}
+
+#[test]
+fn accent_articulation_round_trips() {
+    let abc = "X:1\nT:Acc\nM:4/4\nL:1/4\nK:C\n!>!C D E F |\n";
+    let score = assert_idempotent_s4(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "accent");
+}
+
+#[test]
+fn trill_ornament_round_trips() {
+    let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C\n!trill!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<ornaments>") && x1.contains("<trill-mark/>"),
+        "precondition: !trill! emits <trill-mark/>"
+    );
+    let score = assert_idempotent_s4(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "trill");
+}
+
+#[test]
+fn mordent_ornament_round_trips() {
+    let abc = "X:1\nT:Mord\nM:4/4\nL:1/4\nK:C\n!mordent!C D E F |\n";
+    let score = assert_idempotent_s4(abc);
+    // `mordent` and `lowermordent` both emit <mordent/>; the canonical inverse
+    // is the name that re-emits identically.
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "mordent");
+}
+
+#[test]
+fn fermata_round_trips() {
+    let abc = "X:1\nT:Ferm\nM:4/4\nL:1/4\nK:C\n!fermata!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<fermata type=\"upright\"/>"),
+        "precondition: !fermata! emits <fermata type=\"upright\"/>"
+    );
+    let score = assert_idempotent_s4(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "fermata");
+}
+
+#[test]
+fn inverted_fermata_round_trips() {
+    let abc = "X:1\nT:IFerm\nM:4/4\nL:1/4\nK:C\n!invertedfermata!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<fermata type=\"inverted\"/>"),
+        "precondition: inverted fermata emits type=\"inverted\""
+    );
+    let score = assert_idempotent_s4(abc);
+    assert_eq!(
+        attachments_at(&score, 0).decorations[0].name,
+        "invertedfermata"
+    );
+}
+
+#[test]
+fn upbow_technical_round_trips() {
+    let abc = "X:1\nT:Up\nM:4/4\nL:1/4\nK:C\n!upbow!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<technical>") && x1.contains("<up-bow/>"),
+        "precondition: !upbow! emits <up-bow/>"
+    );
+    let score = assert_idempotent_s4(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "upbow");
+}
+
+#[test]
+fn fingering_technical_text_round_trips() {
+    // !1! is a fingering -> <technical><fingering>1</fingering></technical>; the
+    // reader must reconstruct the decoration whose name re-emits the text element.
+    let abc = "X:1\nT:Fing\nM:4/4\nL:1/4\nK:C\n!1!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<fingering>1</fingering>"),
+        "precondition: !1! emits <fingering>1</fingering>"
+    );
+    let score = assert_idempotent_s4(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "1");
+}
+
+#[test]
+fn arpeggio_round_trips() {
+    let abc = "X:1\nT:Arp\nM:4/4\nL:1/4\nK:C\n!arpeggio![CEG] z2 z |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<arpeggiate/>"),
+        "precondition: !arpeggio! emits <arpeggiate/>"
+    );
+    let score = assert_idempotent_s4(abc);
+    // The arpeggiate decoration attaches to the chord's first member (event 0).
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "arpeggio");
+}
+
+#[test]
+fn multiple_decorations_on_one_note_round_trip() {
+    // A note can carry an ornament AND an articulation AND a fermata; the writer
+    // groups them per category in schema order, and the reader must reconstruct
+    // every one so the whole grouped block re-emits identically.
+    let abc = "X:1\nT:Multi\nM:4/4\nL:1/4\nK:C\n!trill!.!fermata!C D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<trill-mark/>")
+            && x1.contains("<staccato/>")
+            && x1.contains("<fermata type=\"upright\"/>"),
+        "precondition: all three notations are emitted"
+    );
+    let score = assert_idempotent_s4(abc);
+    let names: Vec<&str> = attachments_at(&score, 0)
+        .decorations
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert!(names.contains(&"trill"));
+    assert!(names.contains(&"staccato"));
+    assert!(names.contains(&"fermata"));
+}
+
+#[test]
+fn beams_are_derived_not_stored_and_round_trip() {
+    // The model has NO beam field; the writer derives beaming purely from note
+    // durations/positions (in fact croma's writer emits no <beam> element at
+    // all — beaming is left implicit). Reading the S1 notes correctly therefore
+    // makes any beam behaviour round-trip with ZERO beam-specific reader code.
+    // This test pins that: consecutive eighths (which are beamed when rendered)
+    // round-trip byte-for-byte, and the writer emits no <beam> we failed to read.
+    let abc = "X:1\nT:Beam\nM:4/4\nL:1/8\nK:C\nCDEF GABc |\n";
+    let x1 = export(abc);
+    assert!(
+        !x1.contains("<beam"),
+        "precondition: croma's writer derives beams and emits no <beam> element"
+    );
+    assert_idempotent_s4(abc);
+}
+
+#[test]
+fn derived_time_modification_creates_no_tuplet_attachment() {
+    // `C2/3` is a 1/6-of-a-beat note: the writer SYNTHESISES a 3:2
+    // <time-modification> from the odd duration alone (no <tuplet>, no
+    // <notations>), exactly like a derived beam. The reader must NOT fabricate a
+    // tuplet attachment here — S1's duration reconstruction already re-emits the
+    // identical <time-modification>. Proves the open-tuplet logic ignores
+    // tuplet-less time-modifications.
+    let abc = "X:1\nT:Odd\nM:4/4\nL:1/4\nK:C\nC2/3 D2/3 E2/3 z |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<time-modification>") && !x1.contains("<tuplet"),
+        "precondition: an odd duration emits a derived time-modification with no <tuplet>"
+    );
+    let score = assert_idempotent_s4(abc);
+    assert!(
+        attachments_at(&score, 0).tuplets.is_empty(),
+        "a derived time-modification must NOT reconstruct a tuplet attachment"
+    );
+}
+
+#[test]
+fn notation_and_tuplet_combine_round_trip() {
+    // A triplet whose first note also carries a slur start and a staccato: ties
+    // the tuplet/time-modification path together with the decoration grouping in
+    // one note, proving the combined <notations> block re-emits in order.
+    let abc = "X:1\nT:Combo\nM:4/4\nL:1/8\nK:C\n(3.CDE (FG) z2 |\n";
+    let score = assert_idempotent_s4(abc);
+    // First note: a tuplet start AND a staccato decoration.
+    assert_eq!(
+        attachments_at(&score, 0).tuplets[0].role,
+        crate::model::TupletRole::Start
+    );
+    assert!(
+        attachments_at(&score, 0)
+            .decorations
+            .iter()
+            .any(|d| d.name == "staccato"),
+        "the first triplet note keeps its staccato"
+    );
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.

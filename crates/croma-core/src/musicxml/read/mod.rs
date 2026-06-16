@@ -31,17 +31,32 @@
 //! `channel` / `control` directive (line-start or inline `[I:MIDI=...]`) now
 //! survives ABC -> XML -> [`Score`] -> XML byte-for-byte.
 //!
+//! **S4:** the per-`<note>` `<notations>` block and `<time-modification>` —
+//! `<tied>`/`<tie>` -> [`TieAttachment`], `<slur>` -> [`SlurAttachment`]
+//! (`pair_id` chosen so the writer's `SlurNumbers` re-derives the same
+//! `number`), `<tuplet>` + `<time-modification>` -> [`TupletAttachment`]
+//! (`actual`/`normal` from the time-modification ratio, `role` from the
+//! start/stop/continue position), and the `<notations>` decoration groups
+//! (`<articulations>`/`<ornaments>`/`<technical>`/`<fermata>`/`<arpeggiate>`)
+//! -> [`DecorationAttachment`], inverting the writer's `decoration_notation`
+//! name map exactly. **Beams are derived, not stored**: croma's writer emits no
+//! `<beam>` element (beaming is recomputed from durations), so the S1 note
+//! reconstruction already round-trips them with no beam-specific reader code.
+//!
 //! Mid-measure `<attributes>` changes (`KeyChange`/`MeterChange`/`ClefChange`),
-//! notations, directions, multi-voice, repeats, grace and chords are **later
-//! stages** and are intentionally not reconstructed yet — files that use them
-//! simply do not round-trip idempotently yet, which the corpus gate measures.
+//! directions/dynamics, harmony, lyrics, multi-voice, repeats, grace and chords
+//! are **later stages** and are intentionally not reconstructed yet — files that
+//! use them simply do not round-trip idempotently yet, which the corpus gate
+//! measures.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, Fraction, KeyAccidentalModel,
-    KeySignatureModel, Measure, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part,
-    PartId, Pitch, RestEvent, RestVisibility, Score, ScoreMetadata, Staff, StaffId, TextLine,
-    TimedEvent, TimedEventKind, Voice, VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, DecorationAttachment,
+    DecorationSourceKind, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel,
+    Measure, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part, PartId, Pitch, RestEvent,
+    RestVisibility, Score, ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TextLine,
+    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
+    VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -653,6 +668,10 @@ impl Reader {
         // reproduces the `measure="yes"` attribute (the writer gates it on
         // `expected_duration == duration == actual_duration` at onset 0).
         let mut measure_rest_duration: Option<Fraction> = None;
+        // S4 tuplet reconstruction tracks tuplets open across the measure's
+        // notes: a `<tuplet type="start">` opens one, a middle note with only a
+        // `<time-modification>` continues it, and `type="stop"` closes it.
+        let mut open_tuplets = OpenTuplets::default();
 
         for child in element_children(measure_node) {
             match child.tag_name().name() {
@@ -674,13 +693,22 @@ impl Reader {
                         measure_rest_duration = Some(parsed.duration);
                     }
 
+                    // S4: reconstruct this note's `<notations>` +
+                    // `<time-modification>` into its `EventAttachments`. A
+                    // `<chord/>` member's notations belong to the chord member
+                    // (S6); the writer reads its first member's attachments off
+                    // the timed event, so attaching to every note here is the
+                    // exact inverse for the single-note (non-chord) shapes S4
+                    // proves, and is harmless for chord members until S6.
+                    let attachments = self.read_note_attachments(child, &mut open_tuplets);
+
                     events.push(TimedEvent {
                         measure: measure_id,
                         onset,
                         duration: parsed.duration,
                         source: READER_SPAN,
                         kind: parsed.kind,
-                        attachments: Default::default(),
+                        attachments,
                     });
 
                     if !parsed.chord_member {
@@ -792,6 +820,245 @@ impl Reader {
         })
     }
 
+    /// S4: reconstruct a note's [`EventAttachments`] from its `<notations>` block
+    /// and `<time-modification>`. Inverts [`MusicXmlWriter::write_notations`] and
+    /// [`MusicXmlWriter::write_time_modification`] (plus the `<note>`-level
+    /// `<tie>` the writer emits alongside `<tied>`). Only the four model-driven
+    /// notation classes are reconstructed (ties/slurs/tuplets/decorations); the
+    /// remaining attachment fields stay at their defaults. Grace/lyric/direction
+    /// attachments belong to later stages.
+    fn read_note_attachments(
+        &mut self,
+        note_node: Node<'_, '_>,
+        open_tuplets: &mut OpenTuplets,
+    ) -> EventAttachments {
+        let mut attachments = EventAttachments::default();
+        let notations = child_element(note_node, "notations");
+
+        // Ties: the writer emits BOTH a `<note>`-level `<tie>` (no number) and a
+        // `<notations>/<tied>` (with `number` = `pair_id` and optional dotted
+        // `line-type`). `<tied>` is the richer source, so reconstruct the single
+        // `ties` list from it; that one list re-emits both elements identically.
+        // A file with `<tie>` but no `<tied>` (not croma's own output) falls back
+        // to the `<note>`-level element.
+        if let Some(notations) = notations {
+            for tied in children_named(notations, "tied") {
+                if let Some(tie) = self.read_tie(tied) {
+                    attachments.ties.push(tie);
+                }
+            }
+        }
+        if attachments.ties.is_empty() {
+            for tie in children_named(note_node, "tie") {
+                if let Some(tie) = self.read_tie(tie) {
+                    attachments.ties.push(tie);
+                }
+            }
+        }
+
+        if let Some(notations) = notations {
+            // Slurs: `pair_id = number` so the writer's `SlurNumbers::number_for`
+            // re-derives the same `number` (its `preferred = pair_id`). Distinct
+            // numbers for overlapping/nested slurs therefore become distinct
+            // pair_ids, exactly reproduced on re-write.
+            for slur in children_named(notations, "slur") {
+                if let Some(slur) = self.read_slur(slur) {
+                    attachments.slurs.push(slur);
+                }
+            }
+        }
+
+        // Tuplets need the note's composite `<time-modification>` ratio plus the
+        // open-tuplet state across the measure.
+        let time_modification = self.read_time_modification_ratio(note_node);
+        let tuplet_elements: Vec<(TupletRole, u32)> = notations
+            .map(|notations| {
+                children_named(notations, "tuplet")
+                    .filter_map(|tuplet| self.read_tuplet_marker(tuplet))
+                    .collect()
+            })
+            .unwrap_or_default();
+        attachments.tuplets = open_tuplets.resolve(self, &tuplet_elements, time_modification);
+
+        // Decorations: invert the writer's `decoration_notation` name map from
+        // the grouped `<ornaments>`/`<technical>`/`<articulations>` blocks and
+        // the bare `<fermata>`/`<arpeggiate>` elements.
+        if let Some(notations) = notations {
+            self.read_decorations(notations, &mut attachments.decorations);
+        }
+
+        attachments
+    }
+
+    /// Invert one `<tied>` (or `<note>`-level `<tie>`): `type` -> [`TieRole`],
+    /// `number` -> `pair_id` (default 1 when absent, as on the `<note>`-level
+    /// `<tie>`), `line-type="dotted"` -> `dotted`.
+    fn read_tie(&mut self, node: Node<'_, '_>) -> Option<TieAttachment> {
+        let role = match node.attribute("type") {
+            Some("start") => TieRole::Start,
+            Some("stop") => TieRole::Stop,
+            other => {
+                self.warn(
+                    "musicxml.read.unknown_tie_type",
+                    format!(
+                        "<{}> type `{}` is neither start nor stop; ignored",
+                        node.tag_name().name(),
+                        other.unwrap_or("")
+                    ),
+                );
+                return None;
+            }
+        };
+        let pair_id = node
+            .attribute("number")
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        Some(TieAttachment {
+            pair_id,
+            role,
+            span: READER_SPAN,
+            dotted: node.attribute("line-type") == Some("dotted"),
+        })
+    }
+
+    /// Invert one `<slur>`: `type` -> [`SlurRole`], `number` -> `pair_id` (so the
+    /// writer re-derives the same number), `line-type="dotted"` -> `dotted`.
+    fn read_slur(&mut self, node: Node<'_, '_>) -> Option<SlurAttachment> {
+        let role = match node.attribute("type") {
+            Some("start") => SlurRole::Start,
+            Some("stop") => SlurRole::Stop,
+            // `<slur type="continue">` is valid MusicXML but croma's writer never
+            // emits it (the model has only Start/Stop), so it is ignored here.
+            other => {
+                self.warn(
+                    "musicxml.read.unsupported_slur_type",
+                    format!(
+                        "<slur> type `{}` is not start/stop; ignored",
+                        other.unwrap_or("")
+                    ),
+                );
+                return None;
+            }
+        };
+        let pair_id = node
+            .attribute("number")
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        Some(SlurAttachment {
+            pair_id,
+            role,
+            span: READER_SPAN,
+            dotted: node.attribute("line-type") == Some("dotted"),
+        })
+    }
+
+    /// Read a `<tuplet>` marker's `(role, number)`. Continue is never emitted by
+    /// the writer (middle notes carry only `<time-modification>`), so only
+    /// start/stop are recognised; the `number` pairs a stop with its start.
+    fn read_tuplet_marker(&mut self, node: Node<'_, '_>) -> Option<(TupletRole, u32)> {
+        let role = match node.attribute("type") {
+            Some("start") => TupletRole::Start,
+            Some("stop") => TupletRole::Stop,
+            other => {
+                self.warn(
+                    "musicxml.read.unknown_tuplet_type",
+                    format!(
+                        "<tuplet> type `{}` is not start/stop; ignored",
+                        other.unwrap_or("")
+                    ),
+                );
+                return None;
+            }
+        };
+        let number = node
+            .attribute("number")
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        Some((role, number))
+    }
+
+    /// Read a note's `<time-modification>` as an `(actual_notes, normal_notes)`
+    /// ratio, or `None` when absent. This is the COMPOSITE ratio the writer
+    /// emitted (`TimeModification::composite`); for a single tuplet it equals
+    /// that tuplet's own ratio, which is what makes the common case exact.
+    fn read_time_modification_ratio(&mut self, note_node: Node<'_, '_>) -> Option<(u32, u32)> {
+        let node = child_element(note_node, "time-modification")?;
+        let actual = child_text(node, "actual-notes").and_then(|t| t.parse::<u32>().ok());
+        let normal = child_text(node, "normal-notes").and_then(|t| t.parse::<u32>().ok());
+        match (actual, normal) {
+            (Some(actual), Some(normal)) if actual > 0 && normal > 0 => Some((actual, normal)),
+            _ => {
+                self.warn(
+                    "musicxml.read.invalid_time_modification",
+                    "<time-modification> lacks positive actual-notes/normal-notes; ignored",
+                );
+                None
+            }
+        }
+    }
+
+    /// Invert the writer's grouped `<notations>` decoration blocks
+    /// (`<ornaments>`/`<technical>`/`<articulations>`) and the bare `<fermata>`/
+    /// `<arpeggiate>` elements into [`DecorationAttachment`]s. Each MusicXML
+    /// element name is mapped back through [`decoration_for_notation_element`] to
+    /// the ABC decoration name (and [`DecorationSourceKind`]) that re-emits the
+    /// identical element via the writer's `decoration_notation`. An element with
+    /// no clean inverse warns and is skipped (never invents a mapping).
+    fn read_decorations(&mut self, notations: Node<'_, '_>, out: &mut Vec<DecorationAttachment>) {
+        for child in element_children(notations) {
+            match child.tag_name().name() {
+                "ornaments" | "technical" | "articulations" => {
+                    for element in element_children(child) {
+                        self.push_decoration(element, out);
+                    }
+                }
+                "fermata" => {
+                    // `<fermata type="upright">` <- `fermata`,
+                    // `<fermata type="inverted">` <- `invertedfermata`. An absent
+                    // type defaults to upright in MusicXML; the writer always
+                    // emits one, so map the type explicitly.
+                    let name = match child.attribute("type") {
+                        Some("inverted") => "invertedfermata",
+                        _ => "fermata",
+                    };
+                    out.push(named_decoration(name));
+                }
+                "arpeggiate" => out.push(named_decoration("arpeggio")),
+                // `<tied>`/`<slur>`/`<tuplet>` are handled above; anything else
+                // is a later-stage or unsupported notation.
+                _ => {}
+            }
+        }
+    }
+
+    /// Map a single grouped notation child element (inside `<ornaments>` /
+    /// `<technical>` / `<articulations>`) to its [`DecorationAttachment`].
+    fn push_decoration(&mut self, element: Node<'_, '_>, out: &mut Vec<DecorationAttachment>) {
+        let tag = element.tag_name().name();
+        // `<fingering>N` is the one text-bearing technical: its inverse is the
+        // ABC decoration whose name is the digit text (`!0!`..`!5!`).
+        if tag == "fingering" {
+            if let Some(text) = node_text(element)
+                && matches!(text, "0" | "1" | "2" | "3" | "4" | "5")
+            {
+                out.push(named_decoration(text));
+                return;
+            }
+            self.warn(
+                "musicxml.read.unsupported_fingering",
+                "<fingering> text is not 0-5; no ABC decoration inverse, skipped",
+            );
+            return;
+        }
+        match decoration_for_notation_element(tag) {
+            Some(name) => out.push(named_decoration(name)),
+            None => self.warn(
+                "musicxml.read.unsupported_notation",
+                format!("<{tag}> has no ABC decoration inverse; skipped"),
+            ),
+        }
+    }
+
     /// Inverse of [`Accidental::musicxml_name`]. An unrecognised name warns and
     /// yields `None` (the note keeps its `<alter>`-derived sounding pitch but no
     /// written accidental).
@@ -885,6 +1152,185 @@ struct ParsedNote {
     duration: Fraction,
     chord_member: bool,
     measure_rest: bool,
+}
+
+/// One tuplet currently open across a measure's notes, with the `pair_id` and
+/// ratio reconstructed at its `<tuplet type="start">` and the MusicXML `number`
+/// used to pair its `type="stop"`.
+#[derive(Debug, Clone, Copy)]
+struct OpenTuplet {
+    pair_id: u32,
+    number: u32,
+    actual_notes: u32,
+    normal_notes: u32,
+}
+
+/// Tracks the tuplets open across a measure so each note's
+/// [`TupletAttachment`]s can be reconstructed in inverse of the writer:
+/// `type="start"` opens one (with the note's `<time-modification>` ratio), a
+/// middle note with only a `<time-modification>` continues every open tuplet,
+/// and `type="stop"` closes the matching one.
+///
+/// `next_pair_id` is a per-measure monotonic counter giving every tuplet a
+/// distinct `pair_id`. Tuplet `pair_id`s share no namespace with slur `pair_id`s
+/// (separate model vectors), and the writer's `sequence_tuplet_numbers`
+/// re-derives the MusicXML `number` from the active-set discipline (not from the
+/// `pair_id` value), so distinct sequential ids reproduce the emitted numbers —
+/// including two separate tuplets that both re-emit as `number="1"`.
+#[derive(Default)]
+struct OpenTuplets {
+    open: Vec<OpenTuplet>,
+    next_pair_id: u32,
+}
+
+impl OpenTuplets {
+    /// Resolve one note's tuplet attachments from its `<tuplet>` start/stop
+    /// markers and composite `<time-modification>` ratio, mutating the open set.
+    ///
+    /// Cases, in inverse of the writer:
+    /// - a `type="start"` marker opens a tuplet (ratio = this note's
+    ///   time-modification) and yields a `Start` attachment;
+    /// - a `type="stop"` marker closes the matching open tuplet (by `number`,
+    ///   else the most recently opened) and yields a `Stop` attachment;
+    /// - a note with a `<time-modification>` but NO `<tuplet>` marker is either a
+    ///   middle note of the open tuplet(s) -> a `Continue` for each, OR (when no
+    ///   tuplet is open) a *derived* time-modification the writer synthesised from
+    ///   an odd duration (e.g. `C2/3`) -> no attachment, since S1's duration
+    ///   reconstruction already re-emits the identical `<time-modification>`.
+    fn resolve(
+        &mut self,
+        reader: &mut Reader,
+        markers: &[(TupletRole, u32)],
+        time_modification: Option<(u32, u32)>,
+    ) -> Vec<TupletAttachment> {
+        let mut out = Vec::new();
+        let has_start = markers.iter().any(|(role, _)| *role == TupletRole::Start);
+        let has_stop = markers.iter().any(|(role, _)| *role == TupletRole::Stop);
+
+        // Middle (continue) note: a time-modification, an open tuplet, and no
+        // start/stop marker on this note.
+        if !has_start && !has_stop {
+            if time_modification.is_some() && !self.open.is_empty() {
+                for open in &self.open {
+                    out.push(TupletAttachment {
+                        pair_id: open.pair_id,
+                        actual_notes: open.actual_notes,
+                        normal_notes: open.normal_notes,
+                        role: TupletRole::Continue,
+                        span: READER_SPAN,
+                    });
+                }
+            }
+            return out;
+        }
+
+        for (role, number) in markers {
+            match role {
+                TupletRole::Start => {
+                    let (actual_notes, normal_notes) = time_modification.unwrap_or_else(|| {
+                        reader.warn(
+                            "musicxml.read.tuplet_without_time_modification",
+                            "<tuplet type=\"start\"> has no <time-modification>; assuming 3:2",
+                        );
+                        (3, 2)
+                    });
+                    let pair_id = self.next_pair_id;
+                    self.next_pair_id = self.next_pair_id.saturating_add(1);
+                    self.open.push(OpenTuplet {
+                        pair_id,
+                        number: *number,
+                        actual_notes,
+                        normal_notes,
+                    });
+                    out.push(TupletAttachment {
+                        pair_id,
+                        actual_notes,
+                        normal_notes,
+                        role: TupletRole::Start,
+                        span: READER_SPAN,
+                    });
+                }
+                TupletRole::Stop => {
+                    // Pair with the open tuplet of the same `number`; fall back to
+                    // the most recently opened (LIFO) if none matches.
+                    let index = self
+                        .open
+                        .iter()
+                        .rposition(|open| open.number == *number)
+                        .or_else(|| self.open.len().checked_sub(1));
+                    let closed = index.map(|index| self.open.remove(index));
+                    let closed = match closed {
+                        Some(open) => open,
+                        None => {
+                            reader.warn(
+                                "musicxml.read.tuplet_stop_without_start",
+                                "<tuplet type=\"stop\"> has no open tuplet to close; ignored",
+                            );
+                            continue;
+                        }
+                    };
+                    out.push(TupletAttachment {
+                        pair_id: closed.pair_id,
+                        actual_notes: closed.actual_notes,
+                        normal_notes: closed.normal_notes,
+                        role: TupletRole::Stop,
+                        span: READER_SPAN,
+                    });
+                }
+                TupletRole::Continue => {}
+            }
+        }
+        out
+    }
+}
+
+/// A [`DecorationAttachment`] with the canonical [`DecorationSourceKind::Named`]
+/// source. The reconstructed `name` is chosen so the writer's
+/// `decoration_notation` re-emits the identical MusicXML element; `Named` (the
+/// `!name!` form) re-emits exactly the same notation element regardless of which
+/// `source_kind` the original ABC used (the writer's notation map keys only on
+/// the decoration *name*), so it is the byte-stable inverse.
+fn named_decoration(name: &str) -> DecorationAttachment {
+    DecorationAttachment {
+        name: name.to_owned(),
+        span: READER_SPAN,
+        source_kind: DecorationSourceKind::Named,
+    }
+}
+
+/// Inverse of the writer's `decoration_notation` for the grouped notation
+/// elements (`<ornaments>`/`<technical>`/`<articulations>` children, excluding
+/// the text-bearing `<fingering>` handled separately). Each MusicXML element maps
+/// back to ONE canonical ABC decoration name that `decoration_notation` re-emits
+/// to the same element. Where the forward map is many-to-one (e.g. both `.` and
+/// `staccato` -> `<staccato/>`), the canonical full name is chosen so the
+/// `!name!` form round-trips. Returns `None` for an element croma's writer never
+/// emits as a notation (so the caller can warn rather than invent a mapping).
+fn decoration_for_notation_element(element: &str) -> Option<&'static str> {
+    Some(match element {
+        // Articulations.
+        "staccato" => "staccato",
+        "accent" => "accent",
+        "tenuto" => "tenuto",
+        "staccatissimo" => "wedge",
+        "strong-accent" => "marcato",
+        "breath-mark" => "breath",
+        "scoop" => "slide",
+        // Ornaments.
+        "trill-mark" => "trill",
+        "mordent" => "mordent",
+        "inverted-mordent" => "uppermordent",
+        "turn" => "turn",
+        "inverted-turn" => "invertedturn",
+        // Technical (non-text).
+        "up-bow" => "upbow",
+        "down-bow" => "downbow",
+        "open-string" => "open",
+        "thumb-position" => "thumb",
+        "snap-pizzicato" => "snap",
+        "stopped" => "plus",
+        _ => return None,
+    })
 }
 
 fn text_line(text: impl Into<String>) -> TextLine {
