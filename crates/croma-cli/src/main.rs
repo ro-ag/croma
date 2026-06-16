@@ -236,8 +236,17 @@ fn run_read(args: ReadArgs) -> Result<ExitCode, CliError> {
         format,
     } = args;
     let xml = read_source(&file)?;
-    let (score, diagnostics) = read_score_from_xml(&xml)?;
+    let (mut score, diagnostics) = read_score_from_xml(&xml)?;
     emit_reader_diagnostics(&file, &diagnostics)?;
+
+    // The ABC projection reads fields the pure `write_musicxml` inverse leaves
+    // unpopulated (`voice.events` barline/ending events, `key.display`). Complete
+    // the reconstructed Score for the ABC path ONLY — `--format xml` must stay the
+    // byte-exact `write_musicxml(read_musicxml(xml))` inverse, so it is never
+    // touched. `--format dump` shows the raw inverse too.
+    if format == ReadFormat::Abc {
+        croma_core::complete_score_for_abc(&mut score);
+    }
 
     let projection = project_reconstructed(&score, format);
     if let Some(output) = output {
