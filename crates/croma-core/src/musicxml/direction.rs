@@ -27,9 +27,12 @@ impl<'score> MusicXmlWriter<'score> {
             self.write_direction_words(&tempo.text, None, Some("1"), Some(1));
         }
         // Preserved `%%`/`%%MIDI` stylesheet directives are kept on the model
-        // for round-trip/formatter use, but they control playback/formatting,
-        // not printed musical text. abc2xml emits nothing for them, so the
-        // MusicXML writer must not render them as visible <words> directions.
+        // for round-trip/formatter use. The score-meaningful part of `%%MIDI`
+        // (program/channel) is forward-translated to `<part-list>`
+        // `<score-instrument>`/`<midi-instrument>` in `score.rs`; everything
+        // else controls playback/formatting, not printed musical text. abc2xml
+        // never renders any of them as visible staff text, so this direction
+        // path must not emit them as <words> either.
     }
 
     /// Emit a `Q:` tempo as a MusicXML `<metronome>` direction (matching the
