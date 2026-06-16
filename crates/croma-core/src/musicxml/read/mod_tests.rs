@@ -502,6 +502,198 @@ fn positive_midi_transpose_reconstructs() {
     assert_eq!(score.parts[0].voices[0].midi_transpose, Some(7));
 }
 
+// --- Stage S3: <part-list> MIDI instruments (closes the %%MIDI loop) ---------
+
+/// Assert FULL-byte idempotence — S3 reconstructs the `<part-list>`
+/// `<score-instrument>`/`<midi-instrument>` blocks, so nothing is stripped any
+/// more for a single-voice file. This is the closed-loop gate the stage exists
+/// for. Returns the reconstructed score for direct `midi_instrument` asserts.
+fn assert_idempotent_s3(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S3 full loop)"
+    );
+    score
+}
+
+/// The reconstructed first voice's MIDI instrument.
+fn first_midi(score: &Score) -> crate::model::MidiInstrumentModel {
+    score.parts[0].voices[0]
+        .midi_instrument
+        .expect("S3 must reconstruct voice.midi_instrument from the part-list")
+}
+
+#[test]
+fn midi_program_reconstructs_zero_based() {
+    // %%MIDI program 73 -> <midi-program>74</midi-program> (1-based); the reader
+    // must invert to the 0-based program 73, regenerating the same GM name +
+    // <midi-program> on re-write.
+    let abc = "X:1\nT:P\nL:1/4\nK:C\n%%MIDI program 73\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<midi-program>74</midi-program>")
+            && x1.contains("<instrument-name>flute</instrument-name>"),
+        "precondition: program 73 emits 1-based 74 + GM name flute"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(
+        midi.program,
+        Some(73),
+        "<midi-program>74 inverts to 0-based 73"
+    );
+    assert_eq!(midi.channel, None);
+    assert_eq!(midi.volume_cc, None);
+    assert_eq!(midi.pan_cc, None);
+}
+
+#[test]
+fn midi_program_with_channel_reconstructs_both() {
+    // The two-integer `program <chan> <prog>` form -> <midi-channel> + 1-based
+    // <midi-program>; the reader recovers channel and 0-based program.
+    let abc = "X:1\nT:PC\nL:1/4\nK:C\n%%MIDI program 1 56\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<midi-channel>1</midi-channel>")
+            && x1.contains("<midi-program>57</midi-program>"),
+        "precondition: program 1 56 emits channel 1 + 1-based program 57"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(midi.program, Some(56));
+    assert_eq!(midi.channel, Some(1));
+}
+
+#[test]
+fn standalone_channel_reconstructs_with_no_program() {
+    // A standalone `%%MIDI channel 10` emits ONLY <midi-channel> and falls back
+    // to the PART NAME for <instrument-name> (program is None). The reader must
+    // leave program = None so re-write reproduces the part-name fallback, not a
+    // GM name.
+    let abc = "X:1\nT:Ch\nL:1/4\nK:C\n%%MIDI channel 10\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<midi-channel>10</midi-channel>")
+            && !x1.contains("<midi-program>")
+            && x1.contains("<instrument-name>Ch</instrument-name>"),
+        "precondition: standalone channel emits no program + part-name fallback"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(
+        midi.program, None,
+        "no program -> re-write must use the part name"
+    );
+    assert_eq!(midi.channel, Some(10));
+}
+
+#[test]
+fn control7_volume_reconstructs_cc() {
+    // %%MIDI control 7 64 -> <volume>50.39</volume>; the reader must invert the
+    // float back to the exact integer CC 64 (round(50.39 * 1.27) == 64).
+    let abc = "X:1\nT:Vol\nL:1/4\nK:C\n%%MIDI control 7 64\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<volume>50.39</volume>"),
+        "precondition: control 7 64 emits volume 50.39"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(midi.volume_cc, Some(64), "<volume>50.39 inverts to CC 64");
+    assert_eq!(midi.program, None);
+}
+
+#[test]
+fn control10_pan_reconstructs_cc() {
+    // %%MIDI control 10 64 -> <pan>0.71</pan>; inverse round((0.71+90)*127/180)==64.
+    let abc = "X:1\nT:Pan\nL:1/4\nK:C\n%%MIDI control 10 64\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<pan>0.71</pan>"),
+        "precondition: control 10 64 emits pan 0.71"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(midi.pan_cc, Some(64), "<pan>0.71 inverts to CC 64");
+}
+
+#[test]
+fn pan_extremes_reconstruct() {
+    // CC 0 -> <pan>-90.00</pan>, CC 127 -> <pan>90.00</pan>; the boundary values
+    // must invert exactly (no off-by-one at the signed extremes).
+    let low = "X:1\nT:PanLo\nL:1/4\nK:C\n%%MIDI control 10 0\nC\n";
+    assert_eq!(first_midi(&assert_idempotent_s3(low)).pan_cc, Some(0));
+    let high = "X:1\nT:PanHi\nL:1/4\nK:C\n%%MIDI control 10 127\nC\n";
+    assert_eq!(first_midi(&assert_idempotent_s3(high)).pan_cc, Some(127));
+}
+
+#[test]
+fn full_midi_instrument_reconstructs_all_fields() {
+    // program + channel + CC7 + CC10 in one <midi-instrument>; every field must
+    // round-trip and reconstruct, and the whole document must be byte-identical.
+    let abc = "X:1\nT:All\nL:1/4\nK:C\n%%MIDI program 1 56\n%%MIDI control 7 100\n%%MIDI control 10 30\nC\n";
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(midi.program, Some(56));
+    assert_eq!(midi.channel, Some(1));
+    assert_eq!(midi.volume_cc, Some(100));
+    assert_eq!(midi.pan_cc, Some(30));
+}
+
+#[test]
+fn inline_midi_program_reconstructs_like_line_start() {
+    // The inline `[I:MIDI=program N]` form projects identically to the line-start
+    // directive; the reader inverts it the same way (closing the inline loop).
+    let abc = "X:1\nT:Inl\nL:1/4\nK:C\n[I:MIDI=program 40]C\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<midi-program>41</midi-program>"),
+        "precondition: inline program 40 emits 1-based 41"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(
+        midi.program,
+        Some(40),
+        "inline program 40 inverts to 0-based 40"
+    );
+}
+
+#[test]
+fn no_midi_directive_leaves_instrument_none() {
+    // A file with no %%MIDI must not fabricate a midi_instrument (the writer
+    // emits no part-list instrument for it).
+    let score = assert_idempotent_s3("X:1\nT:Plain\nL:1/4\nK:C\nC\n");
+    assert_eq!(
+        score.parts[0].voices[0].midi_instrument, None,
+        "no %%MIDI -> no reconstructed instrument"
+    );
+}
+
+#[test]
+fn float_cc_round_trip_is_stable_for_every_value() {
+    // Design §9 (REQUIRED): the writer formats <volume> as `{:.2}` of cc/1.27 and
+    // <pan> as `{:.2}` of cc/127*180-90; the reader inverts with round(v*1.27)
+    // and round((p+90)*127/180). Prove the round-trip recovers the EXACT integer
+    // CC for every cc in 0..=127, for both volume and pan. This is what makes
+    // <volume>/<pan> idempotent under the closed loop.
+    for cc in 0u8..=127 {
+        let v: f64 = format!("{:.2}", f64::from(cc) / 1.27)
+            .parse()
+            .expect("formatted volume must parse as f64");
+        let back = (v * 1.27).round();
+        assert_eq!(
+            back,
+            f64::from(cc),
+            "volume CC {cc}: round({v} * 1.27) = {back}, expected {cc}"
+        );
+
+        let p: f64 = format!("{:.2}", f64::from(cc) / 127.0 * 180.0 - 90.0)
+            .parse()
+            .expect("formatted pan must parse as f64");
+        let back = ((p + 90.0) * 127.0 / 180.0).round();
+        assert_eq!(
+            back,
+            f64::from(cc),
+            "pan CC {cc}: round(({p} + 90) * 127 / 180) = {back}, expected {cc}"
+        );
+    }
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.
