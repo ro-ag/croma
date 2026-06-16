@@ -24,18 +24,24 @@
 //! `<key-step>`/`<key-alter>`/`<key-accidental>`) -> [`KeySignatureModel`],
 //! `<time>` -> [`MeterModel`], `<clef>` -> the staff voice's
 //! `initial_properties.clef`, and `<transpose><chromatic>` -> `midi_transpose`.
+//! **S3:** the `<part-list>` MIDI instruments — `<score-instrument>` /
+//! `<midi-instrument>` (`<midi-channel>`, 1-based `<midi-program>`, `<volume>`,
+//! `<pan>`) -> [`MidiInstrumentModel`] on the owning voice. This closes the
+//! forward/reverse `%%MIDI` loop (the epic's motivator): a `%%MIDI program` /
+//! `channel` / `control` directive (line-start or inline `[I:MIDI=...]`) now
+//! survives ABC -> XML -> [`Score`] -> XML byte-for-byte.
+//!
 //! Mid-measure `<attributes>` changes (`KeyChange`/`MeterChange`/`ClefChange`),
-//! part-list MIDI, notations, directions, multi-voice, repeats, grace and chords
-//! are **later stages** and are intentionally not reconstructed yet — files that
-//! use them simply do not round-trip idempotently yet, which the corpus gate
-//! measures.
+//! notations, directions, multi-voice, repeats, grace and chords are **later
+//! stages** and are intentionally not reconstructed yet — files that use them
+//! simply do not round-trip idempotently yet, which the corpus gate measures.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, Fraction, KeyAccidentalModel,
-    KeySignatureModel, Measure, MeasureId, MeterModel, NoteEvent, Part, PartId, Pitch, RestEvent,
-    RestVisibility, Score, ScoreMetadata, Staff, StaffId, TextLine, TimedEvent, TimedEventKind,
-    Voice, VoiceId, VoicePropertiesModel,
+    KeySignatureModel, Measure, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent, Part,
+    PartId, Pitch, RestEvent, RestVisibility, Score, ScoreMetadata, Staff, StaffId, TextLine,
+    TimedEvent, TimedEventKind, Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -154,11 +160,12 @@ impl Reader {
         // `read_part`, scoped to the owning voice.)
         self.read_header_key_meter(root, &mut score.metadata);
 
-        // Part names come from the <part-list>; the music comes from the
-        // sibling <part> elements. The writer keys them by matching `id`.
-        let part_names = self.read_part_list(root);
+        // Part names AND part-list MIDI instruments (S3) come from the
+        // <part-list>; the music comes from the sibling <part> elements. The
+        // writer keys them by matching `id`.
+        let part_list = self.read_part_list(root);
         for part_node in children_named(root, "part") {
-            let part = self.read_part(part_node, score.divisions, &part_names);
+            let part = self.read_part(part_node, score.divisions, &part_list);
             score.parts.push(part);
         }
 
@@ -346,6 +353,39 @@ impl Reader {
         }
     }
 
+    /// Parse an unsigned integer that fits in `u8` (`<midi-channel>`), warning
+    /// and yielding `None` otherwise.
+    fn parse_u8(&mut self, text: &str, label: &str) -> Option<u8> {
+        match text.trim().parse::<u8>() {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.warn(
+                    "musicxml.read.invalid_integer",
+                    format!("<{label}> `{}` is not a valid 0-255 integer", text.trim()),
+                );
+                None
+            }
+        }
+    }
+
+    /// Parse an unsigned integer that fits in `u16` (raw 1-based
+    /// `<midi-program>` before the `- 1` inverse), warning otherwise.
+    fn parse_u16(&mut self, text: &str, label: &str) -> Option<u16> {
+        match text.trim().parse::<u16>() {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.warn(
+                    "musicxml.read.invalid_integer",
+                    format!(
+                        "<{label}> `{}` is not a valid non-negative integer",
+                        text.trim()
+                    ),
+                );
+                None
+            }
+        }
+    }
+
     fn read_metadata(&mut self, root: Node<'_, '_>, metadata: &mut ScoreMetadata) {
         // <work><work-title> -> title. Use the RAW (untrimmed) text so the
         // re-emitted title is byte-identical to the writer's input.
@@ -378,9 +418,15 @@ impl Reader {
         }
     }
 
-    /// Map `score-part` id -> part name. (Full `<score-instrument>` /
-    /// `<midi-instrument>` reconstruction is stage S3 and is deferred.)
-    fn read_part_list(&mut self, root: Node<'_, '_>) -> Vec<(String, Option<String>)> {
+    /// Read each `<score-part>` into its id, `<part-name>`, and the list of
+    /// `<midi-instrument>` MIDI projections (S3). The writer emits one
+    /// `<score-part>` per part, with all `<score-instrument>` before all
+    /// `<midi-instrument>`; only the `<midi-instrument>` carries the
+    /// score-translatable fields the model stores, so the `<score-instrument>`
+    /// blocks (whose `<instrument-name>` is *derived* from the program / part
+    /// name on the forward side) are not read back — recovering `program`
+    /// regenerates the identical name on re-write.
+    fn read_part_list(&mut self, root: Node<'_, '_>) -> Vec<PartListEntry> {
         let Some(part_list) = children_named(root, "part-list").next() else {
             return Vec::new();
         };
@@ -388,24 +434,128 @@ impl Reader {
             .map(|score_part| {
                 let id = score_part.attribute("id").unwrap_or_default().to_owned();
                 let name = child_text(score_part, "part-name").map(str::to_owned);
-                (id, name)
+                let instruments = self.read_midi_instruments(score_part);
+                PartListEntry {
+                    id,
+                    name,
+                    instruments,
+                }
             })
             .collect()
+    }
+
+    /// Invert [`MusicXmlWriter::write_part_instruments`]: read every
+    /// `<midi-instrument>` child of a `<score-part>` into a
+    /// [`MidiInstrumentModel`] (one per voice that carried `%%MIDI` sound
+    /// metadata). The exact inverses of the writer's emission are:
+    ///
+    /// - `<midi-channel>n` -> `channel = n`,
+    /// - `<midi-program>N` -> `program = N - 1` (forward is `program + 1`),
+    /// - `<volume>v` -> `volume_cc = round(v * 1.27)` (forward `{:.2}` of `cc/1.27`),
+    /// - `<pan>p` -> `pan_cc = round((p + 90) * 127 / 180)` (forward `{:.2}` of
+    ///   `cc/127*180 - 90`).
+    ///
+    /// `<instrument-name>` is intentionally **not** read: on the forward side it
+    /// is derived (the GM name when a program exists, else the part name), so
+    /// recovering `program` (or leaving it `None`) regenerates the identical name
+    /// on re-write. The `0..=127` float-stability test proves the CC inverses are
+    /// idempotent. An instrument with no recovered field is dropped (the writer
+    /// would not have emitted it).
+    fn read_midi_instruments(&mut self, score_part: Node<'_, '_>) -> Vec<MidiInstrumentModel> {
+        children_named(score_part, "midi-instrument")
+            .filter_map(|node| self.read_midi_instrument(node))
+            .collect()
+    }
+
+    fn read_midi_instrument(&mut self, node: Node<'_, '_>) -> Option<MidiInstrumentModel> {
+        let channel =
+            child_text(node, "midi-channel").and_then(|text| self.parse_u8(text, "midi-channel"));
+        // `<midi-program>` is 1-based (forward emits `program + 1`); subtract one
+        // to recover the 0-based GM program. A value of 0 is out of range for the
+        // writer's 1-based emission, so it warns and is dropped rather than
+        // wrapping to 255.
+        let program = child_text(node, "midi-program").and_then(|text| {
+            let raw = self.parse_u16(text, "midi-program")?;
+            match raw.checked_sub(1) {
+                Some(value) if value <= u16::from(u8::MAX) => u8::try_from(value).ok(),
+                _ => {
+                    self.warn(
+                        "musicxml.read.invalid_midi_program",
+                        format!("<midi-program> `{raw}` is out of the 1-based GM range; ignored"),
+                    );
+                    None
+                }
+            }
+        });
+        let volume_cc = child_text(node, "volume")
+            .and_then(|text| self.cc_from_float(text, "volume", |v| v * 1.27));
+        let pan_cc = child_text(node, "pan")
+            .and_then(|text| self.cc_from_float(text, "pan", |p| (p + 90.0) * 127.0 / 180.0));
+
+        let model = MidiInstrumentModel {
+            program,
+            channel,
+            volume_cc,
+            pan_cc,
+            span: READER_SPAN,
+        };
+        // Drop an instrument that recovered nothing the writer would emit (so it
+        // does not re-write a spurious empty <midi-instrument>).
+        model.has_content().then_some(model)
+    }
+
+    /// Invert one of the writer's `{:.2}` float CCs back to the exact integer it
+    /// started from. `to_cc` maps the parsed float to the (real-valued) CC, which
+    /// is rounded to the nearest integer. The exhaustive `0..=127` stability unit
+    /// test proves this recovers the original CC for every value the writer can
+    /// emit; a value that rounds outside the valid `0..=127` MIDI CC range can
+    /// only come from a hand-edited file, so it warns and is dropped (never a
+    /// panicking cast).
+    fn cc_from_float(&mut self, text: &str, label: &str, to_cc: impl Fn(f64) -> f64) -> Option<u8> {
+        let value: f64 = match text.trim().parse() {
+            Ok(value) => value,
+            Err(_) => {
+                self.warn(
+                    "musicxml.read.invalid_float",
+                    format!("<{label}> `{}` is not a number; ignored", text.trim()),
+                );
+                return None;
+            }
+        };
+        let cc = to_cc(value).round();
+        if (0.0..=127.0).contains(&cc) {
+            Some(cc as u8)
+        } else {
+            self.warn(
+                "musicxml.read.cc_out_of_range",
+                format!(
+                    "<{label}> `{}` maps to CC {cc}, outside the valid 0-127 range; ignored",
+                    text.trim()
+                ),
+            );
+            None
+        }
     }
 
     fn read_part(
         &mut self,
         part_node: Node<'_, '_>,
         divisions: u32,
-        part_names: &[(String, Option<String>)],
+        part_list: &[PartListEntry],
     ) -> Part {
         let id = part_node.attribute("id").unwrap_or_default().to_owned();
-        let name = part_names
-            .iter()
-            .find(|(part_id, _)| *part_id == id)
-            .and_then(|(_, name)| name.clone())
+        let entry = part_list.iter().find(|entry| entry.id == id);
+        let name = entry
+            .and_then(|entry| entry.name.clone())
             .filter(|name| !name.is_empty())
             .map(text_line);
+        // S3: the writer emits one `<midi-instrument>` per voice that carried
+        // `%%MIDI` sound metadata, in voice order. S1–S3 reconstruct a single
+        // voice per part, so the first recovered instrument is this voice's; any
+        // further instruments belong to additional voices reconstructed in the
+        // multi-voice stage (S6) and are left for then. The common corpus shape
+        // (one voice = one part = one instrument) round-trips now.
+        let midi_instrument = entry.and_then(|entry| entry.instruments.first().copied());
 
         let staff_id = StaffId {
             value: 1,
@@ -451,7 +601,7 @@ impl Reader {
             properties: initial_properties,
             measures,
             events,
-            midi_instrument: None,
+            midi_instrument,
             midi_transpose,
             source_span: READER_SPAN,
         };
@@ -714,6 +864,15 @@ impl Reader {
         let denominator = divisions.max(1).saturating_mul(4);
         Some(Fraction::new(value, denominator))
     }
+}
+
+/// One `<score-part>` reconstructed from the `<part-list>`: its `id`, optional
+/// `<part-name>`, and the MIDI instruments (one per voice that carried `%%MIDI`
+/// sound metadata) recovered from its `<midi-instrument>` children (S3).
+struct PartListEntry {
+    id: String,
+    name: Option<String>,
+    instruments: Vec<MidiInstrumentModel>,
 }
 
 struct MeasureOutcome {
