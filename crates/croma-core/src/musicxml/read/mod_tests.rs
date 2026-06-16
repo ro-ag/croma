@@ -162,6 +162,79 @@ fn non_partwise_root_is_diagnosed() {
 }
 
 #[test]
+fn doctype_prefixed_document_is_read_not_rejected() {
+    // R2b: every real-world MusicXML file (abc2xml / MuseScore / Finale /
+    // Sibelius) carries a `<!DOCTYPE score-partwise PUBLIC ...>` declaration.
+    // The reader must be DTD-tolerant: this minimal-but-valid doctype-prefixed
+    // document must reconstruct a NON-empty Score (>=1 part, the expected note),
+    // not bail at the parse gate with `musicxml.read.parse_error`. With the
+    // default `allow_dtd: false` this returns an empty Score (the bug).
+    let xml = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 3.0 Partwise//EN\" ",
+        "\"http://www.musicxml.org/dtds/partwise.dtd\">\n",
+        "<score-partwise>\n",
+        "  <part-list><score-part id=\"P1\"><part-name>Music</part-name></score-part></part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>2</divisions></attributes>\n",
+        "    <note><pitch><step>D</step><octave>5</octave></pitch>\n",
+        "    <duration>2</duration><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+    let report = read_musicxml(xml);
+    // No parse-gate rejection.
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| d.code != "musicxml.read.parse_error"),
+        "a DOCTYPE-prefixed document must not be rejected at the parse gate, got {:?}",
+        report.diagnostics
+    );
+    // A non-empty Score with the expected single note reconstructed.
+    assert_eq!(report.value.parts.len(), 1, "expected exactly one part");
+    let pitch = first_note_pitch(&report.value);
+    assert_eq!(pitch.step, 'D');
+    assert_eq!(pitch.octave, 5);
+    assert_eq!(pitch.alter, 0);
+    assert_eq!(
+        report.value.parts[0].voices[0].events[0].duration,
+        Fraction::new(1, 4),
+        "a <duration>2</duration> at <divisions>2</divisions> is a quarter note"
+    );
+}
+
+#[test]
+fn doctype_then_garbage_is_total_and_diagnosed() {
+    // R2b totality guard: enabling DTD tolerance must NOT make a genuinely
+    // malformed document parse. A valid doctype followed by a truncated /
+    // mismatched body must still degrade to the graceful empty Score PLUS a
+    // reader diagnostic, never a panic.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 3.0 Partwise//EN\" ",
+        "\"http://www.musicxml.org/dtds/partwise.dtd\">\n",
+        "<score-partwise><part></not-the-same-tag> &&& <<< broken",
+    );
+    let report = read_musicxml(xml);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code.starts_with("musicxml.read")),
+        "a DTD-prefixed-but-malformed document must yield a reader diagnostic, got {:?}",
+        report.diagnostics
+    );
+    // Totality: a minimal/empty Score, no panic, no reconstructed parts.
+    assert!(
+        report.value.parts.is_empty(),
+        "a malformed document must degrade to an empty Score, got {} part(s)",
+        report.value.parts.len()
+    );
+}
+
+#[test]
 fn single_note_round_trips_and_reconstructs_pitch() {
     let score = assert_idempotent("X:1\nT:One\nL:1/4\nK:C\nC\n");
     let pitch = first_note_pitch(&score);

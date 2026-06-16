@@ -108,7 +108,7 @@ use crate::model::{
 };
 use crate::parse::ParseReport;
 
-use roxmltree::{Document, Node};
+use roxmltree::{Document, Node, ParsingOptions};
 
 /// Sentinel span for every model field the reader cannot reconstruct from the
 /// XML (the writer never emits source spans, so the idempotence gate is
@@ -124,7 +124,21 @@ const READER_SPAN: Span = Span { start: 0, end: 0 };
 /// reconstructed `Score.diagnostics` mirrors the report diagnostics so callers
 /// that inspect either see the same warnings.
 pub fn read_musicxml(xml: &str) -> ParseReport<Score> {
-    let document = match Document::parse(xml) {
+    // DTD tolerance (R2b): every real-world MusicXML file (abc2xml, MuseScore,
+    // Finale, Sibelius) opens with a `<!DOCTYPE score-partwise PUBLIC ...>`
+    // declaration. roxmltree's default `allow_dtd: false` rejects all of them
+    // before any reader logic runs, so the reverse direction never reaches a
+    // real document. `allow_dtd: true` permits the declaration; roxmltree still
+    // never fetches the external DTD subset, keeps its billion-laughs guard, and
+    // raises `UnknownEntityReference` for unsafe entity expansion — so this is
+    // the standard, safe way to read real MusicXML. Genuine malformation still
+    // returns `Err`, handled by the graceful empty-Score path below. READ-only:
+    // croma's writer emits no doctype, so forward output is byte-untouched.
+    let options = ParsingOptions {
+        allow_dtd: true,
+        ..ParsingOptions::default()
+    };
+    let document = match Document::parse_with_options(xml, options) {
         Ok(document) => document,
         Err(error) => {
             let diagnostic = Diagnostic::new(
