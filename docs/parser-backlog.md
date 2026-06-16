@@ -225,3 +225,10 @@ normalization candidates rather than active Croma parser/export bugs.
   items (transpose, channel-only, inline `[I:MIDI]`) and the abc2xml-isms not
   mimicked (visible `prog:` words, drummap percussion) are tabled there, along
   with the writer-side projection-coverage gap.
+- **MusicXML → Score reader** (the reverse direction, closing the
+  forward/reverse loop) is documented in
+  [`docs/musicxml-reader.md`](musicxml-reader.md): a feature-gated
+  (`musicxml-reader`), experimental, non-panicking `read_musicxml` that inverts
+  croma's writer, staged S1–S6 and proven by an XML re-emission idempotence gate
+  over the 10k. Stage S1 (parts/measures/notes/durations/metadata) has landed;
+  S2 (`<key>`/`<time>`/`<clef>`/`<transpose>`) is the next gate-driven target.
