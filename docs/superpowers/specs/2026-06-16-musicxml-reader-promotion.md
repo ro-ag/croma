@@ -52,6 +52,13 @@ corpus-wide adjudicated-to-zero worklist. The reader's analog has four legs;
    structurally; reaching a comparable rate with the remainder **adjudicated**
    (not raw-percentage-chased) is the bar. A raw rate materially *below* the
    forward floor with un-triaged files is a fail.
+   **R2 outcome: 98.50% (9,850/10,000), above the floor.** Reached by three clean
+   read-side fixes (DTD-tolerant parse 0→77.1%, textless functional `<harmony>`
+   synthesis 77.1→98.27%, decimal `<alter>` 98.27→98.50%); residual categories all
+   adjudicated to verdicts (comparator/music21 artifacts, croma writer-default
+   tempo, one outlier file, complex-tuplet gap shared with the self-loop residual)
+   — none a clean reader bug. Foreign-engraver stretch: 40/40 music21 `.mxl` read
+   with 0 panics. See `docs/musicxml-reader.md` "Reference-dialect reading".
 
 4. **Second round-trip parity (R1).** The reader has a real consumer and the
    ABC path round-trips: `XML → Score → write_abc → ABC` is structurally faithful.
@@ -183,7 +190,7 @@ library contract. CLI-default + core-opt-in satisfies both.
 | Stage | Scope | Gate |
 |---|---|---|
 | **R1** | CLI `read` / `musicxml2abc`, feature-plumbed (no default dep). Reader Score-completion for the ABC projection. Structural reader→ABC round-trip prover. | **DONE**: both feature states build; reader→ABC structural 9514/9933 (95.8%), residual categorized; XML idempotence held 9915/9935; forward byte-identical |
-| **R2** | reverse driver + abc2xml-ref music21 parity; triage divergences one file at a time; fix reader bugs, adjudicate the rest; probe other engravers. | parity reported; worklist→0 or documented stop |
+| **R2** | reverse driver + abc2xml-ref music21 parity; triage divergences; fix reader bugs, adjudicate the rest; probe other engravers. | **DONE**: parity 0→**98.50%** (9850/10000) via 3 clean read-side fixes (DTD-tolerant parse, textless functional harmony, decimal alter); residual adjudicated to verdicts; idempotence held 9915/9935; forward byte-identical; 40/40 music21 `.mxl` totality |
 | **R3** | self-loop residual closeout (19 cross-channel ordering + 1 nested-21:16 tuplet). | 9935/9935 or documented principled stop, 0 regressions |
 | **R4** | promotion: CLI-default feature flip, AGENTS.md / docs / README / tracker. | legs 1–4 green; forward proofs intact |
 
