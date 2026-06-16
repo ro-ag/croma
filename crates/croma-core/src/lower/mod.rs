@@ -1459,6 +1459,8 @@ fn project_voice_midi(
             .or_insert(MidiInstrumentModel {
                 program: None,
                 channel: None,
+                volume_cc: None,
+                pan_cc: None,
                 span: directive.span,
             });
         apply_midi_instrument_directive(value, directive.span, model);
@@ -1467,7 +1469,7 @@ fn project_voice_midi(
     for voice in voices.iter_mut() {
         if let Some(model) = instrument_by_voice
             .get(voice.id.value.as_str())
-            .filter(|model| model.program.is_some() || model.channel.is_some())
+            .filter(|model| model.has_content())
         {
             voice.midi_instrument = Some(*model);
         }
@@ -1477,11 +1479,12 @@ fn project_voice_midi(
     }
 }
 
-/// Update `model` from one `%%MIDI` directive value, parsing only the
-/// score-translatable `program` / `channel` sub-directives. A trailing `%`
-/// comment and any non-numeric trailing words are ignored, matching abc2midi's
-/// lenient leading-integer parse; out-of-range values are skipped. Last write
-/// wins, so a later directive in the same voice overrides an earlier one.
+/// Update `model` from one `%%MIDI` directive value, parsing the
+/// score-translatable `program` / `channel` / `control` (CC7 volume, CC10 pan)
+/// sub-directives. A trailing `%` comment and any non-numeric trailing words are
+/// ignored, matching abc2midi's lenient leading-integer parse; out-of-range
+/// values are skipped. Last write wins, so a later directive in the same voice
+/// overrides an earlier one.
 fn apply_midi_instrument_directive(value: &str, span: Span, model: &mut MidiInstrumentModel) {
     let head = value.split('%').next().unwrap_or(value);
     let mut tokens = head.split_whitespace();
@@ -1516,6 +1519,24 @@ fn apply_midi_instrument_directive(value: &str, span: Span, model: &mut MidiInst
             {
                 model.channel = Some(channel);
                 model.span = span;
+            }
+        }
+        // `control <cc> <value>`: only CC7 (channel volume) and CC10 (pan) carry
+        // score-relevant sound metadata; every other controller is playback-only.
+        "control" => {
+            let integers: Vec<u8> = tokens.map_while(leading_u8).collect();
+            if let [controller, value, ..] = integers.as_slice() {
+                match controller {
+                    7 => {
+                        model.volume_cc = Some(*value);
+                        model.span = span;
+                    }
+                    10 => {
+                        model.pan_cc = Some(*value);
+                        model.span = span;
+                    }
+                    _ => {}
+                }
             }
         }
         // Every other sub-directive is playback-only: not score-translated.

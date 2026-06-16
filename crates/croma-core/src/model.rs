@@ -174,25 +174,43 @@ pub struct Voice {
     pub source_span: Span,
 }
 
-/// A score-level MIDI instrument projected from `%%MIDI program` / `%%MIDI
-/// channel` directives scoped to one voice.
+/// A score-level MIDI instrument projected from a voice's `%%MIDI program` /
+/// `channel` / `control` directives.
 ///
 /// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; the score-meaningful
-/// fields (instrument identity + channel) are forward-translated to MusicXML
-/// `<score-instrument>` / `<midi-instrument>` while the raw directive text stays
-/// in [`ScoreMetadata::preserved_directives`] for round-trip / formatter use.
+/// fields (instrument identity, channel, CC7 volume, CC10 pan) are
+/// forward-translated to MusicXML `<score-instrument>` / `<midi-instrument>`
+/// while the raw directive text stays in [`ScoreMetadata::preserved_directives`]
+/// for round-trip / formatter use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiInstrumentModel {
     /// General MIDI program number exactly as written in the directive
     /// (0-based, abc2midi/GM convention). The MusicXML `<midi-program>` is this
-    /// value plus one (1-based). `None` when only a channel was declared.
+    /// value plus one (1-based). `None` when no program was declared.
     pub program: Option<u8>,
     /// MIDI channel (1-16) from the two-integer `program <chan> <prog>` form or
     /// a sibling `%%MIDI channel` directive in the same voice. `None` when no
     /// channel was declared.
     pub channel: Option<u8>,
+    /// MIDI CC7 (channel volume) value 0-127 from `%%MIDI control 7 <n>`,
+    /// rendered as `<midi-instrument><volume>` (`n / 1.27`). `None` when unset.
+    pub volume_cc: Option<u8>,
+    /// MIDI CC10 (pan) value 0-127 from `%%MIDI control 10 <n>`, rendered as
+    /// `<midi-instrument><pan>` (`n / 127 * 180 - 90`). `None` when unset.
+    pub pan_cc: Option<u8>,
     /// Source span of the directive that last set this instrument.
     pub span: Span,
+}
+
+impl MidiInstrumentModel {
+    /// True when this projection carries at least one field worth emitting as a
+    /// MusicXML `<score-instrument>` / `<midi-instrument>`.
+    pub fn has_content(&self) -> bool {
+        self.program.is_some()
+            || self.channel.is_some()
+            || self.volume_cc.is_some()
+            || self.pan_cc.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
