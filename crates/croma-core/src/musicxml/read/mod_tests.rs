@@ -2042,6 +2042,377 @@ fn no_barline_directives_leave_measure_lists_empty() {
     );
 }
 
+// --- Stage S6b: mid-measure <attributes> (key / meter / clef changes) --------
+
+/// Assert FULL-byte idempotence on an S6b single-voice fixture. A mid-measure
+/// `<attributes>` block (a SECOND `<attributes>` following notes within a
+/// measure, or the first `<attributes>` of a non-leading measure) carries a
+/// `KeyChange`/`MeterChange`/`ClefChange`; in a single-voice fixture nothing is
+/// deferred, so the whole document must round-trip byte-for-byte. Returns the
+/// reconstructed score for direct model-field assertions.
+fn assert_idempotent_s6b(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S6b mid-measure attrs)"
+    );
+    score
+}
+
+/// All `TimedEventKind::KeyChange` models in the first part's first voice.
+fn key_changes(score: &Score) -> Vec<&crate::model::KeySignatureModel> {
+    score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::KeyChange(key) => Some(key),
+            _ => None,
+        })
+        .collect()
+}
+
+/// All `TimedEventKind::MeterChange` models in the first part's first voice.
+fn meter_changes(score: &Score) -> Vec<&crate::model::MeterModel> {
+    score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::MeterChange(meter) => Some(meter),
+            _ => None,
+        })
+        .collect()
+}
+
+/// All `TimedEventKind::ClefChange` models in the first part's first voice.
+fn clef_changes(score: &Score) -> Vec<&crate::model::ClefChangeModel> {
+    score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::ClefChange(clef) => Some(clef),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn inline_key_change_reconstructs_event() {
+    // A mid-tune [K:G] becomes a SECOND <attributes> with only a <key> block,
+    // emitted between notes. The reader must reconstruct a KeyChange event at the
+    // current onset (NOT touch the header metadata.key) so it re-emits in place.
+    let abc = "X:1\nT:K\nM:4/4\nL:1/4\nK:C\nC D [K:G] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.matches("<attributes>").count() == 2,
+        "precondition: an inline [K:] emits a SECOND mid-measure <attributes>"
+    );
+    let score = assert_idempotent_s6b(abc);
+    // The header key is unchanged (C major, fifths 0).
+    assert_eq!(
+        header_key(&score).fifths,
+        0,
+        "the inline key change must not overwrite the header key"
+    );
+    let changes = key_changes(&score);
+    assert_eq!(changes.len(), 1, "exactly one KeyChange event");
+    assert_eq!(
+        changes[0].fifths, 1,
+        "the KeyChange carries G major (fifths 1)"
+    );
+    // The change sits at onset 2/4 (after two quarter notes), as a zero-duration
+    // event in the same measure as the notes.
+    let event = score.parts[0].voices[0]
+        .events
+        .iter()
+        .find(|event| matches!(event.kind, TimedEventKind::KeyChange(_)))
+        .expect("a KeyChange event");
+    assert_eq!(
+        event.onset,
+        Fraction::new(2, 4),
+        "KeyChange onset is after C D"
+    );
+    assert_eq!(
+        event.duration,
+        Fraction::zero(),
+        "KeyChange is zero-duration"
+    );
+}
+
+#[test]
+fn body_key_change_at_measure_start_reconstructs_event() {
+    // A body-field `K:G` between two measures emits a <attributes> with only a
+    // <key> as the FIRST child of the next measure (onset 0). That first-child
+    // <attributes> in a NON-leading measure is a mid-tune KeyChange, not a header
+    // block (the header attributes only appear in the part's first measure).
+    let abc = "X:1\nT:K\nM:2/4\nL:1/4\nK:C\nC D |\nK:G\nE F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<measure number=\"2\">") && x1.matches("<attributes>").count() == 2,
+        "precondition: the body K: emits a leading <attributes> in measure 2"
+    );
+    let score = assert_idempotent_s6b(abc);
+    let changes = key_changes(&score);
+    assert_eq!(changes.len(), 1, "one KeyChange for the body K:");
+    assert_eq!(changes[0].fifths, 1, "G major (fifths 1)");
+    // It lives in measure 2 (index 1) at onset 0.
+    let event = score.parts[0].voices[0]
+        .events
+        .iter()
+        .find(|event| matches!(event.kind, TimedEventKind::KeyChange(_)))
+        .expect("a KeyChange event");
+    assert_eq!(
+        event.measure.index, 1,
+        "the KeyChange is in the second measure"
+    );
+    assert_eq!(
+        event.onset,
+        Fraction::zero(),
+        "at the measure start (onset 0)"
+    );
+}
+
+#[test]
+fn inline_meter_change_reconstructs_event() {
+    // A mid-tune [M:2/4] emits a SECOND <attributes> with only a <time> block.
+    let abc = "X:1\nT:M\nM:4/4\nL:1/4\nK:C\nC D [M:2/4] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.matches("<attributes>").count() == 2 && x1.contains("<beats>2</beats>"),
+        "precondition: inline [M:] emits a mid-measure <time>"
+    );
+    let score = assert_idempotent_s6b(abc);
+    let changes = meter_changes(&score);
+    assert_eq!(changes.len(), 1, "exactly one MeterChange event");
+    assert_eq!(
+        changes[0].display, "2/4",
+        "the MeterChange display re-emits the 2/4 <time>"
+    );
+}
+
+#[test]
+fn inline_clef_change_reconstructs_event() {
+    // A mid-tune [K:clef=bass] emits a SECOND <attributes> with only a <clef>.
+    let abc = "X:1\nT:Cl\nM:4/4\nL:1/4\nK:C\nC D [K:clef=bass] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.matches("<attributes>").count() == 2 && x1.contains("<sign>F</sign>"),
+        "precondition: inline clef change emits a mid-measure <clef> (bass = F/4)"
+    );
+    let score = assert_idempotent_s6b(abc);
+    let changes = clef_changes(&score);
+    assert_eq!(changes.len(), 1, "exactly one ClefChange event");
+    assert_eq!(
+        changes[0].clef.text, "bass",
+        "the ClefChange reconstructs the canonical bass clef text"
+    );
+}
+
+#[test]
+fn inline_key_and_meter_change_in_one_measure_round_trip() {
+    // `[K:G][M:2/4]` are two SEPARATE zero-duration events at the same onset; the
+    // writer emits each as its own mid-measure <attributes> (key first, then
+    // time), so two events must reconstruct in that order.
+    let abc = "X:1\nT:KM\nM:4/4\nL:1/4\nK:C\nC D [K:G][M:2/4] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.matches("<attributes>").count() == 3,
+        "precondition: header + key + meter = three <attributes> blocks"
+    );
+    let score = assert_idempotent_s6b(abc);
+    assert_eq!(key_changes(&score).len(), 1, "one KeyChange");
+    assert_eq!(meter_changes(&score).len(), 1, "one MeterChange");
+    // The KeyChange must be ordered before the MeterChange (writer emits key
+    // first), both at the same onset, both before the following E note.
+    let kinds: Vec<&str> = score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimedEventKind::KeyChange(_) => Some("key"),
+            TimedEventKind::MeterChange(_) => Some("meter"),
+            TimedEventKind::Note(_) => Some("note"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["note", "note", "key", "meter", "note", "note"],
+        "key change precedes meter change, both between the note pairs"
+    );
+}
+
+#[test]
+fn header_attributes_in_first_measure_are_not_an_event() {
+    // The leading <attributes> (write_attributes) in the part's FIRST measure is
+    // the header key/time/clef, NOT a mid-tune change. A plain tune with no inline
+    // attribute change must reconstruct ZERO change events.
+    let score = assert_idempotent_s6b("X:1\nT:Plain\nM:4/4\nL:1/4\nK:C\nC D E F |\n");
+    assert!(
+        key_changes(&score).is_empty()
+            && meter_changes(&score).is_empty()
+            && clef_changes(&score).is_empty(),
+        "the header <attributes> must not be reconstructed as change events"
+    );
+}
+
+#[test]
+fn key_change_then_more_notes_in_later_measure_round_trip() {
+    // A body K: in measure 2 followed by more music, plus a header in measure 1:
+    // confirms the first-measure header is skipped while the measure-2 leading
+    // <attributes> is a KeyChange, and that following notes keep correct onsets.
+    let abc = "X:1\nT:Multi\nM:4/4\nL:1/4\nK:C\nC D E F |\nK:Am\nG A B c | d e f g |\n";
+    let score = assert_idempotent_s6b(abc);
+    let changes = key_changes(&score);
+    assert_eq!(changes.len(), 1, "one body KeyChange");
+    // A minor has no sharps/flats (fifths 0); the round-trip is what proves the
+    // <key> re-emits, the count proves it is an event not a header rewrite.
+    assert_eq!(changes[0].fifths, 0, "A minor is fifths 0");
+}
+
+#[test]
+fn annotation_before_inline_key_change_round_trips() {
+    // An annotation immediately before an inline [K:G]: the writer emits the
+    // KeyChange <attributes> FIRST (it sorts before the following note at the same
+    // onset), THEN the <direction> annotation (attached to the next note), THEN
+    // the note. The reader must reconstruct the KeyChange as an event AND keep the
+    // annotation buffered onto the following note so the order re-emits.
+    let abc = "X:1\nT:E\nM:4/4\nL:1/4\nK:C\nC D \"^hi\"[K:G] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<words>hi</words>") && x1.matches("<attributes>").count() == 2,
+        "precondition: annotation + inline key change both present"
+    );
+    let score = assert_idempotent_s6b(abc);
+    assert_eq!(key_changes(&score).len(), 1, "one KeyChange event");
+    // The annotation lands on a NOTE event (the one after the key change), never
+    // on the zero-duration KeyChange event itself.
+    let total_annotations: usize = score.parts[0].voices[0]
+        .events
+        .iter()
+        .map(|event| event.attachments.annotations.len())
+        .sum();
+    assert_eq!(total_annotations, 1, "exactly one annotation reconstructed");
+    let annotated_is_note = score.parts[0].voices[0].events.iter().any(|event| {
+        !event.attachments.annotations.is_empty() && matches!(event.kind, TimedEventKind::Note(_))
+    });
+    assert!(
+        annotated_is_note,
+        "the annotation attaches to a note (the one after the key change)"
+    );
+}
+
+#[test]
+fn chord_symbol_before_inline_key_change_round_trips() {
+    // A chord symbol "Am" before [K:G]: writer emits the KeyChange <attributes>,
+    // then the <harmony>, then the note. The reader keeps the harmony buffered
+    // onto the following note while reconstructing the KeyChange event.
+    let abc = "X:1\nT:E3\nM:4/4\nL:1/4\nK:C\nC D \"Am\"[K:G] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<harmony>") && x1.matches("<attributes>").count() == 2,
+        "precondition: chord symbol + inline key change both present"
+    );
+    let score = assert_idempotent_s6b(abc);
+    assert_eq!(key_changes(&score).len(), 1, "one KeyChange event");
+    let total_chord_symbols: usize = score.parts[0].voices[0]
+        .events
+        .iter()
+        .map(|event| event.attachments.chord_symbols.len())
+        .sum();
+    assert_eq!(
+        total_chord_symbols, 1,
+        "exactly one chord symbol reconstructed"
+    );
+    let on_note = score.parts[0].voices[0].events.iter().any(|event| {
+        !event.attachments.chord_symbols.is_empty() && matches!(event.kind, TimedEventKind::Note(_))
+    });
+    assert!(
+        on_note,
+        "the chord symbol attaches to the note after the key change"
+    );
+}
+
+#[test]
+fn mid_tune_key_change_with_explicit_accidentals_round_trips() {
+    // A mid-tune key with explicit accidentals exercises read_key's
+    // <key-step>/<key-alter>/<key-accidental> path inside a mid-measure block.
+    let abc = "X:1\nT:Exp\nM:4/4\nL:1/4\nK:C\nC D [K:D exp _b ^f] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.matches("<attributes>").count() == 2 && x1.contains("<key-accidental>"),
+        "precondition: the inline key change emits explicit <key-accidental>s"
+    );
+    let score = assert_idempotent_s6b(abc);
+    let changes = key_changes(&score);
+    assert_eq!(changes.len(), 1, "one KeyChange event");
+    assert!(
+        !changes[0].explicit_accidentals.is_empty(),
+        "the KeyChange reconstructs its explicit accidentals"
+    );
+}
+
+#[test]
+fn mid_tune_treble_clef_change_round_trips() {
+    // A mid-tune clef change BACK to treble still emits a <clef> (G/2) the writer
+    // produces unconditionally for a ClefChange. The reader must reconstruct a
+    // ClefChange with the canonical "treble" text (NOT None), so the G/2 <clef>
+    // re-emits in place rather than being dropped.
+    let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C clef=bass\nC D [K:clef=treble] E F |\n";
+    let x1 = export(abc);
+    // The header is bass (F/4); the mid-tune change is treble (G/2).
+    assert!(
+        x1.matches("<attributes>").count() == 2 && x1.matches("<sign>G</sign>").count() == 1,
+        "precondition: header bass + a mid-tune treble clef change"
+    );
+    let score = assert_idempotent_s6b(abc);
+    let changes = clef_changes(&score);
+    assert_eq!(changes.len(), 1, "one ClefChange event");
+    assert_eq!(
+        changes[0].clef.text, "treble",
+        "a mid-tune treble clef reconstructs the explicit canonical text"
+    );
+}
+
+#[test]
+fn mid_measure_meter_change_before_body_tempo_round_trips() {
+    // tune_005141 shape: a header with NO meter (K: only), then a body M:C and a
+    // body Q: before the first note. The writer emits the header <attributes>,
+    // then the meter-change <attributes> (a MeterChange at onset 0), THEN the
+    // body tempo <direction> (a TempoChange, sorted after the meter change). The
+    // reader must NOT promote that post-change tempo to the header tempo_model —
+    // it follows a mid-measure attributes block, so it is a body TempoChange.
+    let abc = "X:1\nT:NoHdrMeter\nK:C\nM:C\nQ:1/8=120\nC D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<time symbol=\"common\">") && x1.contains("<metronome>"),
+        "precondition: a body meter AND a body tempo are both present"
+    );
+    // The meter-change <attributes> must precede the tempo <direction> in X1.
+    let meter_pos = x1
+        .find("<time symbol=\"common\">")
+        .expect("the meter change is present");
+    let tempo_pos = x1.find("<metronome>").expect("the body tempo is present");
+    assert!(
+        meter_pos < tempo_pos,
+        "precondition: the writer emits the meter change before the body tempo"
+    );
+    let score = assert_idempotent_s6b(abc);
+    assert_eq!(meter_changes(&score).len(), 1, "one MeterChange event");
+    assert!(
+        score.metadata.tempo_model.is_none(),
+        "a tempo after a mid-measure attributes change is a body TempoChange, \
+         not the header tempo_model"
+    );
+    let tempo_changes = score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::TempoChange(_)))
+        .count();
+    assert_eq!(
+        tempo_changes, 1,
+        "the body tempo reconstructs one TempoChange"
+    );
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.
