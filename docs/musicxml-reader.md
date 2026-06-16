@@ -46,7 +46,7 @@ at documented defaults and is invisible to the gate.
 | Stage | Scope | Status |
 |---|---|---|
 | **S1** | `<score-partwise>` → parts → measures → `<note>` (`<pitch>` step/octave/alter, `<rest>`, `<duration>`/`<type>`/`<dot>`, `<accidental>`), `<backup>`/`<forward>`, `<divisions>`, work-title/composer/credit metadata | **done** |
-| S2 | `<divisions>`, `<key>`/`<fifths>`, `<time>`, `<clef>`, `<transpose>` → `midi_transpose` | planned |
+| **S2** | header `<attributes>`: `<divisions>`, `<key>`/`<fifths>` (+ explicit `<key-step>`/`<key-alter>`/`<key-accidental>`), `<time>` (incl. `symbol="common"`/`"cut"`, compound, free), `<clef>`, `<transpose>` → `midi_transpose`. Mid-measure `<attributes>` changes (key/meter/clef) deferred. | **done** |
 | S3 | `<score-instrument>` / `<midi-instrument>` → `MidiInstrumentModel` (closes the forward/reverse loop) | planned |
 | S4 | ties, slurs, tuplets (`<time-modification>`), articulations/decorations, beams | planned |
 | S5 | `<direction>`, `<harmony>`, `<lyric>` | planned |
@@ -73,17 +73,58 @@ at documented defaults and is invisible to the gate.
   (`explicit = true`); absent `<accidental>` means none. `<alter>` always sets
   the sounding pitch.
 
-### S1 corpus metric (10k zenodo set)
+### S2 reconstruction notes
 
-- Strict full-byte idempotence: **0 / 9,935** exported files — expected, because
-  every ABC tune carries a `K:`, so the writer always emits a `<key>` block that
-  S1 does not read yet (S2). The histogram confirms it: the dominant
-  first-diverging tag is `key` (~9.5k), then `score-instrument` (S3, ~426).
-- S1-supported-subset idempotence (deferred S2 `<key>`/`<time>` and S3
-  `<score-instrument>`/`<midi-instrument>` blocks stripped from both sides):
-  **483 / 9,935** — the files S1 fully reconstructs modulo the deferred stages.
-  The remaining files diverge on other later-stage elements (notations,
-  directions, lyrics, multi-voice, chords).
+- `<key>` is **score-level**: the writer emits an identical `<key>` in every
+  part's first-measure `<attributes>` from `score.metadata.key`, so the reader
+  reads the first part's header into `metadata.key` and re-emits it everywhere.
+  `<fifths>` → `KeySignatureModel.fifths`; each consecutive
+  `<key-step>`/`<key-alter>`/`<key-accidental>` triple → one
+  `KeyAccidentalModel` (the `<key-accidental>` name is the exact inverse of
+  `Accidental::musicxml_name`, with `<key-alter>` as a fallback). The
+  `KeySignatureModel.display` string is **never emitted** by the writer, so it is
+  left empty — the idempotence gate confirms `<key>` is fully driven by
+  `fifths` + `explicit_accidentals`.
+- `<time>` is score-level too. `symbol="common"` → `display = "C"`,
+  `symbol="cut"` → `"C|"`; otherwise the `<beats>`/`<beat-type>` pairs are
+  reassembled into `display` (joined with `+` when compound, e.g. `"3/8+2/8"`).
+  An **absent** `<time>` (free meter `M:none`, or no meter) leaves
+  `metadata.meter = None`; both `None` and a free meter re-emit nothing, so this
+  is idempotent. `MeterModel.display` is the only field the writer reads;
+  `duration`/`free_meter` get documented defaults.
+- `<clef>` is **per-staff**: the writer reads the staff voice's
+  `initial_properties.clef` (ABC text). The reader rebuilds a *canonical* clef
+  text from `<sign>`/`<line>`/`<clef-octave-change>` that `clef_model` re-maps to
+  the same element (`clef_model` is many-to-one, so a representative per
+  `(sign,line)` plus an octave suffix `+8`/`-8`/`+15`/`-15` is sufficient).
+  Plain treble (G/2, no octave change) reconstructs as `None`, matching a freshly
+  lowered score (the writer emits the default `<clef>` either way). The original
+  ABC clef string is unrecoverable but irrelevant to the gate.
+- `<transpose><chromatic>n` → `voice.midi_transpose = Some(n)`. The ABC
+  `transpose=` voice property is not in the XML; on re-write the writer falls
+  through to `midi_transpose`, reproducing the element. Scoped per part (the
+  writer emits one `<transpose>` per part from the first qualifying voice; S2
+  reconstructs a single voice per part).
+- **Deferred:** mid-measure `<attributes>` (a second `<attributes>` block from a
+  `KeyChange`/`MeterChange`/`ClefChange` event) is **not** reconstructed in S2.
+  Doing so requires synthesising the right `TimedEvent` at the exact onset routed
+  through the writer's measure-sequence/overlay timeline; it is tracked as
+  remaining (≈100 corpus files; first-diverging tag `attributes`).
+
+### S1/S2 corpus metric (10k zenodo set)
+
+- **S1** strict full-byte idempotence was **0 / 9,935** exported files (every ABC
+  tune carries a `K:`, so a `<key>` block S1 did not read always diverged first);
+  the S1-supported-subset view (deferred `<key>`/`<time>`/`<score-instrument>`/
+  `<midi-instrument>` stripped) was **483 / 9,935**.
+- **S2** strict full-byte idempotence: **483 / 9,935** — S2 clears the `key`
+  divergence entirely (the strict count now equals the old S1-supported-subset
+  number, confirming S2 reconstructs the whole header `<attributes>` for every
+  file previously blocked only by key/time). The new top first-diverging tags are
+  `barline` (~3.3k, S6), `direction` (~3.3k, S5), `notations` (~1.2k, S4),
+  `harmony` (~0.7k, S5), `score-instrument` (~426, S3), then `lyric`, `tie`,
+  `grace`, and `attributes` (~100, deferred mid-measure changes). These name the
+  next stages' work lists.
 
 Re-run the measurement with:
 
