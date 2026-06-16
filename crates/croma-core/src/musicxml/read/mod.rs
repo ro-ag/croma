@@ -3223,6 +3223,7 @@ pub fn complete_score_for_abc(score: &mut Score) {
     }
     for part in &mut score.parts {
         for voice in &mut part.voices {
+            renumber_voice_tuplet_pair_ids(voice);
             synthesize_voice_barline_events(voice);
             // A mid-tune `[K:..]` is reconstructed as a `KeyChange` event whose
             // `display` is empty for the same reason the header key's is (the
@@ -3236,6 +3237,88 @@ pub fn complete_score_for_abc(score: &mut Score) {
                 {
                     key.display = canonical_major_key_display(key.fifths);
                 }
+            }
+        }
+    }
+}
+
+/// Renumber every tuplet attachment's `pair_id` to be globally unique across a
+/// whole voice, preserving each tuplet's grouping.
+///
+/// **Why.** The reader assigns tuplet `pair_id`s FRESH per measure (its
+/// [`OpenTuplets::next_pair_id`] resets each measure). That is correct for
+/// [`super::write_score_partwise`], which re-derives the MusicXML `number` from
+/// an active-set discipline, never from the `pair_id` *value*. But `write_abc`'s
+/// `tuplet_layout` (and its overlay sibling `overlay_tuplet_layout`) group tuplet
+/// attachments by `pair_id` GLOBALLY across the entire `voice.events`, taking the
+/// group span as `min(index)..=max(index)`. So when the reader reuses e.g.
+/// `pair_id = 0` for a triplet in measure 1 AND another in measure 2, `write_abc`
+/// merges them into ONE group spanning the whole line and multiplies the tuplet
+/// ratio across everything between — producing an absurd span count and
+/// compounded (`9/4`, `27/4`, …) durations.
+///
+/// **The key.** The reader's `pair_id`s are unique WITHIN a measure and reset per
+/// measure, so `(event.measure.index, old_pair_id)` uniquely identifies one
+/// tuplet. We allocate a fresh monotonic global id per distinct key, in
+/// first-occurrence order over `voice.events`, and rewrite every
+/// [`TupletAttachment`] (a tuplet's Start/Continue/Stop attachments share one key,
+/// so they keep one shared new id and their roles stay consistent). Chord-member
+/// attachments ([`ChordMemberEvent::attachments`]) are renumbered with the same
+/// map under the owning event's measure index, since a member can carry tuplet
+/// attachments too.
+///
+/// **Isolation.** This runs ONLY on the ABC-projection Score (the
+/// [`complete_score_for_abc`] pass, applied on the `read --format abc` /
+/// `musicxml2abc` path). The `write_musicxml` view re-derives `number` from the
+/// active set, not the `pair_id` value, so renumbering is invisible there — the
+/// `--format xml` pure inverse is untouched.
+#[cfg(feature = "musicxml-reader")]
+fn renumber_voice_tuplet_pair_ids(voice: &mut Voice) {
+    use std::collections::HashMap;
+
+    // (measure_index, old_pair_id) -> fresh globally-unique pair_id, allocated in
+    // first-occurrence order over the voice's events (and chord members).
+    let mut remap: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut next_id: u32 = 0;
+
+    // Rewrite one tuplet list's `pair_id`s through the shared map, allocating a
+    // fresh global id the first time a `(measure, old_pair_id)` key is seen.
+    fn renumber(
+        tuplets: &mut [TupletAttachment],
+        measure_index: u32,
+        remap: &mut HashMap<(u32, u32), u32>,
+        next_id: &mut u32,
+    ) {
+        for tuplet in tuplets {
+            tuplet.pair_id = *remap
+                .entry((measure_index, tuplet.pair_id))
+                .or_insert_with(|| {
+                    let id = *next_id;
+                    *next_id = next_id.saturating_add(1);
+                    id
+                });
+        }
+    }
+
+    for event in &mut voice.events {
+        let measure_index = event.measure.index;
+        renumber(
+            &mut event.attachments.tuplets,
+            measure_index,
+            &mut remap,
+            &mut next_id,
+        );
+        // A `<chord/>` member can carry its own tuplet attachments; renumber them
+        // under the SAME (measure, old_pair_id) namespace so a tuplet straddling a
+        // chord member keeps one shared new id.
+        if let TimedEventKind::Chord(chord) = &mut event.kind {
+            for member in &mut chord.members {
+                renumber(
+                    &mut member.attachments.tuplets,
+                    measure_index,
+                    &mut remap,
+                    &mut next_id,
+                );
             }
         }
     }

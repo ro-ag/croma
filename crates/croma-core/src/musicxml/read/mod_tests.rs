@@ -3592,6 +3592,29 @@ mod abc_completion {
         score.parts[0].voices[0].measures.len()
     }
 
+    /// The flat played-duration sequence of voice 0 of every part: the
+    /// `event.duration` of every Note/Rest/Chord, in event order. This is the
+    /// already-tuplet-scaled (sounding) duration the lowering carries — the
+    /// quantity the ABC projection must preserve through XML -> ABC -> Score.
+    fn played_duration_sequence(score: &Score) -> Vec<crate::model::Rational> {
+        let mut durations = Vec::new();
+        for part in &score.parts {
+            for voice in &part.voices {
+                for event in &voice.events {
+                    if matches!(
+                        event.kind,
+                        TimedEventKind::Note(_)
+                            | TimedEventKind::Rest(_)
+                            | TimedEventKind::Chord(_)
+                    ) {
+                        durations.push(event.duration);
+                    }
+                }
+            }
+        }
+        durations
+    }
+
     #[test]
     fn completion_synthesizes_voice_barline_events_from_measure_structure() {
         // Before the pass, the reader leaves voice.events barline-free.
@@ -3815,6 +3838,66 @@ mod abc_completion {
         assert!(
             projected.contains("\nK:C\n"),
             "write_abc must default a key-less Score to K:C, got {projected:?}"
+        );
+    }
+
+    #[test]
+    fn tuplets_in_separate_measures_do_not_merge_in_abc_projection() {
+        // R1c regression. The reader assigns tuplet pair_ids FRESH per measure
+        // (correct for write_musicxml, which re-derives the MusicXML number from
+        // an active-set discipline). But write_abc's tuplet_layout groups tuplet
+        // attachments by pair_id GLOBALLY across the whole voice.events, spanning
+        // min..=max. With a triplet in EACH of two measures, both reuse pair_id 0,
+        // so the un-renumbered projection merged them into ONE group spanning the
+        // whole line: an absurd `(3:2:6...`-style span and compounded durations.
+        // The completion pass must renumber pair_ids globally-unique per voice so
+        // each triplet stays its own `(3:2:3` group.
+        let abc = "X:1\nT:TwoMeasureTrips\nM:4/4\nL:1/8\nK:C\n(3CDE A2 z2 | (3FGA c2 z2 |\n";
+
+        // Sanity: the forward XML emits two triplets, both re-numbered `number=1`.
+        let x1 = export(abc);
+        assert_eq!(
+            x1.matches("<tuplet type=\"start\"").count(),
+            2,
+            "precondition: two triplets, one per measure"
+        );
+
+        // The pure reader Score (the per-event sounding durations + pitches the
+        // projection must reproduce).
+        let direct = read_musicxml(&x1).value;
+
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+
+        // The marker must be the clean 3-note triplet form `(3:2:3`, never a
+        // merged super-span like `(3:2:6` (or larger), and there must be exactly
+        // two such markers — one per measure.
+        assert_eq!(
+            projected.matches("(3:2:3").count(),
+            2,
+            "each triplet must project as its own (3:2:3 group; abc {projected:?}"
+        );
+        assert!(
+            !projected.contains("(3:2:4")
+                && !projected.contains("(3:2:5")
+                && !projected.contains("(3:2:6"),
+            "no merged super-span tuplet marker may appear; abc {projected:?}"
+        );
+
+        // Structural: XML -> ABC -> Score reproduces the same per-event sounding
+        // durations AND pitch sequence as reading the XML directly. (A merged
+        // tuplet group compounded the durations, so this is the load-bearing
+        // assertion; the marker check above guards the surface symptom.)
+        let reparsed = lower(&projected);
+        assert_eq!(
+            played_duration_sequence(&reparsed),
+            played_duration_sequence(&direct),
+            "sounding durations must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            pitch_sequence(&direct),
+            "pitch sequence must survive XML -> ABC -> Score; abc {projected:?}"
         );
     }
 }
