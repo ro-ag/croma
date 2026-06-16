@@ -50,7 +50,7 @@ at documented defaults and is invisible to the gate.
 | **S3** | `<part-list>` MIDI: `<midi-instrument>` (`<midi-channel>`, 1-based `<midi-program>`, `<volume>`, `<pan>`) → `MidiInstrumentModel` on the owning voice. **Closes the forward/reverse `%%MIDI` loop.** | **done** |
 | **S4** | per-`<note>` `<notations>` + `<time-modification>`: `<tied>`/`<tie>` → ties, `<slur>` → slurs, `<tuplet>`+`<time-modification>` → tuplets, and the `<articulations>`/`<ornaments>`/`<technical>`/`<fermata>`/`<arpeggiate>` decoration groups → `DecorationAttachment`. Beams are derived (no model field, no `<beam>` emitted) and round-trip via S1. | **done** |
 | **S5a** | `<direction>`: tempo `<metronome>`/`<words>`+`<sound>` → header `tempo_model` or mid-tune `TempoChange`; `<dynamics>` (`p`..`fff`,`mp`/`mf`/`sfz`), `<wedge>` (crescendo/diminuendo/stop), `<coda>`/`<segno>` → `DecorationAttachment`; annotation `<words>` (+placement) → `TextAttachment`. Trailing/pre-barline directions reconstruct on a zero-duration `Spacer`. | **done** |
-| S5b | `<harmony>`, `<lyric>` | planned |
+| **S5b** | `<harmony>` (chord symbols) → `chord_symbols`; `<lyric>` (`<syllabic>`+`<text>`+`<extend>`) → `lyrics` (`Syllable`/`Hyphen`/`Extender`), all verses | **done** |
 | S6 | multi-voice (`<voice>`/`<backup>`), repeats/endings/barlines, grace, chords (`<chord/>`) | planned |
 
 ### S1 reconstruction notes
@@ -263,7 +263,55 @@ direction and flushes the buffer onto the **next** timed event (note, rest, or
   them. Anything with no model-backed inverse (rehearsal marks, pedal, …) is left
   unread with a diagnostic, never an invented mapping.
 
-### S1/S2/S3/S4/S5a corpus metric (10k zenodo set)
+### S5b reconstruction notes — `<harmony>` + `<lyric>`
+
+S5b inverts `write_harmony` (`harmony.rs`) and `write_lyrics` + `syllabic_for_lyric`
+(`lyric.rs`). Like S5a directions, a chord symbol's `<harmony>` is emitted **before**
+its event (in `write_harmony_and_directions`, chord symbols first, then annotations,
+then decorations), so the reader buffers `<harmony>` onto the same `pending`
+attachments that S5a uses and flushes them — `chord_symbols` first — onto the next
+event. `<lyric>` lives **inside** the `<note>` (emitted last by `write_note`), so it
+is read in `read_note_attachments`.
+
+- **Harmony.** The writer derives the entire `<harmony>` tree (`<root>`/`<root-alter>`,
+  `<kind text="…">value</kind>`, optional `<bass>`, `<degree>`s) from the ABC
+  chord-symbol *string* — and crucially preserves that exact original string as the
+  **`<kind text="…">` attribute**. The reader therefore reconstructs the
+  `TextAttachment.text` **directly from `text`**, with **no** kind-value→suffix
+  inversion: re-parsing the same string through the writer's `parse_chord_symbol`
+  reproduces the identical `<root>`/`<kind>`/`<bass>`/`<degree>` tree byte-for-byte.
+  This round-trips every chord shape the writer emits — majors (`C`), minors (`Dm`),
+  sevenths (`Cmaj7`), slash/bass (`G7/B`), altered roots (`F#m7b5`), and added
+  degrees (`C7b9`) — by construction. A non-chord string (e.g. `Cadd9`, `NC`) is
+  **not** emitted as `<harmony>` at all; the writer demotes it to a
+  `<direction><words>`, which the S5a direction reader already round-trips (as an
+  `annotation` rather than a `chord_symbol` — a valid-but-different `Score` that
+  re-writes identically, which the gate accepts by design §9). A `<kind>` lacking a
+  `text` attribute is not croma's output and has no recoverable ABC source, so it is
+  skipped with a diagnostic rather than inventing a spelling from the kind value.
+  **No remaining harmony shapes** — `harmony` is fully cleared from the corpus
+  first-divergence histogram.
+- **Lyrics.** Each `<lyric number=N>` → `verse = N`. The writer's syllabic state
+  machine emits `single`/`begin`/`middle`/`end` from the note's **model** lyrics:
+  it emits a `begin`/`middle` exactly when the note's lyrics contain a trailing
+  `Hyphen` (its `continues` test) and `single`/`end` when they do not, tracking an
+  "open hyphen" across notes. The reader inverts this **locally, with no cross-note
+  state**, because the per-note encoding fully determines the writer's output:
+  - `<syllabic>` + `<text>` → a `LyricControl::Syllable` carrying the text, **plus**
+    a trailing `LyricControl::Hyphen` on the **same note** iff the syllabic is
+    `begin` or `middle`. (`single`/`end` reconstruct a lone `Syllable`.) The
+    re-derived open-hyphen state then reproduces the exact syllabic on re-write.
+  - `<extend/>` (no syllabic/text) → a `LyricControl::Extender` with empty text.
+  - The `<text>` content is read **raw (untrimmed)**: the writer emits `lyric.text`
+    verbatim, and the corpus has syllables with a trailing space (e.g. the `~` lyric
+    space lowers to `<text>la </text>`), so trimming would break the round-trip.
+  - Verses are pushed in document order, reproducing the writer's per-note
+    `verse` emission order. The writer never emits a `<lyric>` for a `Skip` or a
+    standalone `Hyphen`, so neither is reconstructed except as the trailing companion
+    of a begin/middle syllable above. **No remaining lyric cases** — `lyric` is fully
+    cleared from the corpus histogram.
+
+### S1/S2/S3/S4/S5a/S5b corpus metric (10k zenodo set)
 
 - **S1** strict full-byte idempotence was **0 / 9,935** exported files (every ABC
   tune carries a `K:`, so a `<key>` block S1 did not read always diverged first);
@@ -310,6 +358,20 @@ direction and flushes the buffer onto the **next** timed event (note, rest, or
   `attributes` (181, deferred mid-measure changes), `note` (12, S6 multi-voice),
   `score-instrument` (2, S6 multi-voice) and `voice` (1, S6). These name S5b/S6's
   work lists.
+- **S5b** strict full-byte idempotence: **635 / 9,935** (**+29** vs S5a's 606). The
+  self-policing signal fires exactly as designed: the **`harmony` (1,137 → 0) and
+  `lyric` (505 → 0) first-diverging tags collapse entirely** — S5b reads back every
+  `<harmony>` and `<lyric>` wherever it was the first divergence. The strict delta is
+  honest and the same masking effect as prior stages: most files using chord symbols
+  or lyrics also contain a `barline` that diverges earlier (an S6 concern), so
+  clearing harmony/lyric pushes their first divergence forward to `barline` rather
+  than making them fully idempotent — visible as `barline` rising from 7,051 → 8,573
+  as it absorbs those files. The new top first-diverging tags are `barline` (8,573,
+  S6), `grace` (493, S6), `attributes` (207, deferred mid-measure changes), `note`
+  (13, S6 multi-voice), `direction` (11, **S6 multi-voice** — these are `<backup>`
+  files whose second voice shifts the measure, surfacing at a `<direction>` line, not
+  an S5 regression), `score-instrument` (2, S6) and `voice` (1, S6). With harmony and
+  lyric cleared, **`barline`/structure is the dominant remaining work, owned by S6.**
 
 Re-run the measurement with:
 
