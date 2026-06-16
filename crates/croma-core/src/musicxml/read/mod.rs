@@ -108,7 +108,7 @@ use crate::model::{
 };
 use crate::parse::ParseReport;
 
-use roxmltree::{Document, Node};
+use roxmltree::{Document, Node, ParsingOptions};
 
 /// Sentinel span for every model field the reader cannot reconstruct from the
 /// XML (the writer never emits source spans, so the idempotence gate is
@@ -124,7 +124,21 @@ const READER_SPAN: Span = Span { start: 0, end: 0 };
 /// reconstructed `Score.diagnostics` mirrors the report diagnostics so callers
 /// that inspect either see the same warnings.
 pub fn read_musicxml(xml: &str) -> ParseReport<Score> {
-    let document = match Document::parse(xml) {
+    // DTD tolerance (R2b): every real-world MusicXML file (abc2xml, MuseScore,
+    // Finale, Sibelius) opens with a `<!DOCTYPE score-partwise PUBLIC ...>`
+    // declaration. roxmltree's default `allow_dtd: false` rejects all of them
+    // before any reader logic runs, so the reverse direction never reaches a
+    // real document. `allow_dtd: true` permits the declaration; roxmltree still
+    // never fetches the external DTD subset, keeps its billion-laughs guard, and
+    // raises `UnknownEntityReference` for unsafe entity expansion — so this is
+    // the standard, safe way to read real MusicXML. Genuine malformation still
+    // returns `Err`, handled by the graceful empty-Score path below. READ-only:
+    // croma's writer emits no doctype, so forward output is byte-untouched.
+    let options = ParsingOptions {
+        allow_dtd: true,
+        ..ParsingOptions::default()
+    };
+    let document = match Document::parse_with_options(xml, options) {
         Ok(document) => document,
         Err(error) => {
             let diagnostic = Diagnostic::new(
@@ -422,6 +436,41 @@ impl Reader {
                 None
             }
         }
+    }
+
+    /// Parse a `<alter>`-family field. The MusicXML spec types `<alter>` (and the
+    /// `<root-alter>`/`<bass-alter>`/`<degree-alter>` chord-symbol variants) as
+    /// `decimal`, and abc2xml / music21 / MuseScore / Finale all emit it as a
+    /// FLOAT (`<alter>1.0</alter>`, `<alter>-1.0</alter>`). A bare-integer parse of
+    /// `"1.0"` fails, silently dropping the accidental and corrupting the sounding
+    /// pitch — so parse an `f64` and round to the nearest whole semitone (croma's
+    /// model has no sub-semitone alter). A genuine quarter-tone (non-zero
+    /// fractional part, e.g. `0.5`) is unrepresentable: keep the rounded value but
+    /// emit a diagnostic rather than panic or drop. The rounded magnitude is
+    /// clamped into `i8` range defensively (real accidentals are tiny).
+    fn parse_alter(&mut self, text: &str, label: &str) -> Option<i8> {
+        let trimmed = text.trim();
+        let value = match trimmed.parse::<f64>() {
+            Ok(value) if value.is_finite() => value,
+            _ => {
+                self.warn(
+                    "musicxml.read.invalid_alter",
+                    format!("<{label}> `{trimmed}` is not a finite decimal alter; ignored"),
+                );
+                return None;
+            }
+        };
+        let rounded = value.round();
+        if (value - rounded).abs() > f64::EPSILON {
+            self.warn(
+                "musicxml.read.fractional_alter",
+                format!(
+                    "<{label}> `{trimmed}` is a non-integer (microtonal) alter; \
+                     rounded to {rounded} semitone(s) (croma has no sub-semitone model)"
+                ),
+            );
+        }
+        Some(rounded.clamp(f64::from(i8::MIN), f64::from(i8::MAX)) as i8)
     }
 
     /// Parse an unsigned integer that fits in `u8` (`<midi-channel>`), warning
@@ -2020,27 +2069,143 @@ impl Reader {
     /// chord; a non-chord string is emitted as a `<direction><words>` instead, which
     /// the S5a direction reader already round-trips as an annotation.)
     ///
-    /// A `<kind>` with no `text` attribute is not croma's own output (the writer
-    /// always sets it); it has no recoverable ABC source, so it warns and is
-    /// skipped rather than inventing a chord spelling from the kind value.
+    /// A `<kind>` with no `text` attribute is **foreign functional harmony**
+    /// (R2c): abc2xml / music21 emit the chord as a structured `<root>`/`<kind>`/
+    /// `<bass>`/`<degree>` tree with no source string. croma's model carries chord
+    /// symbols, so this is legitimate foreign-dialect reading (not writer-mimicry):
+    /// synthesise an ABC chord-symbol string from the tree via [`synthesise_chord_symbol`]
+    /// and reconstruct the SAME `chord_symbols` [`TextAttachment`] the `text=` path
+    /// produces. The synthesised string is chosen so croma's own re-parse
+    /// (`parse_chord_symbol`) reproduces the identical `<root>`/`<kind>`, keeping
+    /// re-export stable. A `<kind>` value croma cannot model and that carries no
+    /// usable text content is skipped with a diagnostic — never invented.
     fn read_harmony(&mut self, harmony: Node<'_, '_>) -> Option<TextAttachment> {
         let text = match child_element(harmony, "kind").and_then(|kind| kind.attribute("text")) {
-            Some(text) => text,
-            None => {
-                self.warn(
-                    "musicxml.read.harmony_without_kind_text",
-                    "<harmony> has no <kind text=...>; chord symbol not reconstructed",
-                );
-                return None;
-            }
+            Some(text) => text.to_owned(),
+            None => self.synthesise_chord_symbol(harmony)?,
         };
         Some(TextAttachment {
-            text: text.to_owned(),
+            text,
             span: READER_SPAN,
             // A chord symbol carries no placement (the writer's `<harmony>` has no
             // placement attribute); the lowering's chord_symbols are placement-less.
             placement: None,
         })
+    }
+
+    /// R2c: synthesise an ABC chord-symbol string from a textless functional
+    /// `<harmony>` tree (`<root>`, `<kind>`, optional `<bass>`, `<degree>`s),
+    /// returning `None` (with a diagnostic) when the chord cannot be modelled.
+    ///
+    /// The pieces are assembled to mirror croma's OWN forward `parse_chord_symbol`
+    /// grammar (`root accidental? quality? degree* ("/" bass)?`) so the result
+    /// round-trips: re-parsing it reproduces the same `<root>`/`<kind>`. The
+    /// kind→suffix map ([`chord_kind_suffix`]) is the inverse of the writer's
+    /// `CHORD_QUALITY_TABLE`/`SUSPENDED_TABLE` for every value croma can emit, plus
+    /// the common General-MusicXML kinds abc2xml/music21 use. An unknown kind falls
+    /// back to the `<kind>` element's own text content if present, else the chord is
+    /// skipped (never fabricated).
+    fn synthesise_chord_symbol(&mut self, harmony: Node<'_, '_>) -> Option<String> {
+        let Some(root_node) = child_element(harmony, "root") else {
+            self.warn(
+                "musicxml.read.harmony_without_root",
+                "textless <harmony> has no <root>; chord symbol not reconstructed",
+            );
+            return None;
+        };
+        let Some(root_step) = child_text(root_node, "root-step").and_then(first_upper_letter)
+        else {
+            self.warn(
+                "musicxml.read.harmony_without_root",
+                "textless <harmony> <root> has no <root-step> letter; chord symbol not reconstructed",
+            );
+            return None;
+        };
+        let root_alter = child_text(root_node, "root-alter")
+            .and_then(|text| self.parse_alter(text, "root-alter"))
+            .unwrap_or(0);
+
+        let mut symbol = String::new();
+        symbol.push(root_step);
+        symbol.push_str(accidental_suffix(root_alter));
+
+        // The quality suffix. A textless `<kind>` is required; without one there is
+        // nothing to model. A known kind maps to a round-trip-stable suffix; an
+        // unknown kind falls back to the element's own text content, else skips.
+        let Some(kind_node) = child_element(harmony, "kind") else {
+            self.warn(
+                "musicxml.read.harmony_unmodellable_kind",
+                "textless <harmony> has no <kind>; chord symbol not reconstructed",
+            );
+            return None;
+        };
+        let kind_value = node_text(kind_node).unwrap_or("");
+        match chord_kind_suffix(kind_value) {
+            Some(suffix) => symbol.push_str(suffix),
+            None => {
+                // Unknown kind: append the `<kind>`'s own text content (an
+                // already-human-readable quality like "Tristan"), or skip when it is
+                // empty — never invent a spelling from an unknown enum value.
+                if kind_value.is_empty() {
+                    self.warn(
+                        "musicxml.read.harmony_unmodellable_kind",
+                        "textless <harmony> <kind> is empty and unmodellable; chord symbol skipped",
+                    );
+                    return None;
+                }
+                self.warn(
+                    "musicxml.read.harmony_unknown_kind",
+                    format!(
+                        "textless <harmony> <kind> `{kind_value}` is not a known quality; \
+                         using its text content verbatim"
+                    ),
+                );
+                symbol.push_str(kind_value);
+            }
+        }
+
+        // `<degree>`s follow the quality, before the bass. The writer's
+        // `parse_chord_degree` accepts `[#=b]?(2|4|5|6|7|9|11|13)`; emit `add`
+        // degrees as the bare (optionally accidentalled) digit, mirror an explicit
+        // alter as the accidental, and skip a `subtract` (croma's forward grammar
+        // has no removal token — dropping it keeps the string parseable and stable).
+        for degree in element_children(harmony).filter(|n| n.tag_name().name() == "degree") {
+            self.append_chord_degree(&mut symbol, degree);
+        }
+
+        // The slash bass, appended last so `parse_chord_symbol` splits it off the
+        // tail: `<bass><bass-step>/<bass-alter>` -> "/<Bass>".
+        if let Some(bass_node) = child_element(harmony, "bass")
+            && let Some(bass_step) = child_text(bass_node, "bass-step").and_then(first_upper_letter)
+        {
+            let bass_alter = child_text(bass_node, "bass-alter")
+                .and_then(|text| self.parse_alter(text, "bass-alter"))
+                .unwrap_or(0);
+            symbol.push('/');
+            symbol.push(bass_step);
+            symbol.push_str(accidental_suffix(bass_alter));
+        }
+
+        Some(symbol)
+    }
+
+    /// R2c: append one `<degree>` to a synthesised chord-symbol string, mirroring
+    /// the writer's `parse_chord_degree` token (`[#=b]?digit`). `add`/`alter` emit
+    /// the (optionally accidentalled) value; `subtract` is dropped (no forward
+    /// removal syntax) so the string stays round-trip-stable.
+    fn append_chord_degree(&mut self, symbol: &mut String, degree: Node<'_, '_>) {
+        let degree_type = child_text(degree, "degree-type").unwrap_or("add");
+        if degree_type == "subtract" {
+            return;
+        }
+        let Some(value) = child_text(degree, "degree-value") else {
+            return;
+        };
+        let alter = child_text(degree, "degree-alter")
+            .and_then(|text| self.parse_alter(text, "degree-alter"))
+            .unwrap_or(0);
+        symbol.push_str(degree_accidental(alter));
+        symbol.push_str(value.trim());
     }
 
     /// S5b: invert [`MusicXmlWriter::write_lyrics`] + `syllabic_for_lyric` for one
@@ -2326,9 +2491,10 @@ impl Reader {
                 );
                 None
             })?;
-        // `<alter>` is optional; the writer omits it when zero.
+        // `<alter>` is optional; the writer omits it when zero. The spec types it
+        // as `decimal` (`<alter>1.0</alter>`), so parse via `parse_alter`.
         let alter = child_text(pitch_node, "alter")
-            .and_then(|text| text.trim().parse::<i8>().ok())
+            .and_then(|text| self.parse_alter(text, "alter"))
             .unwrap_or(0);
         Some(Pitch {
             step,
@@ -3064,6 +3230,109 @@ fn clef_text_from(sign: &str, line: &str, octave_change: i8) -> Option<String> {
         return None;
     }
     Some(format!("{base}{suffix}"))
+}
+
+/// R2c: the round-trip-stable ABC chord-quality suffix for a MusicXML `<kind>`
+/// value, or `None` for a kind croma cannot model.
+///
+/// This is the **inverse of the writer's `CHORD_QUALITY_TABLE` / `SUSPENDED_TABLE`
+/// `<kind>` mapping** (`crates/croma-core/src/musicxml/harmony.rs`): for every kind
+/// croma's own writer can emit, the chosen suffix is one whose first quality token
+/// re-parses (via `parse_chord_symbol`'s greedy longest-prefix match) back to the
+/// SAME kind, so a synthesised string survives re-export unchanged. The remaining
+/// entries are the common General-MusicXML kinds abc2xml / music21 emit that
+/// croma's own writer never produces (`power`, `dominant-seventh`, the spelled-out
+/// `*-fifth`/`*-ninth` aliases, …), mapped to their standard ABC suffix.
+///
+/// Crucially these suffixes round-trip through croma's forward grammar:
+/// - `""`→major, `"m"`→minor, `"7"`→dominant, `"maj7"`→major-seventh,
+///   `"m7"`→minor-seventh, `"dim"`→diminished, `"dim7"`→diminished-seventh,
+///   `"m7b5"`→half-diminished, `"+"`→augmented, `"6"`/`"m6"`→sixths,
+///   `"9"`/`"maj9"`/`"m9"`→ninths, the `11`/`13` families, `"sus4"`/`"sus2"`,
+///   `"5"`→power (`parse_chord_degree` reads the lone `5` as a degree, re-emitting
+///   the same chord). Each was verified against the forward table's match order.
+fn chord_kind_suffix(kind: &str) -> Option<&'static str> {
+    Some(match kind.trim() {
+        // --- Triads (kinds croma's writer emits) ---
+        "major" => "",
+        "minor" => "m",
+        "augmented" => "+",
+        "diminished" => "dim",
+        // --- Sevenths ---
+        "dominant" | "dominant-seventh" => "7",
+        "major-seventh" => "maj7",
+        "minor-seventh" => "m7",
+        "diminished-seventh" => "dim7",
+        "augmented-seventh" => "aug7",
+        "half-diminished" | "half-diminished-seventh" => "m7b5",
+        // --- Sixths ---
+        "major-sixth" => "6",
+        "minor-sixth" => "m6",
+        // --- Ninths ---
+        "dominant-ninth" => "9",
+        "major-ninth" => "maj9",
+        "minor-ninth" => "m9",
+        // --- Elevenths ---
+        "dominant-11th" => "11",
+        "major-11th" => "maj11",
+        "minor-11th" => "m11",
+        // --- Thirteenths ---
+        "dominant-13th" => "13",
+        "major-13th" => "maj13",
+        "minor-13th" => "m13",
+        // --- Suspended ---
+        "suspended-fourth" => "sus4",
+        "suspended-second" => "sus2",
+        // --- Common General-MusicXML kinds croma's writer never emits but
+        //     abc2xml / music21 do. Mapped to the standard ABC suffix; each
+        //     re-parses to a stable chord (power's "5" reads as a degree). ---
+        "power" => "5",
+        // `major-minor` (a minor triad + major-7th) has no croma chord-grammar
+        // spelling that re-parses to the same chord ("mmaj7" demotes to <words>),
+        // so it is deliberately unmapped: it falls back to the `<kind>`'s own text
+        // content if present, else is skipped — never an unstable string. The
+        // remaining exotic kinds (`Neapolitan`, `Tristan`, `pedal`, …) likewise
+        // have no chord-symbol spelling and take the same text-content fallback.
+        _ => return None,
+    })
+}
+
+/// R2c: the chord ROOT/BASS accidental suffix for a MusicXML `*-alter` integer,
+/// the inverse of `parse_chord_tone` (`#`→+1, `b`→-1). croma's chord-tone grammar
+/// accepts only a SINGLE accidental, so ±2 (double accidentals) widen to two
+/// characters — abc2xml never emits a double-altered root, but reading one as
+/// `##`/`bb` is harmless (re-parse demotes it to a `<words>` direction, not a
+/// crash). `0` / absent -> none.
+fn accidental_suffix(alter: i8) -> &'static str {
+    match alter {
+        2 => "##",
+        1 => "#",
+        -1 => "b",
+        -2 => "bb",
+        _ => "",
+    }
+}
+
+/// R2c: the chord-DEGREE accidental prefix for a `<degree-alter>` integer, the
+/// inverse of `parse_chord_degree` (`#`→+1, `b`→-1, `=`→0). A non-zero alter on a
+/// degree is spelled `#`/`b`; `0` is left bare (the forward grammar reads a bare
+/// digit as a natural degree).
+fn degree_accidental(alter: i8) -> &'static str {
+    match alter {
+        a if a > 0 => "#",
+        a if a < 0 => "b",
+        _ => "",
+    }
+}
+
+/// R2c: the first character of `text` as an uppercase ASCII letter, or `None`.
+/// Used for `<root-step>` / `<bass-step>`, which are single uppercase letters.
+fn first_upper_letter(text: &str) -> Option<char> {
+    text.trim()
+        .chars()
+        .next()
+        .map(|ch| ch.to_ascii_uppercase())
+        .filter(char::is_ascii_uppercase)
 }
 
 // --- roxmltree element helpers (all non-panicking) -------------------------

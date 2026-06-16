@@ -162,6 +162,79 @@ fn non_partwise_root_is_diagnosed() {
 }
 
 #[test]
+fn doctype_prefixed_document_is_read_not_rejected() {
+    // R2b: every real-world MusicXML file (abc2xml / MuseScore / Finale /
+    // Sibelius) carries a `<!DOCTYPE score-partwise PUBLIC ...>` declaration.
+    // The reader must be DTD-tolerant: this minimal-but-valid doctype-prefixed
+    // document must reconstruct a NON-empty Score (>=1 part, the expected note),
+    // not bail at the parse gate with `musicxml.read.parse_error`. With the
+    // default `allow_dtd: false` this returns an empty Score (the bug).
+    let xml = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 3.0 Partwise//EN\" ",
+        "\"http://www.musicxml.org/dtds/partwise.dtd\">\n",
+        "<score-partwise>\n",
+        "  <part-list><score-part id=\"P1\"><part-name>Music</part-name></score-part></part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>2</divisions></attributes>\n",
+        "    <note><pitch><step>D</step><octave>5</octave></pitch>\n",
+        "    <duration>2</duration><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+    let report = read_musicxml(xml);
+    // No parse-gate rejection.
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|d| d.code != "musicxml.read.parse_error"),
+        "a DOCTYPE-prefixed document must not be rejected at the parse gate, got {:?}",
+        report.diagnostics
+    );
+    // A non-empty Score with the expected single note reconstructed.
+    assert_eq!(report.value.parts.len(), 1, "expected exactly one part");
+    let pitch = first_note_pitch(&report.value);
+    assert_eq!(pitch.step, 'D');
+    assert_eq!(pitch.octave, 5);
+    assert_eq!(pitch.alter, 0);
+    assert_eq!(
+        report.value.parts[0].voices[0].events[0].duration,
+        Fraction::new(1, 4),
+        "a <duration>2</duration> at <divisions>2</divisions> is a quarter note"
+    );
+}
+
+#[test]
+fn doctype_then_garbage_is_total_and_diagnosed() {
+    // R2b totality guard: enabling DTD tolerance must NOT make a genuinely
+    // malformed document parse. A valid doctype followed by a truncated /
+    // mismatched body must still degrade to the graceful empty Score PLUS a
+    // reader diagnostic, never a panic.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 3.0 Partwise//EN\" ",
+        "\"http://www.musicxml.org/dtds/partwise.dtd\">\n",
+        "<score-partwise><part></not-the-same-tag> &&& <<< broken",
+    );
+    let report = read_musicxml(xml);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code.starts_with("musicxml.read")),
+        "a DTD-prefixed-but-malformed document must yield a reader diagnostic, got {:?}",
+        report.diagnostics
+    );
+    // Totality: a minimal/empty Score, no panic, no reconstructed parts.
+    assert!(
+        report.value.parts.is_empty(),
+        "a malformed document must degrade to an empty Score, got {} part(s)",
+        report.value.parts.len()
+    );
+}
+
+#[test]
 fn single_note_round_trips_and_reconstructs_pitch() {
     let score = assert_idempotent("X:1\nT:One\nL:1/4\nK:C\nC\n");
     let pitch = first_note_pitch(&score);
@@ -190,6 +263,142 @@ fn altered_pitch_reconstructs_alter_and_written_accidental() {
     let written = written.expect("an explicit ^ accidental must reconstruct a written mark");
     assert_eq!(written.kind, crate::model::Accidental::Sharp);
     assert!(written.explicit);
+}
+
+// --- Stage R2d: decimal `<alter>` parsing -----------------------------------
+//
+// The MusicXML spec types `<alter>` (and the `<*-alter>` family) as `decimal`,
+// and abc2xml / music21 / MuseScore / Finale all emit it as a FLOAT
+// (`<alter>1.0</alter>`). The reader must parse the decimal and round to the
+// nearest whole semitone; a bare-integer parse drops every float-encoded
+// accidental, silently corrupting the sounding pitch. These cases feed a raw,
+// hand-authored foreign-dialect `<pitch>` so the alter text is arbitrary.
+
+/// A one-measure foreign score whose single quarter note carries `alter_xml`
+/// verbatim inside its `<pitch>` (e.g. `<alter>1.0</alter>`, or `""` for none).
+fn foreign_pitch_score(alter_xml: &str) -> crate::parse::ParseReport<Score> {
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <pitch><step>C</step>{alter_xml}<octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#
+    );
+    read_musicxml(&xml)
+}
+
+/// The reconstructed `alter` of the foreign score's first note.
+fn foreign_pitch_alter(alter_xml: &str) -> i8 {
+    let score = foreign_pitch_score(alter_xml).value;
+    first_note_pitch(&score).alter
+}
+
+#[test]
+fn float_alter_sharp_reconstructs_as_one() {
+    // abc2xml/music21 emit `<alter>1.0</alter>`; a bare-i8 parse drops it and the
+    // note reads natural. The decimal parse must recover the +1 semitone.
+    assert_eq!(
+        foreign_pitch_alter("<alter>1.0</alter>"),
+        1,
+        "<alter>1.0</alter> must reconstruct a +1 (sharp) sounding alter"
+    );
+}
+
+#[test]
+fn float_alter_flat_reconstructs_as_negative_one() {
+    assert_eq!(
+        foreign_pitch_alter("<alter>-1.0</alter>"),
+        -1,
+        "<alter>-1.0</alter> must reconstruct a -1 (flat) sounding alter"
+    );
+}
+
+#[test]
+fn float_alter_double_sharp_reconstructs_as_two() {
+    assert_eq!(
+        foreign_pitch_alter("<alter>2.0</alter>"),
+        2,
+        "<alter>2.0</alter> must reconstruct a +2 (double-sharp) sounding alter"
+    );
+}
+
+#[test]
+fn integer_alter_still_reconstructs_without_regression() {
+    // croma's OWN writer emits a bare integer `<alter>`; the decimal parse of "1"
+    // must still yield exactly 1 (the f64 round-trip is exact for small integers).
+    assert_eq!(
+        foreign_pitch_alter("<alter>1</alter>"),
+        1,
+        "integer <alter>1</alter> must still reconstruct as +1"
+    );
+}
+
+#[test]
+fn quarter_tone_alter_rounds_and_diagnoses_without_panic() {
+    // A genuine quarter-tone `<alter>0.5</alter>` is unrepresentable in croma's
+    // whole-semitone model: keep the rounded value (0 or 1) AND emit a diagnostic,
+    // never panic, never silently drop.
+    let report = foreign_pitch_score("<alter>0.5</alter>");
+    let alter = first_note_pitch(&report.value).alter;
+    assert!(
+        alter == 0 || alter == 1,
+        "a 0.5 quarter-tone alter must round to the nearest semitone (0 or 1), got {alter}"
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "musicxml.read.fractional_alter"),
+        "a non-integer (quarter-tone) alter must emit a diagnostic"
+    );
+}
+
+#[test]
+fn float_alter_note_round_trips_to_integer_alter_and_is_stable() {
+    // Reading a float-alter note then re-emitting must produce an INTEGER
+    // `<alter>` (croma's writer never emits a decimal), and re-reading that is
+    // stable at the same +1 alter.
+    let x1 = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <pitch><step>C</step><alter>1.0</alter><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let score = read_musicxml(x1).value;
+    let x2 = write_score_partwise(&score).value;
+    assert!(
+        x2.contains("<alter>1</alter>"),
+        "re-emission must carry an INTEGER <alter>1</alter>, got:\n{x2}"
+    );
+    assert!(
+        !x2.contains("<alter>1.0</alter>"),
+        "the writer must never emit a decimal <alter>"
+    );
+    let reread = read_musicxml(&x2).value;
+    assert_eq!(
+        first_note_pitch(&reread).alter,
+        1,
+        "the re-read float-alter note must stay +1"
+    );
 }
 
 #[test]
@@ -1627,6 +1836,275 @@ fn harmony_before_rest_reconstructs_on_rest_event() {
         "the chord reconstructs onto the following rest event"
     );
     assert_eq!(rest_event.attachments.chord_symbols[0].text, "C");
+}
+
+// --- Stage R2c: textless functional <harmony> synthesis ----------------------
+//
+// abc2xml / music21 emit FUNCTIONAL harmony — `<kind>` carries no `text=`
+// attribute — so croma's S5b `text=`-only reader dropped all foreign chord
+// symbols. These cases feed a raw, hand-authored foreign-dialect `<harmony>`
+// (no `text=`) directly to `read_musicxml` and assert the chord-symbol string is
+// SYNTHESISED from the tree into the same `chord_symbols` `TextAttachment`.
+
+/// A one-measure foreign score whose single quarter note carries `harmony_xml`
+/// (a `<harmony>...</harmony>` block authored WITHOUT a `<kind text=...>`).
+fn foreign_harmony_score(harmony_xml: &str) -> Score {
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      {harmony_xml}
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#
+    );
+    read_musicxml(&xml).value
+}
+
+/// The synthesised chord-symbol text of the first event's first chord symbol.
+fn foreign_chord_text(harmony_xml: &str) -> String {
+    let score = foreign_harmony_score(harmony_xml);
+    let symbols = &attachments_at(&score, 0).chord_symbols;
+    assert_eq!(
+        symbols.len(),
+        1,
+        "exactly one chord symbol synthesised from the textless <harmony>"
+    );
+    symbols[0].text.clone()
+}
+
+#[test]
+fn textless_harmony_major_synthesises_root() {
+    // <root-step>C</root-step><kind>major</kind> with NO text= -> "C".
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>",
+    );
+    assert_eq!(text, "C", "C major synthesises to a bare root");
+}
+
+#[test]
+fn textless_harmony_minor_synthesises_m_suffix() {
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>D</root-step></root><kind>minor</kind></harmony>",
+    );
+    assert_eq!(text, "Dm", "D minor synthesises to Dm");
+}
+
+#[test]
+fn textless_harmony_dominant_synthesises_7() {
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>G</root-step></root><kind>dominant</kind></harmony>",
+    );
+    assert_eq!(text, "G7", "G dominant synthesises to G7");
+}
+
+#[test]
+fn textless_harmony_major_seventh_synthesises_maj7() {
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>C</root-step></root><kind>major-seventh</kind></harmony>",
+    );
+    assert_eq!(text, "Cmaj7", "C major-seventh synthesises to Cmaj7");
+}
+
+#[test]
+fn textless_harmony_sharp_root_minor_seventh_synthesises() {
+    // <root-alter>1 -> '#'; minor-seventh -> "m7".
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>F</root-step><root-alter>1</root-alter></root><kind>minor-seventh</kind></harmony>",
+    );
+    assert_eq!(text, "F#m7", "F#-rooted minor-seventh synthesises to F#m7");
+}
+
+#[test]
+fn textless_harmony_float_root_alter_synthesises_sharp_root() {
+    // R2d: abc2xml/music21 emit `<root-alter>1.0</root-alter>` (decimal). A bare-i8
+    // parse drops it, demoting the sharp root to a natural; the decimal parse must
+    // recover the '#'.
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>F</root-step><root-alter>1.0</root-alter></root><kind>minor-seventh</kind></harmony>",
+    );
+    assert_eq!(
+        text, "F#m7",
+        "a float <root-alter>1.0</root-alter> must synthesise a sharp root"
+    );
+}
+
+#[test]
+fn textless_harmony_float_bass_alter_synthesises_sharp_bass() {
+    // R2d: a decimal `<bass-alter>` on the slash bass must also be recovered.
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>G</root-step></root><kind>dominant</kind><bass><bass-step>F</bass-step><bass-alter>1.0</bass-alter></bass></harmony>",
+    );
+    assert_eq!(
+        text, "G7/F#",
+        "a float <bass-alter>1.0</bass-alter> must synthesise a sharp slash bass"
+    );
+}
+
+#[test]
+fn textless_harmony_with_bass_synthesises_slash() {
+    // <bass><bass-step>B</bass-step></bass> -> "/B".
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>G</root-step></root><kind>dominant</kind><bass><bass-step>B</bass-step></bass></harmony>",
+    );
+    assert_eq!(
+        text, "G7/B",
+        "a dominant chord with a B bass synthesises to G7/B"
+    );
+}
+
+#[test]
+fn textless_harmony_unmodellable_kind_falls_back_to_kind_text_content() {
+    // A `<kind>` croma's writer never emits AND that is not in the General-MusicXML
+    // fallback map (here a made-up value) falls back to the element's own text
+    // CONTENT when present — never invents nonsense.
+    let text = foreign_chord_text(
+        "<harmony><root><root-step>C</root-step></root><kind>Tristan</kind></harmony>",
+    );
+    assert_eq!(
+        text, "CTristan",
+        "an unknown kind value falls back to its own text content appended to the root"
+    );
+}
+
+#[test]
+fn textless_harmony_unknown_empty_kind_skips_with_diagnostic() {
+    // An unknown `<kind>` with NO usable suffix and NO text content cannot be
+    // modelled: skip with a diagnostic, never panic, never invent.
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <harmony><root><root-step>C</root-step></root><kind/></harmony>
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let report = read_musicxml(xml);
+    assert!(
+        attachments_at(&report.value, 0).chord_symbols.is_empty(),
+        "an unmodellable textless chord is skipped, not fabricated"
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "musicxml.read.harmony_unmodellable_kind"),
+        "skipping an unmodellable textless chord emits a diagnostic"
+    );
+}
+
+#[test]
+fn textless_harmony_synthesised_string_round_trips_stable() {
+    // Round-trip stability: the synthesised string, re-emitted by the writer and
+    // re-read, must reproduce the SAME chord (croma's re-export is stable). This
+    // proves the synthesis lands on a string `parse_chord_symbol` round-trips.
+    for harmony_xml in [
+        "<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>",
+        "<harmony><root><root-step>D</root-step></root><kind>minor</kind></harmony>",
+        "<harmony><root><root-step>G</root-step></root><kind>dominant</kind></harmony>",
+        "<harmony><root><root-step>C</root-step></root><kind>major-seventh</kind></harmony>",
+        "<harmony><root><root-step>F</root-step><root-alter>1</root-alter></root><kind>minor-seventh</kind></harmony>",
+        "<harmony><root><root-step>G</root-step></root><kind>dominant</kind><bass><bass-step>B</bass-step></bass></harmony>",
+        "<harmony><root><root-step>B</root-step><root-alter>-1</root-alter></root><kind>diminished-seventh</kind></harmony>",
+    ] {
+        let score = foreign_harmony_score(harmony_xml);
+        let synthesised = attachments_at(&score, 0).chord_symbols[0].text.clone();
+        // Writer re-emits the synthesised string as croma's own `<kind text=...>`
+        // harmony; reading THAT back must reproduce the same chord-symbol text.
+        let x2 = write_score_partwise(&score).value;
+        assert!(
+            x2.contains(&format!("text=\"{synthesised}\"")),
+            "the writer re-emits the synthesised string `{synthesised}` as <kind text=...>"
+        );
+        let reread = read_musicxml(&x2).value;
+        assert_eq!(
+            attachments_at(&reread, 0).chord_symbols[0].text,
+            synthesised,
+            "re-reading croma's own output reproduces the synthesised chord `{synthesised}`"
+        );
+    }
+}
+
+#[test]
+fn every_synthesised_kind_suffix_round_trips_stable() {
+    // EXHAUSTIVE guard over EVERY `<kind>` value the synthesis maps to a suffix
+    // (including the General-MusicXML kinds croma's writer never emits). Each
+    // synthesised string MUST parse as a chord on re-export — a suffix that
+    // `parse_chord_symbol` rejects would demote the symbol to a `<words>` direction
+    // on re-write, breaking re-export stability. This catches a mismapped suffix
+    // (e.g. an exotic kind whose ABC spelling croma's grammar can't re-parse) at
+    // its source rather than in the corpus. The root is the fixed "C".
+    let kinds = [
+        "major",
+        "minor",
+        "augmented",
+        "diminished",
+        "dominant",
+        "dominant-seventh",
+        "major-seventh",
+        "minor-seventh",
+        "diminished-seventh",
+        "augmented-seventh",
+        "half-diminished",
+        "half-diminished-seventh",
+        "major-sixth",
+        "minor-sixth",
+        "dominant-ninth",
+        "major-ninth",
+        "minor-ninth",
+        "dominant-11th",
+        "major-11th",
+        "minor-11th",
+        "dominant-13th",
+        "major-13th",
+        "minor-13th",
+        "suspended-fourth",
+        "suspended-second",
+        "power",
+    ];
+    for kind in kinds {
+        let harmony_xml =
+            format!("<harmony><root><root-step>C</root-step></root><kind>{kind}</kind></harmony>");
+        let score = foreign_harmony_score(&harmony_xml);
+        let symbols = &attachments_at(&score, 0).chord_symbols;
+        assert_eq!(
+            symbols.len(),
+            1,
+            "kind `{kind}` must synthesise exactly one chord symbol"
+        );
+        let synthesised = symbols[0].text.clone();
+        let x2 = write_score_partwise(&score).value;
+        // Re-export stability: the synthesised string must survive as a `<harmony>`
+        // (NOT degrade to a `<direction><words>` because it failed to re-parse).
+        assert!(
+            x2.contains(&format!("text=\"{synthesised}\"")),
+            "kind `{kind}` -> `{synthesised}` must re-parse as a chord on re-export, \
+             not demote to <words>"
+        );
+        let reread = read_musicxml(&x2).value;
+        assert_eq!(
+            attachments_at(&reread, 0).chord_symbols[0].text,
+            synthesised,
+            "kind `{kind}` -> `{synthesised}` must reproduce itself on re-read"
+        );
+    }
 }
 
 #[test]
