@@ -41,6 +41,7 @@ genuine abc2midi/MusicXML semantics and does **not** mimic those quirks.
 | `%%MIDI control 7 <n>` | `<midi-instrument><volume>` | MIDI CC7 (channel volume); `<volume>` = `n / 1.27` (abc2xml parity). |
 | `%%MIDI control 10 <n>` | `<midi-instrument><pan>` | MIDI CC10 (pan); `<pan>` = `n / 127 * 180 - 90`. All other controllers are playback-only and ignored. |
 | `%%MIDI transpose <n>` | `<attributes><transpose><chromatic>n` | A signed semitone shift declaring written-vs-sounding pitch; emitted in the scoped part's first-measure `<attributes>` and does **not** shift the written notes. The ABC `transpose=` voice property (ABC 2.1) takes precedence when both are present. `n` parsed as `i16`. |
+| Inline `[I: MIDI=program N]` (and `channel`/`control`/`transpose`) | same as the line-start forms | The inline music-line form is projected identically (scoped to the voice active at that source position); `[I:...]` still also emits its generic `inline_instruction_ignored` diagnostic. |
 
 **Per-voice scoping is load-bearing** (`project_voice_midi` in `lower/mod.rs`): a
 directive attaches to the voice of the nearest preceding `V:` declaration
@@ -65,9 +66,9 @@ integer run is taken; out-of-range values are skipped.
 
 | Item | Status | Why |
 |---|---|---|
-| Inline `[I: MIDI=program N]` | deferred | Currently dropped with `warning[abc.field.inline_ignored]` (a round-trip loss distinct from the line-start form). 5 occurrences in 2 files. |
 | Mid-tune program change → visible `<words>prog: N</words>` | **not emitted** | abc2xml renders a raw MIDI program number as visible staff text; this is an abc2xml-ism, not standard notation. The affected corpus files are already adjudicated as `dropped.csv` "equivalence" (croma correctly ignores the optional directive). croma emits the part-list instrument identity but not the visible `prog:` words. |
 | `%%MIDI drummap` percussion | **not mimicked** | ABC 2.1 standardises only the drum clef and has no special percussion notes; abc2xml's `<midi-unpitched>`/`x`-notehead percussion is a non-standard extension (`dropped.csv` `abc2xml-percussion-extension`). 1 corpus file. |
+| MusicXML → Score *reader* (import `<midi-instrument>`/`<transpose>` back into the model) | separate epic | The reverse direction; out of scope for forward translation. |
 
 ## Verification & a known gap
 
@@ -81,8 +82,8 @@ repeat endings, harmony, and directions. So **every** translation above is
 regressions** by construction.
 
 This was verified over the full 10k for each change — program/channel,
-transpose, and control/channel-only (9390 matches, 0 mismatches, whitelist
-set-diff = 0 every time). The transpose case is also confirmed
+transpose, control/channel-only, and inline `[I:MIDI]` (9390 matches, 0
+mismatches, whitelist set-diff = 0 every time). The transpose case is also confirmed
 empirically: 56 of the 60 `%%MIDI transpose` corpus files were **already
 whitelisted** with croma emitting *no* `<transpose>` while abc2xml emitted it —
 which only holds if the comparator ignores `<transpose>` entirely (the other 4

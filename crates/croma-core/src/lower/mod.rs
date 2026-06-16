@@ -1400,21 +1400,24 @@ fn preserved_directive_model(syntax: &PreservedDirectiveSyntax) -> PreservedDire
 }
 
 /// Forward-translate the score-meaningful `%%MIDI` sub-directives (`program` /
-/// `channel` → [`MidiInstrumentModel`]; `transpose` → `midi_transpose`) onto
-/// each timeline, respecting per-voice scoping: a directive attaches to the
-/// voice of the nearest preceding `V:` declaration (header or body) by source
-/// position, or the first/default voice if it precedes every `V:`.
+/// `channel` / `control` CC7-CC10 → [`MidiInstrumentModel`]; `transpose` →
+/// `midi_transpose`) onto each timeline. Both the line-start `%%MIDI ...` form
+/// (in `preserved_directives`) and the inline `[I: MIDI=...]` form (a music-line
+/// item) are projected, respecting per-voice scoping: a directive attaches to
+/// the voice of the nearest preceding `V:` declaration (header or body) by
+/// source position, or the first/default voice if it precedes every `V:`.
 ///
 /// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; only the
-/// score-meaningful sub-directives are projected. Every directive (including the
-/// raw text of the translated ones) still survives verbatim in
-/// `preserved_directives` for round-trip and the formatter.
+/// score-meaningful sub-directives are projected. Line-start directives still
+/// survive verbatim in `preserved_directives` for round-trip and the formatter.
 fn project_voice_midi(
     voices: &mut [VoiceTimeline],
     tune_music: &ParsedTuneMusic,
     field_state: &FieldState,
 ) {
-    if tune_music.preserved_directives.is_empty() || voices.is_empty() {
+    // `%%MIDI` directives live in `preserved_directives`; the inline
+    // `[I: MIDI=...]` form lives in the music lines, so both are scanned below.
+    if voices.is_empty() {
         return;
     }
 
@@ -1441,16 +1444,43 @@ fn project_voice_midi(
             .map_or(default_voice.as_str(), |(_, id)| *id)
     };
 
+    // Collect every score-translatable MIDI directive as `(voice, args, span)`,
+    // from both the line-start `%%MIDI ...` form (in `preserved_directives`) and
+    // the inline `[I: MIDI=...]` form (a music-line item). `args` is the text
+    // after the `MIDI` keyword, e.g. `program 41`.
+    let mut directives: Vec<(&str, &str, Span)> = Vec::new();
+    for directive in &tune_music.preserved_directives {
+        if directive.name.value.eq_ignore_ascii_case("MIDI") {
+            let voice_id = voice_at(directive.span.start);
+            directives.push((voice_id, directive.value.value.as_str(), directive.span));
+        }
+    }
+    for line in &tune_music.lines {
+        for item in &line.items {
+            let MusicItem::InlineField(inline) = item else {
+                continue;
+            };
+            if inline.code != 'I' {
+                continue;
+            }
+            let Some(rest) = inline.value.value.strip_prefix("MIDI") else {
+                continue;
+            };
+            // Require `MIDI=`/`MIDI ` so `[I:MIDIfoo]` is not misread.
+            if !rest.is_empty() && !rest.starts_with(['=', ' ', '\t']) {
+                continue;
+            }
+            let args = rest.trim_start_matches(['=', ' ', '\t']);
+            directives.push((voice_at(inline.span.start), args, inline.span));
+        }
+    }
+    // Source order makes last-wins well-defined across both directive forms.
+    directives.sort_by_key(|(_, _, span)| span.start);
+
     let mut instrument_by_voice: BTreeMap<&str, MidiInstrumentModel> = BTreeMap::new();
     let mut transpose_by_voice: BTreeMap<&str, i16> = BTreeMap::new();
-    for directive in &tune_music.preserved_directives {
-        if !directive.name.value.eq_ignore_ascii_case("MIDI") {
-            continue;
-        }
-        let voice_id = voice_at(directive.span.start);
-        let value = directive.value.value.as_str();
-        if let Some(transpose) = parse_midi_transpose(value) {
-            // Last write wins, mirroring the instrument projection.
+    for (voice_id, args, span) in directives {
+        if let Some(transpose) = parse_midi_transpose(args) {
             transpose_by_voice.insert(voice_id, transpose);
             continue;
         }
@@ -1461,9 +1491,9 @@ fn project_voice_midi(
                 channel: None,
                 volume_cc: None,
                 pan_cc: None,
-                span: directive.span,
+                span,
             });
-        apply_midi_instrument_directive(value, directive.span, model);
+        apply_midi_instrument_directive(args, span, model);
     }
 
     for voice in voices.iter_mut() {

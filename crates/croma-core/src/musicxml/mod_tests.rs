@@ -1372,6 +1372,57 @@ fn midi_channel_only_emits_instrument_with_part_name() {
 }
 
 #[test]
+fn midi_inline_program_field_emits_instrument() {
+    // The inline `[I: MIDI=program N]` form (mid-music-line) carries the same
+    // instrument identity as the line-start directive and is translated, not
+    // dropped. program 42 = cello → <midi-program>43.
+    let source = "X:1\nT:T\nL:1/8\nK:C\n[I: MIDI=program 42]CDEF GABc |\n";
+    let export = export_musicxml(source).expect("inline program should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>cello</instrument-name>")
+    );
+    assert!(export.musicxml.contains("<midi-program>43</midi-program>"));
+}
+
+#[test]
+fn midi_inline_program_scopes_per_voice() {
+    // Each voice's inline `[I: MIDI=program N]` lands in its own part (the
+    // tune_007210 family pattern). program 40 = violin (P1), 42 = cello (P2).
+    let source = concat!(
+        "X:1\nT:T\nL:1/8\n",
+        "V:1\nV:2\nK:C\n",
+        "V:1\n[I: MIDI=program 40]CDEF|\n",
+        "V:2\n[I: MIDI=program 42]C,2C,2|\n",
+    );
+    let export = export_musicxml(source).expect("inline multi-voice programs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let (before_p2, p2) = export
+        .musicxml
+        .split_once("<score-part id=\"P2\"")
+        .expect("two score-parts");
+    assert!(before_p2.contains("<instrument-name>violin</instrument-name>"));
+    assert!(!before_p2.contains("cello"));
+    assert!(p2.contains("<instrument-name>cello</instrument-name>"));
+}
+
+#[test]
+fn non_midi_inline_instruction_emits_no_instrument() {
+    // A non-MIDI inline `[I:...]` instruction must not be mistaken for a MIDI
+    // directive and must produce no instrument.
+    let source = "X:1\nT:T\nL:1/8\nK:C\n[I:staffwidth 100]CDEF|\n";
+    let export = export_musicxml(source).expect("non-MIDI inline should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(!export.musicxml.contains("<score-instrument"));
+    assert!(!export.musicxml.contains("<midi-instrument"));
+}
+
+#[test]
 fn midi_transpose_emits_transpose_attribute_without_shifting_pitch() {
     // `%%MIDI transpose <n>` is an abc2midi playback transpose that abc2xml maps
     // to MusicXML `<attributes><transpose><chromatic>n` (written-vs-sounding
