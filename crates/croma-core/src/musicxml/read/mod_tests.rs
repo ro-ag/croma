@@ -2413,6 +2413,388 @@ fn mid_measure_meter_change_before_body_tempo_round_trips() {
     );
 }
 
+// --- Stage S6c: grace notes (<grace>) + chords (<chord/>) --------------------
+
+/// Assert FULL-byte idempotence on an S6c single-voice fixture. By S6c the writer
+/// emits `<grace>` notes (slash/before/after-grace, grace chords, grace slurs) and
+/// `<chord/>` members; in a single-voice grace/chord fixture nothing is deferred,
+/// so the whole document must round-trip byte-for-byte. Returns the reconstructed
+/// score for direct model-field assertions.
+fn assert_idempotent_s6c(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        x1, x2,
+        "write(read(write(score))) must equal write(score) byte-for-byte (S6c grace+chord)"
+    );
+    score
+}
+
+/// The first event's `grace_groups` in the first part's first voice.
+fn grace_groups_at(score: &Score, index: usize) -> &[crate::model::GraceGroupAttachment] {
+    &score.parts[0].voices[0].events[index]
+        .attachments
+        .grace_groups
+}
+
+#[test]
+fn single_grace_round_trips_and_reconstructs_group() {
+    use crate::model::GraceEventKind;
+    // {a}G : one grace note (<type>eighth</type>, base unit 1/8, count 1) before G.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{a}G\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<grace/>") && !x1.contains("slash"),
+        "precondition: a plain {{a}} emits an unslashed <grace/>"
+    );
+    let score = assert_idempotent_s6c(abc);
+    // The grace group attaches to the FOLLOWING main note (event 0 = G).
+    let groups = grace_groups_at(&score, 0);
+    assert_eq!(groups.len(), 1, "one grace group on the following note");
+    assert_eq!(groups[0].note_count, 1, "one grace element");
+    assert!(groups[0].slash.is_none(), "an unslashed grace");
+    assert_eq!(groups[0].events.len(), 1);
+    match &groups[0].events[0].kind {
+        GraceEventKind::Note(note) => {
+            assert_eq!(note.pitch.step, 'A');
+            assert_eq!(note.pitch.octave, 5);
+            assert_eq!(
+                note.length_multiplier,
+                Fraction::one(),
+                "a plain grace note has length multiplier 1"
+            );
+        }
+        other => panic!("expected a grace Note, got {other:?}"),
+    }
+}
+
+#[test]
+fn multi_note_grace_group_round_trips() {
+    // {abc}G : three grace notes (each <type>16th</type>, base unit 1/16, count 3).
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{abc}G\n";
+    let x1 = export(abc);
+    assert_eq!(
+        x1.matches("<grace/>").count(),
+        3,
+        "precondition: three <grace/> notes"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    assert_eq!(groups.len(), 1, "one grace group");
+    assert_eq!(groups[0].note_count, 3, "three grace elements");
+    assert_eq!(groups[0].events.len(), 3, "three grace events");
+}
+
+#[test]
+fn slashed_grace_round_trips_and_reconstructs_slash() {
+    // {/a}G : an acciaccatura -> <grace slash="yes"/>.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{/a}G\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<grace slash=\"yes\"/>"),
+        "precondition: {{/a}} emits slash=\"yes\""
+    );
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    assert_eq!(groups.len(), 1);
+    assert!(
+        groups[0].slash.is_some(),
+        "the reconstructed group records the slash"
+    );
+}
+
+#[test]
+fn grace_length_multiplier_round_trips() {
+    use crate::model::GraceEventKind;
+    // {a2}G : a single grace note with written length 2 -> 1/8 * 2 = 1/4 ->
+    // <type>quarter</type>. The reader must recover length_multiplier = 2.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{a2}G\n";
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    match &groups[0].events[0].kind {
+        GraceEventKind::Note(note) => assert_eq!(
+            note.length_multiplier,
+            Fraction::new(2, 1),
+            "{{a2}} reconstructs a length multiplier of 2"
+        ),
+        other => panic!("expected a grace Note, got {other:?}"),
+    }
+}
+
+#[test]
+fn grace_half_length_multiplier_round_trips() {
+    use crate::model::GraceEventKind;
+    // {a/}G : a single grace note with written length 1/2 -> 1/8 * 1/2 = 1/16 ->
+    // <type>16th</type>. The reader must recover length_multiplier = 1/2.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{a/}G\n";
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    match &groups[0].events[0].kind {
+        GraceEventKind::Note(note) => assert_eq!(
+            note.length_multiplier,
+            Fraction::new(1, 2),
+            "{{a/}} reconstructs a length multiplier of 1/2"
+        ),
+        other => panic!("expected a grace Note, got {other:?}"),
+    }
+}
+
+#[test]
+fn grace_with_slur_round_trips() {
+    use crate::model::SlurRole;
+    // {(ab)}G : a slur opens and closes INSIDE the grace braces, binding the two
+    // grace notes. The writer emits <slur type="start"> on the first grace note
+    // and <slur type="stop"> on the second (both in <notations>).
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{(ab)}G\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<slur type=\"start\" number=\"1\"/>")
+            && x1.contains("<slur type=\"stop\" number=\"1\"/>"),
+        "precondition: a grace slur emits start+stop slurs"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].events.len(), 2, "two grace notes");
+    let start = &groups[0].events[0].slurs;
+    assert_eq!(start.len(), 1, "first grace note opens a slur");
+    assert_eq!(start[0].role, SlurRole::Start);
+    let stop = &groups[0].events[1].slurs;
+    assert_eq!(stop.len(), 1, "second grace note closes the slur");
+    assert_eq!(stop[0].role, SlurRole::Stop);
+}
+
+#[test]
+fn slur_opening_before_grace_binds_first_grace_note() {
+    use crate::model::SlurRole;
+    // ({a}G)A : the slur opens BEFORE the grace brace, so its start binds to the
+    // first grace note and its stop to the main note G. Re-emission must place the
+    // start slur on the grace note again.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n({a}G)A\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<slur type=\"start\" number=\"1\"/>"),
+        "precondition: the slur start lands on the grace note"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    let start = &groups[0].events[0].slurs;
+    assert_eq!(start.len(), 1, "the grace note carries the slur start");
+    assert_eq!(start[0].role, SlurRole::Start);
+}
+
+#[test]
+fn grace_chord_round_trips_and_reconstructs_members() {
+    use crate::model::GraceEventKind;
+    // {[ac]}G : a grace CHORD (one grace element, count 1) whose second member
+    // carries <chord/>. The reader must reconstruct a GraceEventKind::Chord with
+    // two members, not two separate grace notes.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{[ac]}G\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<chord/>") && x1.matches("<grace/>").count() == 2,
+        "precondition: a grace chord emits two <grace/> with one <chord/>"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        groups[0].note_count, 1,
+        "a grace chord is ONE grace element (base unit 1/8)"
+    );
+    assert_eq!(groups[0].events.len(), 1, "one grace event (the chord)");
+    match &groups[0].events[0].kind {
+        GraceEventKind::Chord(members) => {
+            assert_eq!(members.len(), 2, "the grace chord has two members");
+            assert_eq!(members[0].pitch.step, 'A');
+            assert_eq!(members[1].pitch.step, 'C');
+        }
+        other => panic!("expected a grace Chord, got {other:?}"),
+    }
+}
+
+#[test]
+fn grace_rest_round_trips() {
+    use crate::model::{GraceEventKind, RestVisibility};
+    // {x}G : a grace REST (invisible x rest) -> <note print-object="no"><grace/>
+    // <rest/>. The reader must reconstruct a GraceEventKind::Rest.
+    let abc = "X:1\nT:G\nL:1/4\nK:C\n{x}G\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<grace/>") && x1.contains("<rest/>"),
+        "precondition: a grace rest emits <grace/> with <rest/>"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let groups = grace_groups_at(&score, 0);
+    assert_eq!(groups[0].events.len(), 1);
+    match &groups[0].events[0].kind {
+        GraceEventKind::Rest(rest) => {
+            assert_eq!(
+                rest.visibility,
+                RestVisibility::Invisible,
+                "an x grace rest is invisible (print-object=no)"
+            );
+        }
+        other => panic!("expected a grace Rest, got {other:?}"),
+    }
+}
+
+#[test]
+fn after_grace_at_measure_end_binds_to_preceding_note() {
+    // Te6{de}|... : a trailing grace group with NO following note in measure 1
+    // binds as an AFTER-grace on the preceding (decorated) note. The grace <note>s
+    // are the last elements of measure 1; the reader must attach them to that
+    // note's after_grace_groups so they re-emit after it.
+    let abc = "X:1\nT:Trailing\nM:4/4\nL:1/8\nK:C\nTe6{de}|d2f f2f|\n";
+    let score = assert_idempotent_s6c(abc);
+    let after = &score.parts[0].voices[0].events[0]
+        .attachments
+        .after_grace_groups;
+    assert_eq!(
+        after.len(),
+        1,
+        "the preceding note carries one after-grace group"
+    );
+    assert_eq!(
+        after[0].note_count, 2,
+        "the after-grace group has two notes"
+    );
+    // And it is NOT a (before) grace group on that note.
+    assert!(
+        score.parts[0].voices[0].events[0]
+            .attachments
+            .grace_groups
+            .is_empty(),
+        "the trailing grace is an after-grace, not a before-grace"
+    );
+}
+
+/// The first `ChordEvent` in the first part's first voice, with its event index.
+fn first_chord(score: &Score) -> &crate::model::ChordEvent {
+    score.parts[0].voices[0]
+        .events
+        .iter()
+        .find_map(|event| match &event.kind {
+            TimedEventKind::Chord(chord) => Some(chord),
+            _ => None,
+        })
+        .expect("expected a ChordEvent")
+}
+
+#[test]
+fn plain_chord_round_trips_and_reconstructs_members() {
+    // [CEG] : the first note starts the chord; E and G carry <chord/>. The reader
+    // must reconstruct ONE TimedEventKind::Chord with three members at one onset.
+    let abc = "X:1\nT:C\nL:1/4\nK:C\n[CEG]\n";
+    let x1 = export(abc);
+    assert_eq!(
+        x1.matches("<chord/>").count(),
+        2,
+        "precondition: a 3-note chord emits two <chord/> marks"
+    );
+    let score = assert_idempotent_s6c(abc);
+    // Exactly one timed event (the chord), not three separate notes.
+    assert_eq!(
+        score.parts[0].voices[0].events.len(),
+        1,
+        "a chord is one TimedEvent::Chord, not three notes"
+    );
+    let chord = first_chord(&score);
+    assert_eq!(chord.members.len(), 3, "three chord members");
+    assert_eq!(chord.members[0].pitch.step, 'C');
+    assert_eq!(chord.members[1].pitch.step, 'E');
+    assert_eq!(chord.members[2].pitch.step, 'G');
+    assert_eq!(
+        chord.members[0].duration,
+        Fraction::new(1, 4),
+        "each member is a quarter"
+    );
+}
+
+#[test]
+fn chord_then_note_round_trips() {
+    // [CEG] D E F | : a chord followed by plain notes. The chord is one event; the
+    // following notes advance the cursor from the chord's onset.
+    let abc = "X:1\nT:C\nM:4/4\nL:1/4\nK:C\n[CEG] D E F|\n";
+    let score = assert_idempotent_s6c(abc);
+    let events = &score.parts[0].voices[0].events;
+    assert!(
+        matches!(events[0].kind, TimedEventKind::Chord(_)),
+        "the first event is the chord"
+    );
+    assert_eq!(events.len(), 4, "chord + three notes = four events");
+    // The note after the chord starts at the chord's onset + its duration (1/4).
+    assert_eq!(
+        events[1].onset,
+        Fraction::new(1, 4),
+        "the note after the chord is at onset 1/4"
+    );
+}
+
+#[test]
+fn chord_with_ties_round_trips_per_member() {
+    use crate::model::TieRole;
+    // [CEG]2-[CEG]2 : a tied chord. Each member gets its OWN tie pair (numbers
+    // 1,2,3 across the members), so the reader must reconstruct per-member ties
+    // whose pair_ids re-derive the same <tied number=...>.
+    let abc = "X:1\nT:C\nM:4/4\nL:1/4\nK:C\n[CEG]2-[CEG]2 z4|\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<tied type=\"start\" number=\"1\"/>")
+            && x1.contains("<tied type=\"start\" number=\"3\"/>"),
+        "precondition: tied chord members get distinct tie numbers 1..3"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let chord = first_chord(&score);
+    assert_eq!(chord.members.len(), 3);
+    // Every member of the first chord carries a tie START.
+    for (member_index, member) in chord.members.iter().enumerate() {
+        assert_eq!(
+            member.attachments.ties.len(),
+            1,
+            "member {member_index} carries one tie"
+        );
+        assert_eq!(member.attachments.ties[0].role, TieRole::Start);
+    }
+}
+
+#[test]
+fn chord_member_decoration_round_trips() {
+    // [C!trill!EG] : a decoration (trill) on the SECOND chord member. The reader
+    // must reconstruct it onto that member's attachments so the writer re-emits
+    // the <ornaments><trill-mark/> on the same member.
+    let abc = "X:1\nT:C\nM:4/4\nL:1/4\nK:C\n[C!trill!EG] D E F|\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<trill-mark/>"),
+        "precondition: the chord member decoration emits a trill"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let chord = first_chord(&score);
+    // The trill lands on the E member (index 1), per the ABC ordering.
+    let decorated = chord
+        .members
+        .iter()
+        .filter(|member| !member.attachments.decorations.is_empty())
+        .count();
+    assert_eq!(decorated, 1, "exactly one member carries a decoration");
+}
+
+#[test]
+fn two_chords_in_a_measure_round_trip() {
+    // [CE][GB] : two chords back to back. Each must reconstruct as its own
+    // ChordEvent with the right first-member attachments (this exercises the
+    // writer's per-chord first-member attachment lookup, which keys on
+    // source_span — so the reader must give each chord a distinct source span).
+    let abc = "X:1\nT:C\nM:4/4\nL:1/4\nK:C\n[CE]2 [GB]2 z4|\n";
+    let score = assert_idempotent_s6c(abc);
+    let chords = score.parts[0].voices[0]
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, TimedEventKind::Chord(_)))
+        .count();
+    assert_eq!(chords, 2, "two distinct chord events");
+}
+
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
 
 /// Collect every `*.abc` file directly under `dir`, sorted.
