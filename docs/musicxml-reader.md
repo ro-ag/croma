@@ -114,6 +114,59 @@ ABC_ROOT=/abs/path/to/abc REF_ROOT=/abs/path/to/musicxml \
   totality_fuzz_read_musicxml_never_panics -- --nocapture
 ```
 
+## Reference-dialect reading & parity (R2)
+
+The self-loop (XML re-emission idempotence) proves the reader inverts croma's
+**own** writer, but never exercises **foreign** MusicXML. R2 measures reading the
+abc2xml/music21 dialect: `tools/musicxml_reverse_corpus_compare.py` runs each
+abc2xml-reference file through `croma read --format xml` (the **pure inverse**)
+and feeds the re-export + the original into the existing **music21 semantic
+comparator** (`tools/music21_polars_corpus_compare.py`, unchanged) — cross-writer
+semantic parity, not byte idempotence. (LOCAL-ONLY; corpus is external.)
+
+**Three clean reader bugs the self-loop could never surface** (each gated,
+read-side only, forward + self-loop idempotence untouched at 9915/9935):
+
+1. **DTD-tolerant parse.** Every real-world MusicXML file (abc2xml, MuseScore,
+   Finale, Sibelius) carries a `<!DOCTYPE … MusicXML … Partwise>`. roxmltree's
+   default `allow_dtd:false` rejected **all 10,000** at the door → empty Score.
+   croma's own writer emits no doctype, so the self-loop never saw it.
+   `parse_with_options(allow_dtd:true)` unlocked it: parity **0 → 77.1%**.
+2. **Textless functional `<harmony>`.** abc2xml emits *functional* harmony
+   (`<root>`+`<kind>major`, **no** `<kind text=…>`); croma's writer always emits
+   `text=`, so S5b only read the text attribute and dropped foreign harmony
+   (~48k facts / ~1948 files). The reader now **synthesises** a chord-symbol
+   string from `<root>/<kind>/<bass>/<degree>` (inverting croma's own
+   kind↔suffix table, round-trip-stable) when `text=` is absent: parity
+   **77.1 → 98.27%**. This is foreign-dialect *reading* into croma's existing
+   chord-symbol model — never writer-mimicry.
+3. **Decimal `<alter>`.** The MusicXML spec types `<alter>` as `decimal`;
+   abc2xml/music21 emit `1.0`. croma parsed it as `i8` → `"1.0"` failed → the
+   accidental was silently dropped (a note read as natural). The `<alter>`
+   family now parses as f64 rounded to the nearest semitone (quarter-tones
+   degrade with a diagnostic): the `accidental` mismatch category **80 → 2**,
+   parity **98.27 → 98.50%**.
+
+**Result: reverse music21 parity 9,850 / 10,000 (98.50%)** — above the forward
+raw-comparator floor (93.9%). Residual (adjudicated to verdicts, none a clean
+reader bug):
+
+| Category (count) | Verdict |
+|---|---|
+| `duration` 293 (~35 files) | **comparator/music21 artifact** — the breve note is byte-identical in croma's re-export and the ref; music21 reports a context-dependent ql, croma is not wrong. |
+| `extra_in_croma` 181 (~81 files) | **croma writer default** — croma always emits a playback `<sound tempo="120">` that abc2xml omits; semantically neutral, not changeable without touching the (out-of-scope) forward writer. |
+| `missing_in_croma` 398 + `measure_alignment` 73 + `voice` 38 | **single outlier file** `tune_011134.xml` (a pathological 2-part score; reference `<dot>`s croma lacks). 1 file. |
+| `tuplet` 47 | **reader gap on complex/nested tuplets**, shared with the documented self-loop nested-tuplet residual — R3-adjacent, not chased here. |
+| `direction` 34, `barline` 7, `accidental` 2 | uncommon directions croma leaves unread (with a diagnostic) / minor structural & spelling tails. |
+
+**Foreign-engraver stretch (Decision 4).** A totality probe over 40 real
+non-abc2xml engravings from music21 10.3.0's bundled corpus (MuseScore/Finale-origin
+Bach chorales etc., `.mxl`): croma reads **40/40 with 0 panics, 0 empty** — every
+file produces notes (one chorale → 503). Semantic parity on full multi-staff SATB
+scores is lower (they exceed croma's ABC-oriented model), so it is a documented
+totality + substantive-recovery probe, not a parity claim. abc2xml is the
+parity-measured foreign dialect; other engravers are totality-proven.
+
 ## Staging
 
 | Stage | Scope | Status |
