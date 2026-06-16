@@ -164,6 +164,13 @@ pub struct Voice {
     /// / `%%MIDI channel` directives (see [`MidiInstrumentModel`]). `None` when
     /// the voice declared no score-translatable MIDI instrument.
     pub midi_instrument: Option<MidiInstrumentModel>,
+    /// Chromatic transposition (semitones) projected from this voice's
+    /// `%%MIDI transpose <n>` directive, emitted as MusicXML
+    /// `<attributes><transpose><chromatic>`. Distinct from the ABC `transpose=`
+    /// voice property (which is carried in [`VoicePropertiesModel`] and takes
+    /// precedence when both are present). `None` when no `%%MIDI transpose` was
+    /// declared.
+    pub midi_transpose: Option<i16>,
     pub source_span: Span,
 }
 
@@ -505,6 +512,9 @@ pub struct VoiceTimeline {
     /// Score-level MIDI instrument projected from this voice's `%%MIDI` program
     /// / channel directives, carried through to the semantic [`Voice`].
     pub midi_instrument: Option<MidiInstrumentModel>,
+    /// Chromatic transposition (semitones) projected from this voice's
+    /// `%%MIDI transpose` directive, carried through to the semantic [`Voice`].
+    pub midi_transpose: Option<i16>,
     pub source_span: Span,
 }
 

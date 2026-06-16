@@ -1399,16 +1399,16 @@ fn preserved_directive_model(syntax: &PreservedDirectiveSyntax) -> PreservedDire
     }
 }
 
-/// Forward-translate `%%MIDI program` / `%%MIDI channel` directives into a
-/// per-voice [`MidiInstrumentModel`] on each timeline, respecting per-voice
-/// scoping: a directive attaches to the voice of the nearest preceding `V:`
-/// declaration (header or body) by source position, or the first/default voice
-/// if it precedes every `V:`.
+/// Forward-translate the score-meaningful `%%MIDI` sub-directives (`program` /
+/// `channel` → [`MidiInstrumentModel`]; `transpose` → `midi_transpose`) onto
+/// each timeline, respecting per-voice scoping: a directive attaches to the
+/// voice of the nearest preceding `V:` declaration (header or body) by source
+/// position, or the first/default voice if it precedes every `V:`.
 ///
 /// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; only the
-/// score-meaningful program (instrument identity) and channel are projected.
-/// Every directive (including the raw text of the translated ones) still
-/// survives verbatim in `preserved_directives` for round-trip and the formatter.
+/// score-meaningful sub-directives are projected. Every directive (including the
+/// raw text of the translated ones) still survives verbatim in
+/// `preserved_directives` for round-trip and the formatter.
 fn project_voice_midi(
     voices: &mut [VoiceTimeline],
     tune_music: &ParsedTuneMusic,
@@ -1441,26 +1441,38 @@ fn project_voice_midi(
             .map_or(default_voice.as_str(), |(_, id)| *id)
     };
 
-    let mut by_voice: BTreeMap<&str, MidiInstrumentModel> = BTreeMap::new();
+    let mut instrument_by_voice: BTreeMap<&str, MidiInstrumentModel> = BTreeMap::new();
+    let mut transpose_by_voice: BTreeMap<&str, i16> = BTreeMap::new();
     for directive in &tune_music.preserved_directives {
         if !directive.name.value.eq_ignore_ascii_case("MIDI") {
             continue;
         }
         let voice_id = voice_at(directive.span.start);
-        let model = by_voice.entry(voice_id).or_insert(MidiInstrumentModel {
-            program: None,
-            channel: None,
-            span: directive.span,
-        });
-        apply_midi_instrument_directive(&directive.value.value, directive.span, model);
+        let value = directive.value.value.as_str();
+        if let Some(transpose) = parse_midi_transpose(value) {
+            // Last write wins, mirroring the instrument projection.
+            transpose_by_voice.insert(voice_id, transpose);
+            continue;
+        }
+        let model = instrument_by_voice
+            .entry(voice_id)
+            .or_insert(MidiInstrumentModel {
+                program: None,
+                channel: None,
+                span: directive.span,
+            });
+        apply_midi_instrument_directive(value, directive.span, model);
     }
 
     for voice in voices.iter_mut() {
-        if let Some(model) = by_voice
+        if let Some(model) = instrument_by_voice
             .get(voice.id.value.as_str())
             .filter(|model| model.program.is_some() || model.channel.is_some())
         {
             voice.midi_instrument = Some(*model);
+        }
+        if let Some(transpose) = transpose_by_voice.get(voice.id.value.as_str()) {
+            voice.midi_transpose = Some(*transpose);
         }
     }
 }
@@ -1517,6 +1529,19 @@ fn apply_midi_instrument_directive(value: &str, span: Span, model: &mut MidiInst
 fn leading_u8(token: &str) -> Option<u8> {
     let digits: String = token.chars().take_while(char::is_ascii_digit).collect();
     digits.parse::<u8>().ok()
+}
+
+/// Parse `%%MIDI transpose <n>` into a chromatic semitone count, ignoring a
+/// trailing `% comment`. Returns `None` for any other sub-directive or a
+/// non-numeric / out-of-`i16`-range argument. (`%%MIDI transpose` is an abc2midi
+/// playback transpose that abc2xml maps to MusicXML `<transpose><chromatic>`.)
+fn parse_midi_transpose(value: &str) -> Option<i16> {
+    let head = value.split('%').next().unwrap_or(value);
+    let mut tokens = head.split_whitespace();
+    if tokens.next()? != "transpose" {
+        return None;
+    }
+    tokens.next()?.parse::<i16>().ok()
 }
 
 pub(crate) fn music_code_span(line: &crate::syntax::tune::ClassifiedLine) -> Span {

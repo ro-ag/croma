@@ -40,6 +40,7 @@ pub(crate) fn semantic_voice_from_timeline(
         measures,
         events,
         midi_instrument: voice.midi_instrument,
+        midi_transpose: voice.midi_transpose,
         source_span: voice.source_span,
     }
 }
