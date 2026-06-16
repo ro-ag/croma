@@ -3528,20 +3528,29 @@ fn totality_fuzz_read_musicxml_never_panics() {
 
 // --- R1: ABC -> XML -> Score -> ABC re-emission measurement ------------------
 
-/// Companion to [`corpus_idempotence_measurement`], but closing the loop in ABC
-/// space instead of XML space. For each corpus `.abc` that lowers cleanly,
-/// `s1 = lower(parse(abc))`, then we compare
-/// `write_abc(read_musicxml(write_musicxml(&s1).xml).value)` against
-/// `write_abc(&s1)`. A match proves the `ABC -> XML -> Score -> ABC` round-trip
-/// is a fixed point for that file: routing the Score through croma's own
-/// MusicXML and back reproduces the same canonical ABC.
+/// Totality arm for the ABC re-emission loop, run over the whole corpus. For
+/// each corpus `.abc` that lowers cleanly, `s1 = lower(parse(abc))`, then we
+/// drive `write_abc(read_musicxml(write_musicxml(&s1).xml).value)` against
+/// `write_abc(&s1)` and count byte-identical full-document matches.
+///
+/// **This arm asserts TOTALITY ONLY (0 panics over ~10k files); the reported
+/// byte-identity count is expected to be near-zero and is NOT a gate.** Full
+/// ABC-*document* byte equality is the wrong bar here: `write_abc` emits
+/// ABC-only state — the `X:` reference number, `W:` post-tune lyrics, `V:` ids,
+/// an empty display `K:` — that the lossy MusicXML round-trip legitimately
+/// drops, so the documents differ by construction even when every structural
+/// musical fact is preserved. The byte count therefore measures nothing useful
+/// and the test makes no hard count assertion on it; it exists to prove the
+/// reader is *total* over the corpus (it never panics). The **real** R1 metric
+/// — a normalized STRUCTURAL projection that ignores this ABC-only state — lives
+/// in `tools/prove_reader_abc_roundtrip.py` (the structural sibling of
+/// `tools/prove_abc_roundtrip.py`), which is where the round-trip *correctness*
+/// proof belongs.
 ///
 /// **Report-only**, mirroring the XML measurement's discipline: it prints
-/// `N/total` plus a first-divergence note for a few failures and asserts no hard
-/// count (full ABC-document identity through the reader's subset is strictly
-/// stronger than the proven XML re-emission idempotence, so the number is a
-/// measurement, not a gate). Env-gated on `ABC_ROOT`; a no-op when unset, exactly
-/// like the sibling measurement.
+/// `N/total` plus a first-divergence note for a few non-matches and asserts no
+/// hard count. Env-gated on `ABC_ROOT`; a no-op when unset, exactly like the
+/// sibling measurement.
 #[test]
 fn corpus_abc_reemission_through_xml() {
     use crate::to_abc::{AbcWriteOptions, write_abc};
@@ -3597,7 +3606,13 @@ fn corpus_abc_reemission_through_xml() {
     }
 
     eprintln!(
-        "ABC re-emission through XML (ABC -> XML -> Score -> ABC): {idempotent}/{lowered} files round-trip identically ({total} total .abc)"
+        "ABC re-emission through XML (ABC -> XML -> Score -> ABC): {idempotent}/{lowered} \
+         files are BYTE-identical full documents ({total} total .abc). NOTE: this byte \
+         count is EXPECTED to be near-zero and is not a metric — write_abc emits \
+         ABC-only state (X:/W:/V: ids, empty display K:) that the lossy XML round-trip \
+         legitimately drops, so the documents differ by construction. This arm asserts \
+         TOTALITY ONLY (0 panics). The real structural round-trip proof lives in \
+         tools/prove_reader_abc_roundtrip.py."
     );
     if !first_divergences.is_empty() {
         eprintln!("first ABC divergences (up to 5):");
@@ -3606,9 +3621,11 @@ fn corpus_abc_reemission_through_xml() {
         }
     }
 
-    // No hard count: full ABC-document identity is strictly stronger than the
-    // proven XML re-emission idempotence. Require only that the loop is total
-    // over the corpus (no panic) and that at least one file was measured.
+    // No hard count on the byte-identity tally: full ABC-document byte equality
+    // is expected to be near-zero (write_abc emits ABC-only state absent from
+    // the lossy XML round-trip), so it is not a gate. The structural proof is
+    // tools/prove_reader_abc_roundtrip.py. Here we require only that the loop is
+    // total over the corpus (no panic) and that at least one file was measured.
     assert!(
         lowered > 0,
         "expected at least one corpus file to lower and export"
