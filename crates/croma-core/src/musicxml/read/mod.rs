@@ -13,21 +13,29 @@
 //! ignored (optionally with a diagnostic). There is no `unwrap`/`expect`/
 //! `panic`/`todo` and no index that can panic anywhere in this module tree.
 //!
-//! # Stage S1 (this module)
-//! `<score-partwise>` -> parts -> measures -> `<note>` (`<pitch>`/`<rest>`,
-//! `<duration>`/`<type>`/`<dot>`), `<backup>`/`<forward>`, plus the
-//! work-title/composer/credit metadata the writer reads back. `<divisions>` is
-//! read because it is needed to map `<duration>` to a [`Fraction`]. Attributes
-//! (`<key>`/`<time>`/`<clef>`/`<transpose>`), part-list MIDI, notations,
-//! directions, multi-voice, repeats, grace and chords are **later stages** and
-//! are intentionally not reconstructed yet — files that use them simply do not
-//! round-trip idempotently yet, which the corpus gate measures.
+//! # Stages S1–S2 (this module)
+//! **S1:** `<score-partwise>` -> parts -> measures -> `<note>`
+//! (`<pitch>`/`<rest>`, `<duration>`/`<type>`/`<dot>`), `<backup>`/`<forward>`,
+//! plus the work-title/composer/credit metadata the writer reads back.
+//! `<divisions>` is read because it is needed to map `<duration>` to a
+//! [`Fraction`].
+//!
+//! **S2:** the header `<attributes>` block — `<key>`/`<fifths>` (+ explicit
+//! `<key-step>`/`<key-alter>`/`<key-accidental>`) -> [`KeySignatureModel`],
+//! `<time>` -> [`MeterModel`], `<clef>` -> the staff voice's
+//! `initial_properties.clef`, and `<transpose><chromatic>` -> `midi_transpose`.
+//! Mid-measure `<attributes>` changes (`KeyChange`/`MeterChange`/`ClefChange`),
+//! part-list MIDI, notations, directions, multi-voice, repeats, grace and chords
+//! are **later stages** and are intentionally not reconstructed yet — files that
+//! use them simply do not round-trip idempotently yet, which the corpus gate
+//! measures.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, Fraction, Measure, MeasureId,
-    NoteEvent, Part, PartId, Pitch, RestEvent, RestVisibility, Score, ScoreMetadata, Staff,
-    StaffId, TextLine, TimedEvent, TimedEventKind, Voice, VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, Fraction, KeyAccidentalModel,
+    KeySignatureModel, Measure, MeasureId, MeterModel, NoteEvent, Part, PartId, Pitch, RestEvent,
+    RestVisibility, Score, ScoreMetadata, Staff, StaffId, TextLine, TimedEvent, TimedEventKind,
+    Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -139,6 +147,12 @@ impl Reader {
         let mut score = empty_score(Vec::new());
         score.divisions = self.read_divisions(root).unwrap_or(score.divisions);
         self.read_metadata(root, &mut score.metadata);
+        // `<key>`/`<time>` are score-level: the writer emits them from
+        // `score.metadata.{key,meter}` into the FIRST measure's `<attributes>`
+        // of every part, identically. Read them from the first part's header
+        // attributes. (Per-part `<clef>`/`<transpose>` are reconstructed in
+        // `read_part`, scoped to the owning voice.)
+        self.read_header_key_meter(root, &mut score.metadata);
 
         // Part names come from the <part-list>; the music comes from the
         // sibling <part> elements. The writer keys them by matching `id`.
@@ -159,6 +173,177 @@ impl Reader {
             .next()
             .and_then(|node| parse_u32(self, node, "divisions"))
             .filter(|value| *value > 0)
+    }
+
+    /// Read the score-level `<key>`/`<time>` from the first part's first
+    /// measure's `<attributes>` into `metadata.{key,meter}`. The writer emits an
+    /// identical copy in every part's header, so reading the first is sufficient
+    /// and re-emitting it for all parts reproduces the input.
+    fn read_header_key_meter(&mut self, root: Node<'_, '_>, metadata: &mut ScoreMetadata) {
+        let Some(attributes) = children_named(root, "part")
+            .next()
+            .and_then(|part| children_named(part, "measure").next())
+            .and_then(|measure| child_element(measure, "attributes"))
+        else {
+            return;
+        };
+        if let Some(key_node) = child_element(attributes, "key") {
+            metadata.key = Some(self.read_key(key_node));
+        }
+        if let Some(time_node) = child_element(attributes, "time") {
+            metadata.meter = self.read_meter(time_node);
+        }
+        // An absent `<time>` means either `M:none` (free meter) or no meter at
+        // all; both re-emit nothing, so leaving `meter` as `None` is idempotent.
+    }
+
+    /// Invert [`MusicXmlWriter::write_key_element`]: `<fifths>` -> `fifths`, and
+    /// each consecutive `<key-step>`/`<key-alter>`/`<key-accidental>` triple ->
+    /// one [`KeyAccidentalModel`]. The writer never emits the `KeySignatureModel`
+    /// `display` string, so it is left empty (the idempotence gate confirms
+    /// `<key>` is fully driven by `fifths` + `explicit_accidentals`).
+    fn read_key(&mut self, key_node: Node<'_, '_>) -> KeySignatureModel {
+        let fifths = child_text(key_node, "fifths")
+            .and_then(|text| self.parse_i8(text, "fifths"))
+            .unwrap_or(0);
+
+        // The writer interleaves the triple in document order; pair each
+        // `<key-step>` with the `<key-accidental>` that follows it (preferred, as
+        // the exact inverse of `musicxml_name`), falling back to `<key-alter>`.
+        let mut explicit_accidentals = Vec::new();
+        let mut pending_step: Option<char> = None;
+        let mut pending_alter: Option<i8> = None;
+        for child in element_children(key_node) {
+            match child.tag_name().name() {
+                "key-step" => {
+                    pending_step = node_text(child).and_then(|text| text.chars().next());
+                    pending_alter = None;
+                }
+                "key-alter" => {
+                    pending_alter =
+                        node_text(child).and_then(|text| self.parse_i8(text, "key-alter"));
+                }
+                "key-accidental" => {
+                    if let Some(step) = pending_step {
+                        let accidental = node_text(child)
+                            .and_then(|name| self.accidental_from_name(name))
+                            .or_else(|| pending_alter.and_then(accidental_from_alter))
+                            .unwrap_or(Accidental::Natural);
+                        explicit_accidentals.push(KeyAccidentalModel {
+                            step,
+                            accidental,
+                            source_span: READER_SPAN,
+                        });
+                    }
+                    pending_step = None;
+                    pending_alter = None;
+                }
+                _ => {}
+            }
+        }
+
+        KeySignatureModel {
+            display: String::new(),
+            fifths,
+            explicit_accidentals,
+            source_span: READER_SPAN,
+        }
+    }
+
+    /// Invert [`MusicXmlWriter::write_time_element`]. The writer maps
+    /// `meter.display` -> `<time>` via `meter_parts`; the reader reconstructs a
+    /// `display` that maps back to the same element. `symbol="common"` -> `"C"`,
+    /// `symbol="cut"` -> `"C|"`; otherwise reassemble `beats/beat-type` pairs
+    /// (joined with `+` when compound). `MeterModel.display` is the only field the
+    /// writer reads, so `duration`/`free_meter` get documented defaults.
+    fn read_meter(&mut self, time_node: Node<'_, '_>) -> Option<MeterModel> {
+        let display = match time_node.attribute("symbol") {
+            Some("common") => "C".to_owned(),
+            Some("cut") => "C|".to_owned(),
+            _ => {
+                let mut parts: Vec<String> = Vec::new();
+                let mut pending_beats: Option<String> = None;
+                for child in element_children(time_node) {
+                    match child.tag_name().name() {
+                        "beats" => pending_beats = node_text(child).map(str::to_owned),
+                        "beat-type" => {
+                            if let (Some(beats), Some(beat_type)) =
+                                (pending_beats.take(), node_text(child))
+                            {
+                                parts.push(format!("{beats}/{beat_type}"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if parts.is_empty() {
+                    self.warn(
+                        "musicxml.read.empty_time",
+                        "<time> has no beats/beat-type pairs; meter not reconstructed",
+                    );
+                    return None;
+                }
+                parts.join("+")
+            }
+        };
+        Some(MeterModel {
+            display,
+            duration: None,
+            free_meter: false,
+            source_span: READER_SPAN,
+        })
+    }
+
+    /// Invert the `<clef>` the writer emits from a voice's
+    /// `initial_properties.clef`: read `<sign>`/`<line>`/`<clef-octave-change>`
+    /// and rebuild a canonical ABC clef text that `clef_model` re-maps to the
+    /// same element. (The original ABC clef text is unrecoverable — many strings
+    /// map to one `<clef>` — but a canonical representative is idempotent.) S2
+    /// reconstructs a single voice per part, so this is the staff voice's clef.
+    /// Returns `None` for the plain default treble clef, matching a freshly
+    /// lowered score (the writer emits the same `<clef>` either way).
+    fn read_clef(&mut self, attributes: Node<'_, '_>) -> Option<TextLine> {
+        let clef_node = child_element(attributes, "clef")?;
+        let sign = child_text(clef_node, "sign").unwrap_or("G");
+        let line = child_text(clef_node, "line").unwrap_or("2");
+        let octave_change = child_text(clef_node, "clef-octave-change")
+            .and_then(|text| self.parse_i8(text, "clef-octave-change"))
+            .unwrap_or(0);
+        clef_text_from(sign, line, octave_change).map(text_line)
+    }
+
+    /// Invert `<transpose><chromatic>n` -> `midi_transpose = Some(n)`. The writer
+    /// emits one `<transpose>` per part from the first voice that has either a
+    /// `transpose=` property (ABC text, not in the XML) or `midi_transpose`;
+    /// reconstructing `midi_transpose` reproduces the element on re-write.
+    fn read_transpose(&mut self, attributes: Node<'_, '_>) -> Option<i16> {
+        let transpose_node = child_element(attributes, "transpose")?;
+        let chromatic = child_text(transpose_node, "chromatic")?;
+        match chromatic.parse::<i16>() {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.warn(
+                    "musicxml.read.invalid_chromatic",
+                    format!("<chromatic> `{chromatic}` is not an i16; transpose ignored"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Parse a signed integer that fits in `i8` (`<fifths>`, `<key-alter>`,
+    /// `<clef-octave-change>`), warning and yielding `None` otherwise.
+    fn parse_i8(&mut self, text: &str, label: &str) -> Option<i8> {
+        match text.trim().parse::<i8>() {
+            Ok(value) => Some(value),
+            Err(_) => {
+                self.warn(
+                    "musicxml.read.invalid_integer",
+                    format!("<{label}> `{}` is not a valid signed integer", text.trim()),
+                );
+                None
+            }
+        }
     }
 
     fn read_metadata(&mut self, root: Node<'_, '_>, metadata: &mut ScoreMetadata) {
@@ -244,15 +429,30 @@ impl Reader {
             measures.push(outcome.measure);
         }
 
+        // S2: reconstruct the part's header `<clef>` and `<transpose>` from the
+        // first measure's `<attributes>`. The writer reads the staff voice's
+        // `initial_properties.clef` (so it must be populated for re-emission) and
+        // either `properties.transpose` (ABC text, unreconstructable from XML) or
+        // `midi_transpose`; setting `midi_transpose` reproduces `<transpose>`.
+        let header_attributes = children_named(part_node, "measure")
+            .next()
+            .and_then(|measure| child_element(measure, "attributes"));
+        let mut initial_properties = VoicePropertiesModel::default();
+        let mut midi_transpose = None;
+        if let Some(attributes) = header_attributes {
+            initial_properties.clef = self.read_clef(attributes);
+            midi_transpose = self.read_transpose(attributes);
+        }
+
         let voice = Voice {
             id: voice_id.clone(),
             staff: staff_id,
-            initial_properties: VoicePropertiesModel::default(),
-            properties: VoicePropertiesModel::default(),
+            initial_properties: initial_properties.clone(),
+            properties: initial_properties,
             measures,
             events,
             midi_instrument: None,
-            midi_transpose: None,
+            midi_transpose,
             source_span: READER_SPAN,
         };
 
@@ -550,6 +750,54 @@ fn subtract_fraction(left: Fraction, right: Fraction) -> Fraction {
         u32::try_from(numerator).unwrap_or(u32::MAX),
         u32::try_from(denominator).unwrap_or(u32::MAX),
     )
+}
+
+/// Map a numeric `<key-alter>` back to an [`Accidental`] (the fallback inverse
+/// when `<key-accidental>` is absent or unrecognised). Mirrors
+/// [`Accidental::alter`].
+fn accidental_from_alter(alter: i8) -> Option<Accidental> {
+    match alter {
+        -2 => Some(Accidental::DoubleFlat),
+        -1 => Some(Accidental::Flat),
+        0 => Some(Accidental::Natural),
+        1 => Some(Accidental::Sharp),
+        2 => Some(Accidental::DoubleSharp),
+        _ => None,
+    }
+}
+
+/// Inverse of the writer's `clef_model`: build a canonical ABC clef text from the
+/// emitted `<sign>`/`<line>`/`<clef-octave-change>` that `clef_model` re-maps to
+/// the SAME element. `clef_model` is many-to-one (e.g. "treble"/"g" both -> G/2),
+/// so a single representative per `(sign, line)` plus the octave suffix
+/// (`+8`/`-8`/`+15`/`-15`) suffices for byte-identical re-emission. Returns
+/// `None` for the plain default treble clef (G/2, no octave change), which a
+/// freshly lowered score also leaves as `None` (the writer emits an identical
+/// default `<clef>` either way) — keeping the reconstructed model close to the
+/// lowering's and avoiding a spurious clef property.
+fn clef_text_from(sign: &str, line: &str, octave_change: i8) -> Option<String> {
+    let base = match (sign.trim(), line.trim()) {
+        ("F", "4") => "bass",
+        ("C", "3") => "alto",
+        ("C", "4") => "tenor",
+        ("percussion", _) => "perc",
+        // Anything else (notably the default G/2) maps through `clef_model`'s
+        // final `else` arm to a treble G clef.
+        _ => "treble",
+    };
+    let suffix = match octave_change {
+        -2 => "-15",
+        -1 => "-8",
+        1 => "+8",
+        2 => "+15",
+        _ => "",
+    };
+    if base == "treble" && suffix.is_empty() {
+        // Plain treble is the writer's default; emit no clef property so the
+        // reconstructed score matches a freshly lowered one.
+        return None;
+    }
+    Some(format!("{base}{suffix}"))
 }
 
 // --- roxmltree element helpers (all non-panicking) -------------------------
