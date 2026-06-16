@@ -84,6 +84,46 @@ fn assert_idempotent(abc: &str) -> Score {
     score
 }
 
+/// Remove only the **stage S3+** writer blocks (`<score-instrument>` /
+/// `<midi-instrument>`) so an S2 idempotence assertion keeps `<key>`/`<time>`/
+/// `<clef>`/`<transpose>` in the byte comparison — those are reconstructed now —
+/// while still ignoring the part-list MIDI that S3 will own.
+fn strip_stage3_blocks(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut skip_until: Option<&'static str> = None;
+    for line in xml.lines() {
+        if let Some(close) = skip_until {
+            if line.trim() == close {
+                skip_until = None;
+            }
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with("<score-instrument") {
+            skip_until = Some("</score-instrument>");
+        } else if trimmed.starts_with("<midi-instrument") {
+            skip_until = Some("</midi-instrument>");
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Assert the re-emission is byte-identical on the **S2-supported subset**: the
+/// full header `<attributes>` (`<key>`/`<time>`/`<clef>`/`<transpose>`) must
+/// survive verbatim; only the still-deferred S3 part-list MIDI is stripped.
+fn assert_idempotent_s2(abc: &str) -> Score {
+    let (x1, x2, score) = round_trip(abc);
+    assert_eq!(
+        strip_stage3_blocks(&x1),
+        strip_stage3_blocks(&x2),
+        "write(read(write(score))) must equal write(score) on the S2-supported subset"
+    );
+    score
+}
+
 fn first_note_pitch(score: &Score) -> &crate::model::Pitch {
     match &score.parts[0].voices[0].events[0].kind {
         TimedEventKind::Note(note) => &note.pitch,
@@ -268,6 +308,198 @@ fn divisions_are_recovered() {
     // Round-trip a 1/16-ish note: ensure the reconstructed duration is exact.
     let first = &score.parts[0].voices[0].events[0];
     assert_eq!(first.duration, Fraction::new(1, 4), "C2 under L:1/8 is 1/4");
+}
+
+// --- Stage S2: <attributes> (key / time / clef / transpose) ----------------
+
+/// The reconstructed header key (`score.metadata.key`).
+fn header_key(score: &Score) -> &crate::model::KeySignatureModel {
+    score
+        .metadata
+        .key
+        .as_ref()
+        .expect("S2 must reconstruct the header <key> into score.metadata.key")
+}
+
+#[test]
+fn header_key_fifths_sharp_round_trips() {
+    // K:D is two sharps -> <fifths>2</fifths>.
+    let score = assert_idempotent_s2("X:1\nT:Sharps\nL:1/4\nK:D\nD\n");
+    assert_eq!(header_key(&score).fifths, 2, "K:D is 2 sharps");
+    assert!(
+        header_key(&score).explicit_accidentals.is_empty(),
+        "a traditional key emits no explicit key accidentals"
+    );
+}
+
+#[test]
+fn header_key_fifths_flat_round_trips() {
+    // K:F is one flat -> <fifths>-1</fifths>.
+    let score = assert_idempotent_s2("X:1\nT:Flats\nL:1/4\nK:F\nF\n");
+    assert_eq!(header_key(&score).fifths, -1, "K:F is 1 flat");
+}
+
+#[test]
+fn header_key_fifths_zero_round_trips() {
+    // K:C is no accidentals -> <fifths>0</fifths>.
+    let score = assert_idempotent_s2("X:1\nT:Natural\nL:1/4\nK:C\nC\n");
+    assert_eq!(header_key(&score).fifths, 0, "K:C is 0 fifths");
+}
+
+#[test]
+fn header_key_minor_negative_fifths_round_trips() {
+    // K:Cm is three flats -> <fifths>-3</fifths>.
+    let score = assert_idempotent_s2("X:1\nT:Minor\nL:1/4\nK:Cm\nC\n");
+    assert_eq!(header_key(&score).fifths, -3, "K:Cm is 3 flats");
+}
+
+#[test]
+fn explicit_key_accidentals_round_trip() {
+    // K:C exp ^f _b emits two (key-step, key-alter, key-accidental) triples that
+    // the reader must rebuild into explicit_accidentals, preserving order.
+    let abc = "X:1\nT:Exp\nL:1/4\nK:C exp ^f _b\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<key-step>F</key-step>")
+            && x1.contains("<key-accidental>flat</key-accidental>"),
+        "precondition: explicit key accidentals are emitted"
+    );
+    let score = assert_idempotent_s2(abc);
+    let accidentals = &header_key(&score).explicit_accidentals;
+    assert_eq!(accidentals.len(), 2, "two explicit key accidentals");
+    assert_eq!(accidentals[0].step, 'F');
+    assert_eq!(accidentals[0].accidental, crate::model::Accidental::Sharp);
+    assert_eq!(accidentals[1].step, 'B');
+    assert_eq!(accidentals[1].accidental, crate::model::Accidental::Flat);
+}
+
+#[test]
+fn header_meter_round_trips_and_reconstructs() {
+    // M:6/8 -> <time><beats>6</beats><beat-type>8</beat-type>.
+    let score = assert_idempotent_s2("X:1\nT:Compound\nM:6/8\nL:1/8\nK:C\nC2C2C2\n");
+    let meter = score
+        .metadata
+        .meter
+        .as_ref()
+        .expect("S2 must reconstruct the header <time> into score.metadata.meter");
+    assert_eq!(
+        meter.display, "6/8",
+        "reconstructed meter display drives re-emission"
+    );
+    assert!(!meter.free_meter);
+}
+
+#[test]
+fn common_time_symbol_round_trips() {
+    // M:C emits <time symbol="common">; the reconstructed meter must re-emit it.
+    let abc = "X:1\nT:Common\nM:C\nL:1/4\nK:C\nCCCC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("symbol=\"common\""),
+        "precondition: M:C emits symbol=\"common\""
+    );
+    let score = assert_idempotent_s2(abc);
+    let meter = score.metadata.meter.as_ref().expect("meter present");
+    assert_eq!(meter.display, "C");
+}
+
+#[test]
+fn cut_time_symbol_round_trips() {
+    // M:C| emits <time symbol="cut">.
+    let abc = "X:1\nT:Cut\nM:C|\nL:1/4\nK:C\nCCCC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("symbol=\"cut\""),
+        "precondition: M:C| emits symbol=\"cut\""
+    );
+    let score = assert_idempotent_s2(abc);
+    assert_eq!(score.metadata.meter.as_ref().expect("meter").display, "C|");
+}
+
+#[test]
+fn free_meter_round_trips() {
+    // M:none emits NO <time>; both None and Some(free) meter re-emit nothing, so
+    // idempotence holds with the reader leaving meter unset for an absent <time>.
+    let abc = "X:1\nT:Free\nM:none\nL:1/4\nK:C\nCCCC\n";
+    let x1 = export(abc);
+    assert!(
+        !x1.contains("<time"),
+        "precondition: M:none emits no <time> element"
+    );
+    assert_idempotent_s2(abc);
+}
+
+#[test]
+fn bass_clef_round_trips() {
+    // clef=bass -> <sign>F</sign><line>4</line>; the reader must populate the
+    // staff voice's initial_properties.clef so write_clefs re-emits F/4.
+    let abc = "X:1\nT:Bass\nL:1/4\nK:C clef=bass\nC,\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<sign>F</sign>"),
+        "precondition: clef=bass emits sign F"
+    );
+    assert_idempotent_s2(abc);
+}
+
+#[test]
+fn alto_clef_round_trips() {
+    // clef=alto -> <sign>C</sign><line>3</line>.
+    let abc = "X:1\nT:Alto\nL:1/4\nK:C clef=alto\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<sign>C</sign>"),
+        "precondition: clef=alto emits sign C"
+    );
+    assert_idempotent_s2(abc);
+}
+
+#[test]
+fn octave_clef_round_trips() {
+    // clef=treble-8 -> G/2 plus <clef-octave-change>-1</clef-octave-change>.
+    let abc = "X:1\nT:Octave\nL:1/4\nK:C clef=treble-8\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<clef-octave-change>-1</clef-octave-change>"),
+        "precondition: clef=treble-8 emits octave-change -1"
+    );
+    assert_idempotent_s2(abc);
+}
+
+#[test]
+fn default_treble_clef_round_trips() {
+    // No clef= -> the default <sign>G</sign><line>2</line> with no octave change.
+    let score = assert_idempotent_s2("X:1\nT:Treble\nL:1/4\nK:C\nC\n");
+    // The reconstructed staff voice carries a clef whose text maps back to G/2.
+    assert!(
+        !score.parts.is_empty(),
+        "default clef file must still reconstruct a part"
+    );
+}
+
+#[test]
+fn midi_transpose_reconstructs_chromatic() {
+    // %%MIDI transpose -12 -> <transpose><chromatic>-12</chromatic>; the reader
+    // reconstructs voice.midi_transpose so re-emission reproduces it.
+    let abc = "X:1\nT:Trans\nL:1/4\nK:C\n%%MIDI transpose -12\nC\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<chromatic>-12</chromatic>"),
+        "precondition: %%MIDI transpose -12 emits chromatic -12"
+    );
+    let score = assert_idempotent_s2(abc);
+    assert_eq!(
+        score.parts[0].voices[0].midi_transpose,
+        Some(-12),
+        "midi_transpose must reconstruct the chromatic value"
+    );
+}
+
+#[test]
+fn positive_midi_transpose_reconstructs() {
+    let abc = "X:1\nT:Up\nL:1/4\nK:C\n%%MIDI transpose 7\nC\n";
+    let score = assert_idempotent_s2(abc);
+    assert_eq!(score.parts[0].voices[0].midi_transpose, Some(7));
 }
 
 // --- Corpus measurement (env-gated; mirrors croma-fmt::corpus_proof) --------
