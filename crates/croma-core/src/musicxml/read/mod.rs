@@ -65,16 +65,31 @@
 //! still read only by S2 ([`Reader::read_header_key_meter`] +
 //! `read_clef`/`read_transpose`); see [`Reader::read_mid_measure_attributes`].
 //!
-//! Multi-voice (`<voice>`/`<backup>`), grace (`<grace>`), chords (`<chord/>`) and
-//! `<measure-style><multiple-rest>` are the remaining **later-stage** work and are
-//! intentionally not reconstructed yet — files that use them do not round-trip
-//! idempotently yet, which the corpus gate measures.
+//! **S6c (grace notes + chords):** a run of consecutive `<grace>` `<note>`s is
+//! collected ([`Reader::push_grace_note`] + [`GraceGroupBuilder`]) into one
+//! [`GraceGroupAttachment`] bound to the FOLLOWING main note (before-grace) — or,
+//! when the run reaches the measure end with no following note, the PRECEDING note
+//! ([`GraceGroupAttachment`] in `after_grace_groups`). It reconstructs the slash
+//! (`slash="yes"`), grace rests/notes/chords (a grace chord is grace notes joined
+//! by `<chord/>`), grace slurs, and each grace note's `length_multiplier`
+//! (recovered from `<type>`/`<dots>` divided by the count-based base unit). A
+//! `<chord/>` member note folds into the previous main event
+//! ([`Reader::fold_chord_member`]) as a [`TimedEventKind::Chord`] carrying one
+//! [`crate::model::ChordMemberEvent`] per member (pitch/duration/written-accidental
+//! /per-member attachments); each chord gets a distinct synthetic `source_span` so
+//! the writer's first-member attachment lookup resolves correctly.
+//!
+//! Multi-voice (`<voice>`/`<backup>`) and `<measure-style><multiple-rest>` are the
+//! remaining **later-stage** work and are intentionally not reconstructed yet —
+//! files that use them do not round-trip idempotently yet, which the corpus gate
+//! measures.
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
-    AnnotationPlacementModel, BarlineKind, ClefChangeModel, DecorationAttachment,
-    DecorationSourceKind, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel,
+    AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent, ClefChangeModel,
+    DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, GraceEvent,
+    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
     LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent,
     Part, PartId, Pitch, RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility,
     Score, ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel,
@@ -722,7 +737,6 @@ impl Reader {
         // <forward> advances and <backup> rewinds; inverting it means tracking
         // the same cursor across the measure's children in document order.
         let mut cursor = Fraction::zero();
-        let mut last_onset = Fraction::zero();
         let mut max_cursor = Fraction::zero();
         // Detect a full-measure rest (`<rest measure="yes">`) so re-emission
         // reproduces the `measure="yes"` attribute (the writer gates it on
@@ -762,55 +776,95 @@ impl Reader {
         let mut barlines: Vec<MeasureBarline> = Vec::new();
         let mut repeat_endings: Vec<RepeatEndingModel> = Vec::new();
         let mut next_right_span_start: usize = 1;
+        // S6c: a run of consecutive `<grace>` notes is collected into one
+        // [`GraceGroupAttachment`] (a grace chord is grace notes joined by
+        // `<chord/>`). The run is BEFORE-grace when a main `<note>` follows it
+        // directly (the writer emits a note's grace groups just before the note),
+        // and AFTER-grace when it instead runs to the end of the measure with no
+        // following main note (the writer emits after-grace notes after the owner
+        // note). `pending_graces` holds finalised before-grace groups awaiting
+        // their following main note; `grace_builder` is the run currently open;
+        // `last_main_event` indexes the most recent main (note/chord) event so an
+        // after-grace run can bind to it.
+        let mut grace_builder: Option<GraceGroupBuilder> = None;
+        let mut pending_graces: Vec<GraceGroupAttachment> = Vec::new();
+        let mut last_main_event: Option<usize> = None;
+        // S6c: each reconstructed chord needs a DISTINCT `source_span` (== its
+        // `TimedEvent.source`) so the writer's `write_chord` first-member
+        // attachment lookup (`timed.source == chord.source_span`) resolves to
+        // THIS chord, not the first same-onset event. A monotonic high base keeps
+        // these spans clear of the zero-duration change events (which keep
+        // `start == 0` and must sort BEFORE a note at the same onset).
+        let mut next_chord_span_start: usize = 1_000_000;
 
         for child in element_children(measure_node) {
             match child.tag_name().name() {
                 "note" => {
+                    // S6c: a `<grace>` note joins the open grace run (starting one
+                    // if needed) and produces NO timed event. It is finalised when
+                    // the following main note or the measure end is reached.
+                    if child_element(child, "grace").is_some() {
+                        let builder = grace_builder.get_or_insert_with(GraceGroupBuilder::default);
+                        self.push_grace_note(builder, child);
+                        seen_note = true;
+                        continue;
+                    }
+                    // A main note terminates any open grace run as a BEFORE-grace
+                    // group bound to THIS note (the writer emits a note's grace
+                    // groups immediately before it, with nothing in between).
+                    if let Some(builder) = grace_builder.take() {
+                        pending_graces.push(builder.finish());
+                    }
+
                     let Some(parsed) = self.read_note(child, divisions) else {
                         continue;
                     };
                     seen_note = true;
-                    let onset = if parsed.chord_member {
-                        // A `<chord/>` member shares the previous note's onset
-                        // and does not advance the cursor. (Chords are fully a
-                        // stage-S6 concern; S1 keeps the cursor honest so files
-                        // without chords stay idempotent.)
-                        last_onset
-                    } else {
-                        cursor
-                    };
 
                     if parsed.measure_rest {
                         measure_rest_duration = Some(parsed.duration);
                     }
 
                     // S4: reconstruct this note's `<notations>` +
-                    // `<time-modification>` into its `EventAttachments`. A
-                    // `<chord/>` member's notations belong to the chord member
-                    // (S6); the writer reads its first member's attachments off
-                    // the timed event, so attaching to every note here is the
-                    // exact inverse for the single-note (non-chord) shapes S4
-                    // proves, and is harmless for chord members until S6.
+                    // `<time-modification>` into its `EventAttachments`.
                     let mut attachments = self.read_note_attachments(child, &mut open_tuplets);
-                    // S5a: prepend any buffered direction attachments (the writer
-                    // emitted them just before this note). Prepending preserves
-                    // the model field order the lowering uses.
-                    prepend_attachments(&mut attachments, std::mem::take(&mut pending));
 
+                    if parsed.chord_member {
+                        // S6c: a `<chord/>` member folds into the previous main
+                        // event at the SAME onset, turning a Note into a Chord (or
+                        // extending an existing Chord). It carries its own
+                        // per-member attachments and never advances the cursor.
+                        self.fold_chord_member(
+                            &mut events,
+                            last_main_event,
+                            parsed,
+                            attachments,
+                            &mut next_chord_span_start,
+                        );
+                        continue;
+                    }
+
+                    // S5a/S5b: prepend any buffered harmony/direction attachments
+                    // (the writer emitted them just before this note), then attach
+                    // the finalised before-grace groups (emitted between the
+                    // directions and the note).
+                    prepend_attachments(&mut attachments, std::mem::take(&mut pending));
+                    attachments
+                        .grace_groups
+                        .extend(std::mem::take(&mut pending_graces));
+
+                    last_main_event = Some(events.len());
                     events.push(TimedEvent {
                         measure: measure_id,
-                        onset,
+                        onset: cursor,
                         duration: parsed.duration,
                         source: READER_SPAN,
                         kind: parsed.kind,
                         attachments,
                     });
 
-                    if !parsed.chord_member {
-                        last_onset = onset;
-                        cursor = cursor.checked_add(parsed.duration);
-                        max_cursor = max_fraction(max_cursor, cursor);
-                    }
+                    cursor = cursor.checked_add(parsed.duration);
+                    max_cursor = max_fraction(max_cursor, cursor);
                 }
                 "harmony" => {
                     // S5b: the writer emits a chord symbol's `<harmony>` from
@@ -909,6 +963,31 @@ impl Reader {
                 _ => {}
             }
         }
+
+        // S6c: a grace run still open at the END of the measure had no following
+        // main note, so it is an AFTER-grace group bound to the most recent main
+        // (note/chord) event — the writer emits after-grace notes right after the
+        // owner note, which lands them at the measure tail. With no preceding main
+        // event (a measure of only grace notes — croma never emits this) the group
+        // is dropped with a diagnostic rather than fabricated onto nothing.
+        if let Some(builder) = grace_builder.take() {
+            let group = builder.finish();
+            match last_main_event.and_then(|index| events.get_mut(index)) {
+                Some(event) => event.attachments.after_grace_groups.push(group),
+                None => self.warn(
+                    "musicxml.read.orphan_grace",
+                    "a trailing <grace> run has no preceding note to bind as an after-grace; dropped",
+                ),
+            }
+        }
+        // `pending_graces` is always drained onto the first following main note in
+        // the loop, so it is empty here; assert that invariant for the reader's own
+        // robustness rather than fabricating a binding.
+        debug_assert!(
+            pending_graces.is_empty(),
+            "before-grace groups must drain onto their following note"
+        );
+        let _ = pending_graces;
 
         // S5a/S5b: directions or chord symbols with no following note in this
         // measure (e.g. a pre-barline `!segno!` or a trailing `"C"` chord, or a
@@ -1211,14 +1290,15 @@ impl Reader {
         })
     }
 
-    /// Read one `<note>` into the data a [`TimedEvent`] needs. Returns `None`
-    /// for a note the reader cannot turn into a timed event (e.g. a grace note,
-    /// deferred to S6, which carries no `<duration>`).
+    /// Read one **main** (non-grace) `<note>` into the data a [`TimedEvent`]
+    /// needs. Grace notes are collected separately ([`Reader::push_grace_note`])
+    /// before this is called, so the `<grace>` guard here is only defensive;
+    /// returning `None` skips a note the reader cannot turn into a timed event.
     fn read_note(&mut self, note_node: Node<'_, '_>, divisions: u32) -> Option<ParsedNote> {
         let chord_member = child_element(note_node, "chord").is_some();
-        let is_grace = child_element(note_node, "grace").is_some();
-        if is_grace {
-            // Grace notes have no <duration> and belong to stage S6.
+        if child_element(note_node, "grace").is_some() {
+            // Grace notes are handled by the grace-run collector; a grace note
+            // reaching here would carry no <duration> and is skipped defensively.
             return None;
         }
 
@@ -1268,6 +1348,234 @@ impl Reader {
             chord_member,
             measure_rest: false,
         })
+    }
+
+    /// S6c: add one `<grace>` `<note>` to the open grace run, inverting
+    /// [`MusicXmlWriter::write_grace_group`]. The element is one of:
+    ///
+    /// - a grace **rest** (`<rest>`) -> a [`GraceEventKind::Rest`] event;
+    /// - a grace **chord member** (carries `<chord/>`) -> appended to the previous
+    ///   grace event's [`GraceEventKind::Chord`] (promoting a lone grace `Note`
+    ///   into a `Chord` on the first member);
+    /// - a plain grace **note** -> a new [`GraceEventKind::Note`] event.
+    ///
+    /// `note_count` (the writer's grace base-unit selector) counts grace
+    /// *elements*, so a grace chord increments it by ONE — handled by only
+    /// counting non-`<chord/>` notes and rests. Each note's display duration
+    /// (`<type>`/`<dots>`) is recorded raw; the `length_multiplier` is recovered at
+    /// [`GraceGroupBuilder::finish`] once the base unit (1/8 for a single-element
+    /// group, else 1/16) is known. A grace's `<slur>` (and the slur that opened
+    /// before the brace, which the writer also emits on the first grace note) is
+    /// reconstructed onto its [`GraceEvent`]; the writer re-emits the first note's
+    /// `group.slurs ++ event.slurs`, so folding everything into `event.slurs`
+    /// (leaving `group.slurs` empty) is byte-identical.
+    fn push_grace_note(&mut self, builder: &mut GraceGroupBuilder, note_node: Node<'_, '_>) {
+        // A slashed grace (`<grace slash="yes"/>`) marks the whole group as an
+        // acciaccatura; the writer emits `slash="yes"` on every grace note of a
+        // slashed group, so recording it from the first is sufficient.
+        if builder.slash.is_none()
+            && let Some(grace) = child_element(note_node, "grace")
+            && grace.attribute("slash") == Some("yes")
+        {
+            builder.slash = Some(READER_SPAN);
+        }
+        let is_chord_member = child_element(note_node, "chord").is_some();
+        let slurs = self.read_grace_slurs(note_node);
+
+        // A grace rest: a `<rest>` with no pitch (never a chord member in croma's
+        // output). Recorded as its own grace event.
+        if child_element(note_node, "rest").is_some() {
+            let visibility = if note_node.attribute("print-object") == Some("no") {
+                RestVisibility::Invisible
+            } else {
+                RestVisibility::Visible
+            };
+            builder.events.push(GraceEvent {
+                source_span: READER_SPAN,
+                kind: GraceEventKind::Rest(RestEvent { visibility }),
+                slurs,
+            });
+            return;
+        }
+
+        let Some(grace_note) = self.read_grace_note(note_node) else {
+            return;
+        };
+
+        if is_chord_member {
+            // Fold into the previous grace event, turning a lone Note into a Chord
+            // (or extending an existing Chord). A leading `<chord/>` with no
+            // previous grace event is not croma's output; start a fresh note so
+            // nothing is lost.
+            if let Some(previous) = builder.events.last_mut() {
+                match &mut previous.kind {
+                    GraceEventKind::Note(first) => {
+                        previous.kind = GraceEventKind::Chord(vec![first.clone(), grace_note]);
+                    }
+                    GraceEventKind::Chord(members) => members.push(grace_note),
+                    GraceEventKind::Rest(_) => {
+                        self.warn(
+                            "musicxml.read.grace_chord_on_rest",
+                            "a grace <chord/> follows a grace rest; treated as a separate note",
+                        );
+                        builder.events.push(GraceEvent {
+                            source_span: READER_SPAN,
+                            kind: GraceEventKind::Note(grace_note),
+                            slurs,
+                        });
+                    }
+                }
+                return;
+            }
+        }
+
+        builder.events.push(GraceEvent {
+            source_span: READER_SPAN,
+            kind: GraceEventKind::Note(grace_note),
+            slurs,
+        });
+    }
+
+    /// S6c: reconstruct one grace [`GraceNoteEvent`] (pitch + written accidental +
+    /// the raw display-duration fraction the writer spelled into `<type>`/`<dots>`).
+    /// The `length_multiplier` is deferred to [`GraceGroupBuilder::finish`]; here
+    /// the display duration is stashed in `length_multiplier` verbatim as a
+    /// placeholder and rescaled by the base unit once the group size is known.
+    fn read_grace_note(&mut self, note_node: Node<'_, '_>) -> Option<GraceNoteEvent> {
+        let pitch = self.read_pitch(note_node)?;
+        let written_accidental = child_text(note_node, "accidental")
+            .and_then(|name| self.accidental_from_name(name))
+            .map(|kind| AccidentalMark {
+                kind,
+                explicit: true,
+                courtesy: false,
+                source: READER_SPAN,
+            });
+        let display_duration = self.read_note_type_fraction(note_node);
+        Some(GraceNoteEvent {
+            pitch,
+            written_accidental,
+            // Placeholder: holds the raw display duration until `finish` divides it
+            // by the group's base unit to recover the true length multiplier.
+            length_multiplier: display_duration,
+        })
+    }
+
+    /// S6c: reconstruct a grace note's slurs (`<notations><slur>`), inverting the
+    /// `<slur>` half of [`MusicXmlWriter::write_notations`]. Grace notes carry no
+    /// ties/tuplets/decorations in croma's output, so only `<slur>` is read.
+    fn read_grace_slurs(&mut self, note_node: Node<'_, '_>) -> Vec<SlurAttachment> {
+        let Some(notations) = child_element(note_node, "notations") else {
+            return Vec::new();
+        };
+        children_named(notations, "slur")
+            .filter_map(|slur| self.read_slur(slur))
+            .collect()
+    }
+
+    /// S6c: map a `<note>`'s `<type>` (+ `<dots>`) to its written duration
+    /// fraction, the inverse of the writer's `note_spelling` for the no-tuplet
+    /// case (grace notes carry no `<time-modification>`). An unrecognised or
+    /// absent `<type>` falls back to an eighth (the writer's zero-duration
+    /// spelling), so a grace note always yields a usable fraction.
+    fn read_note_type_fraction(&mut self, note_node: Node<'_, '_>) -> Fraction {
+        let base = child_text(note_node, "type")
+            .and_then(note_type_fraction)
+            .unwrap_or_else(|| {
+                self.warn(
+                    "musicxml.read.grace_missing_type",
+                    "a grace <note> has no recognised <type>; assuming eighth",
+                );
+                Fraction::new(1, 8)
+            });
+        let dots = children_named(note_node, "dot").count();
+        dotted_fraction(base, dots)
+    }
+
+    /// S6c: fold a `<chord/>` member note into the previous main event, inverting
+    /// the writer's chord emission ([`MusicXmlWriter::write_chord`] / the
+    /// `is_chord_member` fast-path in `write_sequence`). The first pitched note of
+    /// a chord was already pushed as a [`TimedEventKind::Note`]; the first
+    /// `<chord/>` member promotes it to a [`TimedEventKind::Chord`] (carrying both
+    /// the first note and this member), and each later `<chord/>` member is
+    /// appended.
+    ///
+    /// **Attachment placement.** The chord's `TimedEvent.attachments` stay equal to
+    /// the first member's attachments (what the writer reads for the index-0 note
+    /// via the `source`-keyed lookup and for `write_harmony_and_directions` /
+    /// `write_grace_groups`), and each member also keeps its own attachments
+    /// ([`ChordMemberEvent::attachments`]) so per-member ties/decorations re-emit.
+    ///
+    /// **Span discipline (idempotence-invisible).** The chord is given a DISTINCT
+    /// `source_span`, mirrored on its `TimedEvent.source`, so the writer's
+    /// `write_chord` first-member lookup (`timed.source == chord.source_span`)
+    /// resolves to THIS chord rather than another same-`READER_SPAN` event. The
+    /// writer never emits spans, so the synthetic span is invisible to the
+    /// idempotence gate.
+    fn fold_chord_member(
+        &mut self,
+        events: &mut [TimedEvent],
+        last_main_event: Option<usize>,
+        parsed: ParsedNote,
+        attachments: EventAttachments,
+        next_chord_span_start: &mut usize,
+    ) {
+        let member_pitch = match parsed.kind {
+            TimedEventKind::Note(note) => note,
+            // A `<chord/>` on a rest is not croma's output; drop it defensively.
+            _ => {
+                self.warn(
+                    "musicxml.read.chord_member_not_note",
+                    "a <chord/> member is not a pitched note; ignored",
+                );
+                return;
+            }
+        };
+        let member = ChordMemberEvent {
+            pitch: member_pitch.pitch,
+            duration: parsed.duration,
+            written_accidental: member_pitch.written_accidental,
+            source_span: READER_SPAN,
+            attachments,
+        };
+        let Some(event) = last_main_event.and_then(|index| events.get_mut(index)) else {
+            self.warn(
+                "musicxml.read.chord_member_without_head",
+                "a <chord/> member has no preceding note to attach to; ignored",
+            );
+            return;
+        };
+        match &mut event.kind {
+            TimedEventKind::Note(first) => {
+                // Promote the lone note to a chord: the first member inherits the
+                // event's attachments (the writer's index-0 source-keyed lookup
+                // returns exactly those), and the event's source becomes the
+                // chord's distinct span so that lookup resolves here.
+                let span_start = *next_chord_span_start;
+                *next_chord_span_start = next_chord_span_start.saturating_add(1);
+                let source_span = Span {
+                    start: span_start,
+                    end: span_start,
+                };
+                let first_member = ChordMemberEvent {
+                    pitch: first.pitch,
+                    duration: event.duration,
+                    written_accidental: first.written_accidental,
+                    source_span: READER_SPAN,
+                    attachments: event.attachments.clone(),
+                };
+                event.source = source_span;
+                event.kind = TimedEventKind::Chord(ChordEvent {
+                    members: vec![first_member, member],
+                    source_span,
+                });
+            }
+            TimedEventKind::Chord(chord) => chord.members.push(member),
+            _ => self.warn(
+                "musicxml.read.chord_member_without_head",
+                "a <chord/> member follows a non-note event; ignored",
+            ),
+        }
     }
 
     /// S4: reconstruct a note's [`EventAttachments`] from its `<notations>` block
@@ -1922,6 +2230,53 @@ struct ParsedNote {
     measure_rest: bool,
 }
 
+/// S6c: accumulates one run of consecutive `<grace>` notes into a
+/// [`GraceGroupAttachment`]. While the run is open, each grace note's
+/// `length_multiplier` field holds its RAW display duration (`<type>`/`<dots>`);
+/// [`GraceGroupBuilder::finish`] rescales every multiplier by the group's base
+/// unit (1/8 for a single-element group, else 1/16) once `note_count` is known,
+/// the exact inverse of the writer's `grace_display_duration`.
+#[derive(Default)]
+struct GraceGroupBuilder {
+    slash: Option<Span>,
+    events: Vec<GraceEvent>,
+}
+
+impl GraceGroupBuilder {
+    /// Finalise the run into a [`GraceGroupAttachment`], recovering each grace
+    /// note's `length_multiplier` from its stashed display duration and the
+    /// count-based base unit. `note_count` counts grace *elements* (a chord is
+    /// one), matching the writer's `grace_base_unit` selector.
+    fn finish(mut self) -> GraceGroupAttachment {
+        let note_count = u32::try_from(self.events.len()).unwrap_or(u32::MAX);
+        let base_unit = grace_base_unit(note_count);
+        for event in &mut self.events {
+            match &mut event.kind {
+                GraceEventKind::Note(note) => {
+                    note.length_multiplier = divide_fraction(note.length_multiplier, base_unit);
+                }
+                GraceEventKind::Chord(members) => {
+                    for member in members {
+                        member.length_multiplier =
+                            divide_fraction(member.length_multiplier, base_unit);
+                    }
+                }
+                GraceEventKind::Rest(_) => {}
+            }
+        }
+        GraceGroupAttachment {
+            span: READER_SPAN,
+            slash: self.slash,
+            note_count,
+            events: self.events,
+            // The writer re-emits the first grace note's `group.slurs ++
+            // event.slurs`; folding every reconstructed slur into the per-event
+            // `slurs` (above) makes `group.slurs` redundant, so it stays empty.
+            slurs: Vec::new(),
+        }
+    }
+}
+
 /// One tuplet currently open across a measure's notes, with the `pair_id` and
 /// ratio reconstructed at its `<tuplet type="start">` and the MusicXML `number`
 /// used to pair its `type="stop"`.
@@ -2050,6 +2405,100 @@ impl OpenTuplets {
         }
         out
     }
+}
+
+/// S6c: the writer's count-based grace base unit ([`MusicXmlWriter`]'s
+/// `grace_base_unit`): 1/8 for a single-element grace group, 1/16 otherwise. A
+/// grace note's display duration is this scaled by its `length_multiplier`.
+fn grace_base_unit(note_count: u32) -> Fraction {
+    if note_count <= 1 {
+        Fraction {
+            numerator: 1,
+            denominator: 8,
+        }
+    } else {
+        Fraction {
+            numerator: 1,
+            denominator: 16,
+        }
+    }
+}
+
+/// `left / right` (exact rational division). Used to recover a grace note's
+/// `length_multiplier = display_duration / base_unit`. A zero/degenerate divisor
+/// yields zero (never a panic); the writer never emits a zero base unit.
+fn divide_fraction(left: Fraction, right: Fraction) -> Fraction {
+    if right.numerator == 0 {
+        return Fraction::zero();
+    }
+    Fraction::new(
+        left.numerator.saturating_mul(right.denominator),
+        left.denominator.saturating_mul(right.numerator),
+    )
+}
+
+/// S6c: map a MusicXML `<type>` name to its base note-value fraction, the inverse
+/// of the writer's `note_type_candidates` table. `None` for an unrecognised name.
+fn note_type_fraction(name: &str) -> Option<Fraction> {
+    Some(match name.trim() {
+        "maxima" => Fraction {
+            numerator: 8,
+            denominator: 1,
+        },
+        "long" => Fraction {
+            numerator: 4,
+            denominator: 1,
+        },
+        "breve" => Fraction {
+            numerator: 2,
+            denominator: 1,
+        },
+        "whole" => Fraction {
+            numerator: 1,
+            denominator: 1,
+        },
+        "half" => Fraction {
+            numerator: 1,
+            denominator: 2,
+        },
+        "quarter" => Fraction {
+            numerator: 1,
+            denominator: 4,
+        },
+        "eighth" => Fraction {
+            numerator: 1,
+            denominator: 8,
+        },
+        "16th" => Fraction {
+            numerator: 1,
+            denominator: 16,
+        },
+        "32nd" => Fraction {
+            numerator: 1,
+            denominator: 32,
+        },
+        "64th" => Fraction {
+            numerator: 1,
+            denominator: 64,
+        },
+        "128th" => Fraction {
+            numerator: 1,
+            denominator: 128,
+        },
+        _ => return None,
+    })
+}
+
+/// S6c: a base note value plus `dots` augmentation dots, the inverse of the
+/// writer's `dotted_fraction` (each dot adds half the previous increment).
+fn dotted_fraction(base: Fraction, dots: usize) -> Fraction {
+    let mut duration = base;
+    let mut dot = base;
+    for _ in 0..dots {
+        dot = Fraction::new(dot.numerator, dot.denominator.saturating_mul(2));
+        duration = duration.checked_add(dot);
+    }
+    duration
 }
 
 /// A [`DecorationAttachment`] with the canonical [`DecorationSourceKind::Named`]
