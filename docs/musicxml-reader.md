@@ -48,8 +48,8 @@ at documented defaults and is invisible to the gate.
 | **S1** | `<score-partwise>` → parts → measures → `<note>` (`<pitch>` step/octave/alter, `<rest>`, `<duration>`/`<type>`/`<dot>`, `<accidental>`), `<backup>`/`<forward>`, `<divisions>`, work-title/composer/credit metadata | **done** |
 | **S2** | header `<attributes>`: `<divisions>`, `<key>`/`<fifths>` (+ explicit `<key-step>`/`<key-alter>`/`<key-accidental>`), `<time>` (incl. `symbol="common"`/`"cut"`, compound, free), `<clef>`, `<transpose>` → `midi_transpose`. Mid-measure `<attributes>` changes (key/meter/clef) deferred. | **done** |
 | **S3** | `<part-list>` MIDI: `<midi-instrument>` (`<midi-channel>`, 1-based `<midi-program>`, `<volume>`, `<pan>`) → `MidiInstrumentModel` on the owning voice. **Closes the forward/reverse `%%MIDI` loop.** | **done** |
-| S4 | ties, slurs, tuplets (`<time-modification>`), articulations/decorations, beams | planned |
-| S5 | `<direction>`, `<harmony>`, `<lyric>` | planned |
+| **S4** | per-`<note>` `<notations>` + `<time-modification>`: `<tied>`/`<tie>` → ties, `<slur>` → slurs, `<tuplet>`+`<time-modification>` → tuplets, and the `<articulations>`/`<ornaments>`/`<technical>`/`<fermata>`/`<arpeggiate>` decoration groups → `DecorationAttachment`. Beams are derived (no model field, no `<beam>` emitted) and round-trip via S1. | **done** |
+| S5 | `<direction>` (incl. dynamics, wedges, coda/segno), `<harmony>`, `<lyric>` | planned |
 | S6 | multi-voice (`<voice>`/`<backup>`), repeats/endings/barlines, grace, chords (`<chord/>`) | planned |
 
 ### S1 reconstruction notes
@@ -147,7 +147,69 @@ forward/reverse loop**: a `%%MIDI program` / `program <chan> <prog>` /
   and leaves the rest for the multi-voice stage. Such files do not round-trip yet
   (2 corpus files; first-diverging tag `score-instrument`).
 
-### S1/S2/S3 corpus metric (10k zenodo set)
+### S4 reconstruction notes — `<notations>` + `<time-modification>`
+
+S4 inverts `write_notations`, `write_time_modification`, the `<note>`-level
+`<tie>`, and the `decoration_notation` name map. Only the four **model-driven**
+notation classes are reconstructed; everything the writer *derives* needs no
+reader code.
+
+- **Ties.** The writer emits both a `<note>`-level `<tie type=...>` (no number)
+  and a `<notations>/<tied type=... number=pair_id [line-type="dotted"]>` from the
+  same `EventAttachments.ties` list. The reader rebuilds that single list from the
+  richer `<tied>` (role ← `type`, `pair_id` ← `number`, `dotted` ←
+  `line-type="dotted"`), which re-emits **both** elements identically; it falls
+  back to the bare `<tie>` only for non-croma input that omits `<tied>`.
+- **Slurs.** `<slur number=N type=...>` → `SlurAttachment` with **`pair_id = N`**,
+  so the writer's `SlurNumbers::number_for` (whose `preferred = pair_id`)
+  re-derives the same `number`. Overlapping/nested slurs carry distinct numbers,
+  hence distinct `pair_id`s, and reproduce exactly (the nested-slur test pins
+  outer = 1 / inner = 2).
+- **Tuplets.** `<tuplet type="start|stop" number=N>` plus the note's
+  `<time-modification>` ratio → `TupletAttachment`. Tuplet state is tracked across
+  the measure (`OpenTuplets`): a `start` opens a tuplet whose `actual`/`normal`
+  come from that note's `<time-modification>`; a middle note carrying **only** a
+  `<time-modification>` (no `<tuplet>`) while a tuplet is open is a `Continue`; a
+  `stop` closes the matching open tuplet (by `number`, LIFO fallback). Each tuplet
+  gets a fresh per-measure `pair_id`; the writer's `sequence_tuplet_numbers`
+  re-derives the MusicXML `number` from its active-set discipline (not from the
+  `pair_id` value), so two separate tuplets that both re-emit as `number="1"`
+  round-trip. For a single (non-nested) tuplet the note's `<time-modification>`
+  equals that tuplet's own ratio, making the common case exact.
+- **Derived time-modifications (no tuplet).** An odd duration like `C2/3` makes the
+  writer **synthesise** a `<time-modification>` (e.g. 3:2) from the duration alone,
+  with no `<tuplet>` and no `<notations>`. The reader creates **no** tuplet
+  attachment here (no open tuplet) — S1's duration reconstruction already re-emits
+  the identical `<time-modification>`. This is the same "derived, not stored"
+  principle as beams.
+- **Beams are derived, not stored.** The model has no beam field and croma's writer
+  emits **no `<beam>` element at all** (beaming is implicit/recomputed from
+  durations). Reading the S1 notes correctly therefore round-trips beaming with
+  zero beam-specific reader code; a unit test pins that the writer emits no
+  `<beam>` and consecutive eighths round-trip.
+- **Decorations.** The grouped `<ornaments>`/`<technical>`/`<articulations>`
+  children and the bare `<fermata>`/`<arpeggiate>` invert through
+  `decoration_for_notation_element` (and `<fingering>N` → the `!0!`..`!5!`
+  decoration) to **one canonical ABC decoration name** that re-emits the identical
+  element via the writer's `decoration_notation`. Where the forward map is
+  many-to-one (e.g. both `.` and `staccato` → `<staccato/>`), the reader picks the
+  full `!name!` form with `DecorationSourceKind::Named` — the writer's notation map
+  keys only on the decoration *name*, so `Named` re-emits byte-identically
+  regardless of the original ABC shorthand. The writer re-groups decorations by
+  category on output, so reconstructing the correct **set** suffices.
+  - **Round-tripping decoration classes (S4):** articulations (`staccato`,
+    `accent`, `tenuto`, `staccatissimo`, `strong-accent`, `breath-mark`, `scoop`),
+    ornaments (`trill-mark`, `mordent`, `inverted-mordent`, `turn`,
+    `inverted-turn`), technical (`up-bow`, `down-bow`, `open-string`,
+    `thumb-position`, `snap-pizzicato`, `stopped`, `fingering` 0–5), `fermata`
+    (upright/inverted), and `arpeggiate`.
+  - **Out of S4 scope (handled by the `<direction>` writer, so deferred to S5):**
+    dynamics (`p`..`fff`, `mp`/`mf`/`sfz`), hairpin wedges (`crescendo`/
+    `diminuendo`), and `coda`/`segno` — the writer emits these as `<direction>`
+    elements, **not** inside `<notations>`. The suppressed-decoration set (e.g. the
+    Irish roll `~`) emits nothing on either side and needs no inverse.
+
+### S1/S2/S3/S4 corpus metric (10k zenodo set)
 
 - **S1** strict full-byte idempotence was **0 / 9,935** exported files (every ABC
   tune carries a `K:`, so a `<key>` block S1 did not read always diverged first);
@@ -171,6 +233,18 @@ forward/reverse loop**: a `%%MIDI program` / `program <chan> <prog>` /
   (~3,408, S5), `notations` (~1,257, S4), `harmony` (~796, S5), then `lyric`,
   `tie`, `grace` (~112), `attributes` (~101, deferred mid-measure changes), and
   `note` (6). These name the next stages' work lists.
+- **S4** strict full-byte idempotence: **541 / 9,935** (**+58** vs S3's 483). More
+  importantly, the gate's self-policing signal fires exactly as the design
+  predicts: the **`notations` first-diverging tag collapses from ~1,257 (S3) → 0**
+  — S4 fully reads back every `<notations>`/`<time-modification>` wherever it was
+  the first divergence. The modest strict delta is honest: most files that use
+  notations also use `barline`/`direction`, which diverge earlier and mask the
+  fix. The new top first-diverging tags are `barline` (4,609, S6), `direction`
+  (3,467, S5), `harmony` (809, S5), `grace` (203, S6), `lyric` (190, S5),
+  `attributes` (107, deferred mid-measure changes), and `note` (6). The 6 `note`
+  files are heavily multi-voice (`<note>` vs `<backup>` ordering) — pre-existing
+  multi-voice incompleteness now surfaced as the first divergence; it is **S6
+  scope** (multi-voice `<voice>`/`<backup>`), unrelated to S4.
 
 Re-run the measurement with:
 
