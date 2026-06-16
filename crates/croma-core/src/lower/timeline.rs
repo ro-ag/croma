@@ -29,6 +29,9 @@ pub(crate) fn build_voice_timeline(
         initial_properties: voice.initial_properties,
         properties: voice.properties,
         measures,
+        // Projected after timeline construction, in `lower_tune_music`, once the
+        // whole tune's `%%MIDI` directives can be scoped to voices by position.
+        midi_instrument: None,
         source_span: voice.source_span,
     }
 }

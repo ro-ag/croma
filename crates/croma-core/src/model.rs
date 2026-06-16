@@ -160,7 +160,32 @@ pub struct Voice {
     pub properties: VoicePropertiesModel,
     pub measures: Vec<Measure>,
     pub events: Vec<TimedEvent>,
+    /// Score-level MIDI instrument projected from this voice's `%%MIDI program`
+    /// / `%%MIDI channel` directives (see [`MidiInstrumentModel`]). `None` when
+    /// the voice declared no score-translatable MIDI instrument.
+    pub midi_instrument: Option<MidiInstrumentModel>,
     pub source_span: Span,
+}
+
+/// A score-level MIDI instrument projected from `%%MIDI program` / `%%MIDI
+/// channel` directives scoped to one voice.
+///
+/// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; the score-meaningful
+/// fields (instrument identity + channel) are forward-translated to MusicXML
+/// `<score-instrument>` / `<midi-instrument>` while the raw directive text stays
+/// in [`ScoreMetadata::preserved_directives`] for round-trip / formatter use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiInstrumentModel {
+    /// General MIDI program number exactly as written in the directive
+    /// (0-based, abc2midi/GM convention). The MusicXML `<midi-program>` is this
+    /// value plus one (1-based). `None` when only a channel was declared.
+    pub program: Option<u8>,
+    /// MIDI channel (1-16) from the two-integer `program <chan> <prog>` form or
+    /// a sibling `%%MIDI channel` directive in the same voice. `None` when no
+    /// channel was declared.
+    pub channel: Option<u8>,
+    /// Source span of the directive that last set this instrument.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +502,9 @@ pub struct VoiceTimeline {
     pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<VoiceMeasureTimeline>,
+    /// Score-level MIDI instrument projected from this voice's `%%MIDI` program
+    /// / channel directives, carried through to the semantic [`Voice`].
+    pub midi_instrument: Option<MidiInstrumentModel>,
     pub source_span: Span,
 }
 

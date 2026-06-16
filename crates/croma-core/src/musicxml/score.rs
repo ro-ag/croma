@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::model::{
-    BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, Part, Score, TimedEventKind,
-    TimelineEventKind,
+    BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, MidiInstrumentModel, Part, Score,
+    TimedEventKind, TimelineEventKind,
 };
 
 use super::{
@@ -50,9 +50,50 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.start("score-part", &[("id", id.as_str())]);
             self.xml
                 .text_element("part-name", part_name(part, self.score).as_str());
+            self.write_part_instruments(part, &id);
             self.xml.end("score-part");
         }
         self.xml.end("part-list");
+    }
+
+    /// Emit `<score-instrument>` / `<midi-instrument>` for each voice in this
+    /// part that carries a score-translatable `%%MIDI` program (instrument
+    /// identity). Channel-only voices carry no instrument name, so they remain
+    /// preserved-only and are not emitted here. abc2midi/General MIDI programs
+    /// are 0-based; the MusicXML `<midi-program>` is 1-based (GM+1).
+    fn write_part_instruments(&mut self, part: &Part, part_id: &str) {
+        let instruments: Vec<(String, MidiInstrumentModel)> = part
+            .voices
+            .iter()
+            .filter_map(|voice| voice.midi_instrument)
+            .filter(|midi| midi.program.is_some())
+            .enumerate()
+            .map(|(seq, midi)| (format!("{part_id}-I{}", seq + 1), midi))
+            .collect();
+        if instruments.is_empty() {
+            return;
+        }
+        // MusicXML orders all <score-instrument> before all <midi-instrument>
+        // within a <score-part>.
+        for (instrument_id, midi) in &instruments {
+            self.xml
+                .start("score-instrument", &[("id", instrument_id.as_str())]);
+            self.xml.text_element(
+                "instrument-name",
+                gm_program_name(midi.program.expect("program present")),
+            );
+            self.xml.end("score-instrument");
+        }
+        for (instrument_id, midi) in &instruments {
+            self.xml
+                .start("midi-instrument", &[("id", instrument_id.as_str())]);
+            if let Some(channel) = midi.channel {
+                self.xml.text_element("midi-channel", &channel.to_string());
+            }
+            let program = u16::from(midi.program.expect("program present")) + 1;
+            self.xml.text_element("midi-program", &program.to_string());
+            self.xml.end("midi-instrument");
+        }
     }
 
     pub(crate) fn write_part(&mut self, part: &'score Part, part_index: usize) {
@@ -209,6 +250,150 @@ fn part_name(part: &Part, score: &Score) -> String {
         })
         .unwrap_or_else(|| "Music".to_owned())
 }
+
+/// General MIDI program name for a 0-based program number, used for the
+/// `<instrument-name>` of a translated `%%MIDI program`. Matches the abc2xml
+/// `inst_tb` table (GM Level 1 sound set). `program` is guaranteed `<= 127` by
+/// the lowering, but an out-of-range value falls back to the GM default.
+fn gm_program_name(program: u8) -> &'static str {
+    GM_PROGRAM_NAMES
+        .get(program as usize)
+        .copied()
+        .unwrap_or(GM_PROGRAM_NAMES[0])
+}
+
+/// General MIDI Level 1 instrument names, indexed by 0-based program number.
+/// Spelling follows abc2xml's `inst_tb` for parity with reference output.
+const GM_PROGRAM_NAMES: [&str; 128] = [
+    "acoustic_grand_piano",
+    "bright_acoustic_piano",
+    "electric_grand_piano",
+    "honkytonk_piano",
+    "electric_piano_1",
+    "electric_piano_2",
+    "harpsichord",
+    "clavinet",
+    "celesta",
+    "glockenspiel",
+    "music_box",
+    "vibraphone",
+    "marimba",
+    "xylophone",
+    "tubular_bells",
+    "dulcimer",
+    "drawbar_organ",
+    "percussive_organ",
+    "rock_organ",
+    "church_organ",
+    "reed_organ",
+    "accordion",
+    "harmonica",
+    "tango_accordion",
+    "acoustic_guitar_nylon",
+    "acoustic_guitar_steel",
+    "electric_guitar_jazz",
+    "electric_guitar_clean",
+    "electric_guitar_muted",
+    "overdriven_guitar",
+    "distortion_guitar",
+    "guitar_harmonics",
+    "acoustic_bass",
+    "electric_bass_finger",
+    "electric_bass_pick",
+    "fretless_bass",
+    "slap_bass_1",
+    "slap_bass_2",
+    "synth_bass_1",
+    "synth_bass_2",
+    "violin",
+    "viola",
+    "cello",
+    "contrabass",
+    "tremolo_strings",
+    "pizzicato_strings",
+    "orchestral_harp",
+    "timpani",
+    "string_ensemble_1",
+    "string_ensemble_2",
+    "synth_strings_1",
+    "synth_strings_2",
+    "choir_aahs",
+    "voice_oohs",
+    "synth_choir",
+    "orchestra_hit",
+    "trumpet",
+    "trombone",
+    "tuba",
+    "muted_trumpet",
+    "french_horn",
+    "brass_section",
+    "synth_brass_1",
+    "synth_brass_2",
+    "soprano_sax",
+    "alto_sax",
+    "tenor_sax",
+    "baritone_sax",
+    "oboe",
+    "english_horn",
+    "bassoon",
+    "clarinet",
+    "piccolo",
+    "flute",
+    "recorder",
+    "pan_flute",
+    "blown_bottle",
+    "shakuhachi",
+    "whistle",
+    "ocarina",
+    "lead_1_square",
+    "lead_2_sawtooth",
+    "lead_3_calliope",
+    "lead_4_chiff",
+    "lead_5_charang",
+    "lead_6_voice",
+    "lead_7_fifths",
+    "lead_8_bass__lead",
+    "pad_1_new_age",
+    "pad_2_warm",
+    "pad_3_polysynth",
+    "pad_4_choir",
+    "pad_5_bowed",
+    "pad_6_metallic",
+    "pad_7_halo",
+    "pad_8_sweep",
+    "fx_1_rain",
+    "fx_2_soundtrack",
+    "fx_3_crystal",
+    "fx_4_atmosphere",
+    "fx_5_brightness",
+    "fx_6_goblins",
+    "fx_7_echoes",
+    "fx_8_scifi",
+    "sitar",
+    "banjo",
+    "shamisen",
+    "koto",
+    "kalimba",
+    "bagpipe",
+    "fiddle",
+    "shanai",
+    "tinkle_bell",
+    "agogo",
+    "steel_drums",
+    "woodblock",
+    "taiko_drum",
+    "melodic_tom",
+    "synth_drum",
+    "reverse_cymbal",
+    "guitar_fret_noise",
+    "breath_noise",
+    "seashore",
+    "bird_tweet",
+    "telephone_ring",
+    "helicopter",
+    "applause",
+    "gunshot",
+];
 
 fn part_measure_ids(part: &Part) -> Vec<MeasureId> {
     let mut ids = part

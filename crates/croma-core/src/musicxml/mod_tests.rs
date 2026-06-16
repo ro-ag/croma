@@ -1155,12 +1155,14 @@ fn later_header_tempo_overrides_earlier_header_tempo() {
 }
 
 #[test]
-fn midi_directives_are_not_emitted_as_words() {
-    // `%%MIDI` (and other preserved `%%` stylesheet directives) control
-    // playback/formatting, not printed musical text. abc2xml emits nothing for
-    // them; Croma must not render them as visible <words> directions. A real
-    // `Q:` tempo and the actual notes must still be present, proving we
-    // suppressed only the directive, not genuine content.
+fn midi_program_and_channel_become_part_list_instrument_not_words() {
+    // `%%MIDI program`/`channel` carry genuine instrument identity (an abc2midi
+    // convention, not ABC 2.1 §-text). They map to a `<part-list>`
+    // `<score-instrument>`/`<midi-instrument>` (1-based `<midi-program>` = GM+1,
+    // `<midi-channel>`), matching abc2xml's part-list emission. They are NEVER
+    // rendered as visible staff `<words>`. Other preserved `%%` directives
+    // (and the raw `%%MIDI` text) still must not leak. A real `Q:` tempo and
+    // the actual notes must survive, proving we translated only the instrument.
     let source = concat!(
         "X:1\n",
         "T:Test\n",
@@ -1175,7 +1177,15 @@ fn midi_directives_are_not_emitted_as_words() {
     let export = export_musicxml(source).expect("score with MIDI directives should export");
 
     assert_balanced_xml(&export.musicxml);
-    // No preserved `%%`-derived directive may leak out as <words>.
+    // The instrument identity is emitted as part-list metadata.
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>piccolo</instrument-name>")
+    );
+    assert!(export.musicxml.contains("<midi-channel>1</midi-channel>"));
+    assert!(export.musicxml.contains("<midi-program>73</midi-program>"));
+    // No preserved `%%`-derived directive may leak out as raw text or <words>.
     assert!(!export.musicxml.contains("%%MIDI"));
     assert!(!export.musicxml.contains("%%"));
     assert!(!export.musicxml.contains("<words>"));
@@ -1184,6 +1194,114 @@ fn midi_directives_are_not_emitted_as_words() {
     assert!(export.musicxml.contains("<per-minute>104</per-minute>"));
     assert!(export.musicxml.contains("<step>C</step>"));
     assert!(export.musicxml.contains("<step>G</step>"));
+}
+
+#[test]
+fn midi_program_header_emits_score_and_midi_instrument() {
+    // A single-voice header `%%MIDI program 72` (the dominant corpus placement)
+    // attaches to the one part. `<midi-program>` is 1-based (GM+1 = 73) and the
+    // instrument name is the General MIDI name for program 72 (piccolo).
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI program 72\nK:C\nCDEF GABc |\n";
+    let export = export_musicxml(source).expect("program directive should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<score-instrument"));
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>piccolo</instrument-name>")
+    );
+    assert!(export.musicxml.contains("<midi-instrument"));
+    assert!(export.musicxml.contains("<midi-program>73</midi-program>"));
+    // No channel was declared, so no <midi-channel> is emitted.
+    assert!(!export.musicxml.contains("<midi-channel>"));
+    // Instrument identity is part-list metadata, never visible staff text.
+    assert!(!export.musicxml.contains("<words>"));
+}
+
+#[test]
+fn midi_program_two_integer_form_sets_channel_and_program() {
+    // `%%MIDI program <chan> <prog>` (the two-integer corpus form) sets both the
+    // MIDI channel and the program. abc2xml: <midi-channel>1 + <midi-program>6
+    // (1-based) for `program 1 5`; name from GM program 5 = electric_piano_2.
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI program 1 5\nK:C\nCDEF GABc |\n";
+    let export = export_musicxml(source).expect("channel-prefixed program should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<midi-channel>1</midi-channel>"));
+    assert!(export.musicxml.contains("<midi-program>6</midi-program>"));
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>electric_piano_2</instrument-name>")
+    );
+}
+
+#[test]
+fn midi_program_scopes_to_the_declaring_voice() {
+    // Per-voice scoping is load-bearing (ABC 2.1 §4.16 voice fields; abc2midi
+    // convention): a `%%MIDI program` attaches to the most recently declared
+    // `V:`. Each voice's part gets its own instrument and they must not bleed
+    // across parts. program 40 = violin, program 42 = cello.
+    let source = concat!(
+        "X:1\nT:T\nL:1/8\n",
+        "V:1\n%%MIDI program 40\n",
+        "V:2\n%%MIDI program 42\n",
+        "K:C\n",
+        "V:1\nCDEF|\n",
+        "V:2\nC,2C,2|\n",
+    );
+    let export = export_musicxml(source).expect("multi-voice programs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let (before_p2, p2) = export
+        .musicxml
+        .split_once("<score-part id=\"P2\"")
+        .expect("two score-parts");
+    // P1's score-part (everything before P2's) carries violin, not cello.
+    assert!(before_p2.contains("<instrument-name>violin</instrument-name>"));
+    assert!(before_p2.contains("<midi-program>41</midi-program>"));
+    assert!(!before_p2.contains("cello"));
+    // P2's score-part carries cello.
+    assert!(p2.contains("<instrument-name>cello</instrument-name>"));
+    assert!(p2.contains("<midi-program>43</midi-program>"));
+}
+
+#[test]
+fn midi_program_scopes_to_body_declared_voice() {
+    // Voice scoping also applies to `V:`/`%%MIDI` pairs introduced in the body
+    // (after `K:`), where the voices live in the body field stream rather than
+    // the header. program 40 = violin (P1), program 42 = cello (P2).
+    let source = concat!(
+        "X:1\nT:T\nL:1/8\nK:C\n",
+        "V:1\n%%MIDI program 40\nCDEF|\n",
+        "V:2\n%%MIDI program 42\nC,2C,2|\n",
+    );
+    let export = export_musicxml(source).expect("body multi-voice programs should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let (before_p2, p2) = export
+        .musicxml
+        .split_once("<score-part id=\"P2\"")
+        .expect("two score-parts");
+    assert!(before_p2.contains("<instrument-name>violin</instrument-name>"));
+    assert!(!before_p2.contains("cello"));
+    assert!(p2.contains("<instrument-name>cello</instrument-name>"));
+}
+
+#[test]
+fn midi_playback_only_directives_emit_no_instrument() {
+    // Only score-meaningful sub-directives translate. Playback-only ones
+    // (gchord, nobarlines, ...) stay preserved for round-trip and produce no
+    // MusicXML instrument and no leaked text.
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI gchord off\n%%MIDI nobarlines\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("playback-only directives should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(!export.musicxml.contains("<score-instrument"));
+    assert!(!export.musicxml.contains("<midi-instrument"));
+    assert!(!export.musicxml.contains("gchord"));
+    assert!(!export.musicxml.contains("%%MIDI"));
 }
 
 #[test]

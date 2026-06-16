@@ -39,6 +39,7 @@ pub(crate) fn semantic_voice_from_timeline(
         properties: voice.properties.clone(),
         measures,
         events,
+        midi_instrument: voice.midi_instrument,
         source_span: voice.source_span,
     }
 }
