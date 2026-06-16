@@ -47,7 +47,7 @@ at documented defaults and is invisible to the gate.
 |---|---|---|
 | **S1** | `<score-partwise>` → parts → measures → `<note>` (`<pitch>` step/octave/alter, `<rest>`, `<duration>`/`<type>`/`<dot>`, `<accidental>`), `<backup>`/`<forward>`, `<divisions>`, work-title/composer/credit metadata | **done** |
 | **S2** | header `<attributes>`: `<divisions>`, `<key>`/`<fifths>` (+ explicit `<key-step>`/`<key-alter>`/`<key-accidental>`), `<time>` (incl. `symbol="common"`/`"cut"`, compound, free), `<clef>`, `<transpose>` → `midi_transpose`. Mid-measure `<attributes>` changes (key/meter/clef) deferred. | **done** |
-| S3 | `<score-instrument>` / `<midi-instrument>` → `MidiInstrumentModel` (closes the forward/reverse loop) | planned |
+| **S3** | `<part-list>` MIDI: `<midi-instrument>` (`<midi-channel>`, 1-based `<midi-program>`, `<volume>`, `<pan>`) → `MidiInstrumentModel` on the owning voice. **Closes the forward/reverse `%%MIDI` loop.** | **done** |
 | S4 | ties, slurs, tuplets (`<time-modification>`), articulations/decorations, beams | planned |
 | S5 | `<direction>`, `<harmony>`, `<lyric>` | planned |
 | S6 | multi-voice (`<voice>`/`<backup>`), repeats/endings/barlines, grace, chords (`<chord/>`) | planned |
@@ -111,7 +111,43 @@ at documented defaults and is invisible to the gate.
   through the writer's measure-sequence/overlay timeline; it is tracked as
   remaining (≈100 corpus files; first-diverging tag `attributes`).
 
-### S1/S2 corpus metric (10k zenodo set)
+### S3 reconstruction notes — the closed `%%MIDI` loop
+
+S3 inverts `write_part_instruments`, recovering the `<part-list>` MIDI
+projection that the forward `%%MIDI` translation (PRs #122–#125,
+[`midi-directives.md`](midi-directives.md)) emits. This **closes the
+forward/reverse loop**: a `%%MIDI program` / `program <chan> <prog>` /
+`channel` / `control 7` / `control 10` directive — line-start **or** inline
+`[I:MIDI=...]` — now survives `ABC → XML → Score → XML` byte-for-byte.
+
+- The reader reads each `<score-part>`'s `<midi-instrument>` children into
+  `MidiInstrumentModel`s and attaches them to the part's voices in order. The
+  exact inverses (each the byte-for-byte inverse of the writer):
+  - `<midi-channel>n` → `channel = n`;
+  - `<midi-program>N` → `program = N − 1` (forward emits the **1-based**
+    `program + 1`; a `<midi-program>0`, out of the writer's range, warns and is
+    dropped);
+  - `<volume>v` → `volume_cc = round(v × 1.27)` (forward wrote `{:.2}` of
+    `cc / 1.27`);
+  - `<pan>p` → `pan_cc = round((p + 90) × 127 / 180)` (forward wrote `{:.2}` of
+    `cc / 127 × 180 − 90`).
+- `<score-instrument>` / `<instrument-name>` is **not read back**: the name is
+  *derived* on the forward side (the General MIDI name when a program exists,
+  else the part name), so recovering `program` (or leaving it `None` for a
+  standalone channel/volume/pan) regenerates the **identical** `<instrument-name>`
+  on re-write. Storing the name would risk a second, drifting spec.
+- **Float CC stability is proven exhaustively** (design §9): a unit test asserts
+  `round(parse(format!("{:.2}", cc/1.27)) × 1.27) == cc` and the pan analogue for
+  **every** `cc ∈ 0..=127`, so `<volume>`/`<pan>` are idempotent. The reader also
+  clamps a hand-edited out-of-range float to `0..=127` with a diagnostic rather
+  than panicking.
+- **Multi-voice-per-part is deferred to S6.** When the writer emits more than one
+  `<midi-instrument>` in a single `<score-part>` (two ABC voices in one part each
+  carrying `%%MIDI`), S3 attaches the **first** to the single reconstructed voice
+  and leaves the rest for the multi-voice stage. Such files do not round-trip yet
+  (2 corpus files; first-diverging tag `score-instrument`).
+
+### S1/S2/S3 corpus metric (10k zenodo set)
 
 - **S1** strict full-byte idempotence was **0 / 9,935** exported files (every ABC
   tune carries a `K:`, so a `<key>` block S1 did not read always diverged first);
@@ -120,11 +156,21 @@ at documented defaults and is invisible to the gate.
 - **S2** strict full-byte idempotence: **483 / 9,935** — S2 clears the `key`
   divergence entirely (the strict count now equals the old S1-supported-subset
   number, confirming S2 reconstructs the whole header `<attributes>` for every
-  file previously blocked only by key/time). The new top first-diverging tags are
-  `barline` (~3.3k, S6), `direction` (~3.3k, S5), `notations` (~1.2k, S4),
-  `harmony` (~0.7k, S5), `score-instrument` (~426, S3), then `lyric`, `tie`,
-  `grace`, and `attributes` (~100, deferred mid-measure changes). These name the
-  next stages' work lists.
+  file previously blocked only by key/time).
+- **S3** strict full-byte idempotence: **483 / 9,935** — **unchanged**, and this
+  is expected and honest. The strict count is monotonic but a file is counted
+  only when the reader handles *every* element its export uses; nearly every file
+  with a part-list instrument also uses `barline`/`direction` (S5/S6), so closing
+  the MIDI loop moves their first-divergence forward without making them
+  idempotent. S3's value is the **closed loop**, not the count: the
+  `score-instrument` first-diverging tag collapses from **426 (S2) → 2 (S3)** —
+  S3 eliminates the part-list MIDI as a first divergence for 424 files. The 2
+  residual `score-instrument` files are multi-voice-per-part (two
+  `<midi-instrument>` in one `<score-part>`), deferred to S6 (see the S3 notes).
+  The new top first-diverging tags are `barline` (~3,419, S6), `direction`
+  (~3,408, S5), `notations` (~1,257, S4), `harmony` (~796, S5), then `lyric`,
+  `tie`, `grace` (~112), `attributes` (~101, deferred mid-measure changes), and
+  `note` (6). These name the next stages' work lists.
 
 Re-run the measurement with:
 
