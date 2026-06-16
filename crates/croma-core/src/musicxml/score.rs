@@ -57,41 +57,59 @@ impl<'score> MusicXmlWriter<'score> {
     }
 
     /// Emit `<score-instrument>` / `<midi-instrument>` for each voice in this
-    /// part that carries a score-translatable `%%MIDI` program (instrument
-    /// identity). Channel-only voices carry no instrument name, so they remain
-    /// preserved-only and are not emitted here. abc2midi/General MIDI programs
-    /// are 0-based; the MusicXML `<midi-program>` is 1-based (GM+1).
+    /// part that carries score-translatable `%%MIDI` sound metadata (program,
+    /// channel, CC7 volume, or CC10 pan). The instrument name is the General MIDI
+    /// name when a program is present, otherwise the part name (never abc2xml's
+    /// literal "no name" filler). abc2midi/GM programs are 0-based; the MusicXML
+    /// `<midi-program>` is 1-based (GM+1). `<volume>` is `cc / 1.27` and `<pan>`
+    /// is `cc / 127 * 180 - 90`, matching abc2xml.
     fn write_part_instruments(&mut self, part: &Part, part_id: &str) {
-        let instruments: Vec<(String, MidiInstrumentModel)> = part
+        let fallback_name = part_name(part, self.score);
+        let instruments: Vec<(String, String, MidiInstrumentModel)> = part
             .voices
             .iter()
             .filter_map(|voice| voice.midi_instrument)
-            .filter(|midi| midi.program.is_some())
+            .filter(MidiInstrumentModel::has_content)
             .enumerate()
-            .map(|(seq, midi)| (format!("{part_id}-I{}", seq + 1), midi))
+            .map(|(seq, midi)| {
+                let name = midi.program.map_or_else(
+                    || fallback_name.clone(),
+                    |program| gm_program_name(program).to_owned(),
+                );
+                (format!("{part_id}-I{}", seq + 1), name, midi)
+            })
             .collect();
         if instruments.is_empty() {
             return;
         }
         // MusicXML orders all <score-instrument> before all <midi-instrument>
         // within a <score-part>.
-        for (instrument_id, midi) in &instruments {
+        for (instrument_id, name, _) in &instruments {
             self.xml
                 .start("score-instrument", &[("id", instrument_id.as_str())]);
-            self.xml.text_element(
-                "instrument-name",
-                gm_program_name(midi.program.expect("program present")),
-            );
+            self.xml.text_element("instrument-name", name);
             self.xml.end("score-instrument");
         }
-        for (instrument_id, midi) in &instruments {
+        for (instrument_id, _, midi) in &instruments {
             self.xml
                 .start("midi-instrument", &[("id", instrument_id.as_str())]);
             if let Some(channel) = midi.channel {
                 self.xml.text_element("midi-channel", &channel.to_string());
             }
-            let program = u16::from(midi.program.expect("program present")) + 1;
-            self.xml.text_element("midi-program", &program.to_string());
+            if let Some(program) = midi.program {
+                self.xml
+                    .text_element("midi-program", &(u16::from(program) + 1).to_string());
+            }
+            if let Some(volume) = midi.volume_cc {
+                self.xml
+                    .text_element("volume", &format!("{:.2}", f64::from(volume) / 1.27));
+            }
+            if let Some(pan) = midi.pan_cc {
+                self.xml.text_element(
+                    "pan",
+                    &format!("{:.2}", f64::from(pan) / 127.0 * 180.0 - 90.0),
+                );
+            }
             self.xml.end("midi-instrument");
         }
     }

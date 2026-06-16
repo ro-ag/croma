@@ -1305,6 +1305,73 @@ fn midi_playback_only_directives_emit_no_instrument() {
 }
 
 #[test]
+fn midi_control_cc7_becomes_midi_volume() {
+    // `%%MIDI control 7 <n>` is MIDI CC7 (channel volume) → `<midi-instrument>`
+    // `<volume>` = n/1.27 (abc2xml parity), even with no program in the voice.
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI control 7 120\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("control 7 should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<midi-instrument"));
+    assert!(export.musicxml.contains("<volume>94.49</volume>"));
+    // No program ⇒ the instrument name falls back to the part name, never the
+    // literal "no name" filler abc2xml uses.
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>T</instrument-name>")
+    );
+    assert!(!export.musicxml.contains("no name"));
+}
+
+#[test]
+fn midi_control_cc10_becomes_midi_pan() {
+    // `%%MIDI control 10 <n>` is MIDI CC10 (pan) → `<pan>` = n/127*180-90.
+    // n=0 → -90.00 (hard left); n=127 → 90.00 (hard right). 0 is emitted.
+    let left = export_musicxml("X:1\nT:T\nL:1/8\n%%MIDI control 10 0\nK:C\nCDEF|\n")
+        .expect("control 10 0 should export");
+    assert_balanced_xml(&left.musicxml);
+    assert!(left.musicxml.contains("<pan>-90.00</pan>"));
+
+    let right = export_musicxml("X:1\nT:T\nL:1/8\n%%MIDI control 10 127\nK:C\nCDEF|\n")
+        .expect("control 10 127 should export");
+    assert!(right.musicxml.contains("<pan>90.00</pan>"));
+}
+
+#[test]
+fn midi_other_controllers_are_not_translated() {
+    // Only CC7 (volume) and CC10 (pan) carry score-relevant sound metadata;
+    // every other controller is playback-only and produces no instrument.
+    let source = "X:1\nT:T\nL:1/8\n%%MIDI control 2 70\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("other controllers should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(!export.musicxml.contains("<volume>"));
+    assert!(!export.musicxml.contains("<pan>"));
+    assert!(!export.musicxml.contains("<midi-instrument"));
+}
+
+#[test]
+fn midi_channel_only_emits_instrument_with_part_name() {
+    // `%%MIDI channel <n>` with NO program still carries sound metadata (the
+    // channel). It emits a <midi-channel>, with the instrument name falling back
+    // to the part name (never abc2xml's "no name").
+    let source = "X:1\nT:Tune\nL:1/8\n%%MIDI channel 3\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("channel-only should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<midi-channel>3</midi-channel>"));
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>Tune</instrument-name>")
+    );
+    assert!(!export.musicxml.contains("no name"));
+    // No program declared ⇒ no <midi-program>.
+    assert!(!export.musicxml.contains("<midi-program>"));
+}
+
+#[test]
 fn midi_transpose_emits_transpose_attribute_without_shifting_pitch() {
     // `%%MIDI transpose <n>` is an abc2midi playback transpose that abc2xml maps
     // to MusicXML `<attributes><transpose><chromatic>n` (written-vs-sounding
