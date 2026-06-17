@@ -76,7 +76,7 @@ fn infer_context(source: &str, text: &SourceText, offset: usize) -> Context {
         // header line: an empty document, or a line that is not clearly inside a
         // music body. We keep it permissive (header keys are always safe to
         // suggest at a line start) but avoid offering them mid-music-line.
-        return if line_is_music_body(source, text, line_index) {
+        return if line_is_music_body(text, line_index) {
             Context::Decorations
         } else {
             Context::FieldKeys
@@ -96,7 +96,7 @@ fn infer_context(source: &str, text: &SourceText, offset: usize) -> Context {
 
     // Inside what looks like a music body line (not an information field): offer
     // decorations. An information field line "X:…" is a value context -> nothing.
-    if !prefix_is_information_field(prefix) && line_is_music_body(source, text, line_index) {
+    if !prefix_is_information_field(prefix) && line_is_music_body(text, line_index) {
         return Context::Decorations;
     }
 
@@ -128,15 +128,13 @@ fn in_open_decoration(prefix: &str) -> bool {
 /// is in the field's value, not its key. Used to avoid offering decorations in a
 /// field value.
 fn prefix_is_information_field(prefix: &str) -> bool {
-    let trimmed = prefix.trim_start();
-    let mut chars = trimmed.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic()) && matches!(chars.next(), Some(':'))
+    is_information_field_line(prefix.trim_start())
 }
 
 /// Heuristically decide whether `line_index` is a music-body line: it is inside a
 /// tune (a preceding `X:` exists) and is not itself an information field or a
 /// directive/blank line. Robust to mid-edit buffers — purely textual.
-fn line_is_music_body(source: &str, text: &SourceText, line_index: usize) -> bool {
+fn line_is_music_body(text: &SourceText, line_index: usize) -> bool {
     // Must be after an `X:` reference line (a tune has started).
     let mut started = false;
     let mut in_header = false;
@@ -150,9 +148,7 @@ fn line_is_music_body(source: &str, text: &SourceText, line_index: usize) -> boo
         if started && is_field_line(line, 'K') {
             // The K: line ends the header; subsequent lines are body.
             in_header = false;
-            continue;
         }
-        let _ = source; // (kept for symmetry with the byte view)
     }
     // The cursor's own line:
     let this = text.line_text(line_index).unwrap_or("").trim_start();
@@ -249,7 +245,6 @@ mod tests {
         assert!(labels.contains(&"T:"), "offers T: ; got {labels:?}");
         assert!(labels.contains(&"K:"), "offers K: ; got {labels:?}");
         assert!(labels.contains(&"M:"), "offers M:");
-        // Field kind.
         assert!(
             items
                 .iter()
@@ -337,12 +332,10 @@ mod tests {
         let a = completion("", pos(0, 0), PositionEncoding::Utf8);
         let b = completion("", pos(0, 0), PositionEncoding::Utf8);
         assert_eq!(labels(&a), labels(&b), "deterministic order");
-        // No duplicate labels.
         let mut seen = std::collections::HashSet::new();
         for item in &a {
             assert!(seen.insert(item.label.clone()), "dup {}", item.label);
         }
-        // sort_text monotonic with table order.
         let sorts: Vec<&str> = a.iter().filter_map(|i| i.sort_text.as_deref()).collect();
         let mut sorted = sorts.clone();
         sorted.sort_unstable();

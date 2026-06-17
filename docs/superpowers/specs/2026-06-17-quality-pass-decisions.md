@@ -218,3 +218,72 @@ divergence.
 `scanner.c` lifecycle fns are required ABI boilerplate (not dead);
 `croma-lsp/lib.rs` re-exports are all consumed. The only true dead item is the
 unused `source` param above (folded into (c)).
+
+---
+
+## A2 outcome — applied (branch `feature/quality-a2-cleanup`)
+
+14 files, **+36 / −101** (net ~−52 comment lines, KEEP-leaning per policy).
+
+**Comment trims (HIGH+MEDIUM applied; LOW mostly skipped to avoid vandalism):**
+`main.rs` transport-test numbered step markers → prose / removed; test-block
+"what" narration in `document.rs`/`completion.rs`/`code_action.rs`/
+`diagnostics.rs`/`structure.rs`/`tokens.rs`; `corpus_proof.rs` four `// ----`
+banner rules → plain leg labels + one array-restating line; the section dividers
+in `queries/highlights.scm` **and its byte-identical twin** `web/highlights.scm`;
+shrank the zed `TODO(epic-C)` to one line. **Skipped** (LOW / by policy):
+`tables.rs` decoration labels, `grammar.js` dividers (regeneration risk), and the
+optional micro-simplifications.
+
+**Comment-correctness fixes:** `hover.rs` "half-open" → "inclusive of the closing
+edge" (matches `span_contains_inclusive`); `scanner.c` token-index table
+corrected to the real 7-`externals` order (`_key_field_key_tok` at index 1). Both
+comment-only; no enum/code touched.
+
+**Behavior-preserving simplifications (the only code edits, each verified):**
+1. `clamp_to_boundary` deduped — `position::clamp_to_boundary` is now
+   `pub(crate)`; `document.rs`'s byte-identical copy deleted and both call sites
+   route to it (rationale preserved at the call site).
+2. `completion::line_is_music_body` — dropped the unused `source` param + the
+   `let _ = source;` no-op (and the now-needless trailing `continue`, which
+   `-D warnings` would flag); two call sites updated. Control flow identical.
+3. `completion::prefix_is_information_field` now delegates to
+   `is_information_field_line(prefix.trim_start())` (the inlined body was equal).
+4. `editors/zed` `asset_name` — folded the `.exe` suffix into the `Os` match arm.
+
+**Gates — all byte-identical to the pre-A2 baseline (proof, not assertion):**
+
+| Gate | Baseline | After A2 |
+|---|---|---|
+| LSP `corpus_proof` (legs A/B/D + totality + E) | 3 pass / 0 fail | **3 pass / 0 fail** — tokens 10000/0, totality 10000 files/0 panics, latency under ceiling |
+| grammar coverage (10k) | 9946 / 99.46% / 54 ERROR | **9946 / 99.46% / 54 ERROR** |
+| `tree-sitter test` | 17/17 | **17/17** |
+| `cargo test --workspace` | green | **834 / 0** |
+| `clippy --workspace --all-targets -D warnings` | clean | **clean** |
+| `cargo fmt --all --check` | clean | **clean** |
+| `editors/zed` `cargo test` | — | **8/8** |
+
+Untouched → green by construction (no source change): `croma-fmt` corpus proof,
+raw whitelist 9390/0, MusicXML→ABC reader self-loop/foreign parity, croma-core
+zero-dep, 4 workspace members, `tree-sitter-abc`/`editors/zed` workspace
+exclusion.
+
+## A3 — no in-epic fixes
+
+A1 surfaced no confirmed runtime bug. The two comment-correctness issues were
+folded into A2. The two `editors/zed` flags are **inactive future code**
+(`download_from_release` only fires once epic-C publishes release binaries;
+`latest_github_release` errors today and the resolver falls through to the PATH
+path / actionable error) and are filed as separate hardening tasks, not fixed
+in-epic:
+- download-path `Command{env: Vec::new()}` vs the PATH path's
+  `worktree.shell_env()` — cosmetic for a stdio LSP invoked by absolute path;
+  revisit when release binaries exist.
+- `version_dir()` doesn't sanitize `release.version` (path traversal) — version
+  is first-party (GitHub release tag); low risk; harden alongside epic-C.
+
+## A4 — closeout
+
+Tracker: `phase-65-quality-a1` merged (#160), `-a2` complete, `-a3`
+complete (no-fix). Comment-policy decision recorded to auto-memory. Session ends
+on main.

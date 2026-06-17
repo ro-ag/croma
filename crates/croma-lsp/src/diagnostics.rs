@@ -62,7 +62,6 @@ mod tests {
                 "start line in bounds"
             );
             assert!(d.range.end.line < line_count.max(1), "end line in bounds");
-            // Start must not be after end.
             assert!(
                 (d.range.start.line, d.range.start.character)
                     <= (d.range.end.line, d.range.end.character),

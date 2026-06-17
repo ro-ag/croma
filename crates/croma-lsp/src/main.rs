@@ -481,7 +481,7 @@ mod transport_tests {
         // Run the real server loop in its own thread.
         let server_thread = thread::spawn(move || run(&server));
 
-        // 1. initialize (offer UTF-8 so the server negotiates it).
+        // Initialize, offering UTF-8 so the server negotiates it.
         let init_params = InitializeParams {
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
@@ -502,7 +502,6 @@ mod transport_tests {
             }))
             .expect("send initialize");
 
-        // Expect the InitializeResult response.
         match recv(&client) {
             Message::Response(Response { id, result, error }) => {
                 assert_eq!(id, init_id);
@@ -512,10 +511,8 @@ mod transport_tests {
             other => panic!("expected initialize response, got {other:?}"),
         }
 
-        // 2. initialized.
         notify(&client, "initialized", serde_json::json!({}));
 
-        // 3. didOpen a real-ish ABC document.
         notify(
             &client,
             "textDocument/didOpen",
@@ -534,8 +531,7 @@ mod transport_tests {
             "didOpen should publish once"
         );
 
-        // 4. several didChange notifications, including a malformed/garbage edit.
-        // 4a. incremental insert.
+        // An incremental insert.
         notify(
             &client,
             "textDocument/didChange",
@@ -562,7 +558,7 @@ mod transport_tests {
         );
         assert_eq!(drain_diagnostics(&client, 1), 1);
 
-        // 4b. a garbage didChange payload — must not crash the loop.
+        // A garbage didChange payload must not crash the loop.
         client
             .sender
             .send(Message::Notification(Notification {
@@ -593,8 +589,8 @@ mod transport_tests {
             "server survived garbage edit"
         );
 
-        // 4b.5. Drive each R2 request over the (now malformed mid-edit) buffer
-        // and assert the server replies without hanging or panicking. The buffer
+        // Drive each R2 request over the (now malformed mid-edit) buffer and
+        // assert the server replies without hanging or panicking. The buffer
         // currently holds "[[[ broken é\n" from the previous garbage edit, so
         // these run against a deliberately broken state.
         for (id_n, method) in [
@@ -623,7 +619,7 @@ mod transport_tests {
             }
         }
 
-        // 4b.6. Restore a real tune and re-run the requests to assert non-empty,
+        // Restore a real tune and re-run the requests to assert non-empty,
         // well-formed payloads (semantic tokens + symbols + folding present).
         notify(
             &client,
@@ -642,7 +638,6 @@ mod transport_tests {
         );
         assert_eq!(drain_diagnostics(&client, 1), 1, "restore published once");
 
-        // semanticTokens/full -> non-empty data.
         let st_id = RequestId::from(20);
         client
             .sender
@@ -664,7 +659,6 @@ mod transport_tests {
             other => panic!("expected semanticTokens response, got {other:?}"),
         }
 
-        // formatting -> a single whole-document edit (the body had loose spaces).
         let fmt_id = RequestId::from(21);
         client
             .sender
@@ -689,7 +683,6 @@ mod transport_tests {
             other => panic!("expected formatting response, got {other:?}"),
         }
 
-        // documentSymbol -> one symbol for the tune.
         let sym_id = RequestId::from(22);
         client
             .sender
@@ -717,7 +710,6 @@ mod transport_tests {
             other => panic!("expected documentSymbol response, got {other:?}"),
         }
 
-        // foldingRange -> one region fold over the tune.
         let fold_id = RequestId::from(23);
         client
             .sender
@@ -739,7 +731,7 @@ mod transport_tests {
             other => panic!("expected foldingRange response, got {other:?}"),
         }
 
-        // 4d. hover on the `K:` key line (line 2, col 0) -> a Hover with markup.
+        // Hover on the `K:` key line (line 2, col 0).
         let hover_id = RequestId::from(30);
         client
             .sender
@@ -763,8 +755,8 @@ mod transport_tests {
             other => panic!("expected hover response, got {other:?}"),
         }
 
-        // 4e. completion at a header line start (an inserted blank header line).
-        // First insert a blank line after X: so line 1 is an empty header line.
+        // Insert a blank line after X: so line 1 is an empty header line, then
+        // request completion there.
         notify(
             &client,
             "textDocument/didChange",
@@ -808,7 +800,7 @@ mod transport_tests {
             other => panic!("expected completion response, got {other:?}"),
         }
 
-        // 4f. codeAction over an auto-fixable buffer -> one source.fixAll action.
+        // Set up an auto-fixable buffer, then request a code action over it.
         notify(
             &client,
             "textDocument/didChange",
@@ -861,7 +853,7 @@ mod transport_tests {
             other => panic!("expected codeAction response, got {other:?}"),
         }
 
-        // 4c. an entirely unknown request — server must reply (null), not hang.
+        // An entirely unknown request — the server must reply (null), not hang.
         let probe_id = RequestId::from(2);
         client
             .sender
@@ -876,7 +868,6 @@ mod transport_tests {
             other => panic!("expected a response to the unknown request, got {other:?}"),
         }
 
-        // 5. didClose -> publishes empty diagnostics.
         notify(
             &client,
             "textDocument/didClose",
@@ -890,7 +881,6 @@ mod transport_tests {
             "didClose clears diagnostics"
         );
 
-        // 6. shutdown -> response; exit -> loop ends.
         let shutdown_id = RequestId::from(3);
         client
             .sender
