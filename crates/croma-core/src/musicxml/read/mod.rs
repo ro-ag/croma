@@ -2855,53 +2855,53 @@ impl OpenTuplets {
             if let Some((tm_actual, tm_normal)) = time_modification
                 && !self.open.is_empty()
             {
-                    // Nested-tuplet recovery (P2): when exactly one tuplet is
-                    // still open and this tail note's `<time-modification>`
-                    // differs from the stored ratio, the stored ratio is the
-                    // composite that was emitted during the inner-open phase.
-                    // The tail note's ratio is the true outer ratio. Recover it
-                    // and retroactively patch previously emitted attachments.
-                    // Guard: only when exactly one tuplet is open (the inner
-                    // already closed) and the ratios disagree.
-                    if self.open.len() == 1 {
-                        let outer = &self.open[0];
-                        if outer.actual_notes != tm_actual || outer.normal_notes != tm_normal {
-                            // tm_actual/tm_normal IS the correct outer ratio; the
-                            // stored ratio is the composite (outer × inner).
-                            // inner = composite ÷ outer.
-                            let composite_actual = outer.actual_notes;
-                            let composite_normal = outer.normal_notes;
-                            let outer_pair_id = outer.pair_id;
-                            // Patch outer: every event bearing the outer pair_id
-                            // had the composite stored; correct it to the true
-                            // outer ratio.
-                            patch_tuplet_ratio(events, outer_pair_id, tm_actual, tm_normal);
-                            // Patch inner: every event bearing the composite
-                            // ratio (but NOT the outer pair_id) was the inner
-                            // tuplet emitted with the wrong composite. Rewrite
-                            // those to inner = composite / outer.
-                            patch_inner_tuplet_ratio(
-                                events,
-                                outer_pair_id,
-                                composite_actual,
-                                composite_normal,
-                                tm_actual,
-                                tm_normal,
-                            );
-                            // Update the live open-tuplet entry.
-                            self.open[0].actual_notes = tm_actual;
-                            self.open[0].normal_notes = tm_normal;
-                        }
+                // Nested-tuplet recovery (P2): when exactly one tuplet is
+                // still open and this tail note's `<time-modification>`
+                // differs from the stored ratio, the stored ratio is the
+                // composite that was emitted during the inner-open phase.
+                // The tail note's ratio is the true outer ratio. Recover it
+                // and retroactively patch previously emitted attachments.
+                // Guard: only when exactly one tuplet is open (the inner
+                // already closed) and the ratios disagree.
+                if self.open.len() == 1 {
+                    let outer = &self.open[0];
+                    if outer.actual_notes != tm_actual || outer.normal_notes != tm_normal {
+                        // tm_actual/tm_normal IS the correct outer ratio; the
+                        // stored ratio is the composite (outer × inner).
+                        // inner = composite ÷ outer.
+                        let composite_actual = outer.actual_notes;
+                        let composite_normal = outer.normal_notes;
+                        let outer_pair_id = outer.pair_id;
+                        // Patch outer: every event bearing the outer pair_id
+                        // had the composite stored; correct it to the true
+                        // outer ratio.
+                        patch_tuplet_ratio(events, outer_pair_id, tm_actual, tm_normal);
+                        // Patch inner: every event bearing the composite
+                        // ratio (but NOT the outer pair_id) was the inner
+                        // tuplet emitted with the wrong composite. Rewrite
+                        // those to inner = composite / outer.
+                        patch_inner_tuplet_ratio(
+                            events,
+                            outer_pair_id,
+                            composite_actual,
+                            composite_normal,
+                            tm_actual,
+                            tm_normal,
+                        );
+                        // Update the live open-tuplet entry.
+                        self.open[0].actual_notes = tm_actual;
+                        self.open[0].normal_notes = tm_normal;
                     }
-                    for open in &self.open {
-                        out.push(TupletAttachment {
-                            pair_id: open.pair_id,
-                            actual_notes: open.actual_notes,
-                            normal_notes: open.normal_notes,
-                            role: TupletRole::Continue,
-                            span: READER_SPAN,
-                        });
-                    }
+                }
+                for open in &self.open {
+                    out.push(TupletAttachment {
+                        pair_id: open.pair_id,
+                        actual_notes: open.actual_notes,
+                        normal_notes: open.normal_notes,
+                        role: TupletRole::Continue,
+                        span: READER_SPAN,
+                    });
+                }
             }
             return out;
         }
@@ -2968,7 +2968,13 @@ impl OpenTuplets {
         // (e.g. an inner-stop note carries both an inner Stop and an outer
         // Continue), and `TimeModification::composite` over all of them
         // produces the correct composite for re-emission.
-        if has_stop && time_modification.is_some() {
+        //
+        // Guard: `!has_start` — a foreign note may carry both a `stop` for one
+        // tuplet AND a `start` for another (Sibelius/Finale dialect). In that
+        // case, the newly-opened tuplet is now in `self.open`; emitting a
+        // spurious Continue for it would corrupt its ratio. Only emit outer
+        // Continues when this note opens no new tuplet.
+        if has_stop && !has_start && time_modification.is_some() {
             for open in &self.open {
                 out.push(TupletAttachment {
                     pair_id: open.pair_id,
@@ -3029,14 +3035,13 @@ fn patch_inner_tuplet_ratio(
     if den == 0 {
         return;
     }
-    let g = gcd_u64_reader(num, den);
+    let g = super::gcd_u64(num, den);
     let inner_actual = num / g;
     let inner_normal = den / g;
     // Only patch if the result fits in u32.
-    let (Ok(inner_actual), Ok(inner_normal)) = (
-        u32::try_from(inner_actual),
-        u32::try_from(inner_normal),
-    ) else {
+    let (Ok(inner_actual), Ok(inner_normal)) =
+        (u32::try_from(inner_actual), u32::try_from(inner_normal))
+    else {
         return;
     };
     for event in events.iter_mut().rev() {
@@ -3052,15 +3057,8 @@ fn patch_inner_tuplet_ratio(
     }
 }
 
-/// GCD for u64 values, returning at least 1 (so division is always safe).
-fn gcd_u64_reader(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        let r = a % b;
-        a = b;
-        b = r;
-    }
-    a.max(1)
-}
+// Note: `super::gcd_u64` (in musicxml/mod.rs) is reachable from this child
+// module. Use it directly rather than duplicating the algorithm.
 
 /// S6c: the writer's count-based grace base unit ([`MusicXmlWriter`]'s
 /// `grace_base_unit`): 1/8 for a single-element grace group, 1/16 otherwise. A

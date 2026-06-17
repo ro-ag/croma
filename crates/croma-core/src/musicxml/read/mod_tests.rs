@@ -1282,8 +1282,7 @@ fn nested_tuplet_7_8_inner_3_2_round_trips_and_reconstructs_ratios() {
     // Minimal ABC that generates the same MusicXML structure as tune_003732's
     // nested-tuplet measure: outer 7:8, inner 3:2. [I:tuplets 2 0 2] forces
     // nested bracket display so the writer emits the composite 21/16.
-    let abc =
-        "X:1\nT:NestedTup\nM:4/4\nL:1/16\nK:C\n[I:tuplets 2 0 2](7:8:8(3AAA AAAAA|\n";
+    let abc = "X:1\nT:NestedTup\nM:4/4\nL:1/16\nK:C\n[I:tuplets 2 0 2](7:8:8(3AAA AAAAA|\n";
     let x1 = export(abc);
     // Precondition: the writer must emit the composite 21:16 for inner notes.
     assert!(
@@ -1304,8 +1303,12 @@ fn nested_tuplet_7_8_inner_3_2_round_trips_and_reconstructs_ratios() {
     let ev0 = &attachments_at(&score, 0).tuplets;
     assert_eq!(ev0.len(), 2, "first inner note carries two tuplet starts");
     // Outer is the first (lower pair_id, opened first by writer).
-    let outer_start = ev0.iter().find(|t| t.role == TupletRole::Start && t.actual_notes == 7);
-    let inner_start = ev0.iter().find(|t| t.role == TupletRole::Start && t.actual_notes == 3);
+    let outer_start = ev0
+        .iter()
+        .find(|t| t.role == TupletRole::Start && t.actual_notes == 7);
+    let inner_start = ev0
+        .iter()
+        .find(|t| t.role == TupletRole::Start && t.actual_notes == 3);
     assert!(
         outer_start.is_some(),
         "outer tuplet start must have actual_notes=7; got: {ev0:?}"
@@ -1330,18 +1333,54 @@ fn nested_tuplet_7_8_inner_3_2_round_trips_and_reconstructs_ratios() {
 }
 
 #[test]
-fn nested_tuplet_zero_tail_notes_does_not_panic() {
-    // Degenerate: an outer tuplet that has NO tail notes after the inner close —
-    // i.e. the inner spans the entire outer. No outer ratio is recoverable.
-    // The reader must leave the already-emitted Continue attachments as-is
-    // (keeping the composite) and NOT panic.
-    // We construct this scenario by making a (3:2:3 where all 3 notes are
-    // the inner group — but use a straightforward approach that produces
-    // a single tuplet with no "tail" to test the zero-tail guard.
-    // A single (3 (no outer) exercising the normal continue path: no panic.
-    let abc = "X:1\nT:NoTail\nM:4/4\nL:1/8\nK:C\n(3ccc cccc z|\n";
+fn single_tuplet_continue_does_not_panic() {
+    // A plain (3 with no outer tuplet: exercises the normal Continue path
+    // (middle notes with one open tuplet). Kept as a baseline sanity check
+    // distinct from the nested-degenerate test below.
+    let abc = "X:1\nT:SingleTup\nM:4/4\nL:1/8\nK:C\n(3ccc cccc z|\n";
     // Must not panic:
     let _score = assert_idempotent_s4(abc);
+}
+
+#[test]
+fn nested_tuplet_zero_tail_notes_does_not_panic() {
+    // Degenerate nested-tuplet path: an OUTER tuplet enclosing an INNER tuplet
+    // that spans ALL of the outer's notes (zero outer-only tail notes after the
+    // inner closes). The P2 recovery branch (which infers the outer ratio from a
+    // tail note's `<time-modification>`) is unreachable because no continue note
+    // with exactly one open tuplet ever exists. The reader must:
+    //   - leave the composite ratio on every attachment (no recovery possible),
+    //   - NOT panic.
+    //
+    // We use `[I:tuplets 2 0 2](3:2:3(3:2:3CCC` — outer (3:2:3) immediately
+    // wrapping inner (3:2:3). The writer emits composite 9/4 on all 3 notes;
+    // note 3 carries both inner-stop (number 2) and outer-stop (number 1). No
+    // continue note has `open.len()==1`, so the recovery block is never entered.
+    //
+    // NOTE: this case is deliberately NOT idempotent (the composite is left on
+    // both levels since there is no tail note to recover the outer ratio from).
+    // The contract here is only: no panic + the reader reads the composite as-is.
+    use crate::model::TupletRole;
+    let abc = "X:1\nT:ZeroTail\nM:4/4\nL:1/8\nK:C\n[I:tuplets 2 0 2](3:2:3(3:2:3CCC cccc z|\n";
+    // Must not panic — use round_trip directly, do NOT assert byte idempotence.
+    let (_, _, score) = round_trip(abc);
+    // The outer Start on note 0 carries the composite 9:4 (no recovery fired).
+    let ev0 = &attachments_at(&score, 0).tuplets;
+    let outer = ev0
+        .iter()
+        .find(|t| t.role == TupletRole::Start && t.actual_notes == 9);
+    assert!(
+        outer.is_some(),
+        "outer start should carry composite 9:4 (no recovery); got: {ev0:?}"
+    );
+    // The inner Start on note 0 also carries 9:4 (composite, no recovery).
+    let inner = ev0
+        .iter()
+        .find(|t| t.role == TupletRole::Start && t.normal_notes == 4);
+    assert!(
+        inner.is_some(),
+        "inner start should carry composite 9:4 (no recovery); got: {ev0:?}"
+    );
 }
 
 // --- Stage S5a: <direction> (tempo / dynamics / wedge / coda / segno / words) -
