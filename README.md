@@ -9,9 +9,15 @@ are built on that library API instead of maintaining separate parsers.
 - Primary: ABC -> MusicXML from Rust library code.
 - Next: thin CLI over the library.
 - Later: formatter and language server using the same parse/surface model.
+- MusicXML -> ABC: the reverse reader is shipped in the CLI
+  (`croma read` / `croma musicxml2abc`), inverting croma's own writer and reading
+  foreign MusicXML (abc2xml/MuseScore/Finale/Sibelius). See
+  [`docs/musicxml-reader.md`](docs/musicxml-reader.md).
 - Packaging: the core library must remain publishable as a normal crates.io
-  Rust crate.
-- Out of initial scope: PDF rendering, MusicXML -> ABC, broad engraving layout.
+  Rust crate. The reader's only dependency (`roxmltree`) is opt-in
+  (`croma-core` feature `musicxml-reader`) and ships with the CLI binary, never
+  the library's default build.
+- Out of initial scope: PDF rendering, broad engraving layout.
 
 ## Specification Target
 
