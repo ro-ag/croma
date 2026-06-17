@@ -1901,9 +1901,34 @@ impl Reader {
             for element in element_children(direction_type) {
                 match element.tag_name().name() {
                     "words" => {
-                        attachments
-                            .annotations
-                            .push(annotation_from_words(element, placement));
+                        // R3: a placement-LESS `<direction><words>` in croma's own
+                        // output is a chord-symbol that `write_chord_symbol`
+                        // *demoted* (a non-chord string like `tr`/`Trio` that
+                        // `parse_chord_symbol` rejected, emitted as a `<direction>`
+                        // via the SAME `chord_symbols` channel — never the
+                        // `annotations` channel, which always carries a placement
+                        // prefix and thus emits a `placement` attribute). Reading it
+                        // back into `chord_symbols` (not `annotations`) preserves its
+                        // DOCUMENT-ORDER position relative to any real `<harmony>` in
+                        // the same buffered run: the writer emits the whole
+                        // `chord_symbols` vec in order before any `annotations`, so a
+                        // `"tr""G7"note` run (`<direction>tr` THEN `<harmony>G7`)
+                        // round-trips only when `tr` and `G7` share the ordered
+                        // `chord_symbols` vec. Re-emission is byte-identical: a
+                        // placement-less, trim-stable word emits the same
+                        // `<direction><words>` whether it travels the chord-symbol
+                        // (demoted) path or the annotation path — only the relative
+                        // order vs `<harmony>` differs, which is exactly the fix.
+                        // A placement-BEARING word stays an annotation (the writer's
+                        // annotation channel), and a word with surrounding whitespace
+                        // (not trim-stable) also stays an annotation, since the
+                        // chord-symbol path would `trim()` it and change the bytes.
+                        match demoted_chord_symbol_from_words(element, placement) {
+                            Some(symbol) => attachments.chord_symbols.push(symbol),
+                            None => attachments
+                                .annotations
+                                .push(annotation_from_words(element, placement)),
+                        }
                     }
                     "dynamics" => {
                         for dynamic in element_children(element) {
@@ -1946,7 +1971,10 @@ impl Reader {
             }
         }
 
-        if attachments.annotations.is_empty() && attachments.decorations.is_empty() {
+        if attachments.annotations.is_empty()
+            && attachments.decorations.is_empty()
+            && attachments.chord_symbols.is_empty()
+        {
             ParsedDirection::Ignored
         } else {
             ParsedDirection::Event(attachments)
@@ -3064,6 +3092,46 @@ fn annotation_from_words(words: Node<'_, '_>, placement: Option<&str>) -> TextAt
         span: READER_SPAN,
         placement: placement_model,
     }
+}
+
+/// R3: reconstruct a placement-LESS `<direction><words>` as the chord-symbol
+/// [`TextAttachment`] (placement-less, like a real chord symbol) that
+/// `write_chord_symbol` *demoted* — the writer routes a non-chord string through
+/// the `chord_symbols` channel and emits it as a `<direction><words>` only when
+/// `parse_chord_symbol` rejects it. Returns `None` when the words must instead be
+/// a genuine annotation, in which case the caller falls back to
+/// [`annotation_from_words`]:
+///
+/// - a direction WITH a `placement` attribute is the writer's *annotation*
+///   channel (the model text carried a `^`/`_`/`<`/`>`/`@` prefix), not a
+///   demoted chord symbol; and
+/// - a word whose raw text is NOT trim-stable (has surrounding whitespace) would
+///   be `trim()`med by `write_chord_symbol`, changing the re-emitted bytes, so it
+///   stays an annotation (whose path emits the text verbatim).
+///
+/// For a placement-less, trim-stable word the two channels emit the IDENTICAL
+/// `<direction><words>` element; routing it through the chord-symbol channel only
+/// fixes its document-order position relative to a real `<harmony>` in the same
+/// buffered run (the writer emits the ordered `chord_symbols` vec before any
+/// `annotations`). croma's own writer always emits the words trimmed, so this is
+/// the demoted-chord path for every corpus file and a no-op for foreign,
+/// whitespace-padded words.
+fn demoted_chord_symbol_from_words(
+    words: Node<'_, '_>,
+    placement: Option<&str>,
+) -> Option<TextAttachment> {
+    if placement.is_some() {
+        return None;
+    }
+    let text = raw_text(words);
+    if text != text.trim() {
+        return None;
+    }
+    Some(TextAttachment {
+        text: text.to_owned(),
+        span: READER_SPAN,
+        placement: None,
+    })
 }
 
 /// Inverse of the writer's `dynamic_decoration`: map a `<dynamics>` child element
