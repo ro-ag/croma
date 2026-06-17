@@ -199,7 +199,7 @@ library contract. CLI-default + core-opt-in satisfies both.
 | **R1** | CLI `read` / `musicxml2abc`, feature-plumbed (no default dep). Reader Score-completion for the ABC projection. Structural reader→ABC round-trip prover. | **DONE**: both feature states build; reader→ABC structural 9514/9933 (95.8%), residual categorized; XML idempotence held 9915/9935; forward byte-identical |
 | **R2** | reverse driver + abc2xml-ref music21 parity; triage divergences; fix reader bugs, adjudicate the rest; probe other engravers. | **DONE**: parity 0→**98.50%** (9850/10000) via 3 clean read-side fixes (DTD-tolerant parse, textless functional harmony, decimal alter); residual adjudicated to verdicts; idempotence held 9915/9935; forward byte-identical; 40/40 music21 `.mxl` totality |
 | **R3** | self-loop residual closeout (19 cross-channel ordering + 1 nested-21:16 tuplet). | **DONE**: 9915→**9934/9935** (19 fixed read-side, 0 regressions, R2 parity unchanged); 1 nested-tuplet adjudicated (principled stop) |
-| **R4** | promotion: CLI-default feature flip, AGENTS.md / docs / README / tracker. | legs 1–4 green; forward proofs intact |
+| **R4** | promotion: CLI-default feature flip, AGENTS.md / docs / README / tracker. | **DONE**: legs 1–4 green; `croma-cli` default = `["musicxml-reader"]` (reader ships in CLI, roxmltree CLI-binary-only); `croma-core` default stays zero-dep + publishable; `--no-default-features` = reader-less CLI; AGENTS.md/README/docs updated; forward proofs intact |
 
 **Hard constraints (restated):** zero default deps for `croma-core` preserved
 through R4 (R4 flips only the *CLI* default); additive-only to forward (raw

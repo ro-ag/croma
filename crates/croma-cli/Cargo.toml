@@ -15,10 +15,13 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-# Experimental: surface the gated MusicXML -> Score reader via `croma read` and
-# `croma musicxml2abc`. Forwards to croma-core's `musicxml-reader` feature, which
-# pulls in roxmltree. The default build stays dep-free and exposes neither
-# command.
+# The MusicXML -> Score reader (`croma read` / `croma musicxml2abc`) is PROMOTED
+# (un-gated): it ships in the default CLI build. This forwards to croma-core's
+# `musicxml-reader` feature, which pulls in roxmltree — so roxmltree is a
+# dependency of the CLI *binary*, never of the croma-core *library* default
+# (which stays zero-dep + crates.io-publishable; see docs/musicxml-reader.md).
+# Build a reader-less, dep-free CLI with `--no-default-features`.
+default = ["musicxml-reader"]
 musicxml-reader = ["croma-core/musicxml-reader"]
 
 [dependencies]
