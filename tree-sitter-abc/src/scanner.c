@@ -12,13 +12,14 @@
 // classifies the upcoming characters when one of its tokens is requested.
 //
 // Tokens (must match the `externals` order in grammar.js):
-//   0 _field_key_tok   line-leading `LETTER:` for any letter except w/s
-//   1 _lyric_key_tok   line-leading `w:`
-//   2 _symbol_key_tok  line-leading `s:`
-//   3 _directive_tok   `%%...` to end of line
-//   4 _comment_tok     `%...`  to end of line (line start or trailing)
-//   5 _error_sentinel  never emitted; present so the scanner runs in error
-//                      recovery and can decline cleanly.
+//   0 _field_key_tok      line-leading `LETTER:` for any letter except K/w/s
+//   1 _key_field_key_tok  line-leading `K:` (the header terminator)
+//   2 _lyric_key_tok      line-leading `w:`
+//   3 _symbol_key_tok     line-leading `s:`
+//   4 _directive_tok      `%%...` to end of line
+//   5 _comment_tok        `%...`  to end of line (line start or trailing)
+//   6 _error_sentinel     never emitted; present so the scanner runs in error
+//                         recovery and can decline cleanly.
 
 enum TokenType {
   FIELD_KEY_TOK,

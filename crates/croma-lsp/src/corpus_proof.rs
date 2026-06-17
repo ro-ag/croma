@@ -105,7 +105,6 @@ fn exercise_r3_handlers(text: &str, source: &SourceText, encoding: PositionEncod
     let line_count = source.line_count().max(1);
     for line_index in 0..line_count {
         let width = line_width(source, line_index, encoding);
-        // Line start, a column mid-line, the line end, and one past the end.
         let cols = [0u32, width / 2, width, width + 5];
         for character in cols {
             let pos = Position {
@@ -321,11 +320,9 @@ fn abc_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-// ---------------------------------------------------------------------------
 // Leg D: semantic-token correctness (exhaustive, non-overlapping, in-bounds,
 // monotonic delta-encoding). Used both by the totality sweep above and the
 // fidelity test below.
-// ---------------------------------------------------------------------------
 
 /// Decode a delta-encoded semantic-token stream into absolute
 /// `(line, start, length, token_type)` tuples.
@@ -489,11 +486,9 @@ fn line_width(source: &SourceText, index: usize, encoding: PositionEncoding) -> 
         .unwrap_or(0)
 }
 
-// ---------------------------------------------------------------------------
 // Leg A: diagnostics fidelity. The LSP diagnostics set must equal the core
 // analyze_document diagnostics: same count, matching (severity, code) in order,
 // and every LSP Range reversing to the originating core byte span.
-// ---------------------------------------------------------------------------
 
 fn severity_matches(core: croma_core::Severity, lsp: lsp_types::DiagnosticSeverity) -> bool {
     use croma_core::Severity;
@@ -565,10 +560,8 @@ fn diagnostics_fidelity_violation(source: &str, encoding: PositionEncoding) -> O
     None
 }
 
-// ---------------------------------------------------------------------------
 // Leg B: formatting identity. Applying the formatting() edit to the source must
 // equal croma_fmt::format(source) byte-for-byte.
-// ---------------------------------------------------------------------------
 
 /// Apply the (single, full-document or empty) formatting edit to `source` and
 /// compare with `croma_fmt::format`. Returns a reason on mismatch, else `None`.
@@ -777,12 +770,10 @@ fn lsp_analysis_is_total_over_the_corpus() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Leg E: latency. diagnostics + semantic tokens on an average ~200-line file
 // must complete well under ~50 ms on a CI machine. We measure the median of 20
 // iterations (robust to a slow box / scheduler noise) and print the actual ms.
 // Run with `--release` for a representative number.
-// ---------------------------------------------------------------------------
 
 /// The latency ceiling (ms). The spec budget is ~50 ms on a CI machine; the real
 /// figure is expected to be «1 ms. Generous so a slow shared CI box still passes.

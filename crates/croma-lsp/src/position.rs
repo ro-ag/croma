@@ -48,7 +48,7 @@ impl PositionEncoding {
 
 /// Clamp a byte `offset` into `[0, len]` and onto the nearest **lower** UTF-8
 /// char boundary, so it is always a valid index for slicing `text`.
-fn clamp_to_boundary(text: &str, offset: usize) -> usize {
+pub(crate) fn clamp_to_boundary(text: &str, offset: usize) -> usize {
     let mut offset = offset.min(text.len());
     while offset > 0 && !text.is_char_boundary(offset) {
         offset -= 1;

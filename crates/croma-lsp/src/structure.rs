@@ -257,7 +257,6 @@ GABc|
                     sym.selection_range.end.character
                 ) <= (sym.range.end.line, sym.range.end.character)
             );
-            // Header fields present as children.
             assert!(sym.children.as_ref().is_some_and(|c| !c.is_empty()));
         }
     }

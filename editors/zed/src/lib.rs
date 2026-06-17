@@ -29,23 +29,19 @@ const LSP_BINARY: &str = "croma-lsp";
 /// `croma-lsp-macos-aarch64`, `croma-lsp-linux-x86_64`,
 /// `croma-lsp-windows-x86_64.exe`, etc.
 ///
-// TODO(epic-C): asset names follow the release CI. When epic C cuts binary
-// releases, reconcile this scheme with the names the release workflow actually
-// uploads (and revisit the `DownloadedFileType` in `download_from_release` if
-// the assets ship as archives rather than bare binaries).
+// TODO(epic-C): reconcile this scheme with the names the release workflow uploads.
 pub fn asset_name(platform: (Os, Architecture)) -> String {
     let (os, arch) = platform;
-    let os = match os {
-        Os::Mac => "macos",
-        Os::Linux => "linux",
-        Os::Windows => "windows",
+    let (os, suffix) = match os {
+        Os::Mac => ("macos", ""),
+        Os::Linux => ("linux", ""),
+        Os::Windows => ("windows", ".exe"),
     };
     let arch = match arch {
         Architecture::Aarch64 => "aarch64",
         Architecture::X86 => "x86",
         Architecture::X8664 => "x86_64",
     };
-    let suffix = if os == "windows" { ".exe" } else { "" };
     format!("{LSP_BINARY}-{os}-{arch}{suffix}")
 }
 
