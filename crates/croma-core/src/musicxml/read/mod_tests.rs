@@ -1317,8 +1317,8 @@ fn nested_tuplet_7_8_inner_3_2_round_trips_and_reconstructs_ratios() {
         inner_start.is_some(),
         "inner tuplet start must have actual_notes=3; got: {ev0:?}"
     );
-    let outer_start = outer_start.unwrap();
-    let inner_start = inner_start.unwrap();
+    let outer_start = outer_start.expect("outer tuplet start present");
+    let inner_start = inner_start.expect("inner tuplet start present");
     assert_eq!(outer_start.actual_notes, 7, "outer actual");
     assert_eq!(outer_start.normal_notes, 8, "outer normal");
     assert_eq!(inner_start.actual_notes, 3, "inner actual");
