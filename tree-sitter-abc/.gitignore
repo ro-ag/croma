@@ -1,0 +1,14 @@
+# Build / dependency artifacts — the GENERATED parser under src/ IS committed
+# (tree-sitter convention), but downstream build outputs are not.
+node_modules/
+package-lock.json
+*.wasm
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+build/
+dist/
+.build/
+target/

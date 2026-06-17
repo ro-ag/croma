@@ -1,0 +1,166 @@
+================================================================================
+decorations chord symbols and annotations
+================================================================================
+
+X:1
+K:C
+!trill!C .D "Cmaj7"E "^above"F "_below"G ~A|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (decoration)
+        (note
+          (pitch))
+        (decoration)
+        (note
+          (pitch))
+        (chord_symbol)
+        (note
+          (pitch))
+        (annotation)
+        (note
+          (pitch))
+        (annotation)
+        (note
+          (pitch))
+        (decoration)
+        (note
+          (pitch))
+        (barline)))))
+
+================================================================================
+barlines and repeats
+================================================================================
+
+X:1
+K:C
+C|D||E|]F[|G|:A:|B::c|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)
+        (note
+          (pitch))
+        (barline)))))
+
+================================================================================
+repeat endings
+================================================================================
+
+X:1
+K:C
+|:CD|[1EF:|[2GA|]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (barline)
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline)
+        (repeat_ending)
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline)
+        (repeat_ending)
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline)))))
+
+================================================================================
+voice overlay
+================================================================================
+
+X:1
+K:C
+CDEF & GABc|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (overlay)
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline)))))

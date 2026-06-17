@@ -1,0 +1,38 @@
+{
+  "name": "tree-sitter-abc",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for ABC music notation (ABC 2.1), grounded in croma's strict recognition.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ro-ag/croma"
+  },
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "abc",
+    "abc-notation",
+    "music"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.abc",
+      "file-types": [
+        "abc"
+      ],
+      "grammar": "grammar.js",
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm",
+      "folds": "queries/folds.scm",
+      "brackets": "queries/brackets.scm"
+    }
+  ]
+}

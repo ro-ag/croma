@@ -1,0 +1,176 @@
+================================================================================
+minimal tune
+================================================================================
+
+X:1
+T:Scale
+K:C
+CDEF|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline)))))
+
+================================================================================
+tune header with several fields
+================================================================================
+
+X:1
+T:Scale
+C:Composer
+M:4/4
+L:1/8
+Q:1/4=120
+K:C
+C|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (barline)))))
+
+================================================================================
+two tunes
+================================================================================
+
+X:1
+T:First
+K:C
+CDEF|
+
+X:2
+T:Second
+K:G
+GABc|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline))))
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (note
+          (pitch))
+        (barline)))))
+
+================================================================================
+file header and free text before first tune
+================================================================================
+
+%%abc-version 2.1
+This is free text.
+
+X:1
+T:Only
+K:C
+C|
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (stylesheet_directive
+    (directive_text))
+  (free_text)
+  (tune
+    (tune_header
+      (field
+        (field_key)
+        (field_value))
+      (field
+        (field_key)
+        (field_value))
+      (key_field
+        (field_key)
+        (field_value)))
+    (tune_body
+      (music_line
+        (note
+          (pitch))
+        (barline)))))
