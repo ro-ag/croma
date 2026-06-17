@@ -12,3 +12,11 @@ build/
 dist/
 .build/
 target/
+
+# ...but DO commit the few WASM files the web/WASM reuse proof needs (stage G3):
+#   - the grammar wasm (the headline reuse artifact; ~26 KB, self-contained demo)
+#   - the demo's self-contained copy of it
+#   - the vendored web-tree-sitter runtime (offline demo, version-pinned 0.26.9)
+!tree-sitter-abc.wasm
+!web/tree-sitter-abc.wasm
+!web/vendor/web-tree-sitter.wasm

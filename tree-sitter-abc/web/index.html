@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tree-sitter-abc · web/WASM highlighting demo</title>
+    <style>
+      :root {
+        --bg: #1e1e2e;
+        --panel: #181825;
+        --fg: #cdd6f4;
+        --muted: #6c7086;
+        --border: #313244;
+        /* Capture-name -> color theme (editor-agnostic; the same capture names
+           Zed / nvim / helix map to their own themes). */
+        --c-keyword: #cba6f7; /* @keyword, inline field keys */
+        --c-keyword-directive: #f38ba8; /* X:/T:, %% stylesheet directives */
+        --c-variable: #89b4fa; /* @variable — pitches */
+        --c-attribute: #fab387; /* @attribute — accidentals, octaves */
+        --c-number: #f9e2af; /* @number — lengths, tuplets, broken rhythm */
+        --c-operator: #94e2d5; /* @operator — barlines, slurs, ties */
+        --c-string: #a6e3a1; /* @string — chord symbols, annotations */
+        --c-string-special: #94e2d5; /* lyric / symbol lines */
+        --c-function-macro: #f5c2e7; /* @function.macro — decorations */
+        --c-constant: #fab387; /* @constant — key value */
+        --c-constant-builtin: #f38ba8; /* @constant.builtin — rests */
+        --c-comment: #6c7086; /* @comment */
+        --c-comment-documentation: #7f849c; /* directive text */
+        --c-punctuation-bracket: #9399b2;
+        --c-punctuation-special: #94e2d5;
+        --c-text: #cdd6f4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        line-height: 1.5;
+        padding: 1.5rem;
+      }
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 0.25rem;
+      }
+      p.lede {
+        margin: 0 0 1rem;
+        color: var(--muted);
+        max-width: 60ch;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      @media (max-width: 720px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .pane {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .pane > .label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+      }
+      textarea#source,
+      pre#output {
+        margin: 0;
+        padding: 0.75rem;
+        width: 100%;
+        min-height: 16rem;
+        border: 0;
+        font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+        font-size: 13px;
+        background: transparent;
+        color: var(--fg);
+        white-space: pre-wrap;
+        word-break: break-word;
+        tab-size: 2;
+      }
+      textarea#source {
+        resize: vertical;
+        outline: none;
+      }
+      .status {
+        margin-top: 1rem;
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.8rem;
+        font-family: ui-monospace, Menlo, monospace;
+        border: 1px solid var(--border);
+      }
+      .status-ok {
+        color: #a6e3a1;
+        border-color: #40543c;
+      }
+      .status-warn {
+        color: #f38ba8;
+        border-color: #5c2f3a;
+      }
+      footer {
+        margin-top: 1.25rem;
+        color: var(--muted);
+        font-size: 0.8rem;
+        max-width: 70ch;
+      }
+      code {
+        background: var(--panel);
+        padding: 0.1rem 0.3rem;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+      }
+      /* Capture classes: tok-<capture-name with dots->hyphens> */
+      .tok-keyword { color: var(--c-keyword); font-weight: 600; }
+      .tok-keyword-directive { color: var(--c-keyword-directive); font-weight: 600; }
+      .tok-variable { color: var(--c-variable); }
+      .tok-attribute { color: var(--c-attribute); }
+      .tok-number { color: var(--c-number); }
+      .tok-operator { color: var(--c-operator); }
+      .tok-string { color: var(--c-string); }
+      .tok-string-special { color: var(--c-string-special); font-style: italic; }
+      .tok-function-macro { color: var(--c-function-macro); }
+      .tok-constant { color: var(--c-constant); }
+      .tok-constant-builtin { color: var(--c-constant-builtin); }
+      .tok-comment { color: var(--c-comment); font-style: italic; }
+      .tok-comment-documentation { color: var(--c-comment-documentation); font-style: italic; }
+      .tok-punctuation-bracket { color: var(--c-punctuation-bracket); }
+      .tok-punctuation-special { color: var(--c-punctuation-special); }
+      .tok-text { color: var(--c-text); }
+    </style>
+  </head>
+  <body>
+    <h1>tree-sitter-abc — web/WASM highlighting demo</h1>
+    <p class="lede">
+      The same <code>tree-sitter-abc</code> grammar that drives Zed and croma's
+      GPUI app, compiled to WebAssembly and run in the browser via
+      <code>web-tree-sitter</code>. Edit the ABC on the left; the right pane is
+      highlighted live by <code>queries/highlights.scm</code> — no server-side
+      processing, no build step (the grammar wasm is committed), and the
+      runtime is vendored so it works offline.
+    </p>
+    <div class="grid">
+      <div class="pane">
+        <div class="label">ABC source (editable)</div>
+        <textarea id="source" spellcheck="false" autocomplete="off"></textarea>
+      </div>
+      <div class="pane">
+        <div class="label">Highlighted (tree-sitter-abc + highlights.scm)</div>
+        <pre id="output"></pre>
+      </div>
+    </div>
+    <div id="status" class="status">Loading…</div>
+    <footer>
+      Reuse proof: one grammar, many consumers (Zed · GPUI · web · Markdown
+      injection · Neovim/Helix). Rebuild the wasm with
+      <code>npm run build:wasm</code>; run the headless gate with
+      <code>npm run verify:web</code>.
+    </footer>
+    <script type="module" src="./demo.mjs"></script>
+  </body>
+</html>
