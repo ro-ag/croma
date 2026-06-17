@@ -5371,6 +5371,181 @@ fn no_part_group_synthesizes_no_score_directive() {
     );
 }
 
+// --- Fix 1 (P1a review): sibling top-level groups ----------------------------
+//
+// When the `<part-list>` has two or more sibling bracket/brace groups with NO
+// enclosing outer group, `build_score_text` must render BOTH groups in document
+// order, e.g. `[P1 P2] [P3 P4]`.  The pre-fix code silently dropped the second
+// group (it selected the first group as "outermost" and the second failed the
+// subset check).
+
+#[test]
+fn two_sibling_bracket_groups_both_emitted() {
+    // Two bracket groups, each covering 2 parts, with NO enclosing outer group.
+    // Expected: `%%score [P1 P2] [P3 P4]`.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "    <part-group number=\"2\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P3\"><part-name/></score-part>\n",
+        "    <score-part id=\"P4\"><part-name/></score-part>\n",
+        "    <part-group number=\"2\" type=\"stop\"/>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!(
+        "{}{}{}{}",
+        minimal_part("P1"),
+        minimal_part("P2"),
+        minimal_part("P3"),
+        minimal_part("P4"),
+    );
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "two sibling bracket groups must produce exactly one %%score directive; \
+         directives = {:?}",
+        score
+            .metadata
+            .directives
+            .iter()
+            .map(|d| &d.value.text)
+            .collect::<Vec<_>>()
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "[P1 P2] [P3 P4]",
+        "two sibling bracket groups must produce `[P1 P2] [P3 P4]`; got `{directive_text}`"
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score [P1 P2] [P3 P4]\n"),
+        "write_abc must emit `%%score [P1 P2] [P3 P4]` for two sibling bracket groups; got:\n{abc}"
+    );
+}
+
+#[test]
+fn sibling_bracket_and_brace_groups_both_emitted() {
+    // One bracket group [P1 P2] followed by one brace group {P3 P4}, no outer wrapper.
+    // Expected: `%%score [P1 P2] {P3 P4}`.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "    <part-group number=\"2\" type=\"start\">\n",
+        "      <group-symbol>brace</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P3\"><part-name/></score-part>\n",
+        "    <score-part id=\"P4\"><part-name/></score-part>\n",
+        "    <part-group number=\"2\" type=\"stop\"/>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!(
+        "{}{}{}{}",
+        minimal_part("P1"),
+        minimal_part("P2"),
+        minimal_part("P3"),
+        minimal_part("P4"),
+    );
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "sibling bracket+brace groups must produce exactly one %%score directive; \
+         directives = {:?}",
+        score
+            .metadata
+            .directives
+            .iter()
+            .map(|d| &d.value.text)
+            .collect::<Vec<_>>()
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "[P1 P2] {P3 P4}",
+        "sibling bracket+brace groups must produce `[P1 P2] {{P3 P4}}`; got `{directive_text}`"
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score [P1 P2] {P3 P4}\n"),
+        "write_abc must emit `%%score [P1 P2] {{P3 P4}}` for sibling bracket+brace groups; \
+         got:\n{abc}"
+    );
+}
+
+// --- Fix 2 (P1a review): diagnostic on unclosed group -------------------------
+//
+// An unmatched `<part-group type="start">` with no matching stop at end of
+// `<part-list>` must emit a `musicxml.read.unbalanced_part_group` warning
+// diagnostic.  The reader must still be non-panicking and must still produce
+// a reasonable score (the unbalanced group's parts are ignored, not panicked).
+
+#[test]
+fn unbalanced_part_group_emits_diagnostic() {
+    // One `<part-group type="start">` with NO matching stop.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!("{}{}", minimal_part("P1"), minimal_part("P2"));
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let report = read_musicxml(&xml);
+    let score = &report.value;
+
+    // Must NOT panic (totality) and must still have 2 parts.
+    assert_eq!(
+        score.parts.len(),
+        2,
+        "unclosed group must still produce 2 parts"
+    );
+
+    // Must emit at least one diagnostic with the expected code.
+    let has_diag = report
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "musicxml.read.unbalanced_part_group");
+    assert!(
+        has_diag,
+        "unclosed <part-group> must emit a `musicxml.read.unbalanced_part_group` diagnostic; \
+         got diagnostics: {:?}",
+        report
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// The first line at which two ABC documents diverge, rendered as
 /// `` `<expected>` != `<actual>` ``. `None`-free: returns a sentinel when one is
 /// a prefix of the other. Used only for the human-readable divergence note.

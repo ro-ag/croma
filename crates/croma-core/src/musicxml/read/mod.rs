@@ -635,6 +635,18 @@ impl Reader {
             }
         }
 
+        // Fix 2: any group still open (no matching `stop`) is unbalanced.
+        // Emit a warning for each rather than silently dropping it.
+        for (number, _, _) in &open_groups {
+            self.warn(
+                "musicxml.read.unbalanced_part_group",
+                format!(
+                    "<part-group number=\"{number}\" type=\"start\"> has no matching stop; \
+                     the group is dropped"
+                ),
+            );
+        }
+
         PartListResult { entries, groups }
     }
 
@@ -2769,7 +2781,22 @@ fn synthesize_score_directive(groups: &[PartGroupEntry]) -> Option<ScoreDirectiv
 }
 
 /// Build the `%%score` text body (the part after `%%score `) from the recovered
-/// groups.  Handles flat, nested, and multi-group layouts.
+/// groups.  Handles flat, nested, sibling, and mixed layouts.
+///
+/// **Algorithm.**
+///
+/// 1. Identify *top-level* groups — groups whose `part_ids` are NOT a strict
+///    subset of any other group in the list.  Sibling groups are both top-level;
+///    an enclosing wrapper is top-level while its inner groups are not.
+///
+/// 2. Sort top-level groups by the position of their first `part_id` in the
+///    global ordered part list (a union of all part ids in document order).
+///    This preserves document order for sibling groups.
+///
+/// 3. For each top-level group, render it using `render_group_with_subs`, which
+///    substitutes any inner sub-group blocks inline.
+///
+/// 4. Join the rendered top-level blocks with `" "`.
 fn build_score_text(groups: &[PartGroupEntry]) -> String {
     if groups.is_empty() {
         return String::new();
@@ -2778,53 +2805,87 @@ fn build_score_text(groups: &[PartGroupEntry]) -> String {
         return render_group(&groups[0]);
     }
 
-    // Multi-group: find the outermost group (the one with the most parts).
-    // Typically there is one outer group that contains all parts, and one or
-    // more inner sub-groups that share a subset. Render the outer group,
-    // substituting each inner sub-group block in-place.
-    //
-    // Find the outermost group: it has the largest `part_ids` count.
-    let outer_idx = groups
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, g)| g.part_ids.len())
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let outer = &groups[outer_idx];
+    // Step 1: find top-level groups — not a strict subset of any other group.
+    // A group G is top-level iff there is no other group H such that every
+    // part_id in G is also in H (i.e. G ⊆ H strictly).
+    let top_level_indices: Vec<usize> = (0..groups.len())
+        .filter(|&i| {
+            let g = &groups[i];
+            // G is NOT contained in any OTHER group H.
+            !groups.iter().enumerate().any(|(j, h)| {
+                j != i
+                    && !h.part_ids.is_empty()
+                    && g.part_ids.iter().all(|id| h.part_ids.contains(id))
+            })
+        })
+        .collect();
 
-    // Build a map: first part_id of each inner group → the rendered sub-block.
-    // A sub-group is any group whose part_ids is a strict subset of the outer.
-    // Key: the first part_id of the sub-group; value: (rendered block, sub_ids).
+    // Step 2: stable document order for top-level groups.  Build a global part
+    // order from all part_ids across all groups (union, first-seen).
+    let mut global_order: Vec<&str> = Vec::new();
+    for g in groups {
+        for id in &g.part_ids {
+            if !global_order.contains(&id.as_str()) {
+                global_order.push(id.as_str());
+            }
+        }
+    }
+    let position_of = |id: &str| -> usize {
+        global_order
+            .iter()
+            .position(|&s| s == id)
+            .unwrap_or(usize::MAX)
+    };
+
+    let mut sorted_top: Vec<usize> = top_level_indices;
+    sorted_top.sort_by_key(|&i| {
+        groups[i]
+            .part_ids
+            .first()
+            .map_or(usize::MAX, |id| position_of(id))
+    });
+
+    // Step 3: render each top-level group with its sub-group substitutions.
+    let rendered: Vec<String> = sorted_top
+        .iter()
+        .map(|&i| render_group_with_subs(&groups[i], groups, i))
+        .collect();
+
+    // Step 4: join top-level blocks.
+    rendered.join(" ")
+}
+
+/// Render one group, substituting any inner sub-groups (groups whose `part_ids`
+/// are a strict subset of this group) inline at the position of their first part.
+fn render_group_with_subs(
+    group: &PartGroupEntry,
+    all_groups: &[PartGroupEntry],
+    self_idx: usize,
+) -> String {
+    // Build a map: first part_id of each sub-group → (rendered block, all sub ids).
     let mut sub_blocks: std::collections::HashMap<&str, (String, &[String])> = Default::default();
-    for (i, g) in groups.iter().enumerate() {
-        if i == outer_idx {
+    for (i, g) in all_groups.iter().enumerate() {
+        if i == self_idx || g.part_ids.is_empty() {
             continue;
         }
-        if g.part_ids.is_empty() {
-            continue;
-        }
-        // Check that all of g's part_ids are contained in outer's part_ids.
-        let is_sub = g.part_ids.iter().all(|id| outer.part_ids.contains(id));
+        // Sub-group: all of g's parts are in `group`, AND g is not the group itself.
+        let is_sub = g.part_ids.iter().all(|id| group.part_ids.contains(id));
         if is_sub {
             sub_blocks.insert(g.part_ids[0].as_str(), (render_group(g), &g.part_ids));
         }
     }
 
-    // Walk outer's part_ids, emitting either the sub-group block (and skipping
-    // its subsequent parts) or the bare voice id.
-    let open = open_char(outer.symbol);
-    let close = close_char(outer.symbol);
+    // Walk this group's part_ids, substituting sub-group blocks in place.
+    let open = open_char(group.symbol);
+    let close = close_char(group.symbol);
     let mut tokens: Vec<String> = Vec::new();
-    // Track how many ids of the current sub-group remain to be skipped.
     let mut skip_remaining: usize = 0;
-    for id in &outer.part_ids {
+    for id in &group.part_ids {
         if skip_remaining > 0 {
             skip_remaining -= 1;
             continue;
         }
         if let Some((block, sub_ids)) = sub_blocks.get(id.as_str()) {
-            // Emit the sub-group's rendered block and skip its remaining parts
-            // in the outer loop (all but the first, which we are processing now).
             skip_remaining = sub_ids.len().saturating_sub(1);
             tokens.push(block.clone());
         } else {
