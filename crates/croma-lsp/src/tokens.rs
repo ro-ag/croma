@@ -371,7 +371,6 @@ mod tests {
             vec![0, 2, 4],
             "skipping whitespace keeps columns right"
         );
-        // All on line 2, all pitches.
         assert!(
             decoded
                 .iter()

@@ -97,20 +97,11 @@ fn apply_change(
     if start > end {
         std::mem::swap(&mut start, &mut end);
     }
-    start = clamp_to_boundary(text, start);
-    end = clamp_to_boundary(text, end);
+    // Re-clamp onto char boundaries so `replace_range` can never split a scalar.
+    start = crate::position::clamp_to_boundary(text, start);
+    end = crate::position::clamp_to_boundary(text, end);
 
     text.replace_range(start..end, &change.text);
-}
-
-/// Clamp a byte `offset` into `[0, len]` and onto the nearest lower char
-/// boundary, so `replace_range` can never split a multi-byte scalar.
-fn clamp_to_boundary(text: &str, offset: usize) -> usize {
-    let mut offset = offset.min(text.len());
-    while offset > 0 && !text.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    offset
 }
 
 #[cfg(test)]
@@ -175,7 +166,6 @@ mod tests {
     fn ranged_insert_at_line_start() {
         let mut store = DocumentStore::new();
         store.open(uri(), "X:1\nK:C\n".to_string());
-        // Insert "T:Hi\n" at start of line 1.
         store.change(
             &uri(),
             vec![ranged(1, 0, 1, 0, "T:Hi\n")],
@@ -188,7 +178,6 @@ mod tests {
     fn ranged_replace_spanning_characters() {
         let mut store = DocumentStore::new();
         store.open(uri(), "abcdef\n".to_string());
-        // Replace "cd" (cols 2..4 on line 0) with "ZZZ".
         store.change(
             &uri(),
             vec![ranged(0, 2, 0, 4, "ZZZ")],
@@ -201,7 +190,6 @@ mod tests {
     fn ranged_delete_a_middle_line() {
         let mut store = DocumentStore::new();
         store.open(uri(), "a\nb\nc\n".to_string());
-        // Delete line 1 entirely: from (1,0) to (2,0).
         store.change(&uri(), vec![ranged(1, 0, 2, 0, "")], PositionEncoding::Utf8);
         assert_eq!(store.get(&uri()), Some("a\nc\n"));
     }

@@ -123,7 +123,6 @@ mod tests {
         let action = &actions[0];
         assert_eq!(action.kind, Some(CodeActionKind::SOURCE_FIX_ALL));
         assert!(action.title.starts_with(TITLE), "title: {}", action.title);
-        // The edit's new text equals auto_fix(src).output exactly.
         assert_eq!(
             edit_text(action),
             fixed.output,

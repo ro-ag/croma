@@ -68,8 +68,8 @@ fn field_key_at(
 ) -> Option<(&ParsedField, &'static FieldKey)> {
     for field in &fields.fields {
         // The marker span covers the field letter and its colon (`K:`); hovering
-        // anywhere on it explains the field. Use a half-open containment so the
-        // cursor at the colon's trailing edge still counts.
+        // anywhere on it explains the field. Containment is inclusive of the
+        // closing edge so the cursor at the colon's trailing edge still counts.
         if span_contains_inclusive(field.marker_span, offset)
             && let Some(key) = field_key(field.code)
         {
