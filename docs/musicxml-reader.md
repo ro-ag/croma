@@ -619,36 +619,63 @@ divergences are unrelated single-voice issues — see the metric below).
 
 #### Unsupported residual (documented per design "stop where coverage flattens")
 
-**Final state (after S6e): the corpus idempotent count is `9,915 / 9,935`** — the
-20 remaining non-idempotent files are all single-voice (`<backup>`-free) and are
+**Final state (after R3): the corpus idempotent count is `9,934 / 9,935`** — the
+single remaining non-idempotent file is single-voice (`<backup>`-free) and is
 documented as the reader's residual. (S6d reached `9,912 / 9,935`; S6e's clean
-ordering fix added **+3 with 0 regressions** — verified by a corpus set-diff of the
-strictly-idempotent file set, HEAD vs the fix: 0 previously-passing files break, 3
-new wins. See the corpus metric below.) The residual:
+ordering fix added **+3 with 0 regressions**; **R3 closed the 19-file
+demoted-chord-symbol ordering residual with 0 regressions** — verified by a corpus
+set-diff of the strictly-idempotent file set, HEAD vs the fix: 0 previously-passing
+files break, 19 new wins. See the corpus metric below.) The residual:
 
-- **19 files, first-diverging tag `direction`:** a **note-less** measure carrying
-  *both* a standalone annotation (`<direction><words>`) **and** a chord symbol
-  (`<harmony>`) with no note to host them. The writer emits them in their original
-  ABC document order, but the reader buffers both onto one trailing `Spacer` whose
-  attachment channels re-emit in a fixed order (chord symbols before annotations),
-  reversing the pair. Recovering the cross-channel document order within a single
-  Spacer would need per-attachment source tracking through the `pending` buffer —
-  a deeper change with its own regression surface — so it is **left documented**,
-  not forced. (S6e's `pending_insert_index` fix addresses the *adjacent* sub-case,
-  annotation-or-harmony **before an inline key/meter/clef change** in a note-less
-  measure — e.g. `"Trio"[K:F]` — by placing the trailing Spacer at its
-  document-order position relative to the same-onset change event; that subset, 3
-  files, now round-trips.)
-- **1 file, first-diverging tag `type`:** a deeply nested tuplet (a 21:16
-  composite from two stacked `<tuplet type="start">`) whose first note's `<type>`
-  spelling the reader does not reproduce (the reader recovers the composite
-  `21/16` ratio as the writer's reduced `441/256`, an S4 tuplet/note-spelling edge
-  case). Single-voice, **left documented**.
+- **1 file, first-diverging tag `type`** (`tune_003732.abc`): a deeply nested
+  tuplet — a `(7:8:8(3…` whose first note carries TWO stacked
+  `<tuplet type="start">` and the **composite** `<time-modification>21/16` — whose
+  first note's `<type>` spelling the reader does not reproduce. The reader's S4
+  tuplet machinery takes each opened tuplet's `actual`/`normal` from that note's
+  single `<time-modification>`, so both nested levels read `21/16` instead of the
+  individual `7:8` (outer) and `3:2` (inner) factors; on re-write the writer
+  re-composes them (`21/16 × 21/16` reduced to `441/256`) and re-derives `<type>`
+  `quarter` instead of `eighth`. The per-level factors are not individually present
+  in the XML for the first note (MusicXML's `<time-modification>` is the per-note
+  composite, and the two `<tuplet>` start markers carry no ratio), so recovering
+  the nesting decomposition would require a brittle cross-note inference (factoring
+  `21/16` back into `(7:8)×(3:2)` by reading the outer ratio off the notes that
+  remain after the inner `<tuplet type="stop">`). This is a genuinely lossy
+  reduction with no clean inverse, so it is **adjudicated — left documented**, not
+  forced into a special-case (per the design's "stop where coverage flattens").
+  Single-voice.
+
+**R3 — the closed 19-file `direction` residual.** Earlier docs attributed this to a
+*note-less* measure flushing an annotation + a chord symbol onto one trailing
+`Spacer` in fixed channel order. Re-investigation found the real (and more general)
+cause: a quoted ABC string with **no placement prefix** (e.g. `"tr"`, `"Trio"`,
+`"End with"`) is a *chord symbol* that `write_chord_symbol` **demotes** to a
+`<direction><words>` when `parse_chord_symbol` rejects it — emitted through the
+**same `chord_symbols` channel** (and therefore in document order) as a real
+`<harmony>`. So `"tr""G7"note` emits `<direction>tr` **before** `<harmony>G7`,
+both before the note. The reader read the placement-less `<direction><words>` back
+as an **annotation** (the writer always emits annotations *after* every chord
+symbol), so re-emission put `<harmony>G7` first — reversing the pair. (All 19 files
+were note-**hosted**, not note-less.) The fix
+([`demoted_chord_symbol_from_words`] in `read/mod.rs`) reads a **placement-less,
+trim-stable** `<direction><words>` back into `chord_symbols` (a placement-less
+`TextAttachment`, exactly like a real chord symbol), preserving its document-order
+position relative to any real `<harmony>` in the same buffered run. A
+placement-**bearing** `<direction>` stays an annotation (the writer's annotation
+channel always carries a `placement` attribute), and a non-trim-stable word stays
+an annotation (the chord-symbol path would `trim()` it). Re-emission is byte-
+identical because a placement-less, trim-stable word emits the same
+`<direction><words>` element through either channel — only its order vs `<harmony>`
+changes, which is the fix. The change is **read-side only**; the corpus set-diff
+confirmed **0 regressions, 19 new wins** (`9,915 → 9,934`).
 
 Every multi-voice (`<backup>`/`<voice>`) and every `<multiple-rest>` file in the
 corpus round-trips byte-for-byte; **zero** files first-diverge on `note`,
-`backup`, `voice`, `multiple-rest`, `score-instrument`, `pitch`, `step`, or (after
-S6e) on `attributes` (no mid-tune key/meter/clef change ordering remains).
+`backup`, `voice`, `multiple-rest`, `score-instrument`, `pitch`, `step`,
+`direction` (after R3), or (after S6e) on `attributes` (no mid-tune key/meter/clef
+change ordering remains).
+
+[`demoted_chord_symbol_from_words`]: ../crates/croma-core/src/musicxml/read/mod.rs
 
 ### S1/S2/S3/S4/S5a/S5b/S6a/S6b/S6c/S6d corpus metric (10k zenodo set)
 
@@ -784,6 +811,20 @@ S6e) on `attributes` (no mid-tune key/meter/clef change ordering remains).
   flattens." The totality work (debug_assert removal + the fuzz over 9,935 own
   exports + 10,000 abc2xml-reference files + 11 malformed cases, all 0 panics) is
   the stage's primary deliverable; see **Totality** above.
+- **R3 (residual closeout)** strict full-byte idempotence: **9,934 / 9,935**
+  (**+19** vs S6e's 9,915). R3 closes the 19-file `direction` residual at its true
+  root cause (a **demoted chord symbol** — a placement-less quoted string the
+  writer routes through the `chord_symbols` channel and emits as a
+  `<direction><words>` — read back as an `annotation`, reversing its order vs a
+  real `<harmony>` on the same note). The reader now reads a placement-less,
+  trim-stable `<direction><words>` back into `chord_symbols`, preserving document
+  order; the **`direction` first-diverging tag collapses 19 → 0**. A **corpus
+  set-diff of the strictly-idempotent file set (HEAD vs the fix) confirms 0
+  regressions and 19 new wins**. Read-side only — forward writer byte-untouched.
+  The lone remaining residual is the nested-`21:16`-tuplet `<type>` file
+  (`tune_003732.abc`), **adjudicated** (lossy ratio reduction, no clean inverse) —
+  see "Unsupported residual" above. **Coverage is fully flat for the self-loop
+  except the one adjudicated tuplet.**
 
 Re-run the measurement with (note: pass an **absolute** `ABC_ROOT` — the test
 runs with the crate dir as its working directory):
