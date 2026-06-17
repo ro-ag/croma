@@ -3556,26 +3556,139 @@ pub fn complete_score_for_abc(score: &mut Score) {
     if let Some(key) = score.metadata.key.as_mut()
         && key.display.is_empty()
     {
-        key.display = canonical_major_key_display(key.fifths);
+        key.display = key_display_for_abc(key);
     }
     for part in &mut score.parts {
         for voice in &mut part.voices {
             renumber_voice_tuplet_pair_ids(voice);
+            reproject_grace_slurs_for_abc(voice);
             synthesize_voice_barline_events(voice);
             // A mid-tune `[K:..]` is reconstructed as a `KeyChange` event whose
             // `display` is empty for the same reason the header key's is (the
             // writer drives `<key>` from `fifths`, never `display`). `write_abc`
             // emits `[K:{display}]`, so an empty display re-parses to `fifths 0`
-            // and drops the change. Fill the canonical major spelling — the same
-            // clean fix as the header key — so the mid-tune change survives.
+            // and drops the change. Fill the canonical major spelling — or, when
+            // the change carries explicit accidentals, the explicit-accidental
+            // spelling (P3) — so the mid-tune change survives.
             for event in &mut voice.events {
                 if let TimedEventKind::KeyChange(key) = &mut event.kind
                     && key.display.is_empty()
                 {
-                    key.display = canonical_major_key_display(key.fifths);
+                    key.display = key_display_for_abc(key);
                 }
             }
         }
+    }
+}
+
+/// P2: re-project a voice's grace-group slurs into the channels `write_abc`
+/// reads, mirroring forward lowering.
+///
+/// **The mismatch.** `read_musicxml` reconstructs every grace note's `<slur>`
+/// into its per-[`GraceEvent`] `slurs`, leaving the group-level
+/// [`GraceGroupAttachment::slurs`] empty (the comment on
+/// [`GraceGroupBuilder::finish`] explains this is byte-identical for
+/// `write_score_partwise`, which emits `group.slurs ++ first_event.slurs` on the
+/// first grace note). But `write_abc` reads the two channels DIFFERENTLY:
+///
+/// - a slur in `group.slurs` opens its `(` BEFORE the `{` (`event_prefix`), giving
+///   the canonical `({grace}note)` of a slur anchored on the first grace note;
+/// - a slur in a per-grace-event `slurs` opens its `(` INSIDE the braces
+///   (`grace_str`), and its `)` renders inside the braces only when
+///   `stop.span.start < group.span.end`, else as a trailing `)` after `}`.
+///
+/// The reader's flat [`READER_SPAN`] therefore breaks BOTH grace-slur shapes:
+/// a group-anchored start (`({Bc}B2)`) emits as `{(Bc}` (start swallowed into the
+/// braces, lost on re-parse), and an internal grace slur (`{(ef)}`) emits as
+/// `{(ef})` (stop pushed past the brace, also lost), since `0 >= 0` makes every
+/// reconstructed stop look "trailing".
+///
+/// **The fix (ABC projection only).** For each grace group:
+///
+/// 1. A slur START on a grace event whose matching `pair_id` has NO STOP within
+///    the same group is **group-anchored** (its STOP is on the following main
+///    note, which the reader already reconstructed into the event's own `slurs`).
+///    Move it into `group.slurs` so `write_abc` opens it before the `{`. This is
+///    XML-invisible: `write_score_partwise` emits `group.slurs ++ first_event.slurs`
+///    on the first grace note, and a group-anchored start is always the first
+///    `<slur>` there, so the combined per-note list is byte-identical.
+/// 2. When the group still carries any internal stop slur, give the group span a
+///    non-zero `end` so each internal stop (kept at `READER_SPAN`, `start == 0`)
+///    satisfies `start < group.span.end` and renders its `)` INSIDE the braces.
+///    The writer never emits a grace group's span, so this is XML-invisible too.
+///
+/// Both edits live in the ABC projection; the `write_musicxml` view (which reads
+/// the union of the slur channels and ignores spans) is untouched, so the
+/// `--format xml` pure inverse holds.
+#[cfg(feature = "musicxml-reader")]
+fn reproject_grace_slurs_for_abc(voice: &mut Voice) {
+    for event in &mut voice.events {
+        for group in event
+            .attachments
+            .grace_groups
+            .iter_mut()
+            .chain(&mut event.attachments.after_grace_groups)
+        {
+            reproject_one_grace_group_slurs(group);
+        }
+    }
+}
+
+/// P2 helper: re-project one grace group's slurs (see
+/// [`reproject_grace_slurs_for_abc`]).
+#[cfg(feature = "musicxml-reader")]
+fn reproject_one_grace_group_slurs(group: &mut GraceGroupAttachment) {
+    use std::collections::HashSet;
+
+    // pair_ids that have a STOP among the grace events, and those that have a
+    // START among them. A slur is **fully internal** iff its pair_id is in BOTH:
+    // it opens and closes within the group (`{(ef)}`). A START whose pair_id has
+    // no internal STOP is **group-anchored** (its STOP is on the following main
+    // note: `({Bc}B2)`). A STOP whose pair_id has no internal START closes a slur
+    // that opened on the PRECEDING main note — the after-grace shape `(f4{ef})` —
+    // and must stay a TRAILING `)` after `}`.
+    let internal_stop_ids: HashSet<u32> = group
+        .events
+        .iter()
+        .flat_map(|grace| &grace.slurs)
+        .filter(|slur| slur.role == SlurRole::Stop)
+        .map(|slur| slur.pair_id)
+        .collect();
+    let internal_start_ids: HashSet<u32> = group
+        .events
+        .iter()
+        .flat_map(|grace| &grace.slurs)
+        .filter(|slur| slur.role == SlurRole::Start)
+        .map(|slur| slur.pair_id)
+        .collect();
+
+    // Hoist every group-anchored START (a START with no matching internal STOP)
+    // out of the grace events and into `group.slurs`, preserving document order.
+    // Track whether any FULLY-INTERNAL stop remains (a stop whose start is also
+    // internal); only those need the span tweak that renders `)` inside the braces.
+    let mut has_fully_internal_stop = false;
+    for grace in &mut group.events {
+        let mut kept = Vec::with_capacity(grace.slurs.len());
+        for slur in grace.slurs.drain(..) {
+            if slur.role == SlurRole::Start && !internal_stop_ids.contains(&slur.pair_id) {
+                group.slurs.push(slur);
+            } else {
+                if slur.role == SlurRole::Stop && internal_start_ids.contains(&slur.pair_id) {
+                    has_fully_internal_stop = true;
+                }
+                kept.push(slur);
+            }
+        }
+        grace.slurs = kept;
+    }
+
+    // When a fully-internal stop remains, ensure the group span's `end` is non-zero
+    // so each internal stop (kept at `READER_SPAN`, `start == 0`) renders its `)`
+    // inside the braces (`start < group.span.end`). An after-grace trailing stop
+    // (start outside the group) is left untouched: with `group.span.end == 0` and
+    // the stop at `READER_SPAN`, `0 >= 0` keeps it a trailing `)`, matching forward.
+    if has_fully_internal_stop && group.span.end == 0 {
+        group.span = Span { start: 0, end: 1 };
     }
 }
 
@@ -3751,6 +3864,22 @@ fn synthesize_voice_barline_events(voice: &mut Voice) {
 /// round-trips them. `synthesize_trailing_regular` appends a plain `Regular`
 /// closing barline (the internal-boundary glyph the XML never recorded) when the
 /// caller determined the boundary to the next measure needs one.
+///
+/// **P1: empty / all-spacer measure.** A source measure that is entirely spacers
+/// (`y8 ...`) — including a trailing all-spacer measure — emits an empty
+/// `<measure></measure>` in MusicXML, because croma's spacers produce no XML
+/// element. The reader keeps an empty `Measure` for it (every `<measure>` gets a
+/// primary-voice `Measure`), but if it carries no barline, no ending, no content,
+/// and no synthesized internal-boundary `|` (the last-measure case, or a measure
+/// whose boundary is already marked by the next measure's leading barline), it
+/// would contribute ZERO events here — so `write_abc` segments it away and the
+/// re-parsed ABC loses a measure (the dominant `measure_count` divergence). When a
+/// measure would otherwise emit nothing, synthesize a single zero-duration
+/// [`TimedEventKind::Spacer`] so `write_abc` renders a `y`, preserving the measure
+/// boundary. This mirrors forward lowering, which represents an all-spacer measure
+/// as `Spacer` events; the structural projection counts the measure, not the
+/// spacer count, so one `y` is sufficient. The Spacer is inert in `write_musicxml`
+/// (a spacer emits no XML element), keeping the `--format xml` pure inverse intact.
 #[cfg(feature = "musicxml-reader")]
 fn emit_measure_with_barlines(
     measure: &Measure,
@@ -3759,6 +3888,7 @@ fn emit_measure_with_barlines(
     synthesize_trailing_regular: bool,
     out: &mut Vec<TimedEvent>,
 ) {
+    let start_len = out.len();
     // A barline "leads" its measure when its reader span starts at 0 (matching
     // the measure's READER_SPAN), exactly the writer's `is_leading_barline`
     // predicate. Leading barlines open the measure; the rest close it.
@@ -3795,6 +3925,18 @@ fn emit_measure_with_barlines(
             measure_id,
         ));
     }
+    // P1: an empty / all-spacer measure contributed no event above; emit a single
+    // `Spacer` so `write_abc` preserves the measure boundary (see the doc comment).
+    if out.len() == start_len {
+        out.push(TimedEvent {
+            measure: measure_id,
+            onset: Fraction::zero(),
+            duration: Fraction::zero(),
+            source: READER_SPAN,
+            kind: TimedEventKind::Spacer,
+            attachments: EventAttachments::default(),
+        });
+    }
 }
 
 /// A reader-reconstructed barline trails its measure iff it is not leading.
@@ -3823,6 +3965,61 @@ fn barline_event(barline: MeasureBarline, measure_id: MeasureId) -> TimedEvent {
         source: barline.span,
         kind: TimedEventKind::Barline(barline),
         attachments: EventAttachments::default(),
+    }
+}
+
+/// P3: the ABC `K:`/`[K:]` display string for a reconstructed key, the inverse
+/// spelling `write_abc` (re-parsed by the forward parser + lowering) maps back to
+/// the same `fifths` + `explicit_accidentals`.
+///
+/// **Why the canonical major spelling alone is wrong here.** `read_musicxml`
+/// reconstructs the explicit `<key-step>`/`<key-alter>`/`<key-accidental>` triples
+/// into [`KeySignatureModel::explicit_accidentals`] (confirmed by the XML
+/// idempotence gate), but the bare [`canonical_major_key_display`] spells only the
+/// `<fifths>`, so `write_abc` emits e.g. `K:Eb` and drops the explicit accidentals
+/// — losing a `K:<tonic> exp <accidentals>` signature, or a cancellation
+/// accidental on a consecutive `[K:][K:]`.
+///
+/// **The spelling.** When the key carries explicit accidentals, append them to the
+/// canonical major tonic as space-separated `<sign><step>` tokens (`Eb _b ^f`).
+/// The forward parser ([`crate::parse::field::parse_key`]) reads a tonic followed
+/// by space-separated accidental tokens into exactly `KeySignature.accidentals`
+/// (ABC 2.1 §3.1.14), and lowering copies them into `explicit_accidentals`; the
+/// canonical major tonic re-derives the same `fifths` via `key_fifths`. This
+/// round-trips both the `K:C _B` tonic-plus-accidental form (its `fifths` is the
+/// C-major 0) and the `K:D exp _B^g` form (whose `fifths` is forced to 0 by `exp`,
+/// so the canonical-major tonic for 0 — `C` — re-derives the same 0; no `exp`
+/// keyword is needed because the accidental tokens alone reconstruct the
+/// accidentals and the major tonic fixes the fifths). A key with no explicit
+/// accidentals falls back to the bare canonical major spelling.
+#[cfg(feature = "musicxml-reader")]
+fn key_display_for_abc(key: &KeySignatureModel) -> String {
+    let tonic = canonical_major_key_display(key.fifths);
+    if key.explicit_accidentals.is_empty() {
+        return tonic;
+    }
+    let mut display = tonic;
+    for accidental in &key.explicit_accidentals {
+        display.push(' ');
+        display.push_str(key_accidental_sign_token(accidental.accidental));
+        // The step is stored uppercase; the parser uppercases the note letter, so
+        // a lowercase token (the common ABC spelling) re-parses identically.
+        display.push(accidental.step.to_ascii_lowercase());
+    }
+    display
+}
+
+/// P3: the ABC accidental-sign prefix for a key accidental, the inverse of the
+/// parser's `<sign><note>` accidental tokens (ABC 2.1 §3.1.14): `^`/`_`/`=` and
+/// the doubles `^^`/`__`.
+#[cfg(feature = "musicxml-reader")]
+fn key_accidental_sign_token(accidental: Accidental) -> &'static str {
+    match accidental {
+        Accidental::DoubleFlat => "__",
+        Accidental::Flat => "_",
+        Accidental::Natural => "=",
+        Accidental::Sharp => "^",
+        Accidental::DoubleSharp => "^^",
     }
 }
 
