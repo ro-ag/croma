@@ -2,7 +2,7 @@
 
 The reader inverts **croma's own writer** (`crates/croma-core/src/musicxml/`).
 It is **PROMOTED** (un-gated, 2026-06-16) — like the formatter before it — on the
-evidence below (self-loop idempotence **9,934/9,935**, totality 0-panic,
+evidence below (self-loop idempotence **9,935/9,935**, totality 0-panic,
 reference-dialect music21 parity **98.50%**, reader→ABC round-trip **97.9%**). It
 **ships in the default CLI build** (`croma read` / `croma musicxml2abc`). The
 `croma-core` **library** keeps it behind the opt-in `musicxml-reader` feature so
@@ -53,26 +53,27 @@ cannot perturb the write_musicxml inverse.
 
 **Structural round-trip evidence** (`tools/prove_reader_abc_roundtrip.py`,
 LOCAL-ONLY: `croma xml`→X1, `croma read X1 --format abc`→ABC', `croma xml ABC'`
-→X2, compare the normalized musical projection X1≡X2): **9,722 / 9,933 in-scope
-round-trip structurally (97.9%)**. The remaining 211 are adjudicated below — a
+→X2, compare the normalized musical projection X1≡X2): **9,724 / 9,933 in-scope
+round-trip structurally (97.9%)**. The remaining 209 are adjudicated below — a
 valid-but-different Score that the lossy XML intermediate cannot always render
 back to byte-faithful ABC.
 
 ### Reader→ABC residual (adjudicated)
 
-After three completion passes (R1 + the two residual-burndown phases), the
-reader→ABC structural round-trip stands at **9,722 / 9,933 (97.9%)** — **211
-structural diffs**. Each was triaged from the **actual X1-vs-X2 projection diff**
-(not the original ABC source) with a *decisive* test: does any sounding note or
-rest (pitch+alter+octave+duration) get dropped or added? **208 of the 211 preserve
-every sounding fact** — they are valid-but-different *structural equivalence* the
-lossy XML intermediate cannot byte-match, **not** a defect. Only **3** carry a real
-sounding difference, and all 3 are bounded HARD/degenerate stops.
+After five completion passes (R1 + three residual-burndown phases + phase-62 P2/P3
+fixes), the reader→ABC structural round-trip stands at **9,724 / 9,933 (97.9%)** —
+**209 structural diffs**. Each was triaged from the **actual X1-vs-X2 projection
+diff** (not the original ABC source) with a *decisive* test: does any sounding note
+or rest (pitch+alter+octave+duration) get dropped or added? **207 of the 209
+preserve every sounding fact** — they are valid-but-different *structural
+equivalence* the lossy XML intermediate cannot byte-match, **not** a defect. Only
+**2** carry a real sounding or metadata difference, and both are bounded
+HARD/degenerate stops.
 
 The principled stop: **the ABC projection is musically faithful** — through the
 lossy MusicXML intermediate it emits correct, playable ABC; the residual is
 structural equivalence (different-but-equal voice grouping, redundant restatement,
-section/barline ordering, chord-internal marker attribution) plus **3 HARD items**.
+section/barline ordering, chord-internal marker attribution) plus **2 HARD items**.
 Forcing byte-fidelity on these is cosmetic, not correctness. The first-divergence
 histogram and the verdict per category:
 
@@ -82,16 +83,15 @@ histogram and the verdict per category:
 | `element_kind` | 61 | **ADJUDICATE** (61/61 sounding-equal). Two shapes: a **redundant `[K:]`/`[M:]` restatement** the reader drops as a no-op (restating the same signature changes nothing), and a **section-boundary reorder** where a key signature and an adjacent repeat barline (`||:` heavy-light-forward) swap relative order. No note dropped. |
 | `lyric` | 9 | **ADJUDICATE / HARD** (9/9 sounding-equal; syllable **multiset identical**). The `w:` syllable-to-note **redistribution**: every syllable survives, but the lossy `<lyric>` round-trip lands a syllable on a neighbouring note. Re-aligning syllables byte-exactly is the deep `w:` redistribution problem — a documented stop, not chased. |
 | `slur` | 5 | **ADJUDICATE** (5/5 sounding-equal; slur start/stop **counts conserved**). Chord-internal slur **re-attribution**: a member-specific `[(B,(G]` start (or a stop) lands on the chord *head* vs *member* of the **same chord** through `complete_score_for_abc`'s `((`-before-chord emission. The slur span (which chord it opens/closes on) is identical — only the per-member marker placement differs. |
-| `duration` | 1 | **HARD** (`tune_003732`). A **nested `7:8:8` / `21:16` tuplet** the forward writer reduced to `441/256`, which has **no clean inverse** to a 7:8 ⊂ 3:2 nesting. Documented as a principled stop since R3. |
 | `pitch` | 1 | **HARD / degenerate source** (`tune_014467`). A `Q: "Figs 1-3" 3/2=84 "Fig 4" 3/2=76` tempo whose text **contains `"` quote characters**: the forward writer parks it in a `<direction><words>`, the reader reads it back as an annotation, and ABC has **no escape for `"` inside a `"…"` annotation**, so the re-parse skips tokens and fabricates phantom notes. Tempo text is **non-structural metadata the projection ignores** by design; a fix would have to strip it read-side, perturbing the byte-identical `--format xml` inverse, so it is adjudicated rather than chased. (The other 8 corpus files whose ABC carries a `""` are benign adjacent chord-symbols, not corruption.) |
 
-The 1 remaining sounding difference inside `measure_count` is `tune_013508` — a
-3-staff `%%staves`+`&`-within-`[V:]`+mid-tune-`[K:]` tangle where one note's
-accidental flips flat↔natural through the multi-voice round-trip (total duration
-conserved); it is the multi-voice-overlay rewrite the residual deliberately does
-not chase.
+The 1 remaining sounding difference inside `measure_count` is `tune_013508` —
+**ADJUDICATE**: a 3-staff `%%staves`+`&`-within-`[V:]`+mid-tune-`[K:]` tangle where
+one note's accidental flips flat↔natural through the multi-voice round-trip (total
+duration conserved); it is the multi-voice-overlay rewrite the residual deliberately
+does not chase.
 
-**What this phase fixed (CLEAN-FIX, TDD, ABC-projection-isolated):** the dominant
+**What phase-61 fixed (CLEAN-FIX, TDD, ABC-projection-isolated):** the dominant
 `measure_count` lever — a measure that, after lowering, **anchors no `write_abc`
 segment** (no note/rest/chord/spacer) was dropped on re-parse. Two slots collapse:
 an empty interior `||`-boundary measure (`… | | …`, an empty `| |` the parser
@@ -103,6 +103,14 @@ forward writer's bar glyphs re-parse to that empty measure. The `Spacer` is iner
 `write_musicxml`, so XML idempotence stayed **9,934 / 9,935** and `--format xml` is
 byte-identical. Result: **318 → 211** structural diffs (**107 files** fixed, **0
 regressions**).
+
+**What phase-62 fixed (P2 + P3):** P2 fixed `tune_003732` — the nested `7:8:8` /
+`21:16` tuplet self-loop residual (see phase-62 below). P3 fixed `tune_013528` — its
+bracketed `P:` section label now emits whole-line (`P:…`) so it survives re-parse.
+Combined: **211 → 209** structural diffs (**2 files** fixed, **0 regressions**).
+
+See [`docs/superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md`](superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md)
+for the full adjudication rationale of the remaining items.
 
 ## Verification gate
 
@@ -208,8 +216,9 @@ reader bug):
 | `duration` 293 (~35 files) | **comparator/music21 artifact** — the breve note is byte-identical in croma's re-export and the ref; music21 reports a context-dependent ql, croma is not wrong. |
 | `extra_in_croma` 181 (~81 files) | **croma writer default** — croma always emits a playback `<sound tempo="120">` that abc2xml omits; semantically neutral, not changeable without touching the (out-of-scope) forward writer. |
 | `missing_in_croma` 398 + `measure_alignment` 73 + `voice` 38 | **single outlier file** `tune_011134.xml` (a pathological 2-part score; reference `<dot>`s croma lacks). 1 file. |
-| `tuplet` 47 | **reader gap on complex/nested tuplets**, shared with the documented self-loop nested-tuplet residual — R3-adjacent, not chased here. |
-| `direction` 34, `barline` 7, `accidental` 2 | uncommon directions croma leaves unread (with a diagnostic) / minor structural & spelling tails. |
+| `tuplet` 47 | **reader gap on complex/nested tuplets** in foreign dialects (distinct from the self-loop nested-tuplet residual, which is now FIXED — see phase-62 P2). Not chased here; foreign nested-tuplet shapes vary and the abc2xml dialect does not exercise P2's specific `21:16` pattern. |
+| `direction` 34 (pre-P3) → **`direction` ~24** (post-P3) | P3 eliminated the `<rehearsal>` sub-category (~10 files, `unsupported_direction_type` diagnostic) — the reader now imports `<rehearsal>` into `P:`. Remaining: uncommon directions croma leaves unread (with a diagnostic) / minor structural tails. |
+| `barline` 7, `accidental` 2 | minor structural & spelling tails. |
 
 **Foreign-engraver stretch (Decision 4).** A totality probe over 40 real
 non-abc2xml engravings from music21 10.3.0's bundled corpus (MuseScore/Finale-origin
@@ -440,8 +449,9 @@ direction and flushes the buffer onto the **next** timed event (note, rest, or
 - **Writer-derived, no reader code:** the `<sound>` tempo value, the `<voice>`/
   `<staff>` routing, and the per-category re-grouping are all derived by the
   writer from the reconstructed fields, so recovering the model field reproduces
-  them. Anything with no model-backed inverse (rehearsal marks, pedal, …) is left
-  unread with a diagnostic, never an invented mapping.
+  them. Anything with no model-backed inverse (pedal, …) is left unread with a
+  diagnostic, never an invented mapping. `<rehearsal>` marks are now read
+  (phase-62 P3) — see the phase-62 section below.
 
 ### S5b reconstruction notes — `<harmony>` + `<lyric>`
 
@@ -671,31 +681,13 @@ divergences are unrelated single-voice issues — see the metric below).
 
 #### Unsupported residual (documented per design "stop where coverage flattens")
 
-**Final state (after R3): the corpus idempotent count is `9,934 / 9,935`** — the
-single remaining non-idempotent file is single-voice (`<backup>`-free) and is
-documented as the reader's residual. (S6d reached `9,912 / 9,935`; S6e's clean
-ordering fix added **+3 with 0 regressions**; **R3 closed the 19-file
-demoted-chord-symbol ordering residual with 0 regressions** — verified by a corpus
-set-diff of the strictly-idempotent file set, HEAD vs the fix: 0 previously-passing
-files break, 19 new wins. See the corpus metric below.) The residual:
-
-- **1 file, first-diverging tag `type`** (`tune_003732.abc`): a deeply nested
-  tuplet — a `(7:8:8(3…` whose first note carries TWO stacked
-  `<tuplet type="start">` and the **composite** `<time-modification>21/16` — whose
-  first note's `<type>` spelling the reader does not reproduce. The reader's S4
-  tuplet machinery takes each opened tuplet's `actual`/`normal` from that note's
-  single `<time-modification>`, so both nested levels read `21/16` instead of the
-  individual `7:8` (outer) and `3:2` (inner) factors; on re-write the writer
-  re-composes them (`21/16 × 21/16` reduced to `441/256`) and re-derives `<type>`
-  `quarter` instead of `eighth`. The per-level factors are not individually present
-  in the XML for the first note (MusicXML's `<time-modification>` is the per-note
-  composite, and the two `<tuplet>` start markers carry no ratio), so recovering
-  the nesting decomposition would require a brittle cross-note inference (factoring
-  `21/16` back into `(7:8)×(3:2)` by reading the outer ratio off the notes that
-  remain after the inner `<tuplet type="stop">`). This is a genuinely lossy
-  reduction with no clean inverse, so it is **adjudicated — left documented**, not
-  forced into a special-case (per the design's "stop where coverage flattens").
-  Single-voice.
+**Final state (after phase-62): the corpus idempotent count is `9,935 / 9,935` —
+zero residual.** (S6d reached `9,912 / 9,935`; S6e's clean ordering fix added
+**+3 with 0 regressions**; R3 closed the 19-file demoted-chord-symbol ordering
+residual with 0 regressions; **phase-62 P2 closed the 1 remaining nested-tuplet
+residual** — see the phase-62 section below. All verified by corpus set-diff of the
+strictly-idempotent file set: 0 regressions, 1 new win on `tune_003732.abc`.) See
+the corpus metric below for the full per-stage progression.
 
 **R3 — the closed 19-file `direction` residual.** Earlier docs attributed this to a
 *note-less* measure flushing an annotation + a chord symbol onto one trailing
@@ -724,8 +716,9 @@ confirmed **0 regressions, 19 new wins** (`9,915 → 9,934`).
 Every multi-voice (`<backup>`/`<voice>`) and every `<multiple-rest>` file in the
 corpus round-trips byte-for-byte; **zero** files first-diverge on `note`,
 `backup`, `voice`, `multiple-rest`, `score-instrument`, `pitch`, `step`,
-`direction` (after R3), or (after S6e) on `attributes` (no mid-tune key/meter/clef
-change ordering remains).
+`direction` (after R3), `type` (after phase-62 P2), or (after S6e) on `attributes`
+(no mid-tune key/meter/clef change ordering remains). The corpus is **fully
+idempotent: 9,935 / 9,935**.
 
 [`demoted_chord_symbol_from_words`]: ../crates/croma-core/src/musicxml/read/mod.rs
 
@@ -873,10 +866,22 @@ change ordering remains).
   order; the **`direction` first-diverging tag collapses 19 → 0**. A **corpus
   set-diff of the strictly-idempotent file set (HEAD vs the fix) confirms 0
   regressions and 19 new wins**. Read-side only — forward writer byte-untouched.
-  The lone remaining residual is the nested-`21:16`-tuplet `<type>` file
-  (`tune_003732.abc`), **adjudicated** (lossy ratio reduction, no clean inverse) —
-  see "Unsupported residual" above. **Coverage is fully flat for the self-loop
-  except the one adjudicated tuplet.**
+  The lone remaining residual was the nested-`21:16`-tuplet `<type>` file
+  (`tune_003732.abc`) — closed by phase-62 P2 below.
+- **phase-62 P2 (nested-tuplet inverse)** strict full-byte idempotence:
+  **9,935 / 9,935** (**+1** vs R3's 9,934). P2 closes the lone remaining
+  self-loop residual: the nested `7:8:8` / `21:16` tuplet in `tune_003732.abc`.
+  The S4 tuplet reader previously took each opened tuplet's ratio from the first
+  note's single composite `<time-modification>21/16`, so both nested levels read
+  `21/16` instead of the individual `7:8` (outer) and `3:2` (inner) factors.
+  P2 adds a **deterministic decomposition**: after the inner `<tuplet type="stop">`
+  closes, the outer-tuplet ratio is recovered from the post-inner-close tail notes'
+  `<time-modification>` (which carries the outer `7:8` alone, not the composite),
+  allowing the outer level to be reconstructed as `7:8` and the inner as `3:2 =
+  (21/16) ÷ (7/8)` by division. The writer then re-emits `<type>eighth` (not
+  `quarter`). A **corpus set-diff of the strictly-idempotent file set confirms 0
+  regressions, 1 new win**. The self-loop is now **fully idempotent — 9,935 /
+  9,935, zero residual**.
 
 Re-run the measurement with (note: pass an **absolute** `ABC_ROOT` — the test
 runs with the crate dir as its working directory):
@@ -890,3 +895,108 @@ ABC_ROOT=/abs/path/to/docs/untracked/corpus/zenodo-10k/abc \
 Set `READER_IDEMPOTENT_LIST=/tmp/idem.txt` to additionally dump the sorted list of
 strictly-idempotent file names; two runs (baseline vs a change) can then be
 `comm`-diffed to prove a fix has zero regressions, as S6e did.
+
+## Phase-62 closeout (deferred items)
+
+Phase-62 resolved the three deferred items from the promotion and closed two
+reader→ABC structural diffs. Full adjudication rationale:
+[`docs/superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md`](superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md).
+
+### P2 — nested-tuplet inverse (reader-only, self-loop)
+
+**Capability.** The reader now deterministically recovers a nested `(7:8:8(3…`
+tuplet from the XML emitted by croma's own writer. The S4 tuplet reader previously
+took each opened level's `actual`/`normal` from the first note's single composite
+`<time-modification>` (e.g. `21/16`), so both levels read `21/16` and the writer
+re-composed them as `441/256`, deriving the wrong `<type>`. The fix reads the outer
+ratio off the **post-inner-close tail notes** whose `<time-modification>` carries
+only the outer factor (`7:8`), then recovers the inner factor by division (`3:2 =
+(21/16) ÷ (7/8)`). This is deterministic and requires no forward change.
+
+**Result.** Self-loop: **9,935 / 9,935** (was 9,934). `tune_003732` is closed —
+zero corpus residual. Forward gates held (raw whitelist 9390/0, fmt 10000/0, ABC
+roundtrip 129).
+
+**Adjudication (FIXED, not deferred).** Evidence: the outer ratio is explicitly
+recoverable from tail-note time-modifications; no cross-note heuristic or
+factoring is required. 0 regressions confirmed by corpus set-diff.
+
+### P1a — `%%score` from `<part-group>` (reader-only)
+
+**Capability.** The reader synthesises a croma `%%score` directive from MusicXML
+`<part-list>/<part-group>` when reading foreign multi-part scores. Mapping:
+`<group-symbol>brace` → `{}`, `<group-symbol>bracket` or `square` → `[]`. The
+synthesis handles:
+- **Nested sub-groups:** one level of sub-group substitution.
+- **Sibling top-level groups:** e.g. `[P1 P2] [P3 P4]` emitted as two bracket pairs.
+- **Ungrouped parts:** emitted as bare voice-id tokens appended after any groups,
+  so no voice is hidden by the selective `%%score`.
+
+**351 corpus files** now emit a `%%score` directive through `musicxml2abc` (before/
+after unit-test count). The reverse comparator is grouping-blind, so no corpus gate
+measures it directly; proven by unit tests and the before/after emission count.
+Forward- and self-loop-neutral: croma's own writer never emits `<part-group>`.
+
+**Adjudication (P1b — multi-staff / 2-staves-per-part — DEFERRED).** ABC has no
+2-staff-per-part concept and croma deliberately lacks a structured grouping model.
+Collapsing to one staff drops **0 sounding notes** — evidence: music21 `.mxl`
+Schubert/Schumann SATB files show staff routing collapses, every sounding pitch
+preserved. Revisit only if classical keyboard/SATB import becomes an explicit goal.
+
+**Adjudication (3-level nested `<part-group>` — DOCUMENTED LIMITATION).** The P1a
+synthesis handles one level of sub-group substitution. Deeper nesting (3+ levels)
+has **0 corpus files** and is theoretical only; the reader degrades gracefully
+(emits the top-level grouping, ignores deeper nesting).
+
+### P3 — `P:` ↔ `<rehearsal>` (forward + reader)
+
+**Capability.** A BODY/inline ABC `P:` section label now round-trips
+`ABC → MusicXML <rehearsal> → Score → MusicXML` via a new
+`TimedEventKind::SectionLabel`. The writer emits abc2xml's shape:
+
+```xml
+<direction placement="above">
+  <direction-type>
+    <rehearsal font-weight="bold">…</rehearsal>
+  </direction-type>
+</direction>
+```
+
+A label containing `[` or `]` is emitted whole-line (`P:…`) to survive re-parse.
+The reader reads `<rehearsal>` into `SectionLabel` (the `unsupported_direction_type`
+diagnostic for `<rehearsal>` — 410 foreign files — is eliminated). The header
+`P:ABAB` play-order macro is deliberately NOT converted (stays dropped with a
+diagnostic): the play-order semantics are non-trivial and the macro targets the
+header, not the body.
+
+**Forward gates held across P3** (a forward change): raw whitelist **9390/0**
+(the comparator is rehearsal-blind → neutral; set-diff proven), fmt **10000/0**
+(croma-fmt is decoupled from `write_abc`), forward ABC roundtrip **129** (no
+regression). `croma-core` default build stays zero-dep; `SectionLabel` is plain
+data with no new dependencies.
+
+**Reader→ABC improvement.** P3 closed `tune_013528` (its bracketed `P:` label now
+emits whole-line and survives re-parse): **211 → 209** structural diffs (combined
+with P2's `tune_003732` fix — see the residual section above).
+
+**Adjudication — foreign `<direction>` with co-located `<rehearsal>` + `<words>`/
+`<dynamics>`.** The reader reads the rehearsal and drops the co-located sibling
+(graceful degrade). croma's own writer and abc2xml emit `<rehearsal>` standalone,
+so this edge never affects the self-loop or the abc2xml corpus. Noted as a
+foreign-input robustness edge.
+
+**Adjudication — pedal `<direction>`.** ABC 2.1/2.2 has no sustain-pedal syntax.
+0 corpus files use pedal directives. Writer-can't-express; left unread with a
+diagnostic. No sounding loss.
+
+### Summary gate numbers (phase-62 final)
+
+| Gate | Value |
+|---|---|
+| Self-loop XML idempotence | **9,935 / 9,935** (100%) |
+| Reader→ABC structural roundtrip | **9,724 / 9,933** (209 diffs; 207 sounding-equal + 2 HARD) |
+| Foreign reverse music21 parity | **9,850 / 10,000** (98.50%) |
+| Raw whitelist | **9,390 / 0** |
+| fmt corpus | **10,000 / 0** |
+| Forward ABC roundtrip | **129** diffs (no regression vs pre-P3) |
+| Totality panics | **0** (9,935 own + 10,000 abc2xml-ref + 11 malformed) |
