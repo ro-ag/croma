@@ -91,7 +91,8 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::KeyChange(_)
         | LoweredEvent::MeterChange(_)
         | LoweredEvent::ClefChange(_)
-        | LoweredEvent::TempoChange(_) => divisions,
+        | LoweredEvent::TempoChange(_)
+        | LoweredEvent::SectionLabel { .. } => divisions,
     });
     let events = all_lowered
         .into_iter()
@@ -103,7 +104,8 @@ pub(crate) fn lower_tune_music(
             | LoweredEvent::KeyChange(_)
             | LoweredEvent::MeterChange(_)
             | LoweredEvent::ClefChange(_)
-            | LoweredEvent::TempoChange(_) => None,
+            | LoweredEvent::TempoChange(_)
+            | LoweredEvent::SectionLabel { .. } => None,
         })
         .collect();
     let meter_duration = lowering.meter_duration;
@@ -255,11 +257,24 @@ impl MultiVoiceLowering {
                 voice_id: self.current_voice.clone(),
                 line: line.clone(),
             }),
+            MusicFieldLineKind::SectionLabel(label) => self.apply_section_label(label),
             MusicFieldLineKind::PostTuneText(_)
             | MusicFieldLineKind::Score(_)
             | MusicFieldLineKind::Unknown(_)
             | MusicFieldLineKind::Other => {}
         }
+    }
+
+    /// A body `P:` line or inline `[P:..]` (ABC 2.1 §4.3 section label): record a
+    /// zero-duration section-label event at the current voice position so
+    /// exporters reproduce the label in place (as a MusicXML `<rehearsal>`).
+    fn apply_section_label(&mut self, label: &Spanned<String>) {
+        self.current_state()
+            .lowered
+            .push(LoweredEvent::SectionLabel {
+                label: label.value.clone(),
+                span: label.span,
+            });
     }
 
     fn apply_meter_change(&mut self, meter: &Spanned<Meter>) {
@@ -493,6 +508,15 @@ impl MultiVoiceLowering {
             }
             'Q' => {
                 self.apply_tempo_change(&Spanned::new(
+                    inline.value.value.clone(),
+                    inline.value.span,
+                ));
+            }
+            'P' => {
+                // Inline `[P:..]` is a section label (ABC 2.1 §4.3): record a
+                // zero-duration label event at the current voice position,
+                // mirroring the body `P:` line and the inline `[Q:..]` path.
+                self.apply_section_label(&Spanned::new(
                     inline.value.value.clone(),
                     inline.value.span,
                 ));

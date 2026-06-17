@@ -79,6 +79,19 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.end("direction");
     }
 
+    /// Emit a body/inline `P:` section label as a MusicXML `<rehearsal>`
+    /// direction, matching abc2xml's exact shape (all 1109 corpus occurrences use
+    /// only `font-weight="bold"`). The label text is XML-escaped by
+    /// `text_element_attrs`; the reader inverts this byte-for-byte.
+    pub(crate) fn write_rehearsal_direction(&mut self, label: &str) {
+        self.xml.start("direction", &[("placement", "above")]);
+        self.xml.start("direction-type", &[]);
+        self.xml
+            .text_element_attrs("rehearsal", &[("font-weight", "bold")], label);
+        self.xml.end("direction-type");
+        self.xml.end("direction");
+    }
+
     pub(crate) fn write_harmony_and_directions(
         &mut self,
         attachments: &EventAttachments,

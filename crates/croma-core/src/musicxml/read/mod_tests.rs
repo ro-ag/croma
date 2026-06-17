@@ -5613,6 +5613,146 @@ fn ungrouped_part_included_in_score_directive() {
     );
 }
 
+// --- P3: body/inline `P:` section label <-> <rehearsal> ----------------------
+
+/// Collect every `SectionLabel(label)` across all parts/voices, in document
+/// order, as owned strings — the model surface the writer emits as
+/// `<rehearsal>` and the reader reconstructs from one.
+fn section_labels(score: &Score) -> Vec<String> {
+    let mut labels = Vec::new();
+    for part in &score.parts {
+        for voice in &part.voices {
+            for event in &voice.events {
+                if let TimedEventKind::SectionLabel(label) = &event.kind {
+                    labels.push(label.clone());
+                }
+            }
+        }
+    }
+    labels
+}
+
+#[test]
+fn body_part_label_round_trips_through_rehearsal() {
+    // A body `P:A` section label (ABC 2.1 §4.3) must become a <rehearsal> in the
+    // writer, read back into a SectionLabel event, and re-write byte-identically.
+    let abc = "X:1\nT:Sections\nM:4/4\nL:1/4\nK:C\nP:A\nC D E F |\nP:B\nG A B c |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<rehearsal font-weight=\"bold\">A</rehearsal>"),
+        "precondition: body `P:A` must emit a <rehearsal>A direction; got:\n{x1}"
+    );
+    assert!(
+        x1.contains("<rehearsal font-weight=\"bold\">B</rehearsal>"),
+        "precondition: body `P:B` must emit a <rehearsal>B direction"
+    );
+    let score = assert_idempotent_full(abc);
+    assert_eq!(
+        section_labels(&score),
+        vec!["A".to_owned(), "B".to_owned()],
+        "the reader must reconstruct both body section labels in order"
+    );
+}
+
+#[test]
+fn inline_part_label_round_trips_through_rehearsal() {
+    // An inline `[P:B]` mid-line section label must round-trip identically too.
+    let abc = "X:1\nT:Inline\nM:4/4\nL:1/4\nK:C\nC D [P:B] E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<rehearsal font-weight=\"bold\">B</rehearsal>"),
+        "precondition: inline `[P:B]` must emit a <rehearsal>B direction; got:\n{x1}"
+    );
+    let score = assert_idempotent_full(abc);
+    assert_eq!(
+        section_labels(&score),
+        vec!["B".to_owned()],
+        "the reader must reconstruct the inline section label"
+    );
+}
+
+#[test]
+fn foreign_rehearsal_imports_as_part_label() {
+    // A minimal foreign MusicXML carrying abc2xml's <rehearsal> shape must read
+    // into a SectionLabel and write back to ABC as `[P:A]`.
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1"><part-name>V</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <direction placement="above">
+        <direction-type>
+          <rehearsal font-weight="bold">A</rehearsal>
+        </direction-type>
+      </direction>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <type>whole</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>
+"#;
+    let report = read_musicxml(xml);
+    assert_eq!(
+        section_labels(&report.value),
+        vec!["A".to_owned()],
+        "a foreign <rehearsal> must import as a SectionLabel; diags: {:?}",
+        report.diagnostics
+    );
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[P:A]"),
+        "write_abc must emit `[P:A]` for the imported section label; got:\n{abc}"
+    );
+}
+
+#[test]
+fn header_play_order_is_not_a_rehearsal() {
+    // CRITICAL boundary: a HEADER `P:ABAB` is the play-order macro, NOT a section
+    // label. It must stay dropped (no <rehearsal>, no SectionLabel event), exactly
+    // as today — turning it into a rehearsal mark would corrupt the file.
+    let abc = "X:1\nT:PlayOrder\nM:4/4\nL:1/4\nP:ABAB\nK:C\nC D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        !x1.contains("<rehearsal"),
+        "a header `P:ABAB` must NOT emit a <rehearsal>; got:\n{x1}"
+    );
+    let report = read_musicxml(&x1);
+    assert!(
+        section_labels(&report.value).is_empty(),
+        "a header `P:ABAB` must produce no SectionLabel events"
+    );
+}
+
+#[test]
+fn rehearsal_label_xml_escapes_round_trip() {
+    // A label containing `&` and `<` must be XML-escaped on write and unescaped on
+    // read, round-tripping byte-identically.
+    let abc = "X:1\nT:Escape\nM:4/4\nL:1/4\nK:C\nP:A&<B\nC D E F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<rehearsal font-weight=\"bold\">A&amp;&lt;B</rehearsal>"),
+        "the `&`/`<` in the label must be XML-escaped in <rehearsal>; got:\n{x1}"
+    );
+    let score = assert_idempotent_full(abc);
+    assert_eq!(
+        section_labels(&score),
+        vec!["A&<B".to_owned()],
+        "the reader must XML-unescape the label back to `A&<B`"
+    );
+}
+
 /// The first line at which two ABC documents diverge, rendered as
 /// `` `<expected>` != `<actual>` ``. `None`-free: returns a sentinel when one is
 /// a prefix of the other. Used only for the human-readable divergence note.

@@ -380,6 +380,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::TempoChange(tempo) => {
                 out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
             }
+            TimedEventKind::SectionLabel(label) => {
+                out.push_str(&format!("[P:{label}] "));
+            }
         }
     }
     // Flush overlays of the final measure (and any not reached via barlines).
@@ -936,7 +939,8 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
             | TimelineEventKind::KeyChange(_)
             | TimelineEventKind::MeterChange(_)
             | TimelineEventKind::ClefChange(_)
-            | TimelineEventKind::TempoChange(_) => {}
+            | TimelineEventKind::TempoChange(_)
+            | TimelineEventKind::SectionLabel(_) => {}
         }
         i += 1;
     }

@@ -181,6 +181,21 @@ impl VoiceTimelineBuilder {
                     attachments: EventAttachments::default(),
                 });
             }
+            LoweredEvent::SectionLabel { label, span } => {
+                let onset = self.onset;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::SectionLabel(label),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                    attachments: EventAttachments::default(),
+                });
+            }
             LoweredEvent::Untimed(Event::Spacer { span }) => {
                 let onset = self.onset;
                 self.current_measure_mut().events.push(VoiceTimedEvent {
@@ -491,9 +506,12 @@ impl VoiceTimelineBuilder {
 /// A measure with no events and no overlays at all (the original phantom case:
 /// a fresh measure opened after a trailing bar line with nothing following).
 fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
-    // Zero-duration key/meter change events do not make a measure real: in
-    // `...| [K:C] |: ...` the change belongs to the measure the `|:` opens,
-    // and the pending one must keep accepting that leading barline.
+    // Zero-duration key/meter/tempo change AND section-label events do not make a
+    // measure real: in `...| [K:C] |: ...` (or a leading `P:A` before a pickup's
+    // `|:`) the change/label belongs to the measure the `|:` opens, and the
+    // pending one must keep accepting that leading barline. Without including
+    // `SectionLabel`, a leading body `P:` would split off a spurious standalone
+    // measure and shift every downstream measure number.
     measure.overlays.is_empty()
         && measure.events.iter().all(|event| {
             matches!(
@@ -502,6 +520,7 @@ fn is_empty_measure(measure: &VoiceMeasureTimeline) -> bool {
                     | TimelineEventKind::MeterChange(_)
                     | TimelineEventKind::ClefChange(_)
                     | TimelineEventKind::TempoChange(_)
+                    | TimelineEventKind::SectionLabel(_)
             )
         })
 }

@@ -456,6 +456,7 @@ fn measure_sequences<'score>(
                         | TimedEventKind::MeterChange(_)
                         | TimedEventKind::ClefChange(_)
                         | TimedEventKind::TempoChange(_)
+                        | TimedEventKind::SectionLabel(_)
                 )
             })
             .map(SequenceEvent::Timed)

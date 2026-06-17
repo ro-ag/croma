@@ -26,6 +26,15 @@ pub(crate) enum LoweredEvent {
     MeterChange(crate::model::MeterModel),
     ClefChange(crate::model::ClefChangeModel),
     TempoChange(crate::model::TempoModel),
+    /// A body/inline `P:` section label plus its source span. The span drives
+    /// the writer's same-onset event ordering (it sorts zero-duration events by
+    /// source position), so it must be the real `P:` position — a default span
+    /// would sort the label before earlier same-onset changes and break the
+    /// `<rehearsal>` round-trip.
+    SectionLabel {
+        label: String,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
