@@ -1129,6 +1129,36 @@ impl Reader {
                                 state.pending_insert_index = None;
                             }
                         }
+                        // A `<rehearsal>` section label: push a zero-duration
+                        // SectionLabel at the active region's voice/cursor,
+                        // mirroring the TempoChange arm. It carries no `<voice>`
+                        // but lowers within a voice's sequence, exactly like the
+                        // writer emitted it.
+                        ParsedDirection::SectionLabel(label) => {
+                            // A positioned section label occupies the leading slot
+                            // just like a note: a `<metronome>` AFTER it is a
+                            // mid-tune `TempoChange`, not the header tempo. Without
+                            // this, a body `P:A` written before an in-sequence
+                            // `Q:` (the writer orders both zero-duration events by
+                            // source position) would re-import the tempo as the
+                            // header tempo, which always re-writes FIRST — swapping
+                            // the rehearsal and metronome and breaking the
+                            // round-trip. Setting `seen_note` keeps the tempo a
+                            // mid-tune event so re-write preserves their order.
+                            seen_note = true;
+                            let state = voice_state(&mut voices, &current_voice);
+                            state.events.push(TimedEvent {
+                                measure: measure_id,
+                                onset: state.cursor,
+                                duration: Fraction::zero(),
+                                source: READER_SPAN,
+                                kind: TimedEventKind::SectionLabel(label),
+                                attachments: std::mem::take(&mut state.pending),
+                            });
+                            // This label consumed any pending run, like the tempo
+                            // change above.
+                            state.pending_insert_index = None;
+                        }
                         // A voice-bearing direction (annotation words, dynamics,
                         // coda/segno, wedge): buffer it for the next event of its
                         // `<voice>` (falling back to the active region's voice).
@@ -2060,8 +2090,17 @@ impl Reader {
                     }
                     "coda" => attachments.decorations.push(named_decoration("coda")),
                     "segno" => attachments.decorations.push(named_decoration("segno")),
-                    // Other direction-type children (rehearsal, pedal, …) have no
-                    // model-backed inverse the writer emits; left for later work.
+                    // A `<rehearsal>` is the writer's (and abc2xml's) encoding of a
+                    // body/inline `P:` section label. Reconstruct it as a distinct
+                    // SectionLabel; `raw_text` XML-unescapes the label, inverting
+                    // the writer's escape byte-for-byte. A `<rehearsal>` is emitted
+                    // as its own `<direction>` (no words/dynamics alongside it), so
+                    // returning early here cannot drop a co-located attachment.
+                    "rehearsal" => {
+                        return ParsedDirection::SectionLabel(raw_text(element).to_owned());
+                    }
+                    // Other direction-type children (pedal, …) have no model-backed
+                    // inverse the writer emits; left for later work.
                     other => self.warn(
                         "musicxml.read.unsupported_direction_type",
                         format!("<direction-type> child <{other}> is not reconstructed; skipped"),
@@ -3163,6 +3202,9 @@ enum ParsedDirection {
     /// A voice-bearing direction reconstructed into attachments (annotation
     /// words, dynamics, coda/segno, wedge) for the following event.
     Event(EventAttachments),
+    /// A `<rehearsal>` section label (abc2xml's encoding of a body/inline `P:`);
+    /// the caller pushes it as a zero-duration [`TimedEventKind::SectionLabel`].
+    SectionLabel(String),
     /// A direction with no model-backed inverse the writer emits.
     Ignored,
 }

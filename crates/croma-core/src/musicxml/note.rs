@@ -113,6 +113,7 @@ impl<'score> MusicXmlWriter<'score> {
                     self.write_mid_tune_clef(clef, sequence.staff, part)
                 }
                 TimedEventKind::TempoChange(tempo) => self.write_tempo_direction(tempo),
+                TimedEventKind::SectionLabel(label) => self.write_rehearsal_direction(label),
             },
             SequenceEvent::Overlay(timed) => match &timed.kind {
                 TimelineEventKind::Note {
@@ -184,7 +185,8 @@ impl<'score> MusicXmlWriter<'score> {
                 TimelineEventKind::KeyChange(_)
                 | TimelineEventKind::MeterChange(_)
                 | TimelineEventKind::ClefChange(_)
-                | TimelineEventKind::TempoChange(_) => {}
+                | TimelineEventKind::TempoChange(_)
+                | TimelineEventKind::SectionLabel(_) => {}
                 TimelineEventKind::Spacer
                 | TimelineEventKind::Barline { .. }
                 | TimelineEventKind::VariantEnding { .. } => {}

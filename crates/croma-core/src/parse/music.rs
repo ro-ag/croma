@@ -63,6 +63,10 @@ pub(crate) fn parse_music_document(
                     | MusicFieldLineKind::UnitNoteLength(_)
                     | MusicFieldLineKind::Key(_)
                     | MusicFieldLineKind::Tempo(_)
+                    // A HEADER `P:` is the play-order macro (`P:ABAB`), NOT a
+                    // section label: drop it exactly as before, never lowering it
+                    // to a `<rehearsal>`.
+                    | MusicFieldLineKind::SectionLabel(_)
                     | MusicFieldLineKind::Unknown(_)
                     | MusicFieldLineKind::Other => {}
                     MusicFieldLineKind::PostTuneText(_) => tune.body_fields.push(field_line),
@@ -114,6 +118,11 @@ pub(crate) fn parse_music_document(
                     | MusicFieldLineKind::UnitNoteLength(_)
                     | MusicFieldLineKind::Key(_)
                     | MusicFieldLineKind::Tempo(_)
+                    // A BODY `P:` section label falls through here as a no-op in
+                    // this match, but (like meter/key/tempo body changes) the
+                    // field IS pushed to `body_fields` below, so `apply_field`
+                    // lowers it to a `SectionLabel` event.
+                    | MusicFieldLineKind::SectionLabel(_)
                     | MusicFieldLineKind::Unknown(_)
                     | MusicFieldLineKind::Voice(_)
                     | MusicFieldLineKind::PostTuneText(_)
@@ -478,6 +487,7 @@ fn music_field_for_line(
             )
         }
         ParsedFieldKind::Unknown(unknown) => unknown.value.clone(),
+        ParsedFieldKind::Part(value) => value.clone(),
         _ => Spanned::new(String::new(), field.parsed_value_span),
     };
     let kind = match &field.kind {
@@ -510,6 +520,12 @@ fn music_field_for_line(
         }
         ParsedFieldKind::Unknown(unknown) => MusicFieldLineKind::Unknown(unknown.value.clone()),
         ParsedFieldKind::Tempo(value) => MusicFieldLineKind::Tempo(value.clone()),
+        // A `P:` field. `music_field_for_line` is shared by the header and body
+        // paths; the BODY caller pushes this into `body_fields` (lowered to a
+        // `<rehearsal>`), while the HEADER caller drops it (the play-order macro
+        // `P:ABAB` is not a section label). The body/header split is enforced by
+        // the two call-site matches below, NOT here.
+        ParsedFieldKind::Part(value) => MusicFieldLineKind::SectionLabel(value.clone()),
         _ => MusicFieldLineKind::Other,
     };
 

@@ -39,6 +39,9 @@ pub enum MusicFieldLineKind {
     PostTuneText(Spanned<String>),
     Score(ScoreDirective),
     Tempo(Spanned<String>),
+    /// A body/inline `P:` section label (ABC 2.1 §4.3). Only the BODY position
+    /// produces this; a header `P:ABAB` play-order macro is dropped upstream.
+    SectionLabel(Spanned<String>),
     Unknown(Spanned<String>),
     Other,
 }
