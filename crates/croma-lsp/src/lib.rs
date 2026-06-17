@@ -19,14 +19,22 @@ use croma_core::{Diagnostic, export_musicxml};
 
 pub mod diagnostics;
 pub mod document;
+pub mod formatting;
 pub mod position;
+pub mod structure;
+pub mod tokens;
 
 #[cfg(test)]
 mod corpus_proof;
 
 pub use diagnostics::diagnostics;
 pub use document::DocumentStore;
-pub use position::{PositionEncoding, byte_to_position, position_to_byte, span_to_range};
+pub use formatting::formatting;
+pub use position::{
+    PositionEncoding, byte_to_position, position_to_byte, span_length, span_to_range,
+};
+pub use structure::{document_symbols, folding_ranges};
+pub use tokens::{legend, semantic_tokens};
 
 /// The result of analysing one document: the core diagnostics plus whether the
 /// source lowered to MusicXML.

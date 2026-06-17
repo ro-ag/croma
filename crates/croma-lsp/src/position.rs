@@ -112,6 +112,40 @@ pub fn span_to_range(source: &SourceText, span: Span, encoding: PositionEncoding
     }
 }
 
+/// Measure a byte slice's width in the negotiated encoding's units (UTF-8 bytes
+/// or UTF-16 code units).
+///
+/// This is the unit shared by a [`SemanticToken`](lsp_types::SemanticToken)'s
+/// `length`/`delta_start` and by [`byte_to_position`]'s column: counting it the
+/// same way is what keeps an emitted token's `length` consistent with the
+/// `Range` its endpoints would map to. Total: a slice with no characters is 0.
+pub fn measure(slice: &str, encoding: PositionEncoding) -> u32 {
+    let units: usize = match encoding {
+        PositionEncoding::Utf8 => slice.len(),
+        PositionEncoding::Utf16 => slice.chars().map(char::len_utf16).sum(),
+    };
+    units as u32
+}
+
+/// The encoding-aware width of `span` within `source`, for a span that lies on a
+/// single line (every ABC `MusicToken` does, by construction).
+///
+/// Total: an out-of-bounds or non-boundary span is clamped via [`SourceText`]'s
+/// own boundary-checked [`slice`](SourceText::slice); anything unsliceable
+/// measures 0. A reversed span (`start > end`) is normalised first.
+pub fn span_length(source: &SourceText, span: Span, encoding: PositionEncoding) -> u32 {
+    let text = source.as_str();
+    let (start, end) = if span.start <= span.end {
+        (span.start, span.end)
+    } else {
+        (span.end, span.start)
+    };
+    let start = clamp_to_boundary(text, start);
+    let end = clamp_to_boundary(text, end);
+    let slice = text.get(start..end).unwrap_or("");
+    measure(slice, encoding)
+}
+
 /// Convert an LSP [`Position`] back to a UTF-8 byte offset under `encoding`.
 ///
 /// Total: a line past EOF clamps to the document length; a character past the
@@ -286,6 +320,59 @@ mod tests {
             position_to_byte(&src, p, PositionEncoding::Utf8),
             src.as_str().len()
         );
+    }
+
+    #[test]
+    fn span_length_counts_encoding_units() {
+        // "T:Café" — the span over "Café" is 4 bytes for "Caf" + 2 for 'é' = 5
+        // UTF-8 bytes, but 4 UTF-16 units.
+        let src = SourceText::new("T:Café\n");
+        let cafe = Span::new(2, 7); // "Café"
+        assert_eq!(span_length(&src, cafe, PositionEncoding::Utf8), 5);
+        assert_eq!(span_length(&src, cafe, PositionEncoding::Utf16), 4);
+    }
+
+    #[test]
+    fn span_length_is_total_on_garbage_spans() {
+        let src = SourceText::new("abc\n");
+        // Past EOF clamps end to len: slice [2,4) = "c\n" -> 2.
+        assert_eq!(
+            span_length(&src, Span::new(2, 99), PositionEncoding::Utf8),
+            2
+        );
+        // Reversed normalises to [1,3) = "bc" -> 2.
+        assert_eq!(
+            span_length(&src, Span::new(3, 1), PositionEncoding::Utf8),
+            2
+        );
+        let multi = SourceText::new("é\n");
+        // 'é' is bytes [0,2); [1,2) has start mid-char (clamps to 0) and end on a
+        // boundary, so the measured slice is [0,2) = "é" -> 2 UTF-8 bytes.
+        assert_eq!(
+            span_length(&multi, Span::new(1, 2), PositionEncoding::Utf8),
+            2
+        );
+        // A span entirely inside a single multi-byte char measures 0: [1,1).
+        assert_eq!(
+            span_length(&multi, Span::new(1, 1), PositionEncoding::Utf8),
+            0
+        );
+    }
+
+    #[test]
+    fn measure_matches_byte_to_position_column_on_one_line() {
+        // The measure of a single-line prefix from the line start must equal the
+        // column byte_to_position reports at its end — the invariant tokens rely
+        // on. Stay on line 0 (bytes <= 8, before the newline at byte 8).
+        let src = SourceText::new("CDEFé|\n");
+        // Bytes: C0 D1 E2 F3 é4..6 |6 \n7. Line 0 text is bytes [0,7).
+        for end in [0usize, 1, 4, 6, 7] {
+            let pos = byte_to_position(&src, end, PositionEncoding::Utf16);
+            assert_eq!(pos.line, 0, "byte {end} stays on line 0");
+            let prefix = src.as_str().get(0..end).unwrap_or("");
+            let len = measure(prefix, PositionEncoding::Utf16);
+            assert_eq!(pos.character, len, "at byte {end}");
+        }
     }
 
     #[test]
