@@ -4579,6 +4579,125 @@ mod abc_completion {
         assert_eq!(xml_after, x1, "the XML inverse must stay byte-identical");
     }
 
+    #[test]
+    fn empty_interior_measure_is_preserved_in_abc_projection() {
+        // P1 extension: an empty *interior* measure (`| ||` — a measure with no
+        // content whose boundaries to both neighbours are synthesized plain `|`)
+        // emits an empty `<measure></measure>` in MusicXML. The original P1 guard
+        // (`out.len() == start_len`) did NOT fire for it, because the boundary to
+        // the next measure adds a synthesized trailing `|`: the measure emitted a
+        // lone `|`, so the projected ABC read `... | | ...` (an empty `| |` the
+        // parser drops) and the measure count fell by one. The spacer must be
+        // emitted whenever a content-empty measure has no opening barline/ending,
+        // so the measure renders `y |` and survives.
+        let abc = "X:1\nL:1/4\nK:C\nC D E F | || G A B c | d e f g |\n";
+        let reference = lower(abc);
+        assert_eq!(
+            measure_count(&reference),
+            4,
+            "precondition: `| ||` yields an empty interior measure (4 total)"
+        );
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            measure_count(&reparsed),
+            measure_count(&reference),
+            "the empty interior measure must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        // The content notes must all survive, in order (no fact lost).
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            pitch_sequence(&reference),
+            "every note must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn empty_interior_measure_preservation_keeps_xml_inverse_byte_identical() {
+        // P1 isolation: synthesizing the interior spacer in the ABC projection
+        // must not perturb the write_musicxml pure inverse (a spacer emits no XML).
+        let abc = "X:1\nL:1/4\nK:C\nC D E F | || G A B c | d e f g |\n";
+        let x1 = export(abc);
+        let mut score = read_musicxml(&x1).value;
+        let xml_before = write_musicxml(&score).musicxml;
+        complete_score_for_abc(&mut score);
+        let xml_after = write_musicxml(&score).musicxml;
+        assert_eq!(
+            xml_before, xml_after,
+            "completion must not change the write_musicxml inverse"
+        );
+        assert_eq!(xml_after, x1, "the XML inverse must stay byte-identical");
+    }
+
+    /// A three-measure part whose MIDDLE `<measure>` is directive-only: it holds
+    /// just an `<attributes><key>` restatement and no notes — exactly the empty
+    /// key-restatement slot croma's forward writer parks at a `||` section
+    /// boundary (observed on corpus `tune_012588`). The reader keeps a `Measure`
+    /// for it, but it anchors no `write_abc` segment, so without the P1 spacer the
+    /// projected `| [K:G] |` folds into a neighbour and the measure count drops.
+    const DIRECTIVE_ONLY_MIDDLE_XML: &str = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<score-partwise version=\"3.1\">\n",
+        "  <part-list><score-part id=\"P1\"><part-name>P</part-name></score-part></part-list>\n",
+        "  <part id=\"P1\">\n",
+        "    <measure number=\"1\">\n",
+        "      <attributes><divisions>1</divisions><key><fifths>0</fifths></key>\n",
+        "        <time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+        "      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>\n",
+        "    </measure>\n",
+        "    <measure number=\"2\">\n",
+        "      <attributes><key><fifths>1</fifths></key></attributes>\n",
+        "    </measure>\n",
+        "    <measure number=\"3\">\n",
+        "      <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>\n",
+        "    </measure>\n",
+        "  </part>\n",
+        "</score-partwise>\n",
+    );
+
+    #[test]
+    fn directive_only_measure_is_preserved_in_abc_projection() {
+        // P1 extension: a measure whose ONLY content is a mid-tune key change
+        // anchors no segment, so `write_abc` emits `| [K:G] |`, which the parser
+        // folds into the adjacent measure — the measure count falls by one. The
+        // spacer must fire for it too, so the measure renders `[K:G] y |`.
+        let raw = read_musicxml(DIRECTIVE_ONLY_MIDDLE_XML).value;
+        assert_eq!(
+            measure_count(&raw),
+            3,
+            "precondition: the reader keeps a Measure for the directive-only middle measure"
+        );
+        let mut completed = raw;
+        complete_score_for_abc(&mut completed);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            measure_count(&reparsed),
+            3,
+            "the directive-only measure must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            vec![('C', 0, 4), ('G', 0, 4)],
+            "both notes must survive, none lost to the folded measure; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn directive_only_measure_preservation_keeps_xml_inverse_byte_identical() {
+        // P1 isolation: the directive-only spacer must not perturb the
+        // write_musicxml pure inverse (a spacer emits no XML element).
+        let mut score = read_musicxml(DIRECTIVE_ONLY_MIDDLE_XML).value;
+        let xml_before = write_musicxml(&score).musicxml;
+        complete_score_for_abc(&mut score);
+        let xml_after = write_musicxml(&score).musicxml;
+        assert_eq!(
+            xml_before, xml_after,
+            "completion must not change the write_musicxml inverse (the spacer emits no XML)"
+        );
+    }
+
     // --- P2: grace-anchored slur start preservation -------------------------
 
     #[test]
