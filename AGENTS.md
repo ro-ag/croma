@@ -79,8 +79,21 @@ on any host. Never hardcode an absolute toolchain path. Use `uv` for all Python.
   quality is proven (raw whitelist 9,390 / dropped 545 / worklist 0) and the
   formatter is idempotent + lossless over the full 10k corpus — see
   [`docs/formatter.md`](docs/formatter.md) and the `corpus_proof` test +
-  `tools/prove_fmt_lossless.py`. **LSP remains gated** until it has comparable
-  evidence; parser / corpus / music21 comparison work stays the priority for it.
+  `tools/prove_fmt_lossless.py`.
+- The **MusicXML→Score reader (`croma read` / `croma musicxml2abc`) is promoted**
+  (un-gated in the CLI): self-loop XML re-emission idempotence **9,934/9,935** (1
+  adjudicated residual), totality 0-panic over croma's own 10k + the
+  abc2xml-reference 10k + malformed inputs, reference-dialect **music21 parity
+  98.50%** (above the 93.9% forward floor; residual adjudicated), and a reader→ABC
+  structural round-trip of **95.8%** — see
+  [`docs/musicxml-reader.md`](docs/musicxml-reader.md). The **default CLI build now
+  ships the reader** (pulling `roxmltree`), but **`croma-core` keeps
+  `musicxml-reader` opt-in** so the library's default build stays zero-dependency +
+  crates.io-publishable (`cargo build -p croma-core` pulls nothing; roxmltree is a
+  dep of the CLI *binary* only). Build a reader-less CLI with
+  `cargo build -p croma-cli --no-default-features`.
+- **LSP remains gated** until it has comparable evidence; parser / corpus /
+  music21 comparison work stays the priority for it.
 
 ## Parser recovery policy
 

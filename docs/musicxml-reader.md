@@ -1,15 +1,22 @@
 # MusicXML → Score reader (coverage & policy)
 
 The reader inverts **croma's own writer** (`crates/croma-core/src/musicxml/`).
-It is **feature-gated** behind `musicxml-reader` and **experimental** (like the
-LSP) until it has corpus round-trip evidence comparable to the formatter's. The
-default build never compiles it nor its sole optional dependency (`roxmltree`).
+It is **PROMOTED** (un-gated, 2026-06-16) — like the formatter before it — on the
+evidence below (self-loop idempotence **9,934/9,935**, totality 0-panic,
+reference-dialect music21 parity **98.50%**, reader→ABC round-trip **95.8%**). It
+**ships in the default CLI build** (`croma read` / `croma musicxml2abc`). The
+`croma-core` **library** keeps it behind the opt-in `musicxml-reader` feature so
+its default build stays **zero-dependency + crates.io-publishable**; the only
+dependency (`roxmltree`) reaches the CLI *binary*, never the library default. (The
+LSP remains gated.)
 
 - Entry point: `croma_core::read_musicxml(xml: &str) -> ParseReport<Score>`
   (`#[cfg(feature = "musicxml-reader")]`).
+- Promotion bar + evidence: [`superpowers/specs/2026-06-16-musicxml-reader-promotion.md`](superpowers/specs/2026-06-16-musicxml-reader-promotion.md).
 - Design: [`superpowers/specs/2026-06-15-musicxml-reader-design.md`](superpowers/specs/2026-06-15-musicxml-reader-design.md).
 - The writer is the spec. The reader inverts croma's dialect **exactly** and
-  never mirrors an abc2xml-ism.
+  never mirrors an abc2xml-ism; foreign dialects are read gracefully (diagnostics)
+  but never mimicked into the writer.
 
 ## CLI surface (R1, gated)
 
