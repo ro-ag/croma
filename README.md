@@ -8,7 +8,12 @@ are built on that library API instead of maintaining separate parsers.
 
 - Primary: ABC -> MusicXML from Rust library code.
 - Next: thin CLI over the library.
-- Later: formatter and language server using the same parse/surface model.
+- Formatter (`croma fmt` + `--auto-fix`) and the `croma-lsp` language server are
+  shipped and promoted (un-gated), built on the same parse/surface model — see
+  [`docs/formatter.md`](docs/formatter.md) and [`docs/lsp.md`](docs/lsp.md).
+- Editor integration: a Zed extension plus a reusable `tree-sitter-abc` grammar
+  (Zed, web/WASM, Markdown ` ```abc ` injection, Neovim/Helix) — see
+  [`docs/editors.md`](docs/editors.md).
 - MusicXML -> ABC: the reverse reader is shipped in the CLI
   (`croma read` / `croma musicxml2abc`), inverting croma's own writer and reading
   foreign MusicXML (abc2xml/MuseScore/Finale/Sibelius). See
@@ -39,6 +44,10 @@ crates/croma-lsp   Language-server support, built on the core model
 `croma-core` is organized as a pipeline: `surface`, `parser`, `model`, and
 `musicxml`. The current implementation is intentionally small; the module shape
 is the contract for the fuller parser.
+
+Editor tooling lives outside the cargo workspace: `tree-sitter-abc/` (the
+reusable ABC grammar) and `editors/zed/` (the Zed extension). See
+[`docs/editors.md`](docs/editors.md).
 
 ## Development
 
