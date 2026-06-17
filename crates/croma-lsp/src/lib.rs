@@ -17,19 +17,26 @@
 
 use croma_core::{Diagnostic, export_musicxml};
 
+pub mod code_action;
+pub mod completion;
 pub mod diagnostics;
 pub mod document;
 pub mod formatting;
+pub mod hover;
 pub mod position;
 pub mod structure;
+pub mod tables;
 pub mod tokens;
 
 #[cfg(test)]
 mod corpus_proof;
 
+pub use code_action::code_actions;
+pub use completion::completion;
 pub use diagnostics::diagnostics;
 pub use document::DocumentStore;
 pub use formatting::formatting;
+pub use hover::hover;
 pub use position::{
     PositionEncoding, byte_to_position, position_to_byte, span_length, span_to_range,
 };

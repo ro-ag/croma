@@ -12,8 +12,8 @@ use std::error::Error;
 
 use croma_lsp::position::PositionEncoding;
 use croma_lsp::{
-    DocumentStore, diagnostics, document_symbols, folding_ranges, formatting, legend,
-    semantic_tokens,
+    DocumentStore, code_actions, completion, diagnostics, document_symbols, folding_ranges,
+    formatting, hover, legend, semantic_tokens,
 };
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
@@ -21,16 +21,19 @@ use lsp_types::notification::{
     Notification as NotificationTrait, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, FoldingRangeRequest, Formatting, Request as RequestTrait,
-    SemanticTokensFullRequest,
+    CodeActionRequest, Completion, DocumentSymbolRequest, FoldingRangeRequest, Formatting,
+    HoverRequest, Request as RequestTrait, SemanticTokensFullRequest,
 };
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
+    CodeActionKind, CodeActionOptions, CodeActionParams, CodeActionProviderCapability,
+    CompletionOptions, CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FoldingRangeParams, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
     SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    WorkDoneProgressOptions,
 };
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -66,6 +69,23 @@ pub fn run(connection: &Connection) -> Result<(), Box<dyn Error + Sync + Send>> 
         )),
         document_symbol_provider: Some(OneOf::Left(true)),
         folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
+        // R3: hover (field/decoration docs), completion (header keys + decoration
+        // names, triggered after `!`/`+`), and code actions (the `source.fixAll`
+        // whole-document auto-fix; `quickfix` advertised so a client that filters
+        // by kind still surfaces it).
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec!["!".to_string(), "+".to_string()]),
+            ..Default::default()
+        }),
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            code_action_kinds: Some(vec![
+                CodeActionKind::SOURCE_FIX_ALL,
+                CodeActionKind::QUICKFIX,
+            ]),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+            resolve_provider: Some(false),
+        })),
         ..Default::default()
     };
     let result = InitializeResult {
@@ -174,7 +194,30 @@ fn handle_request(store: &DocumentStore, encoding: PositionEncoding, request: Re
             let text = store.get(&uri).unwrap_or("");
             ok_or_null(id, &folding_ranges(text, encoding))
         }
-        // Any other request (e.g. hover in R1) — reply null, never hang.
+        HoverRequest::METHOD => {
+            let Some((uri, position)) = hover_request(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            // `hover` already returns `Option<Hover>`; `None` serialises to
+            // `null`, which is the correct "no hover" reply.
+            ok_or_null(id, &hover(text, position, encoding))
+        }
+        Completion::METHOD => {
+            let Some((uri, position)) = completion_request(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            ok_or_null(id, &completion(text, position, encoding))
+        }
+        CodeActionRequest::METHOD => {
+            let Some((uri, range)) = code_action_request(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            ok_or_null(id, &code_actions(&uri, text, range, encoding))
+        }
+        // Any other request — reply null, never hang.
         _ => null_ok(id),
     }
 }
@@ -194,13 +237,47 @@ fn folding_range_uri(request: &Request) -> Option<Url> {
     decode_uri::<FoldingRangeParams>(request, |p| p.text_document)
 }
 
+/// Decode a hover request into `(uri, position)`, dropping a malformed payload.
+fn hover_request(request: &Request) -> Option<(Url, lsp_types::Position)> {
+    let params = decode::<HoverParams>(request)?;
+    let TextDocumentPositionParams {
+        text_document,
+        position,
+    } = params.text_document_position_params;
+    Some((text_document.uri, position))
+}
+
+/// Decode a completion request into `(uri, position)`.
+fn completion_request(request: &Request) -> Option<(Url, lsp_types::Position)> {
+    let params = decode::<CompletionParams>(request)?;
+    let TextDocumentPositionParams {
+        text_document,
+        position,
+    } = params.text_document_position;
+    Some((text_document.uri, position))
+}
+
+/// Decode a code-action request into `(uri, range)`.
+fn code_action_request(request: &Request) -> Option<(Url, lsp_types::Range)> {
+    let params = decode::<CodeActionParams>(request)?;
+    Some((params.text_document.uri, params.range))
+}
+
 /// Decode a request's params and extract its document identifier's URI.
 fn decode_uri<P>(request: &Request, pick: impl FnOnce(P) -> TextDocumentIdentifier) -> Option<Url>
 where
     P: serde::de::DeserializeOwned,
 {
+    decode::<P>(request).map(|params| pick(params).uri)
+}
+
+/// Decode a request's params into `P`, logging + dropping a malformed payload.
+fn decode<P>(request: &Request) -> Option<P>
+where
+    P: serde::de::DeserializeOwned,
+{
     match serde_json::from_value::<P>(request.params.clone()) {
-        Ok(params) => Some(pick(params).uri),
+        Ok(params) => Some(params),
         Err(error) => {
             log(format!("{} decode error: {error}", request.method));
             None
@@ -660,6 +737,128 @@ mod transport_tests {
                 assert_eq!(folds.len(), 1, "one fold per tune");
             }
             other => panic!("expected foldingRange response, got {other:?}"),
+        }
+
+        // 4d. hover on the `K:` key line (line 2, col 0) -> a Hover with markup.
+        let hover_id = RequestId::from(30);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: hover_id.clone(),
+                method: "textDocument/hover".to_string(),
+                params: serde_json::json!({
+                    "textDocument": { "uri": uri().to_string() },
+                    "position": { "line": 2, "character": 0 }
+                }),
+            }))
+            .expect("send hover");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, hover_id);
+                assert!(error.is_none(), "hover errored: {error:?}");
+                let hover: Option<lsp_types::Hover> =
+                    serde_json::from_value(result.expect("hover result")).expect("valid Hover");
+                assert!(hover.is_some(), "K: line should hover to the key doc");
+            }
+            other => panic!("expected hover response, got {other:?}"),
+        }
+
+        // 4e. completion at a header line start (an inserted blank header line).
+        // First insert a blank line after X: so line 1 is an empty header line.
+        notify(
+            &client,
+            "textDocument/didChange",
+            DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri(),
+                    version: 5,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "X:1\n\nK:C\nCDEF|\n".to_string(),
+                }],
+            },
+        );
+        assert_eq!(drain_diagnostics(&client, 1), 1, "edit re-published");
+        let comp_id = RequestId::from(31);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: comp_id.clone(),
+                method: "textDocument/completion".to_string(),
+                params: serde_json::json!({
+                    "textDocument": { "uri": uri().to_string() },
+                    "position": { "line": 1, "character": 0 }
+                }),
+            }))
+            .expect("send completion");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, comp_id);
+                assert!(error.is_none(), "completion errored: {error:?}");
+                let items: Vec<lsp_types::CompletionItem> =
+                    serde_json::from_value(result.expect("completion result"))
+                        .expect("valid CompletionItem list");
+                assert!(
+                    items.iter().any(|i| i.label == "K:"),
+                    "header completion offers K:"
+                );
+            }
+            other => panic!("expected completion response, got {other:?}"),
+        }
+
+        // 4f. codeAction over an auto-fixable buffer -> one source.fixAll action.
+        notify(
+            &client,
+            "textDocument/didChange",
+            DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri(),
+                    version: 6,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "X:1\nQ:320s\nK:C\nCDEF|\n".to_string(),
+                }],
+            },
+        );
+        assert_eq!(
+            drain_diagnostics(&client, 1),
+            1,
+            "fixable edit re-published"
+        );
+        let ca_id = RequestId::from(32);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: ca_id.clone(),
+                method: "textDocument/codeAction".to_string(),
+                params: serde_json::json!({
+                    "textDocument": { "uri": uri().to_string() },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 0 }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            }))
+            .expect("send codeAction");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, ca_id);
+                assert!(error.is_none(), "codeAction errored: {error:?}");
+                let actions: Vec<lsp_types::CodeAction> =
+                    serde_json::from_value(result.expect("codeAction result"))
+                        .expect("valid CodeAction list");
+                assert_eq!(actions.len(), 1, "one fix-all action for Q:320s");
+                assert_eq!(
+                    actions[0].kind,
+                    Some(lsp_types::CodeActionKind::SOURCE_FIX_ALL)
+                );
+            }
+            other => panic!("expected codeAction response, got {other:?}"),
         }
 
         // 4c. an entirely unknown request — server must reply (null), not hang.

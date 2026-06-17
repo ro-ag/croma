@@ -30,8 +30,8 @@ use lsp_types::{Position, Range, SemanticToken, TextDocumentContentChangeEvent, 
 
 use crate::position::{PositionEncoding, position_to_byte};
 use crate::{
-    DocumentStore, analyze_document, diagnostics, document_symbols, folding_ranges, formatting,
-    semantic_tokens,
+    DocumentStore, analyze_document, code_actions, completion, diagnostics, document_symbols,
+    folding_ranges, formatting, hover, semantic_tokens,
 };
 
 /// The smallest corpus we accept as a non-vacuous proof; guards a mis-set
@@ -71,7 +71,58 @@ fn ranges_in_bounds(text: &str, encoding: PositionEncoding) -> Option<String> {
         return Some(format!("semantic tokens: {reason}"));
     }
 
+    // R3 handlers (hover / completion / codeAction) must also be total on every
+    // mid-edit state, probed at a spread of positions including out-of-bounds.
+    exercise_r3_handlers(text, &source, encoding);
+
     None
+}
+
+/// Drive the R3 request handlers (`hover`, `completion`, `code_actions`) over
+/// `text` at a spread of positions — every line start, a couple of interior
+/// columns per line, and a deliberately out-of-bounds position — so the totality
+/// sweep proves they never panic on a real (or mid-edit) corpus buffer. The
+/// caller wraps the whole sequence in `catch_unwind`, so a panic here is counted.
+fn exercise_r3_handlers(text: &str, source: &SourceText, encoding: PositionEncoding) {
+    let uri = Url::parse("file:///probe.abc").expect("valid probe uri");
+    // code_actions ignores position; run it once.
+    let _ = code_actions(
+        &uri,
+        text,
+        Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 0,
+            },
+        },
+        encoding,
+    );
+
+    let line_count = source.line_count().max(1);
+    for line_index in 0..line_count {
+        let width = line_width(source, line_index, encoding);
+        // Line start, a column mid-line, the line end, and one past the end.
+        let cols = [0u32, width / 2, width, width + 5];
+        for character in cols {
+            let pos = Position {
+                line: line_index as u32,
+                character,
+            };
+            let _ = hover(text, pos, encoding);
+            let _ = completion(text, pos, encoding);
+        }
+    }
+    // A line well past EOF (out of bounds) — both must stay total.
+    let past = Position {
+        line: (line_count as u32) + 50,
+        character: 99,
+    };
+    let _ = hover(text, past, encoding);
+    let _ = completion(text, past, encoding);
 }
 
 /// Whether `pos` addresses a real line and a character within that line's width
@@ -723,5 +774,131 @@ fn lsp_analysis_is_total_over_the_corpus() {
         failures.is_empty(),
         "{} totality failures (incl. panics); see the list above",
         failures.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Leg E: latency. diagnostics + semantic tokens on an average ~200-line file
+// must complete well under ~50 ms on a CI machine. We measure the median of 20
+// iterations (robust to a slow box / scheduler noise) and print the actual ms.
+// Run with `--release` for a representative number.
+// ---------------------------------------------------------------------------
+
+/// The latency ceiling (ms). The spec budget is ~50 ms on a CI machine; the real
+/// figure is expected to be «1 ms. Generous so a slow shared CI box still passes.
+const LATENCY_CEILING_MS: f64 = 50.0;
+
+/// How many iterations to time; we report the median.
+const LATENCY_ITERATIONS: usize = 20;
+
+/// Choose the timing subject: if `ABC_ROOT` is set, the real corpus file whose
+/// line count is closest to 200; otherwise a synthesized ~200-line ABC document.
+/// Returns `(text, label)`.
+fn latency_subject() -> (String, String) {
+    if let Ok(root) = std::env::var("ABC_ROOT") {
+        let files = abc_files(&PathBuf::from(&root));
+        let mut best: Option<(usize, PathBuf, String)> = None;
+        for path in &files {
+            let Ok(bytes) = fs::read(path) else { continue };
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let lines = text.lines().count();
+            let distance = lines.abs_diff(200);
+            let take = match &best {
+                Some((best_distance, _, _)) => distance < *best_distance,
+                None => true,
+            };
+            if take {
+                best = Some((distance, path.clone(), text));
+            }
+        }
+        if let Some((_, path, text)) = best {
+            let lines = text.lines().count();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            return (text, format!("corpus {name} ({lines} lines)"));
+        }
+    }
+    let text = synthetic_abc_200();
+    let lines = text.lines().count();
+    (text, format!("synthetic ({lines} lines)"))
+}
+
+/// A plausible ~200-line ABC document for when no corpus is available: a header
+/// plus ~190 music-body lines with a representative mix of notes, chords, grace
+/// groups, decorations, tuplets, and barlines.
+fn synthetic_abc_200() -> String {
+    let mut out = String::with_capacity(8 * 1024);
+    out.push_str("X:1\nT:Latency Probe\nC:croma\nM:4/4\nL:1/8\nQ:1/4=120\nK:C\n");
+    let bodies = [
+        "CDEF GABc | defg abc'd' | !trill!c2 B2 A2 G2 |",
+        "[CEG]2 {ab}c2 | (3def (3gab c4 | \"Am\"A2 \"G\"G2 F4 |",
+        ".C.D.E.F | G>A B<c d2 e2 | z2 c2 B2 A2 |]",
+        "T2 A,B,C,D, E,F,G,A, | =c ^d _e f | C/2D/2E/2F/2 G2 |",
+    ];
+    // ~190 body lines so the total is ~200 incl. the 7 header lines.
+    for i in 0..190 {
+        out.push_str(bodies[i % bodies.len()]);
+        out.push('\n');
+    }
+    out
+}
+
+/// The median of a slice of f64 (sorted copy); empty slices report 0.
+fn median(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    if sorted.len().is_multiple_of(2) {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
+#[test]
+fn lsp_leg_e_latency_under_ceiling() {
+    let (text, label) = latency_subject();
+    // Use UTF-8 (the negotiated-preferred encoding) for the headline number.
+    let encoding = PositionEncoding::Utf8;
+
+    // Warm up once (page in code paths / allocator) so the first sample is not
+    // an outlier; the warm-up result is discarded.
+    let _ = diagnostics(&text, encoding);
+    let _ = semantic_tokens(&text, encoding);
+
+    let mut samples = Vec::with_capacity(LATENCY_ITERATIONS);
+    for _ in 0..LATENCY_ITERATIONS {
+        let start = std::time::Instant::now();
+        let diags = diagnostics(&text, encoding);
+        let tokens = semantic_tokens(&text, encoding);
+        let elapsed = start.elapsed();
+        // Touch the results so the optimiser cannot elide the work.
+        std::hint::black_box((&diags, &tokens.data));
+        samples.push(elapsed.as_secs_f64() * 1_000.0);
+    }
+
+    let median_ms = median(&samples);
+    // The stable line a tools/ wrapper can parse.
+    eprintln!(
+        "lsp leg E latency: {median_ms:.2} ms (~200-line file, median of {LATENCY_ITERATIONS}) [{label}]"
+    );
+
+    // The leg E bar is a *release* figure on a CI machine ("Run it with
+    // `--release`"). A plain `cargo test --workspace` builds unoptimized, where
+    // the same work is an order of magnitude slower and unrepresentative — so the
+    // ceiling is only enforced for optimized builds. The number is always
+    // measured and printed regardless, so the gate is observable in either mode.
+    if cfg!(debug_assertions) {
+        eprintln!("lsp leg E: debug build — ceiling not enforced (run with --release for the bar)");
+        return;
+    }
+    assert!(
+        median_ms < LATENCY_CEILING_MS,
+        "leg E latency {median_ms:.2} ms exceeds ceiling {LATENCY_CEILING_MS} ms on {label}"
     );
 }
