@@ -946,8 +946,11 @@ impl Reader {
 
                     // S4: reconstruct this note's `<notations>` +
                     // `<time-modification>` into its `EventAttachments`.
-                    let mut attachments =
-                        self.read_note_attachments(child, &mut state.open_tuplets);
+                    let mut attachments = self.read_note_attachments(
+                        child,
+                        &mut state.open_tuplets,
+                        &mut state.events,
+                    );
 
                     if parsed.chord_member {
                         // S6c: a `<chord/>` member folds into the previous main
@@ -1813,6 +1816,7 @@ impl Reader {
         &mut self,
         note_node: Node<'_, '_>,
         open_tuplets: &mut OpenTuplets,
+        events: &mut [TimedEvent],
     ) -> EventAttachments {
         let mut attachments = EventAttachments::default();
         let notations = child_element(note_node, "notations");
@@ -1860,7 +1864,8 @@ impl Reader {
                     .collect()
             })
             .unwrap_or_default();
-        attachments.tuplets = open_tuplets.resolve(self, &tuplet_elements, time_modification);
+        attachments.tuplets =
+            open_tuplets.resolve(self, &tuplet_elements, time_modification, events);
 
         // Decorations: invert the writer's `decoration_notation` name map from
         // the grouped `<ornaments>`/`<technical>`/`<articulations>` blocks and
@@ -2838,6 +2843,7 @@ impl OpenTuplets {
         reader: &mut Reader,
         markers: &[(TupletRole, u32)],
         time_modification: Option<(u32, u32)>,
+        events: &mut [TimedEvent],
     ) -> Vec<TupletAttachment> {
         let mut out = Vec::new();
         let has_start = markers.iter().any(|(role, _)| *role == TupletRole::Start);
@@ -2846,16 +2852,56 @@ impl OpenTuplets {
         // Middle (continue) note: a time-modification, an open tuplet, and no
         // start/stop marker on this note.
         if !has_start && !has_stop {
-            if time_modification.is_some() && !self.open.is_empty() {
-                for open in &self.open {
-                    out.push(TupletAttachment {
-                        pair_id: open.pair_id,
-                        actual_notes: open.actual_notes,
-                        normal_notes: open.normal_notes,
-                        role: TupletRole::Continue,
-                        span: READER_SPAN,
-                    });
-                }
+            if let Some((tm_actual, tm_normal)) = time_modification
+                && !self.open.is_empty()
+            {
+                    // Nested-tuplet recovery (P2): when exactly one tuplet is
+                    // still open and this tail note's `<time-modification>`
+                    // differs from the stored ratio, the stored ratio is the
+                    // composite that was emitted during the inner-open phase.
+                    // The tail note's ratio is the true outer ratio. Recover it
+                    // and retroactively patch previously emitted attachments.
+                    // Guard: only when exactly one tuplet is open (the inner
+                    // already closed) and the ratios disagree.
+                    if self.open.len() == 1 {
+                        let outer = &self.open[0];
+                        if outer.actual_notes != tm_actual || outer.normal_notes != tm_normal {
+                            // tm_actual/tm_normal IS the correct outer ratio; the
+                            // stored ratio is the composite (outer × inner).
+                            // inner = composite ÷ outer.
+                            let composite_actual = outer.actual_notes;
+                            let composite_normal = outer.normal_notes;
+                            let outer_pair_id = outer.pair_id;
+                            // Patch outer: every event bearing the outer pair_id
+                            // had the composite stored; correct it to the true
+                            // outer ratio.
+                            patch_tuplet_ratio(events, outer_pair_id, tm_actual, tm_normal);
+                            // Patch inner: every event bearing the composite
+                            // ratio (but NOT the outer pair_id) was the inner
+                            // tuplet emitted with the wrong composite. Rewrite
+                            // those to inner = composite / outer.
+                            patch_inner_tuplet_ratio(
+                                events,
+                                outer_pair_id,
+                                composite_actual,
+                                composite_normal,
+                                tm_actual,
+                                tm_normal,
+                            );
+                            // Update the live open-tuplet entry.
+                            self.open[0].actual_notes = tm_actual;
+                            self.open[0].normal_notes = tm_normal;
+                        }
+                    }
+                    for open in &self.open {
+                        out.push(TupletAttachment {
+                            pair_id: open.pair_id,
+                            actual_notes: open.actual_notes,
+                            normal_notes: open.normal_notes,
+                            role: TupletRole::Continue,
+                            span: READER_SPAN,
+                        });
+                    }
             }
             return out;
         }
@@ -2916,8 +2962,104 @@ impl OpenTuplets {
                 TupletRole::Continue => {}
             }
         }
+        // If a Stop was processed and there are still-open outer tuplets
+        // (the outer remains while the inner just closed), emit Continues for
+        // those outer tuplets. The writer stores these explicitly in the model
+        // (e.g. an inner-stop note carries both an inner Stop and an outer
+        // Continue), and `TimeModification::composite` over all of them
+        // produces the correct composite for re-emission.
+        if has_stop && time_modification.is_some() {
+            for open in &self.open {
+                out.push(TupletAttachment {
+                    pair_id: open.pair_id,
+                    actual_notes: open.actual_notes,
+                    normal_notes: open.normal_notes,
+                    role: TupletRole::Continue,
+                    span: READER_SPAN,
+                });
+            }
+        }
         out
     }
+}
+
+/// Retroactively patch the `actual_notes`/`normal_notes` on every
+/// [`TupletAttachment`] in `events` whose `pair_id` matches `target_pair_id`.
+/// Used by the nested-tuplet recovery path (P2): when an outer tuplet was
+/// opened with the composite ratio (e.g. 21/16) and a subsequent tail note
+/// reveals the true outer ratio (e.g. 7/8), this rewrites every previously
+/// emitted Start/Continue for that tuplet so the re-write produces the
+/// original bytes.
+fn patch_tuplet_ratio(
+    events: &mut [TimedEvent],
+    target_pair_id: u32,
+    actual_notes: u32,
+    normal_notes: u32,
+) {
+    for event in events.iter_mut().rev() {
+        for tuplet in event.attachments.tuplets.iter_mut() {
+            if tuplet.pair_id == target_pair_id {
+                tuplet.actual_notes = actual_notes;
+                tuplet.normal_notes = normal_notes;
+            }
+        }
+    }
+}
+
+/// Retroactively patch inner tuplet attachments after the outer ratio is
+/// recovered. `composite_actual/composite_normal` is the ratio that was stored
+/// on both outer and inner when they were opened together (the writer emits the
+/// composite for all inner notes). `outer_actual/outer_normal` is the true outer
+/// ratio now known from the tail note. The inner ratio is `composite ÷ outer`.
+/// All events with pair_id ≠ `outer_pair_id` that currently carry the composite
+/// ratio are the inner-tuplet attachments; rewrite them to the inner ratio.
+fn patch_inner_tuplet_ratio(
+    events: &mut [TimedEvent],
+    outer_pair_id: u32,
+    composite_actual: u32,
+    composite_normal: u32,
+    outer_actual: u32,
+    outer_normal: u32,
+) {
+    // inner = composite / outer = (composite_actual / composite_normal) /
+    // (outer_actual / outer_normal) = (composite_actual * outer_normal) /
+    // (composite_normal * outer_actual). Reduce by GCD.
+    let num = u64::from(composite_actual) * u64::from(outer_normal);
+    let den = u64::from(composite_normal) * u64::from(outer_actual);
+    if den == 0 {
+        return;
+    }
+    let g = gcd_u64_reader(num, den);
+    let inner_actual = num / g;
+    let inner_normal = den / g;
+    // Only patch if the result fits in u32.
+    let (Ok(inner_actual), Ok(inner_normal)) = (
+        u32::try_from(inner_actual),
+        u32::try_from(inner_normal),
+    ) else {
+        return;
+    };
+    for event in events.iter_mut().rev() {
+        for tuplet in event.attachments.tuplets.iter_mut() {
+            if tuplet.pair_id != outer_pair_id
+                && tuplet.actual_notes == composite_actual
+                && tuplet.normal_notes == composite_normal
+            {
+                tuplet.actual_notes = inner_actual;
+                tuplet.normal_notes = inner_normal;
+            }
+        }
+    }
+}
+
+/// GCD for u64 values, returning at least 1 (so division is always safe).
+fn gcd_u64_reader(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a.max(1)
 }
 
 /// S6c: the writer's count-based grace base unit ([`MusicXmlWriter`]'s
