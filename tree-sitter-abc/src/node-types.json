@@ -1,0 +1,613 @@
+[
+  {
+    "type": "barline",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "chord",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "annotation",
+          "named": true
+        },
+        {
+          "type": "chord_symbol",
+          "named": true
+        },
+        {
+          "type": "decoration",
+          "named": true
+        },
+        {
+          "type": "length",
+          "named": true
+        },
+        {
+          "type": "note",
+          "named": true
+        },
+        {
+          "type": "slur",
+          "named": true
+        },
+        {
+          "type": "tie",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "comment",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "comment_text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "decoration",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "field",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_key",
+          "named": true
+        },
+        {
+          "type": "field_value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "field_value",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "free_text",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "grace_group",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "chord",
+          "named": true
+        },
+        {
+          "type": "decoration",
+          "named": true
+        },
+        {
+          "type": "note",
+          "named": true
+        },
+        {
+          "type": "rest",
+          "named": true
+        },
+        {
+          "type": "slur",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "inline_field",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_key",
+          "named": true
+        },
+        {
+          "type": "field_value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "key_field",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_key",
+          "named": true
+        },
+        {
+          "type": "field_value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "line_continuation",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "lyric_line",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_key",
+          "named": true
+        },
+        {
+          "type": "field_value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "multi_measure_rest",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "length",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "music_line",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "annotation",
+          "named": true
+        },
+        {
+          "type": "barline",
+          "named": true
+        },
+        {
+          "type": "broken_rhythm",
+          "named": true
+        },
+        {
+          "type": "chord",
+          "named": true
+        },
+        {
+          "type": "chord_symbol",
+          "named": true
+        },
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "decoration",
+          "named": true
+        },
+        {
+          "type": "field",
+          "named": true
+        },
+        {
+          "type": "grace_group",
+          "named": true
+        },
+        {
+          "type": "inline_field",
+          "named": true
+        },
+        {
+          "type": "line_continuation",
+          "named": true
+        },
+        {
+          "type": "multi_measure_rest",
+          "named": true
+        },
+        {
+          "type": "note",
+          "named": true
+        },
+        {
+          "type": "overlay",
+          "named": true
+        },
+        {
+          "type": "repeat_ending",
+          "named": true
+        },
+        {
+          "type": "rest",
+          "named": true
+        },
+        {
+          "type": "slur",
+          "named": true
+        },
+        {
+          "type": "spacer",
+          "named": true
+        },
+        {
+          "type": "tie",
+          "named": true
+        },
+        {
+          "type": "tuplet",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "note",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "accidental",
+          "named": true
+        },
+        {
+          "type": "length",
+          "named": true
+        },
+        {
+          "type": "octave",
+          "named": true
+        },
+        {
+          "type": "pitch",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "rest",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "length",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "source_file",
+    "named": true,
+    "root": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "field",
+          "named": true
+        },
+        {
+          "type": "free_text",
+          "named": true
+        },
+        {
+          "type": "stylesheet_directive",
+          "named": true
+        },
+        {
+          "type": "tune",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "stylesheet_directive",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "directive_text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "symbol_line",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_key",
+          "named": true
+        },
+        {
+          "type": "field_value",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "tune",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "tune_body",
+          "named": true
+        },
+        {
+          "type": "tune_header",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "tune_body",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "field",
+          "named": true
+        },
+        {
+          "type": "key_field",
+          "named": true
+        },
+        {
+          "type": "lyric_line",
+          "named": true
+        },
+        {
+          "type": "music_line",
+          "named": true
+        },
+        {
+          "type": "stylesheet_directive",
+          "named": true
+        },
+        {
+          "type": "symbol_line",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "tune_header",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "field",
+          "named": true
+        },
+        {
+          "type": "key_field",
+          "named": true
+        },
+        {
+          "type": "stylesheet_directive",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "!",
+    "named": false
+  },
+  {
+    "type": "$",
+    "named": false
+  },
+  {
+    "type": "+",
+    "named": false
+  },
+  {
+    "type": ".",
+    "named": false
+  },
+  {
+    "type": "/",
+    "named": false
+  },
+  {
+    "type": "[",
+    "named": false
+  },
+  {
+    "type": "[|",
+    "named": false
+  },
+  {
+    "type": "[|:",
+    "named": false
+  },
+  {
+    "type": "[|]",
+    "named": false
+  },
+  {
+    "type": "\\",
+    "named": false
+  },
+  {
+    "type": "]",
+    "named": false
+  },
+  {
+    "type": "accidental",
+    "named": true
+  },
+  {
+    "type": "annotation",
+    "named": true
+  },
+  {
+    "type": "broken_rhythm",
+    "named": true
+  },
+  {
+    "type": "chord_symbol",
+    "named": true
+  },
+  {
+    "type": "comment_text",
+    "named": true
+  },
+  {
+    "type": "directive_text",
+    "named": true
+  },
+  {
+    "type": "field_key",
+    "named": true
+  },
+  {
+    "type": "length",
+    "named": true
+  },
+  {
+    "type": "octave",
+    "named": true
+  },
+  {
+    "type": "overlay",
+    "named": true
+  },
+  {
+    "type": "pitch",
+    "named": true
+  },
+  {
+    "type": "repeat_ending",
+    "named": true
+  },
+  {
+    "type": "slur",
+    "named": true
+  },
+  {
+    "type": "spacer",
+    "named": true
+  },
+  {
+    "type": "tie",
+    "named": true
+  },
+  {
+    "type": "tuplet",
+    "named": true
+  },
+  {
+    "type": "{",
+    "named": false
+  },
+  {
+    "type": "}",
+    "named": false
+  }
+]
