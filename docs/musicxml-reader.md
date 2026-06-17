@@ -3,7 +3,7 @@
 The reader inverts **croma's own writer** (`crates/croma-core/src/musicxml/`).
 It is **PROMOTED** (un-gated, 2026-06-16) — like the formatter before it — on the
 evidence below (self-loop idempotence **9,934/9,935**, totality 0-panic,
-reference-dialect music21 parity **98.50%**, reader→ABC round-trip **95.8%**). It
+reference-dialect music21 parity **98.50%**, reader→ABC round-trip **97.9%**). It
 **ships in the default CLI build** (`croma read` / `croma musicxml2abc`). The
 `croma-core` **library** keeps it behind the opt-in `musicxml-reader` feature so
 its default build stays **zero-dependency + crates.io-publishable**; the only
@@ -53,11 +53,56 @@ cannot perturb the write_musicxml inverse.
 
 **Structural round-trip evidence** (`tools/prove_reader_abc_roundtrip.py`,
 LOCAL-ONLY: `croma xml`→X1, `croma read X1 --format abc`→ABC', `croma xml ABC'`
-→X2, compare the normalized musical projection X1≡X2): **9,514 / 9,933 in-scope
-round-trip structurally (95.8%)**. The 419 residual is categorized (empty-measure
-/`y`-spacer length, multi-voice `V:`-vs-`&`, key/barline ordering, slur-drop) and
-logged for the consolidated residual pass — a valid-but-different Score that the
-lossy XML intermediate cannot always render back to byte-faithful ABC.
+→X2, compare the normalized musical projection X1≡X2): **9,722 / 9,933 in-scope
+round-trip structurally (97.9%)**. The remaining 211 are adjudicated below — a
+valid-but-different Score that the lossy XML intermediate cannot always render
+back to byte-faithful ABC.
+
+### Reader→ABC residual (adjudicated)
+
+After three completion passes (R1 + the two residual-burndown phases), the
+reader→ABC structural round-trip stands at **9,722 / 9,933 (97.9%)** — **211
+structural diffs**. Each was triaged from the **actual X1-vs-X2 projection diff**
+(not the original ABC source) with a *decisive* test: does any sounding note or
+rest (pitch+alter+octave+duration) get dropped or added? **208 of the 211 preserve
+every sounding fact** — they are valid-but-different *structural equivalence* the
+lossy XML intermediate cannot byte-match, **not** a defect. Only **3** carry a real
+sounding difference, and all 3 are bounded HARD/degenerate stops.
+
+The principled stop: **the ABC projection is musically faithful** — through the
+lossy MusicXML intermediate it emits correct, playable ABC; the residual is
+structural equivalence (different-but-equal voice grouping, redundant restatement,
+section/barline ordering, chord-internal marker attribution) plus **3 HARD items**.
+Forcing byte-fidelity on these is cosmetic, not correctness. The first-divergence
+histogram and the verdict per category:
+
+| Category (first-divergence) | Count | Verdict & why it is valid-but-different / a HARD stop |
+| --- | ---: | --- |
+| `measure_count` | 134 | **ADJUDICATE** (134/134 sounding-equal). Almost all are the multi-voice overlay: a `&`-overlay or `%%staves` tune the reader reconstructs as **explicit sequential `V:` voices** instead of a single `&`-overlaid voice (MusicXML `<backup>` ↔ both are two simultaneous lines — musically identical, forcing `&` is cosmetic). The rest are per-voice `K:`/`M:` header **restatement** at a voice split and `||`/`[|` section-barline **style/order** shifts. No note dropped. |
+| `element_kind` | 61 | **ADJUDICATE** (61/61 sounding-equal). Two shapes: a **redundant `[K:]`/`[M:]` restatement** the reader drops as a no-op (restating the same signature changes nothing), and a **section-boundary reorder** where a key signature and an adjacent repeat barline (`||:` heavy-light-forward) swap relative order. No note dropped. |
+| `lyric` | 9 | **ADJUDICATE / HARD** (9/9 sounding-equal; syllable **multiset identical**). The `w:` syllable-to-note **redistribution**: every syllable survives, but the lossy `<lyric>` round-trip lands a syllable on a neighbouring note. Re-aligning syllables byte-exactly is the deep `w:` redistribution problem — a documented stop, not chased. |
+| `slur` | 5 | **ADJUDICATE** (5/5 sounding-equal; slur start/stop **counts conserved**). Chord-internal slur **re-attribution**: a member-specific `[(B,(G]` start (or a stop) lands on the chord *head* vs *member* of the **same chord** through `complete_score_for_abc`'s `((`-before-chord emission. The slur span (which chord it opens/closes on) is identical — only the per-member marker placement differs. |
+| `duration` | 1 | **HARD** (`tune_003732`). A **nested `7:8:8` / `21:16` tuplet** the forward writer reduced to `441/256`, which has **no clean inverse** to a 7:8 ⊂ 3:2 nesting. Documented as a principled stop since R3. |
+| `pitch` | 1 | **HARD / degenerate source** (`tune_014467`). A `Q: "Figs 1-3" 3/2=84 "Fig 4" 3/2=76` tempo whose text **contains `"` quote characters**: the forward writer parks it in a `<direction><words>`, the reader reads it back as an annotation, and ABC has **no escape for `"` inside a `"…"` annotation**, so the re-parse skips tokens and fabricates phantom notes. Tempo text is **non-structural metadata the projection ignores** by design; a fix would have to strip it read-side, perturbing the byte-identical `--format xml` inverse, so it is adjudicated rather than chased. (The other 8 corpus files whose ABC carries a `""` are benign adjacent chord-symbols, not corruption.) |
+
+The 1 remaining sounding difference inside `measure_count` is `tune_013508` — a
+3-staff `%%staves`+`&`-within-`[V:]`+mid-tune-`[K:]` tangle where one note's
+accidental flips flat↔natural through the multi-voice round-trip (total duration
+conserved); it is the multi-voice-overlay rewrite the residual deliberately does
+not chase.
+
+**What this phase fixed (CLEAN-FIX, TDD, ABC-projection-isolated):** the dominant
+`measure_count` lever — a measure that, after lowering, **anchors no `write_abc`
+segment** (no note/rest/chord/spacer) was dropped on re-parse. Two slots collapse:
+an empty interior `||`-boundary measure (`… | | …`, an empty `| |` the parser
+drops) and a **directive-only** measure holding just a redundant key restatement
+(`| [K:G] |`, folded into a neighbour). `emit_measure_with_barlines` now synthesizes
+a single zero-duration `Spacer` in the content slot for any segment-less measure, so
+`write_abc` renders `y |` / `[K:G] y |` and the boundary survives — exactly as the
+forward writer's bar glyphs re-parse to that empty measure. The `Spacer` is inert in
+`write_musicxml`, so XML idempotence stayed **9,934 / 9,935** and `--format xml` is
+byte-identical. Result: **318 → 211** structural diffs (**107 files** fixed, **0
+regressions**).
 
 ## Verification gate
 

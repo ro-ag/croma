@@ -3865,21 +3865,23 @@ fn synthesize_voice_barline_events(voice: &mut Voice) {
 /// closing barline (the internal-boundary glyph the XML never recorded) when the
 /// caller determined the boundary to the next measure needs one.
 ///
-/// **P1: empty / all-spacer measure.** A source measure that is entirely spacers
-/// (`y8 ...`) — including a trailing all-spacer measure — emits an empty
-/// `<measure></measure>` in MusicXML, because croma's spacers produce no XML
-/// element. The reader keeps an empty `Measure` for it (every `<measure>` gets a
-/// primary-voice `Measure`), but if it carries no barline, no ending, no content,
-/// and no synthesized internal-boundary `|` (the last-measure case, or a measure
-/// whose boundary is already marked by the next measure's leading barline), it
-/// would contribute ZERO events here — so `write_abc` segments it away and the
-/// re-parsed ABC loses a measure (the dominant `measure_count` divergence). When a
-/// measure would otherwise emit nothing, synthesize a single zero-duration
-/// [`TimedEventKind::Spacer`] so `write_abc` renders a `y`, preserving the measure
-/// boundary. This mirrors forward lowering, which represents an all-spacer measure
-/// as `Spacer` events; the structural projection counts the measure, not the
-/// spacer count, so one `y` is sufficient. The Spacer is inert in `write_musicxml`
-/// (a spacer emits no XML element), keeping the `--format xml` pure inverse intact.
+/// **P1: measure that anchors no `write_abc` segment.** A measure that, after
+/// lowering, carries no note/rest/chord/spacer emits an empty (or directive-only)
+/// `<measure>` in MusicXML — an all-spacer measure (`y8 ...`, whose spacers produce
+/// no XML element), an empty `||`-boundary slot, or a measure holding only a
+/// redundant key/meter restatement (`<attributes>` with no notes). The reader keeps
+/// a `Measure` for every `<measure>`, but only `Note`/`Chord`/`Rest`/`Spacer`
+/// anchor a measure on re-parse; a measure emitting only barlines, repeat endings,
+/// or zero-duration directive events (`[K:..]`/`[M:..]`/clef/tempo) is folded into a
+/// neighbour, so the re-parsed ABC loses a measure (the dominant `measure_count`
+/// divergence). When the measure's content anchors no segment, synthesize a single
+/// zero-duration [`TimedEventKind::Spacer`] in the content slot so `write_abc`
+/// renders a `y` (`y |`, or `[K:G] y |` for a directive-only measure), preserving
+/// the boundary. This mirrors forward lowering, which represents such a slot with
+/// glyphs that re-parse to the empty measure; the structural projection counts the
+/// measure, not the spacer count, so one `y` suffices. The Spacer is inert in
+/// `write_musicxml` (a spacer emits no XML element), keeping the `--format xml`
+/// pure inverse intact.
 #[cfg(feature = "musicxml-reader")]
 fn emit_measure_with_barlines(
     measure: &Measure,
@@ -3888,7 +3890,6 @@ fn emit_measure_with_barlines(
     synthesize_trailing_regular: bool,
     out: &mut Vec<TimedEvent>,
 ) {
-    let start_len = out.len();
     // A barline "leads" its measure when its reader span starts at 0 (matching
     // the measure's READER_SPAN), exactly the writer's `is_leading_barline`
     // predicate. Leading barlines open the measure; the rest close it.
@@ -3907,7 +3908,45 @@ fn emit_measure_with_barlines(
             attachments: EventAttachments::default(),
         });
     }
+    // P1: a measure that `write_abc` would render with NO segment-anchoring token
+    // (no note/rest/chord/spacer) must carry a single zero-duration `Spacer` in the
+    // CONTENT slot — after any leading barline/ending and any mid-tune change, but
+    // before the trailing barline — so `write_abc` emits a `y` that keeps the
+    // measure boundary. Only `Note`/`Chord`/`Rest`/`Spacer` anchor a measure on
+    // re-parse; barlines, repeat endings, and zero-duration directive events
+    // (`KeyChange`/`MeterChange`/`ClefChange`/`TempoChange`) are absorbed into a
+    // neighbour. So two distinct slots collapse without this spacer and lose a
+    // measure:
+    //   * a fully-empty interior measure whose boundary to the next measure is a
+    //     synthesized trailing `|` would emit only `|`, collapsing `... | | ...`
+    //     (an empty `| |` the parser drops);
+    //   * a directive-only measure (e.g. a redundant key restatement the forward
+    //     path parked in its own empty `<measure>`) would emit `| [K:G] |`, which
+    //     the parser folds into the adjacent measure.
+    // With the spacer they emit `y |` / `[K:G] y |`, which re-parse to a counted
+    // measure (mirroring the forward writer, whose bar glyphs re-parse to the empty
+    // measure). The Spacer is inert in `write_musicxml` (a spacer emits no XML
+    // element), so the `--format xml` pure inverse is unchanged.
+    let content_anchors_measure = content.iter().any(|event| {
+        matches!(
+            event.kind,
+            TimedEventKind::Note(_)
+                | TimedEventKind::Chord(_)
+                | TimedEventKind::Rest(_)
+                | TimedEventKind::Spacer
+        )
+    });
     out.extend(content);
+    if !content_anchors_measure {
+        out.push(TimedEvent {
+            measure: measure_id,
+            onset: Fraction::zero(),
+            duration: Fraction::zero(),
+            source: READER_SPAN,
+            kind: TimedEventKind::Spacer,
+            attachments: EventAttachments::default(),
+        });
+    }
     for barline in &measure.barlines {
         if is_trailing_reader_barline(barline) {
             out.push(barline_event(*barline, measure_id));
@@ -3924,18 +3963,6 @@ fn emit_measure_with_barlines(
             },
             measure_id,
         ));
-    }
-    // P1: an empty / all-spacer measure contributed no event above; emit a single
-    // `Spacer` so `write_abc` preserves the measure boundary (see the doc comment).
-    if out.len() == start_len {
-        out.push(TimedEvent {
-            measure: measure_id,
-            onset: Fraction::zero(),
-            duration: Fraction::zero(),
-            source: READER_SPAN,
-            kind: TimedEventKind::Spacer,
-            attachments: EventAttachments::default(),
-        });
     }
 }
 
