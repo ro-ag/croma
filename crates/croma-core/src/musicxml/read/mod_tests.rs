@@ -4494,6 +4494,343 @@ mod abc_completion {
             "pitch sequence must survive XML -> ABC -> Score; abc {projected:?}"
         );
     }
+
+    // --- P1: empty / all-spacer trailing measure preservation ---------------
+
+    /// The (slur-start, slur-stop) pair_id count across a lowered Score, used to
+    /// assert grace-anchored slurs survive the projection. Counts both event-level
+    /// slurs and grace-group/grace-event slurs so a slur moving between channels is
+    /// still seen.
+    fn total_slur_starts(score: &Score) -> usize {
+        use crate::model::SlurRole;
+        let mut starts = 0;
+        for part in &score.parts {
+            for voice in &part.voices {
+                for event in &voice.events {
+                    starts += event
+                        .attachments
+                        .slurs
+                        .iter()
+                        .filter(|s| s.role == SlurRole::Start)
+                        .count();
+                    for group in event
+                        .attachments
+                        .grace_groups
+                        .iter()
+                        .chain(&event.attachments.after_grace_groups)
+                    {
+                        starts += group
+                            .slurs
+                            .iter()
+                            .filter(|s| s.role == SlurRole::Start)
+                            .count();
+                        for grace in &group.events {
+                            starts += grace
+                                .slurs
+                                .iter()
+                                .filter(|s| s.role == SlurRole::Start)
+                                .count();
+                        }
+                    }
+                }
+            }
+        }
+        starts
+    }
+
+    #[test]
+    fn empty_trailing_all_spacer_measure_is_preserved_in_abc_projection() {
+        // A tune whose LAST measure is entirely spacers (`y8 ...`) emits an empty
+        // `<measure></measure>` in MusicXML (spacers have no XML element). The raw
+        // reader keeps an empty `Measure` for it, but the completion pass dropped
+        // it (no content, no barline, last measure => no synthesized `|`), so the
+        // re-parsed ABC lost the boundary and the measure count fell by one.
+        let abc = "X:1\nL:1/4\nK:C\nC D E F | y4 y4 y4 y4\n";
+        let reference = lower(abc);
+        assert_eq!(
+            measure_count(&reference),
+            2,
+            "precondition: the source has two measures (content + all-spacer)"
+        );
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            measure_count(&reparsed),
+            measure_count(&reference),
+            "the trailing all-spacer measure must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn empty_trailing_measure_preservation_keeps_xml_inverse_byte_identical() {
+        // P1 isolation: synthesizing the trailing spacer in the ABC projection
+        // must not perturb the write_musicxml pure inverse.
+        let abc = "X:1\nL:1/4\nK:C\nC D E F | y4 y4 y4 y4\n";
+        let x1 = export(abc);
+        let mut score = read_musicxml(&x1).value;
+        let xml_before = write_musicxml(&score).musicxml;
+        complete_score_for_abc(&mut score);
+        let xml_after = write_musicxml(&score).musicxml;
+        assert_eq!(
+            xml_before, xml_after,
+            "completion must not change the write_musicxml inverse"
+        );
+        assert_eq!(xml_after, x1, "the XML inverse must stay byte-identical");
+    }
+
+    // --- P2: grace-anchored slur start preservation -------------------------
+
+    #[test]
+    fn grace_anchored_slur_start_survives_abc_projection() {
+        // `({Bc}B2)`: a slur opens on the FIRST grace note and closes on the main
+        // note. Forward lowering records the start in `group.slurs` (so write_abc
+        // emits `(` BEFORE the `{`). The reader folds grace slurs into the per-
+        // grace-event `slurs`, which write_abc emits INSIDE the braces (`{(Bc}`),
+        // dropping the slur on re-parse. The completion pass must hoist the
+        // group-anchored start back to `group.slurs`.
+        let abc = "X:1\nL:1/8\nK:C\n({Bc}B2) A2 |\n";
+        let reference = lower(abc);
+        assert_eq!(
+            total_slur_starts(&reference),
+            1,
+            "precondition: the source has exactly one slur start"
+        );
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        assert!(
+            projected.contains("({"),
+            "grace-anchored slur must open before the grace group `({{`, got {projected:?}"
+        );
+        let reparsed = lower(&projected);
+        assert_eq!(
+            total_slur_starts(&reparsed),
+            total_slur_starts(&reference),
+            "the grace-anchored slur start must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn internal_grace_slur_survives_abc_projection() {
+        // `{(ef)}g2`: a slur that opens AND closes inside the grace group. The
+        // reader's flat READER_SPAN made write_abc emit the closing `)` AFTER the
+        // brace (`{(ef})`), which re-parses to zero slurs. The completion pass must
+        // place the internal stop so it renders inside the braces.
+        let abc = "X:1\nL:1/8\nK:C\n{(ef)}g2 |\n";
+        let reference = lower(abc);
+        assert_eq!(
+            total_slur_starts(&reference),
+            1,
+            "precondition: one internal grace slur"
+        );
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            total_slur_starts(&reparsed),
+            total_slur_starts(&reference),
+            "the internal grace slur must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn after_grace_trailing_slur_survives_abc_projection() {
+        // `(f4{ef})`: a slur opens on the MAIN note `f4`, then an AFTER-grace group
+        // `{ef}`, with the slur closing on the after-grace note — rendered as a
+        // trailing `)` AFTER the `}`. The grace-slur re-projection must NOT pull
+        // this stop inside the braces (an earlier over-broad span tweak did, which
+        // reordered the slur and dropped a measure on re-parse).
+        let abc = "X:1\nL:1/8\nK:C\n(f4{ef}) g2 |\n";
+        let reference = lower(abc);
+        assert_eq!(
+            total_slur_starts(&reference),
+            1,
+            "precondition: one slur start on the main note"
+        );
+        let completed = completed_from_abc(abc);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            total_slur_starts(&reparsed),
+            total_slur_starts(&reference),
+            "the after-grace trailing slur must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        // The played-duration / pitch sequence must also survive (the regression
+        // dropped a measure, so this guards the structural shape).
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            pitch_sequence(&reference),
+            "after-grace slur pitch sequence must survive; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn grace_slur_preservation_keeps_xml_inverse_byte_identical() {
+        // P2 isolation: the grace-slur hoist must not perturb the write_musicxml
+        // pure inverse.
+        for abc in [
+            "X:1\nL:1/8\nK:C\n({Bc}B2) A2 |\n",
+            "X:1\nL:1/8\nK:C\n{(ef)}g2 |\n",
+            "X:1\nL:1/8\nK:C\n(f4{ef}) g2 |\n",
+        ] {
+            let x1 = export(abc);
+            let mut score = read_musicxml(&x1).value;
+            let xml_before = write_musicxml(&score).musicxml;
+            complete_score_for_abc(&mut score);
+            let xml_after = write_musicxml(&score).musicxml;
+            assert_eq!(
+                xml_before, xml_after,
+                "completion must not change the write_musicxml inverse for {abc:?}"
+            );
+            assert_eq!(
+                xml_after, x1,
+                "the XML inverse must stay byte-identical for {abc:?}"
+            );
+        }
+    }
+
+    // --- P3: explicit key-signature accidentals in the ABC display ----------
+
+    /// The flat (step, alter) explicit-accidental list of the header key.
+    fn header_key_explicit(score: &Score) -> Vec<(char, i8)> {
+        score
+            .metadata
+            .key
+            .as_ref()
+            .map(|key| {
+                key.explicit_accidentals
+                    .iter()
+                    .map(|acc| (acc.step, acc.accidental.alter()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn explicit_key_accidentals_survive_abc_projection() {
+        // `K: C _B`: C major (fifths 0) PLUS an explicit `_B` accidental in the key
+        // signature. The reader reconstructs `fifths` + `explicit_accidentals`, but
+        // the completion pass spelled the display as the bare canonical major
+        // (`K:C`), dropping the `_B`. The pass must build a display that re-parses
+        // to the same explicit accidentals.
+        let abc = "X:1\nL:1/8\nK:C _B\nB c d e |\n";
+        let reference = lower(abc);
+        assert_eq!(
+            header_key_explicit(&reference),
+            vec![('B', -1)],
+            "precondition: the source key carries one explicit flat on B"
+        );
+        let mut completed = read_musicxml(&export(abc)).value;
+        complete_score_for_abc(&mut completed);
+        assert_eq!(
+            header_key_explicit(&completed),
+            header_key_explicit(&reference),
+            "reconstruction must carry the explicit key accidental"
+        );
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            header_key_explicit(&reparsed),
+            header_key_explicit(&reference),
+            "explicit key accidentals must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+        // The sounding pitches depend on the key accidental (B is flattened), so
+        // they must survive too.
+        assert_eq!(
+            pitch_sequence(&reparsed),
+            pitch_sequence(&reference),
+            "explicit-key sounding pitches must survive; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_exp_key_accidentals_survive_abc_projection() {
+        // `[K:D exp _B^g]`: the `exp` form forces fifths 0 and defines the
+        // signature purely by explicit accidentals. Both header and mid-tune forms
+        // must round-trip their explicit accidentals.
+        let abc = "X:1\nL:1/8\nK:D exp _B ^g\nB c d e |\n";
+        let reference = lower(abc);
+        assert_eq!(
+            header_key_explicit(&reference),
+            vec![('B', -1), ('G', 1)],
+            "precondition: exp key carries _B and ^g"
+        );
+        let mut completed = read_musicxml(&export(abc)).value;
+        complete_score_for_abc(&mut completed);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            header_key_explicit(&reparsed),
+            header_key_explicit(&reference),
+            "exp-key explicit accidentals must survive; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn mid_tune_explicit_key_accidentals_survive_abc_projection() {
+        // A mid-tune `[K:=e]`: an explicit natural cancellation on the key. The
+        // KeyChange display must carry the explicit accidental, not just the
+        // canonical major spelling.
+        let abc = "X:1\nL:1/8\nK:Bb\nB c d e | [K:=e] e f g a |\n";
+        let reference = lower(abc);
+        let mid_tune_explicit = |s: &Score| -> Vec<Vec<(char, i8)>> {
+            let mut out = Vec::new();
+            for p in &s.parts {
+                for v in &p.voices {
+                    for e in &v.events {
+                        if let TimedEventKind::KeyChange(k) = &e.kind {
+                            out.push(
+                                k.explicit_accidentals
+                                    .iter()
+                                    .map(|a| (a.step, a.accidental.alter()))
+                                    .collect(),
+                            );
+                        }
+                    }
+                }
+            }
+            out
+        };
+        assert_eq!(
+            mid_tune_explicit(&reference),
+            vec![vec![('E', 0)]],
+            "precondition: mid-tune [K:=e] carries one explicit natural on E"
+        );
+        let mut completed = read_musicxml(&export(abc)).value;
+        complete_score_for_abc(&mut completed);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        let reparsed = lower(&projected);
+        assert_eq!(
+            mid_tune_explicit(&reparsed),
+            mid_tune_explicit(&reference),
+            "mid-tune explicit key accidentals must survive; abc {projected:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_key_preservation_keeps_xml_inverse_byte_identical() {
+        // P3 isolation: building an explicit-accidental display must not perturb
+        // the write_musicxml pure inverse.
+        for abc in [
+            "X:1\nL:1/8\nK:C _B\nB c d e |\n",
+            "X:1\nL:1/8\nK:D exp _B ^g\nB c d e |\n",
+            "X:1\nL:1/8\nK:Bb\nB c d e | [K:=e] e f g a |\n",
+        ] {
+            let x1 = export(abc);
+            let mut score = read_musicxml(&x1).value;
+            let xml_before = write_musicxml(&score).musicxml;
+            complete_score_for_abc(&mut score);
+            let xml_after = write_musicxml(&score).musicxml;
+            assert_eq!(
+                xml_before, xml_after,
+                "completion must not change the write_musicxml inverse for {abc:?}"
+            );
+            assert_eq!(
+                xml_after, x1,
+                "the XML inverse must stay byte-identical for {abc:?}"
+            );
+        }
+    }
 }
 
 // --- R1: ABC -> XML -> Score -> ABC re-emission measurement ------------------
