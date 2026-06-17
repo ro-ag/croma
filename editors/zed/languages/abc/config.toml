@@ -1,0 +1,27 @@
+name = "ABC"
+grammar = "abc"
+path_suffixes = ["abc"]
+# ABC comments run from `%` to end of line; `%%` introduces a stylesheet
+# directive (still a `%`-prefixed line, so this single prefix covers both).
+line_comments = ["% "]
+
+# Bracket pairs ABC uses inside a music line plus the quoted chord-symbol /
+# annotation string. `autoclose` inserts the closer as you type the opener;
+# `newline` (chords/grace) lets Zed split the pair across lines on Enter.
+[[brackets]]
+start = "["
+end = "]"
+close = true
+newline = true
+
+[[brackets]]
+start = "{"
+end = "}"
+close = true
+newline = true
+
+[[brackets]]
+start = "\""
+end = "\""
+close = true
+newline = false

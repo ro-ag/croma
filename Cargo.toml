@@ -6,6 +6,15 @@ members = [
     "crates/croma-fmt",
     "crates/croma-lsp",
 ]
+# Kept OUT of the cargo workspace. `editors/zed` targets wasm32-wasip1 and pulls
+# in `zed_extension_api` (+ wit-bindgen) deps that must not touch croma-core's
+# zero-dep publishable build; build/lint it directly from `editors/zed/`.
+# `tree-sitter-abc` has no Cargo.toml today, but is listed defensively so a
+# future generated binding crate there can't be vacuumed into the workspace.
+exclude = [
+    "editors/zed",
+    "tree-sitter-abc",
+]
 # croma-lsp is PROMOTED (un-gated): the stdio language server ships in the
 # default build. Its lsp-server/lsp-types deps land on the croma-lsp binary
 # only; croma-core's default build stays zero-dep + crates.io-publishable.

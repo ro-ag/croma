@@ -1,0 +1,22 @@
+# croma ABC — Zed extension.
+#
+# This crate is INTENTIONALLY NOT part of the croma cargo workspace: it targets
+# `wasm32-wasip1` and pulls in `zed_extension_api` (and its transitive wit-bindgen
+# deps), which have no business in croma-core's zero-dep publishable build. The
+# workspace root `Cargo.toml` lists `editors/zed` under `[workspace] exclude`, so
+# `cargo build/test/clippy --workspace` never sees this crate. Build/lint it
+# directly from this directory instead.
+[package]
+name = "zed_croma_abc"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Zed extension for ABC music notation, backed by croma-lsp."
+repository = "https://github.com/ro-ag/croma"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"

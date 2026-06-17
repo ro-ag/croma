@@ -1,0 +1,23 @@
+id = "croma-abc"
+name = "croma ABC"
+version = "0.0.1"
+schema_version = 1
+authors = ["Rodrigo Agurto <removed>"]
+description = "ABC music notation support for Zed: tree-sitter highlighting, folds, and the croma-lsp language server."
+repository = "https://github.com/ro-ag/croma"
+
+# The ABC grammar lives in the croma monorepo under `tree-sitter-abc/`, pinned to
+# the G1 merge commit that committed it. `path` selects the grammar subdirectory
+# within the repo — this requires a reasonably recent Zed that supports the
+# `path` key in `[grammars.*]` (older Zed expects the grammar at the repo root).
+[grammars.abc]
+repository = "https://github.com/ro-ag/croma"
+commit = "59fc859e24215c4f65c80a50a9f99a1a2122fabc"
+path = "tree-sitter-abc"
+
+# Launch the croma-lsp stdio server for ABC buffers. The binary is resolved at
+# runtime by `language_server_command` in src/lib.rs (PATH first, then a GitHub
+# release download). `languages` matches the `name` in languages/abc/config.toml.
+[language_servers.croma-lsp]
+name = "croma-lsp"
+languages = ["ABC"]
