@@ -381,7 +381,25 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
             }
             TimedEventKind::SectionLabel(label) => {
-                out.push_str(&format!("[P:{label}] "));
+                // If the label contains `[` or `]` it cannot be safely emitted
+                // as an inline field `[P:{label}]` — the parser reads up to the
+                // first `]`, truncating the label.  Emit as a whole-line body
+                // field instead: trim any trailing space from the preceding
+                // music content, start the body field on a new line (or at the
+                // beginning if there is no preceding content), then resume on
+                // yet another new line for the music that follows.
+                // Whole-line body fields allow `]` in the value (ABC 2.1 §4.3).
+                if label.contains('[') || label.contains(']') {
+                    let trimmed = out.trim_end_matches(' ').to_owned();
+                    out.clear();
+                    if !trimmed.is_empty() {
+                        out.push_str(&trimmed);
+                        out.push('\n');
+                    }
+                    out.push_str(&format!("P:{label}\n"));
+                } else {
+                    out.push_str(&format!("[P:{label}] "));
+                }
             }
         }
     }
@@ -2203,5 +2221,59 @@ mod tests {
             let rewritten = write_abc(&score_of(&abc), AbcWriteOptions::default());
             assert_eq!(abc, rewritten, "write_abc not idempotent for {src:?}");
         }
+    }
+
+    #[test]
+    fn section_label_with_brackets_emits_whole_line_not_inline() {
+        // A `P:` label whose text contains `[` or `]` cannot be safely emitted
+        // as an inline field `[P:{label}]` — the parser reads up to the first `]`,
+        // truncating the label.  The fix is to emit it as a whole-line body field
+        // `P:{label}` (on its own line) which allows `]` in the value.
+        // This is the tune_013528 case: P:Avokatrilli   [Am]
+        let src = "X:1\nT:T\nM:2/4\nL:1/8\nK:Am\nP:Avokatrilli   [Am]\nAB cd |\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        // Must NOT contain the broken inline form.
+        assert!(
+            !abc.contains("[P:Avokatrilli"),
+            "label containing `[` must not be emitted as inline `[P:...]`; got:\n{abc}"
+        );
+        // Must contain a whole-line `P:` with the full label (including `[Am]`).
+        assert!(
+            abc.contains("\nP:Avokatrilli   [Am]\n"),
+            "label containing `[` must be emitted as whole-line `P:...[Am]`; got:\n{abc}"
+        );
+        // Re-parsing must recover the identical SectionLabel event.
+        let s2 = score_of(&abc);
+        let labels1: Vec<_> = s1
+            .parts
+            .iter()
+            .flat_map(|p| p.voices.iter())
+            .flat_map(|v| v.events.iter())
+            .filter_map(|e| {
+                if let crate::TimedEventKind::SectionLabel(l) = &e.kind {
+                    Some(l.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let labels2: Vec<_> = s2
+            .parts
+            .iter()
+            .flat_map(|p| p.voices.iter())
+            .flat_map(|v| v.events.iter())
+            .filter_map(|e| {
+                if let crate::TimedEventKind::SectionLabel(l) = &e.kind {
+                    Some(l.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            labels1, labels2,
+            "section label must survive the ABC → write_abc → re-parse round-trip"
+        );
     }
 }

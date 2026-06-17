@@ -535,9 +535,9 @@ impl MultiVoiceLowering {
                 self.diagnostics
                     .push(inline_instruction_ignored_warning(directive, inline.span));
             }
-            // Any other inline field (`[w:]`, `[r:]`, `[N:]`, `[P:]`, `[s:]`,
-            // `[U:]`, ...) is a VALID field croma's lowering does not yet apply —
-            // an unsupported-feature no-op, not a recovery from malformed input.
+            // Any other inline field (`[w:]`, `[r:]`, `[N:]`, `[s:]`, `[U:]`,
+            // ...) is a VALID field croma's lowering does not yet apply — an
+            // unsupported-feature no-op, not a recovery from malformed input.
             // Per the 3-tier recovery policy it is silently skipped (KEEP), not
             // warned: a per-occurrence warning here is noise on well-formed input.
             _ => {}
