@@ -269,7 +269,15 @@ impl Reader {
         // id="P1">` gets `voice_id_value("P1", "1", 0) = "P1"`, which is exactly
         // the part id. `write_abc` emits `V:P1` for that voice, so the synthesised
         // `%%score [P1 P2 …]` references the same ids that `V:` headers use.
-        if let Some(directive) = synthesize_score_directive(&part_list_result.groups) {
+        // Fix 3: pass the full ordered part-id list so ungrouped parts are
+        // included as bare voice-id tokens in their document-order positions.
+        let all_part_ids: Vec<&str> = part_list_result
+            .entries
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        if let Some(directive) = synthesize_score_directive(&part_list_result.groups, &all_part_ids)
+        {
             score.metadata.directives.push(directive);
         }
 
@@ -2749,7 +2757,15 @@ fn voice_id_value(part_id: &str, voice: &str, index: usize) -> String {
 /// **Single-group fast path.** When there is exactly one group, we emit the simple
 /// `[id1 id2 …]` or `{id1 id2}` form directly, which covers the vast majority of
 /// corpus files.
-fn synthesize_score_directive(groups: &[PartGroupEntry]) -> Option<ScoreDirectiveModel> {
+///
+/// **Fix 3 — ungrouped parts.** `all_part_ids` is the full `<score-part>` list
+/// in document order. When ≥1 group exists AND ≥1 part is outside every group, the
+/// ungrouped parts are emitted as bare voice-id tokens interleaved with the group
+/// blocks at their document-order positions, so no voice is hidden by `%%score`.
+fn synthesize_score_directive(
+    groups: &[PartGroupEntry],
+    all_part_ids: &[&str],
+) -> Option<ScoreDirectiveModel> {
     if groups.is_empty() {
         return None;
     }
@@ -2758,7 +2774,7 @@ fn synthesize_score_directive(groups: &[PartGroupEntry]) -> Option<ScoreDirectiv
     // Strategy: find the outermost group (largest part_ids set), then for each
     // position in its part_ids list, check if there is a sub-group starting at
     // that position and substitute the sub-group's bracketed form.
-    let text = build_score_text(groups);
+    let text = build_score_text(groups, all_part_ids);
     if text.is_empty() {
         return None;
     }
@@ -2783,6 +2799,10 @@ fn synthesize_score_directive(groups: &[PartGroupEntry]) -> Option<ScoreDirectiv
 /// Build the `%%score` text body (the part after `%%score `) from the recovered
 /// groups.  Handles flat, nested, sibling, and mixed layouts.
 ///
+/// `all_part_ids` is the full `<score-part>` id list in document order.  Parts
+/// not covered by any group are emitted as bare voice-id tokens at their
+/// document-order positions (Fix 3 — ungrouped-part fidelity).
+///
 /// **Algorithm.**
 ///
 /// 1. Identify *top-level* groups — groups whose `part_ids` are NOT a strict
@@ -2796,13 +2816,16 @@ fn synthesize_score_directive(groups: &[PartGroupEntry]) -> Option<ScoreDirectiv
 /// 3. For each top-level group, render it using `render_group_with_subs`, which
 ///    substitutes any inner sub-group blocks inline.
 ///
-/// 4. Join the rendered top-level blocks with `" "`.
-fn build_score_text(groups: &[PartGroupEntry]) -> String {
+/// 4. Walk `all_part_ids` in document order.  For each id that is the first id
+///    of a top-level group, emit that group's rendered block and skip the
+///    remaining ids of the group.  For each id that belongs to no group at all,
+///    emit it as a bare token.  Skip ids that are non-first members of a
+///    top-level group (they were consumed by the group block in step 4).
+///
+/// 5. Join all collected tokens with `" "`.
+fn build_score_text(groups: &[PartGroupEntry], all_part_ids: &[&str]) -> String {
     if groups.is_empty() {
         return String::new();
-    }
-    if groups.len() == 1 {
-        return render_group(&groups[0]);
     }
 
     // Step 1: find top-level groups — not a strict subset of any other group.
@@ -2820,9 +2843,28 @@ fn build_score_text(groups: &[PartGroupEntry]) -> String {
         })
         .collect();
 
+    // Fast path: single top-level group AND no ungrouped parts → the pre-fix
+    // simple form; avoids rebuilding the document-order walk for the common case.
+    let all_grouped: bool = all_part_ids
+        .iter()
+        .all(|&id| groups.iter().any(|g| g.part_ids.iter().any(|p| p == id)));
+    if top_level_indices.len() == 1 && all_grouped {
+        let idx = top_level_indices[0];
+        if groups.len() == 1 {
+            return render_group(&groups[idx]);
+        }
+        return render_group_with_subs(&groups[idx], groups, idx);
+    }
+
     // Step 2: stable document order for top-level groups.  Build a global part
-    // order from all part_ids across all groups (union, first-seen).
+    // order from all part_ids across all groups (union, first-seen), augmented
+    // with any ungrouped ids from `all_part_ids`.
     let mut global_order: Vec<&str> = Vec::new();
+    for &id in all_part_ids {
+        if !global_order.contains(&id) {
+            global_order.push(id);
+        }
+    }
     for g in groups {
         for id in &g.part_ids {
             if !global_order.contains(&id.as_str()) {
@@ -2846,13 +2888,42 @@ fn build_score_text(groups: &[PartGroupEntry]) -> String {
     });
 
     // Step 3: render each top-level group with its sub-group substitutions.
-    let rendered: Vec<String> = sorted_top
-        .iter()
-        .map(|&i| render_group_with_subs(&groups[i], groups, i))
-        .collect();
+    // Build a map: first_id → (rendered_block, set of all ids consumed by that group).
+    let mut top_by_first: std::collections::HashMap<&str, (String, &[String])> = Default::default();
+    for &idx in &sorted_top {
+        let g = &groups[idx];
+        if let Some(first) = g.part_ids.first() {
+            let block = if groups.len() == 1 {
+                render_group(g)
+            } else {
+                render_group_with_subs(g, groups, idx)
+            };
+            top_by_first.insert(first.as_str(), (block, &g.part_ids));
+        }
+    }
 
-    // Step 4: join top-level blocks.
-    rendered.join(" ")
+    // Step 4: walk all_part_ids in document order, emitting group blocks or bare tokens.
+    let mut result_tokens: Vec<String> = Vec::new();
+    let mut skip_ids: std::collections::HashSet<&str> = Default::default();
+    for &id in all_part_ids {
+        if skip_ids.contains(id) {
+            continue;
+        }
+        if let Some((block, consumed_ids)) = top_by_first.get(id) {
+            result_tokens.push(block.clone());
+            // Mark all ids in this top-level group as consumed so we don't
+            // emit them again as bare tokens.
+            for cid in *consumed_ids {
+                skip_ids.insert(cid.as_str());
+            }
+        } else {
+            // Ungrouped part: emit as bare voice-id token.
+            result_tokens.push(id.to_owned());
+        }
+    }
+
+    // Step 5: join all collected tokens.
+    result_tokens.join(" ")
 }
 
 /// Render one group, substituting any inner sub-groups (groups whose `part_ids`

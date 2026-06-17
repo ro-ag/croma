@@ -5546,6 +5546,73 @@ fn unbalanced_part_group_emits_diagnostic() {
     );
 }
 
+// --- Fix 3 (P1a review): ungrouped parts must appear in %%score ---------------
+//
+// When a `<part-list>` has SOME parts inside a `<part-group>` and OTHERS
+// outside any group, the synthesized `%%score` must list EVERY part in
+// document order — grouped parts inside their brackets, ungrouped parts as
+// bare voice-id tokens at their document-order position.
+//
+// Without this fix the ungrouped part's voice is HIDDEN by `%%score` (ABC
+// renderers only print voices named in `%%score`), which is a fidelity
+// regression versus the pre-P1a behaviour (no `%%score` → all voices print).
+
+#[test]
+fn ungrouped_part_included_in_score_directive() {
+    // 4 parts: bracket group over P1, P2, P3; P4 is standalone (ungrouped).
+    // Expected %%score: `[P1 P2 P3] P4`  (P4 in its document position after
+    // the group).
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <score-part id=\"P3\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "    <score-part id=\"P4\"><part-name/></score-part>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!(
+        "{}{}{}{}",
+        minimal_part("P1"),
+        minimal_part("P2"),
+        minimal_part("P3"),
+        minimal_part("P4"),
+    );
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "bracket group + standalone P4 must produce exactly one %%score directive; \
+         directives = {:?}",
+        score
+            .metadata
+            .directives
+            .iter()
+            .map(|d| &d.value.text)
+            .collect::<Vec<_>>()
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "[P1 P2 P3] P4",
+        "bracket group + standalone P4 must produce `[P1 P2 P3] P4`; got `{directive_text}`"
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score [P1 P2 P3] P4\n"),
+        "write_abc must emit `%%score [P1 P2 P3] P4` for bracket group + standalone P4; \
+         got:\n{abc}"
+    );
+}
+
 /// The first line at which two ABC documents diverge, rendered as
 /// `` `<expected>` != `<actual>` ``. `None`-free: returns a sentinel when one is
 /// a prefix of the other. Used only for the human-readable divergence note.
