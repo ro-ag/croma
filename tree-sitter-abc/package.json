@@ -17,10 +17,13 @@
   "scripts": {
     "generate": "tree-sitter generate",
     "test": "tree-sitter test",
-    "parse": "tree-sitter parse"
+    "parse": "tree-sitter parse",
+    "build:wasm": "tree-sitter build --wasm -o tree-sitter-abc.wasm . && cp tree-sitter-abc.wasm web/tree-sitter-abc.wasm && cp queries/highlights.scm web/highlights.scm",
+    "verify:web": "node web/verify.mjs"
   },
   "devDependencies": {
-    "tree-sitter-cli": "^0.26.0"
+    "tree-sitter-cli": "^0.26.0",
+    "web-tree-sitter": "0.26.9"
   },
   "tree-sitter": [
     {
