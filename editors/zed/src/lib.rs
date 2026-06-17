@@ -45,9 +45,30 @@ pub fn asset_name(platform: (Os, Architecture)) -> String {
     format!("{LSP_BINARY}-{os}-{arch}{suffix}")
 }
 
+/// Validates that `version` is safe to use as a path component when caching a
+/// downloaded release binary, returning the version unchanged when it is.
+///
+/// Returns `None` for anything that could let the cached path escape the
+/// extension work dir: an empty string, a `..` parent-dir segment, or any byte
+/// outside a semver-ish `[A-Za-z0-9._-]` charset (notably the `/` and `\` path
+/// separators). The version comes from the first-party GitHub release API so a
+/// hostile tag is unlikely, but a separator or `..` in a tag must never reach
+/// `version_dir`/`bin_path` as a filesystem path.
+///
+/// Pure and host-testable, like [`asset_name`].
+pub fn sanitize_version(version: &str) -> Option<&str> {
+    if version.is_empty() || version.contains("..") {
+        return None;
+    }
+    version
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        .then_some(version)
+}
+
 #[cfg(target_arch = "wasm32")]
 mod wasm_ext {
-    use super::{asset_name, LSP_BINARY};
+    use super::{asset_name, sanitize_version, LSP_BINARY};
     use zed_extension_api::{
         self as zed, DownloadedFileType, GithubReleaseOptions, LanguageServerId, Result,
     };
@@ -87,7 +108,7 @@ mod wasm_ext {
             // 2) Otherwise try a GitHub release auto-download for this platform.
             //    Functional once the release epic (C) publishes binaries; until
             //    then `latest_github_release` simply errors and we fall through.
-            if let Ok(command) = download_from_release() {
+            if let Ok(command) = download_from_release(worktree) {
                 return Ok(command);
             }
 
@@ -104,7 +125,11 @@ mod wasm_ext {
 
     /// Attempts to download the latest `croma-lsp` release binary for the current
     /// platform and returns a [`zed::Command`] pointing at the cached path.
-    fn download_from_release() -> Result<zed::Command> {
+    ///
+    /// `worktree` is threaded through only to source the shell env, so the
+    /// downloaded server is launched with the same environment as a `croma-lsp`
+    /// resolved from PATH (see `language_server_command`).
+    fn download_from_release(worktree: &zed::Worktree) -> Result<zed::Command> {
         let platform = zed::current_platform();
         let asset_name = asset_name(platform);
 
@@ -127,7 +152,16 @@ mod wasm_ext {
                 )
             })?;
 
-        let dir = version_dir(&release.version);
+        // Reject a release tag that is not a safe path component before it is
+        // spliced into the on-disk cache path below.
+        let version = sanitize_version(&release.version).ok_or_else(|| {
+            format!(
+                "croma release version {:?} is not a safe path component",
+                release.version
+            )
+        })?;
+
+        let dir = version_dir(version);
         let bin_path = format!("{dir}/{LSP_BINARY}");
 
         // Re-download only if not already cached for this version.
@@ -143,7 +177,10 @@ mod wasm_ext {
         Ok(zed::Command {
             command: bin_path,
             args: Vec::new(),
-            env: Vec::new(),
+            // Match the PATH-resolution branch so both launch the server with an
+            // identical environment. Harmless today (the stdio server reads no
+            // runtime env) but avoids a latent divergence if that ever changes.
+            env: worktree.shell_env(),
         })
     }
 
@@ -228,5 +265,45 @@ mod tests {
                 assert!(name.starts_with("croma-lsp-"), "{name} bad prefix");
             }
         }
+    }
+
+    #[test]
+    fn sanitize_version_accepts_plain_semver() {
+        assert_eq!(sanitize_version("1.2.3"), Some("1.2.3"));
+        assert_eq!(sanitize_version("0.0.1"), Some("0.0.1"));
+    }
+
+    #[test]
+    fn sanitize_version_accepts_v_prefix_and_prerelease() {
+        // The semver-ish charset must allow `v`, `-`, and `.`.
+        assert_eq!(sanitize_version("v1.2.3-rc.1"), Some("v1.2.3-rc.1"));
+        assert_eq!(sanitize_version("2026.06.17"), Some("2026.06.17"));
+    }
+
+    #[test]
+    fn sanitize_version_rejects_empty() {
+        assert_eq!(sanitize_version(""), None);
+    }
+
+    #[test]
+    fn sanitize_version_rejects_path_separators() {
+        // The real path-escape vectors: `/` and `\` must never reach a path.
+        assert_eq!(sanitize_version("../../etc/passwd"), None);
+        assert_eq!(sanitize_version("/abs/path"), None);
+        assert_eq!(sanitize_version("1.0\\..\\.."), None);
+    }
+
+    #[test]
+    fn sanitize_version_rejects_parent_dir_segment() {
+        // `..` is in-charset (only dots) yet is the traversal token — reject it.
+        assert_eq!(sanitize_version(".."), None);
+        assert_eq!(sanitize_version("1..2"), None);
+    }
+
+    #[test]
+    fn sanitize_version_rejects_out_of_charset_bytes() {
+        assert_eq!(sanitize_version("1 2"), None); // space
+        assert_eq!(sanitize_version("1;2"), None); // shell metachar
+        assert_eq!(sanitize_version("1\u{0}2"), None); // NUL
     }
 }

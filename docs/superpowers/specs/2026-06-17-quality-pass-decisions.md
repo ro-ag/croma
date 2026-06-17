@@ -282,6 +282,31 @@ in-epic:
 - `version_dir()` doesn't sanitize `release.version` (path traversal) — version
   is first-party (GitHub release tag); low risk; harden alongside epic-C.
 
+### Hardening done (branch `bugfix/zed-download-hardening`)
+
+Both deferred flags are now closed (the download path is still inactive, so this
+is pre-emptive — and the version sanitizer is pure, so it is tested on the host
+today regardless of epic-C):
+
+- **env parity.** `download_from_release` now takes `&Worktree` and returns
+  `Command { env: worktree.shell_env(), .. }` instead of an empty env, matching
+  the PATH-resolution branch. Decision was *inherit* (not zero both): the PATH
+  branch is the active, working-today path, so consistency means the download
+  branch matches it. Harmless today (the stdio server reads no runtime env —
+  `ABC_ROOT` is read only by the `corpus_proof` harness, never the runtime
+  server), but it removes a latent divergence.
+- **version sanitize.** New pure, host-testable `sanitize_version(&str) ->
+  Option<&str>` (sibling of `asset_name`) rejects empty, any `..` parent-dir
+  segment, and any byte outside `[A-Za-z0-9._-]` (notably `/` and `\`) before the
+  version reaches `version_dir`/`bin_path`; a rejected tag becomes an actionable
+  error instead of an escaped cache path. 6 host unit tests added (14 total).
+- `TODO(epic-C)` in `asset_name` left as-is: it tracks asset-name reconciliation
+  with the release workflow, a separate epic-C concern.
+- Verified: host `cargo test` 14/14; `wasm32-wasip1` build + clippy clean; fmt
+  clean. (wasm toolchain gotcha: the shell's `cargo`/`rustc` resolve to the
+  `stable` dir, whose sysroot lacks the wasm std — build/clippy the wasm target
+  with the `1.96.0-*` toolchain bin dir prepended to `PATH`.)
+
 ## A4 — closeout
 
 Tracker: `phase-65-quality-a1` merged (#160), `-a2` complete, `-a3`
