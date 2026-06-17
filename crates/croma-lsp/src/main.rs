@@ -11,16 +11,26 @@
 use std::error::Error;
 
 use croma_lsp::position::PositionEncoding;
-use croma_lsp::{DocumentStore, diagnostics};
-use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
+use croma_lsp::{
+    DocumentStore, diagnostics, document_symbols, folding_ranges, formatting, legend,
+    semantic_tokens,
+};
+use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
     Notification as NotificationTrait, PublishDiagnostics,
 };
+use lsp_types::request::{
+    DocumentSymbolRequest, FoldingRangeRequest, Formatting, Request as RequestTrait,
+    SemanticTokensFullRequest,
+};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
+    InitializeParams, InitializeResult, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
@@ -42,6 +52,20 @@ pub fn run(connection: &Connection) -> Result<(), Box<dyn Error + Sync + Send>> 
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::INCREMENTAL,
         )),
+        // R2: formatting (whole-doc replace), full semantic tokens (the legend
+        // is the SAME one the analysis layer emits indices against), document
+        // symbols, and folding ranges.
+        document_formatting_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: legend(),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: Some(false),
+                ..Default::default()
+            },
+        )),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
         ..Default::default()
     };
     let result = InitializeResult {
@@ -86,9 +110,10 @@ fn main_loop(connection: &Connection, encoding: PositionEncoding) {
                 match connection.handle_shutdown(&request) {
                     Ok(true) => break,
                     Ok(false) => {
-                        // No other requests are served in R1; reply with an
-                        // empty result so the client is never left hanging.
-                        respond_empty(connection, request);
+                        // Dispatch to an R2 request handler, or reply `null` for
+                        // anything unsupported so the client never hangs.
+                        let response = handle_request(&store, encoding, request);
+                        send_response(connection, response);
                     }
                     Err(error) => {
                         log(format!("shutdown handling error: {error}"));
@@ -107,10 +132,100 @@ fn main_loop(connection: &Connection, encoding: PositionEncoding) {
     }
 }
 
-/// Reply to an unsupported request with `null` so a conformant client does not
-/// block waiting for a response.
-fn respond_empty(connection: &Connection, request: Request) {
-    let response = Response::new_ok(request.id, serde_json::Value::Null);
+/// Dispatch a (non-shutdown) request to the matching R2 analysis function over
+/// the stored document text, producing a [`Response`].
+///
+/// Total: an unrecognised method, a payload that fails to decode, an unopened
+/// document, or a serialisation failure all yield a `null`-result response
+/// rather than an error response or a panic, so a conformant client is never
+/// left hanging and the loop never aborts. The analysis functions themselves are
+/// panic-free (they parse/format clamped, total input).
+fn handle_request(store: &DocumentStore, encoding: PositionEncoding, request: Request) -> Response {
+    let id = request.id.clone();
+    match request.method.as_str() {
+        Formatting::METHOD => {
+            let Some(uri) = formatting_uri(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            ok_or_null(id, &formatting(text, encoding))
+        }
+        SemanticTokensFullRequest::METHOD => {
+            let Some(uri) = semantic_tokens_uri(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            ok_or_null(id, &semantic_tokens(text, encoding))
+        }
+        DocumentSymbolRequest::METHOD => {
+            let Some(uri) = document_symbol_uri(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            ok_or_null(
+                id,
+                &DocumentSymbolResponse::Nested(document_symbols(text, encoding)),
+            )
+        }
+        FoldingRangeRequest::METHOD => {
+            let Some(uri) = folding_range_uri(&request) else {
+                return null_ok(id);
+            };
+            let text = store.get(&uri).unwrap_or("");
+            ok_or_null(id, &folding_ranges(text, encoding))
+        }
+        // Any other request (e.g. hover in R1) — reply null, never hang.
+        _ => null_ok(id),
+    }
+}
+
+/// Decode the `textDocument.uri` of each request kind, logging + dropping a
+/// malformed payload. Kept per-kind so each uses its real `Params` type.
+fn formatting_uri(request: &Request) -> Option<Url> {
+    decode_uri::<DocumentFormattingParams>(request, |p| p.text_document)
+}
+fn semantic_tokens_uri(request: &Request) -> Option<Url> {
+    decode_uri::<SemanticTokensParams>(request, |p| p.text_document)
+}
+fn document_symbol_uri(request: &Request) -> Option<Url> {
+    decode_uri::<DocumentSymbolParams>(request, |p| p.text_document)
+}
+fn folding_range_uri(request: &Request) -> Option<Url> {
+    decode_uri::<FoldingRangeParams>(request, |p| p.text_document)
+}
+
+/// Decode a request's params and extract its document identifier's URI.
+fn decode_uri<P>(request: &Request, pick: impl FnOnce(P) -> TextDocumentIdentifier) -> Option<Url>
+where
+    P: serde::de::DeserializeOwned,
+{
+    match serde_json::from_value::<P>(request.params.clone()) {
+        Ok(params) => Some(pick(params).uri),
+        Err(error) => {
+            log(format!("{} decode error: {error}", request.method));
+            None
+        }
+    }
+}
+
+/// Serialise `value` into an ok-response, falling back to `null` on failure.
+fn ok_or_null<T: serde::Serialize>(id: RequestId, value: &T) -> Response {
+    match serde_json::to_value(value) {
+        Ok(value) => Response::new_ok(id, value),
+        Err(error) => {
+            log(format!("failed to serialise response: {error}"));
+            null_ok(id)
+        }
+    }
+}
+
+/// A `null`-result ok-response.
+fn null_ok(id: RequestId) -> Response {
+    Response::new_ok(id, serde_json::Value::Null)
+}
+
+/// Send a response, logging a transport failure.
+fn send_response(connection: &Connection, response: Response) {
     if let Err(error) = connection.sender.send(Message::Response(response)) {
         log(format!("failed to send response: {error}"));
     }
@@ -400,6 +515,152 @@ mod transport_tests {
             1,
             "server survived garbage edit"
         );
+
+        // 4b.5. Drive each R2 request over the (now malformed mid-edit) buffer
+        // and assert the server replies without hanging or panicking. The buffer
+        // currently holds "[[[ broken é\n" from the previous garbage edit, so
+        // these run against a deliberately broken state.
+        for (id_n, method) in [
+            (10i32, "textDocument/formatting"),
+            (11, "textDocument/semanticTokens/full"),
+            (12, "textDocument/documentSymbol"),
+            (13, "textDocument/foldingRange"),
+        ] {
+            let req_id = RequestId::from(id_n);
+            client
+                .sender
+                .send(Message::Request(Request {
+                    id: req_id.clone(),
+                    method: method.to_string(),
+                    params: serde_json::json!({
+                        "textDocument": { "uri": uri().to_string() }
+                    }),
+                }))
+                .expect("send R2 request");
+            match recv(&client) {
+                Message::Response(Response { id, error, .. }) => {
+                    assert_eq!(id, req_id, "{method} response id");
+                    assert!(error.is_none(), "{method} errored: {error:?}");
+                }
+                other => panic!("expected {method} response, got {other:?}"),
+            }
+        }
+
+        // 4b.6. Restore a real tune and re-run the requests to assert non-empty,
+        // well-formed payloads (semantic tokens + symbols + folding present).
+        notify(
+            &client,
+            "textDocument/didChange",
+            DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri(),
+                    version: 4,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "X:1\nT:Probe\nK:C\nC   D E F|\n".to_string(),
+                }],
+            },
+        );
+        assert_eq!(drain_diagnostics(&client, 1), 1, "restore published once");
+
+        // semanticTokens/full -> non-empty data.
+        let st_id = RequestId::from(20);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: st_id.clone(),
+                method: "textDocument/semanticTokens/full".to_string(),
+                params: serde_json::json!({ "textDocument": { "uri": uri().to_string() } }),
+            }))
+            .expect("send semanticTokens");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, st_id);
+                assert!(error.is_none(), "semanticTokens errored: {error:?}");
+                let tokens: lsp_types::SemanticTokens =
+                    serde_json::from_value(result.expect("semanticTokens result"))
+                        .expect("valid SemanticTokens");
+                assert!(!tokens.data.is_empty(), "real tune should yield tokens");
+            }
+            other => panic!("expected semanticTokens response, got {other:?}"),
+        }
+
+        // formatting -> a single whole-document edit (the body had loose spaces).
+        let fmt_id = RequestId::from(21);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: fmt_id.clone(),
+                method: "textDocument/formatting".to_string(),
+                params: serde_json::json!({
+                    "textDocument": { "uri": uri().to_string() },
+                    "options": { "tabSize": 2, "insertSpaces": true }
+                }),
+            }))
+            .expect("send formatting");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, fmt_id);
+                assert!(error.is_none(), "formatting errored: {error:?}");
+                let edits: Vec<lsp_types::TextEdit> =
+                    serde_json::from_value(result.expect("formatting result"))
+                        .expect("valid TextEdit list");
+                assert!(edits.len() <= 1, "at most one full-document edit");
+            }
+            other => panic!("expected formatting response, got {other:?}"),
+        }
+
+        // documentSymbol -> one symbol for the tune.
+        let sym_id = RequestId::from(22);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: sym_id.clone(),
+                method: "textDocument/documentSymbol".to_string(),
+                params: serde_json::json!({ "textDocument": { "uri": uri().to_string() } }),
+            }))
+            .expect("send documentSymbol");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, sym_id);
+                assert!(error.is_none(), "documentSymbol errored: {error:?}");
+                let response: lsp_types::DocumentSymbolResponse =
+                    serde_json::from_value(result.expect("documentSymbol result"))
+                        .expect("valid DocumentSymbolResponse");
+                match response {
+                    lsp_types::DocumentSymbolResponse::Nested(symbols) => {
+                        assert_eq!(symbols.len(), 1, "one tune symbol");
+                        assert_eq!(symbols[0].name, "Probe");
+                    }
+                    other => panic!("expected nested symbols, got {other:?}"),
+                }
+            }
+            other => panic!("expected documentSymbol response, got {other:?}"),
+        }
+
+        // foldingRange -> one region fold over the tune.
+        let fold_id = RequestId::from(23);
+        client
+            .sender
+            .send(Message::Request(Request {
+                id: fold_id.clone(),
+                method: "textDocument/foldingRange".to_string(),
+                params: serde_json::json!({ "textDocument": { "uri": uri().to_string() } }),
+            }))
+            .expect("send foldingRange");
+        match recv(&client) {
+            Message::Response(Response { id, result, error }) => {
+                assert_eq!(id, fold_id);
+                assert!(error.is_none(), "foldingRange errored: {error:?}");
+                let folds: Vec<lsp_types::FoldingRange> =
+                    serde_json::from_value(result.expect("foldingRange result"))
+                        .expect("valid FoldingRange list");
+                assert_eq!(folds.len(), 1, "one fold per tune");
+            }
+            other => panic!("expected foldingRange response, got {other:?}"),
+        }
 
         // 4c. an entirely unknown request — server must reply (null), not hang.
         let probe_id = RequestId::from(2);
