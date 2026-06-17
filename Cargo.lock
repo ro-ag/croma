@@ -159,6 +159,7 @@ name = "croma-lsp"
 version = "0.1.0"
 dependencies = [
  "croma-core",
+ "croma-fmt",
  "lsp-server",
  "lsp-types",
  "serde",
