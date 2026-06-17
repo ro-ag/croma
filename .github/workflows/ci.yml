@@ -28,8 +28,10 @@ jobs:
       # Experimental, feature-gated MusicXML reader (default build stays dep-free).
       - run: cargo test -p croma-core --features musicxml-reader
       - run: cargo clippy -p croma-core --all-targets --features musicxml-reader -- -D warnings
-      - name: croma-core default build stays dep-free
-        run: "! cargo tree -p croma-core --edges normal | grep -q roxmltree"
+      - name: croma-core default build stays zero-dep
+        run: |
+          lines=$(cargo tree -p croma-core --edges normal | wc -l | tr -d ' ')
+          test "$lines" = "1" || { echo "croma-core gained a normal dependency:"; cargo tree -p croma-core --edges normal; exit 1; }
 
   linux-nix:
     name: Linux (nixos-unstable)

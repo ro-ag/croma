@@ -6,7 +6,11 @@ members = [
     "crates/croma-fmt",
     "crates/croma-lsp",
 ]
-default-members = ["crates/croma-core", "crates/croma-cli"]
+# croma-lsp is PROMOTED (un-gated): the stdio language server ships in the
+# default build. Its lsp-server/lsp-types deps land on the croma-lsp binary
+# only; croma-core's default build stays zero-dep + crates.io-publishable.
+# See docs/lsp.md.
+default-members = ["crates/croma-core", "crates/croma-cli", "crates/croma-lsp"]
 
 [workspace.package]
 edition = "2024"
