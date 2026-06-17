@@ -5170,6 +5170,207 @@ fn corpus_abc_reemission_through_xml() {
     );
 }
 
+// --- Phase-62 P1a: synthesize `%%score` from `<part-group>` ----------------
+//
+// Each test builds a minimal MusicXML document with a `<part-group>` and
+// asserts that `read_musicxml` reconstructs the correct `%%score` directive
+// in `metadata.directives`, and that `write_abc` emits the expected line.
+//
+// Self-loop-neutral: croma's own writer never emits `<part-group>`, so the
+// synthesis fires only on foreign XML and the self-loop 9935/9935 is
+// unchanged by construction.
+
+/// Minimal part XML: one measure, one C quarter note, at `<divisions>4</divisions>`.
+fn minimal_part(id: &str) -> String {
+    format!(
+        "  <part id=\"{id}\">\n    <measure number=\"1\">\
+         \n      <attributes><divisions>4</divisions></attributes>\
+         \n      <note><pitch><step>C</step><octave>4</octave></pitch>\
+         \n        <duration>4</duration><voice>1</voice><type>quarter</type></note>\
+         \n    </measure>\n  </part>\n"
+    )
+}
+
+#[test]
+fn part_group_bracket_synthesizes_score_directive() {
+    // A `<part-group type="start"><group-symbol>bracket</group-symbol>` wrapping
+    // three single-staff parts → `%%score [P1 P2 P3]` in metadata.directives AND
+    // in the write_abc output.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <score-part id=\"P3\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!(
+        "{}{}{}",
+        minimal_part("P1"),
+        minimal_part("P2"),
+        minimal_part("P3")
+    );
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    // The directive must be present.
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "bracket group must synthesize exactly one %%score directive; \
+         directives = {:?}",
+        score
+            .metadata
+            .directives
+            .iter()
+            .map(|d| &d.value.text)
+            .collect::<Vec<_>>()
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "[P1 P2 P3]",
+        "bracket group must produce `[P1 P2 P3]`"
+    );
+
+    // write_abc must emit the %%score line.
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score [P1 P2 P3]\n"),
+        "write_abc must emit `%%score [P1 P2 P3]` for the bracket group; got:\n{abc}"
+    );
+}
+
+#[test]
+fn part_group_brace_synthesizes_score_directive() {
+    // A `<part-group type="start"><group-symbol>brace</group-symbol>` wrapping
+    // two parts → `%%score {P1 P2}` in metadata.directives and write_abc output.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>brace</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!("{}{}", minimal_part("P1"), minimal_part("P2"));
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "brace group must synthesize exactly one %%score directive"
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "{P1 P2}",
+        "brace group must produce `{{P1 P2}}`"
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score {P1 P2}\n"),
+        "write_abc must emit `%%score {{P1 P2}}` for the brace group; got:\n{abc}"
+    );
+}
+
+#[test]
+fn part_group_nested_synthesizes_score_directive() {
+    // A bracket group wrapping an inner brace sub-group plus a standalone part:
+    // bracket([brace(P1 P2), P3]) → `%%score [{ P1 P2 } P3]`.
+    // MusicXML: group-1(bracket) contains group-2(brace) over P1,P2, then P3.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <part-group number=\"2\" type=\"start\">\n",
+        "      <group-symbol>brace</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <part-group number=\"2\" type=\"stop\"/>\n",
+        "    <score-part id=\"P3\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!(
+        "{}{}{}",
+        minimal_part("P1"),
+        minimal_part("P2"),
+        minimal_part("P3")
+    );
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "nested groups must produce exactly one %%score directive"
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "[{P1 P2} P3]",
+        "nested bracket(brace(P1,P2),P3) must produce `[{{P1 P2}} P3]`"
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score [{P1 P2} P3]\n"),
+        "write_abc must emit `%%score [{{P1 P2}} P3]` for nested groups; got:\n{abc}"
+    );
+}
+
+#[test]
+fn no_part_group_synthesizes_no_score_directive() {
+    // A MusicXML file with NO `<part-group>` must not synthesize any %%score
+    // directive — no spurious output, no change from the pre-change behavior.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!("{}{}", minimal_part("P1"), minimal_part("P2"));
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert!(
+        score.metadata.directives.is_empty(),
+        "no <part-group> must not synthesize any %%score directive; \
+         got {:?}",
+        score
+            .metadata
+            .directives
+            .iter()
+            .map(|d| &d.value.text)
+            .collect::<Vec<_>>()
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        !abc.contains("%%score"),
+        "write_abc must not emit %%score when there is no part-group; got:\n{abc}"
+    );
+}
+
 /// The first line at which two ABC documents diverge, rendered as
 /// `` `<expected>` != `<actual>` ``. `None`-free: returns a sentinel when one is
 /// a prefix of the other. Used only for the human-readable divergence note.

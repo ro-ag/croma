@@ -102,9 +102,10 @@ use crate::model::{
     GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
     LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent,
     Part, PartId, Pitch, RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility,
-    Score, ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel,
-    TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment,
-    TupletRole, Voice, VoiceId, VoicePropertiesModel,
+    Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel,
+    ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment,
+    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
+    Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -239,19 +240,37 @@ impl Reader {
 
         // Part names AND part-list MIDI instruments (S3) come from the
         // <part-list>; the music comes from the sibling <part> elements. The
-        // writer keys them by matching `id`.
-        let part_list = self.read_part_list(root);
+        // writer keys them by matching `id`. P1a: `read_part_list` also
+        // recovers any `<part-group>` spans for `%%score` synthesis.
+        let part_list_result = self.read_part_list(root);
         // The header tempo direction (the writer's `write_initial_directions`)
         // belongs to the score once, emitted only in part 1; reconstruct it into
         // `metadata.tempo_model`. `read_part` reports the captured header tempo so
         // a voice-less tempo direction before part 1's first note becomes the
         // header model rather than a mid-tune `TempoChange`.
         for (part_index, part_node) in children_named(root, "part").enumerate() {
-            let outcome = self.read_part(part_node, score.divisions, &part_list, part_index == 0);
+            let outcome = self.read_part(
+                part_node,
+                score.divisions,
+                &part_list_result.entries,
+                part_index == 0,
+            );
             if let Some(tempo) = outcome.header_tempo {
                 score.metadata.tempo_model.get_or_insert(tempo);
             }
             score.parts.push(outcome.part);
+        }
+
+        // P1a: synthesize `%%score` directives from recovered `<part-group>`
+        // spans. This is ABC-path only: `write_score_partwise` (the `--format xml`
+        // pure-inverse path) does not consult `metadata.directives`, so the
+        // directive is inert for the self-loop and reverse-parity gates.
+        // Voice-id alignment: the first (index 0) voice of each `<score-part
+        // id="P1">` gets `voice_id_value("P1", "1", 0) = "P1"`, which is exactly
+        // the part id. `write_abc` emits `V:P1` for that voice, so the synthesised
+        // `%%score [P1 P2 …]` references the same ids that `V:` headers use.
+        if let Some(directive) = synthesize_score_directive(&part_list_result.groups) {
+            score.metadata.directives.push(directive);
         }
 
         score.diagnostics = self.diagnostics.clone();
@@ -538,30 +557,85 @@ impl Reader {
         }
     }
 
-    /// Read each `<score-part>` into its id, `<part-name>`, and the list of
-    /// `<midi-instrument>` MIDI projections (S3). The writer emits one
-    /// `<score-part>` per part, with all `<score-instrument>` before all
-    /// `<midi-instrument>`; only the `<midi-instrument>` carries the
-    /// score-translatable fields the model stores, so the `<score-instrument>`
-    /// blocks (whose `<instrument-name>` is *derived* from the program / part
-    /// name on the forward side) are not read back — recovering `program`
-    /// regenerates the identical name on re-write.
-    fn read_part_list(&mut self, root: Node<'_, '_>) -> Vec<PartListEntry> {
+    /// Read each `<score-part>` (into its id, `<part-name>`, and MIDI
+    /// projections — S3) AND each `<part-group>` (P1a) from the `<part-list>`.
+    ///
+    /// **P1a — `<part-group>` reading.** `<part-group>` elements interleave with
+    /// `<score-part>` elements in document order. A `type="start"` element opens
+    /// a group keyed by its `number` attribute; a `type="stop"` with the same
+    /// `number` closes it. The closed group's `<group-symbol>` determines the ABC
+    /// delimiter (`bracket`/`square` → `'['`, `brace` → `'{'`, `line`/absent →
+    /// `'\0'`). Each part id that appeared BETWEEN the start and stop is recorded
+    /// in `PartGroupEntry.part_ids`. Nesting is supported via the active-group
+    /// stack: an inner group's parts are added to both the inner AND every outer
+    /// group so each level's delimiters span its correct range.
+    ///
+    /// **Forward byte-identity.** croma's own writer never emits `<part-group>`,
+    /// so the groups list is always empty for croma-produced XML; the synthesised
+    /// `%%score` directive is therefore never added for self-loop files.
+    fn read_part_list(&mut self, root: Node<'_, '_>) -> PartListResult {
         let Some(part_list) = children_named(root, "part-list").next() else {
-            return Vec::new();
+            return PartListResult {
+                entries: Vec::new(),
+                groups: Vec::new(),
+            };
         };
-        children_named(part_list, "score-part")
-            .map(|score_part| {
-                let id = score_part.attribute("id").unwrap_or_default().to_owned();
-                let name = child_text(score_part, "part-name").map(str::to_owned);
-                let instruments = self.read_midi_instruments(score_part);
-                PartListEntry {
-                    id,
-                    name,
-                    instruments,
+
+        let mut entries: Vec<PartListEntry> = Vec::new();
+        // Each active group: (number, symbol, accumulated part_ids).
+        let mut open_groups: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
+        // Completed groups, in close order.
+        let mut groups: Vec<PartGroupEntry> = Vec::new();
+
+        for child in element_children(part_list) {
+            match child.tag_name().name() {
+                "score-part" => {
+                    let id = child.attribute("id").unwrap_or_default().to_owned();
+                    let name = child_text(child, "part-name").map(str::to_owned);
+                    let instruments = self.read_midi_instruments(child);
+                    // Add this part id to every open group (outer → inner).
+                    for (_, _, ids) in &mut open_groups {
+                        ids.push(id.clone());
+                    }
+                    entries.push(PartListEntry {
+                        id,
+                        name,
+                        instruments,
+                    });
                 }
-            })
-            .collect()
+                "part-group" => {
+                    let type_attr = child.attribute("type").unwrap_or_default();
+                    let number = child.attribute("number").unwrap_or("1").to_owned();
+                    match type_attr {
+                        "start" => {
+                            let symbol = child_text(child, "group-symbol").map(str::to_owned);
+                            open_groups.push((number, symbol, Vec::new()));
+                        }
+                        "stop" => {
+                            // Find the matching open group by number (innermost
+                            // match, per the MusicXML nesting model).
+                            if let Some(pos) =
+                                open_groups.iter().rposition(|(n, _, _)| n == &number)
+                            {
+                                let (_, symbol_opt, part_ids) = open_groups.remove(pos);
+                                let symbol = match symbol_opt.as_deref().unwrap_or_default() {
+                                    "brace" => '{',
+                                    "bracket" | "square" => '[',
+                                    _ => '\0', // "line" or absent → no delimiter
+                                };
+                                if !part_ids.is_empty() {
+                                    groups.push(PartGroupEntry { symbol, part_ids });
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        PartListResult { entries, groups }
     }
 
     /// Invert [`MusicXmlWriter::write_part_instruments`]: read every
@@ -2568,6 +2642,29 @@ struct PartListEntry {
     instruments: Vec<MidiInstrumentModel>,
 }
 
+/// P1a: one `<part-group>` span recovered from the `<part-list>`.
+///
+/// `symbol` drives the ABC grouping delimiters:
+/// - `'['` → `bracket` or `square` → `[ … ]`
+/// - `'{'` → `brace` → `{ … }`
+/// - `'\0'` → `line` or absent → no delimiters (bare voice list)
+///
+/// `part_ids` is the ordered list of `<score-part id>` values inside the group.
+/// Nested groups: the outer group's `part_ids` also contains the inner group's
+/// parts (interleaved via the stack mechanism); a separate inner `PartGroupEntry`
+/// captures the inner group's subset so it emits its own delimiters.
+struct PartGroupEntry {
+    symbol: char,
+    part_ids: Vec<String>,
+}
+
+/// The full `<part-list>` read result: the ordered `<score-part>` entries
+/// (forwarded to `read_part`) plus any `<part-group>` spans (P1a).
+struct PartListResult {
+    entries: Vec<PartListEntry>,
+    groups: Vec<PartGroupEntry>,
+}
+
 /// S6d: accumulates one voice's reconstruction across a part's measures — its
 /// `<voice>` string (for ordering and `slur_voice_key` derivation), its full
 /// `TimedEvent` stream, and one [`Measure`] per measure where it has content.
@@ -2612,6 +2709,203 @@ fn voice_id_value(part_id: &str, voice: &str, index: usize) -> String {
     } else {
         format!("{part_id}#{}", voice.trim())
     }
+}
+
+/// P1a: build one `%%score` [`ScoreDirectiveModel`] from the list of recovered
+/// `<part-group>` spans, or `None` when there are no groups.
+///
+/// **Voice-id alignment.** The first (index 0) voice of a part with id `"P1"` is
+/// named `voice_id_value("P1", "1", 0) = "P1"`. `write_abc` emits `V:P1` for
+/// that voice, so `%%score [P1 P2 …]` references the exact same id. For
+/// single-voice foreign parts this is always the case.
+///
+/// **Text form.** The emitted text (stored in `directive.value.text` and re-emitted
+/// verbatim by `write_abc`) follows croma's `%%score` grammar:
+/// - `bracket`/`square` → `[P1 P2 P3]`
+/// - `brace` → `{P1 P2}`
+/// - `line`/absent → `P1 P2` (no delimiters)
+///
+/// **Nested groups.** When multiple groups are present (nested or sequential), the
+/// directive text is built by rendering each group with its delimiters in the order
+/// they were encountered, then deduplicating consecutive ids to avoid repeating a
+/// part that the outer group already emitted. The nesting logic:
+/// - Groups are sorted by decreasing `part_ids.len()` so that enclosing groups are
+///   rendered before the inner groups they contain.
+/// - Parts already emitted by a sub-group are NOT repeated at the enclosing level;
+///   instead the sub-group's bracketed token block is inserted where those ids were.
+///
+/// **Single-group fast path.** When there is exactly one group, we emit the simple
+/// `[id1 id2 …]` or `{id1 id2}` form directly, which covers the vast majority of
+/// corpus files.
+fn synthesize_score_directive(groups: &[PartGroupEntry]) -> Option<ScoreDirectiveModel> {
+    if groups.is_empty() {
+        return None;
+    }
+
+    // Build the directive text with proper nesting.
+    // Strategy: find the outermost group (largest part_ids set), then for each
+    // position in its part_ids list, check if there is a sub-group starting at
+    // that position and substitute the sub-group's bracketed form.
+    let text = build_score_text(groups);
+    if text.is_empty() {
+        return None;
+    }
+
+    // Build the token list to match the text (for the model's structured tokens
+    // field). The `tokens` are used by the lowering layer's `part_voice_groups` to
+    // decide which voices share a part; bracket/brace groups keep one part per
+    // voice (visual-only grouping), so the tokens only need to be structurally
+    // correct, not semantically load-bearing for the self-loop.
+    let tokens = parse_score_tokens(&text);
+
+    Some(ScoreDirectiveModel {
+        span: READER_SPAN,
+        value: TextLine {
+            text,
+            span: READER_SPAN,
+        },
+        tokens,
+    })
+}
+
+/// Build the `%%score` text body (the part after `%%score `) from the recovered
+/// groups.  Handles flat, nested, and multi-group layouts.
+fn build_score_text(groups: &[PartGroupEntry]) -> String {
+    if groups.is_empty() {
+        return String::new();
+    }
+    if groups.len() == 1 {
+        return render_group(&groups[0]);
+    }
+
+    // Multi-group: find the outermost group (the one with the most parts).
+    // Typically there is one outer group that contains all parts, and one or
+    // more inner sub-groups that share a subset. Render the outer group,
+    // substituting each inner sub-group block in-place.
+    //
+    // Find the outermost group: it has the largest `part_ids` count.
+    let outer_idx = groups
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, g)| g.part_ids.len())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let outer = &groups[outer_idx];
+
+    // Build a map: first part_id of each inner group → the rendered sub-block.
+    // A sub-group is any group whose part_ids is a strict subset of the outer.
+    // Key: the first part_id of the sub-group; value: (rendered block, sub_ids).
+    let mut sub_blocks: std::collections::HashMap<&str, (String, &[String])> = Default::default();
+    for (i, g) in groups.iter().enumerate() {
+        if i == outer_idx {
+            continue;
+        }
+        if g.part_ids.is_empty() {
+            continue;
+        }
+        // Check that all of g's part_ids are contained in outer's part_ids.
+        let is_sub = g.part_ids.iter().all(|id| outer.part_ids.contains(id));
+        if is_sub {
+            sub_blocks.insert(g.part_ids[0].as_str(), (render_group(g), &g.part_ids));
+        }
+    }
+
+    // Walk outer's part_ids, emitting either the sub-group block (and skipping
+    // its subsequent parts) or the bare voice id.
+    let open = open_char(outer.symbol);
+    let close = close_char(outer.symbol);
+    let mut tokens: Vec<String> = Vec::new();
+    // Track how many ids of the current sub-group remain to be skipped.
+    let mut skip_remaining: usize = 0;
+    for id in &outer.part_ids {
+        if skip_remaining > 0 {
+            skip_remaining -= 1;
+            continue;
+        }
+        if let Some((block, sub_ids)) = sub_blocks.get(id.as_str()) {
+            // Emit the sub-group's rendered block and skip its remaining parts
+            // in the outer loop (all but the first, which we are processing now).
+            skip_remaining = sub_ids.len().saturating_sub(1);
+            tokens.push(block.clone());
+        } else {
+            tokens.push(id.clone());
+        }
+    }
+    let inner = tokens.join(" ");
+    if open == '\0' {
+        inner
+    } else {
+        format!("{open}{inner}{close}")
+    }
+}
+
+/// Render one group as its bracketed string, e.g. `[P1 P2 P3]` or `{P1 P2}`.
+fn render_group(group: &PartGroupEntry) -> String {
+    let open = open_char(group.symbol);
+    let close = close_char(group.symbol);
+    let ids = group.part_ids.join(" ");
+    if open == '\0' {
+        ids
+    } else {
+        format!("{open}{ids}{close}")
+    }
+}
+
+fn open_char(symbol: char) -> char {
+    match symbol {
+        '[' => '[',
+        '{' => '{',
+        _ => '\0',
+    }
+}
+
+fn close_char(symbol: char) -> char {
+    match symbol {
+        '[' => ']',
+        '{' => '}',
+        _ => '\0',
+    }
+}
+
+/// Parse the score text into `ScoreDirectiveTokenModel`s. Mirrors
+/// `parse::field::voice::parse_score_directive` but works on a plain `&str`
+/// and produces `ScoreDirectiveTokenModel` directly (without the parse-layer
+/// `Spanned` wrapper). All spans are `READER_SPAN` (idempotence-invisible).
+fn parse_score_tokens(text: &str) -> Vec<ScoreDirectiveTokenModel> {
+    let mut tokens = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    while let Some((_, ch)) = chars.next() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        let kind = match ch {
+            '(' | '[' | '{' => ScoreDirectiveTokenKindModel::GroupStart(ch),
+            ')' | ']' | '}' => ScoreDirectiveTokenKindModel::GroupEnd(ch),
+            '|' => ScoreDirectiveTokenKindModel::StaffSeparator,
+            ',' => ScoreDirectiveTokenKindModel::MeasureSeparator,
+            '*' => ScoreDirectiveTokenKindModel::FloatingVoiceMarker,
+            _ => {
+                // Collect the full voice id (until whitespace or delimiter).
+                let mut id = String::new();
+                id.push(ch);
+                while let Some(&(_, next_ch)) = chars.peek() {
+                    if next_ch.is_whitespace()
+                        || matches!(next_ch, '(' | ')' | '[' | ']' | '{' | '}' | '|')
+                    {
+                        break;
+                    }
+                    id.push(next_ch);
+                    chars.next();
+                }
+                ScoreDirectiveTokenKindModel::Voice(id)
+            }
+        };
+        tokens.push(ScoreDirectiveTokenModel {
+            span: READER_SPAN,
+            kind,
+        });
+    }
+    tokens
 }
 
 /// One `<part>` reconstructed, plus the header [`TempoModel`] (S5a) captured from
