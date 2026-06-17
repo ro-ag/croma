@@ -285,6 +285,10 @@ pub enum TimedEventKind {
     ClefChange(ClefChangeModel),
     /// A mid-tune tempo change (`[Q:..]` or a body `Q:` line). Zero duration.
     TempoChange(TempoModel),
+    /// A body/inline `P:` section label (ABC 2.1 §4.3), e.g. `P:A` or `[P:B]`.
+    /// Zero duration; emitted as a MusicXML `<rehearsal>`. The header `P:ABAB`
+    /// play-order macro is a different construct and never produces this.
+    SectionLabel(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -608,6 +612,9 @@ pub enum TimelineEventKind {
     MeterChange(MeterModel),
     ClefChange(ClefChangeModel),
     TempoChange(TempoModel),
+    /// A body/inline `P:` section label, mirrored from [`TimedEventKind`] so the
+    /// per-voice alignment timeline carries it (zero duration, non-alignable).
+    SectionLabel(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
