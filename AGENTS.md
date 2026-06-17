@@ -92,8 +92,21 @@ on any host. Never hardcode an absolute toolchain path. Use `uv` for all Python.
   crates.io-publishable (`cargo build -p croma-core` pulls nothing; roxmltree is a
   dep of the CLI *binary* only). Build a reader-less CLI with
   `cargo build -p croma-cli --no-default-features`.
-- **LSP remains gated** until it has comparable evidence; parser / corpus /
-  music21 comparison work stays the priority for it.
+- The **LSP (`croma-lsp`, a stdio language server) is promoted** (un-gated in the
+  default build). It is a thin adapter over the proven core/formatter — never a
+  re-implementation — proven over the full 10k corpus: diagnostics fidelity
+  **10,000/10,000** (LSP path == core, codes+spans), formatting identity
+  **10,000/10,000** (== `croma fmt`, byte-exact), totality **0 panics / 0 hangs**
+  (didOpen/didChange incl. malformed mid-edit), semantic tokens
+  exhaustive/non-overlapping/in-bounds **10,000/0**, and latency **~1 ms** for
+  diagnostics + semantic tokens on a ~200-line file (ceiling 50 ms) — see
+  [`docs/lsp.md`](docs/lsp.md) and the `croma-lsp` `corpus_proof` harness +
+  `tools/prove_lsp_totality.py` / `tools/prove_lsp_fidelity.py`. The **default
+  build now ships the `croma-lsp` binary** (pulling `lsp-server`/`lsp-types`), but
+  those deps live on the **LSP binary only**; **`croma-core` stays
+  zero-dependency + crates.io-publishable** (`cargo build -p croma-core` pulls
+  nothing). Any LSP-vs-core mismatch is a bug, not a new spec; re-prove the legs
+  above after any touch.
 
 ## Parser recovery policy
 
