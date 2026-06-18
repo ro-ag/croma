@@ -35,10 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout croma (this PR)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Clone croma-test (provers + corpus)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ro-ag/croma-test
           token: ${{ secrets.CROMA_TEST_TOKEN }}
