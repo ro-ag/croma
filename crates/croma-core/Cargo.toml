@@ -29,7 +29,7 @@ roxmltree = { version = "0.20", optional = true }
 # Dev-only statistical benchmark harness. `default-features = false` drops the
 # heavy plotters/HTML chain; `cargo_bench_support` keeps `cargo bench` working.
 # Excluded from `--edges normal`, so the zero-dep guard stays at 1.
-criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 name = "parser"
