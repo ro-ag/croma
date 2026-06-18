@@ -24,3 +24,23 @@ musicxml-reader = ["dep:roxmltree"]
 
 [dependencies]
 roxmltree = { version = "0.20", optional = true }
+
+[dev-dependencies]
+# Dev-only statistical benchmark harness. `default-features = false` drops the
+# heavy plotters/HTML chain; `cargo_bench_support` keeps `cargo bench` working.
+# Excluded from `--edges normal`, so the zero-dep guard stays at 1.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "parser"
+harness = false
+
+[[bench]]
+name = "writer"
+harness = false
+
+# Reader bench needs the gated MusicXML reader; skipped by a plain `cargo bench`.
+[[bench]]
+name = "reader"
+harness = false
+required-features = ["musicxml-reader"]

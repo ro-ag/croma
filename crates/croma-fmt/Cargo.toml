@@ -15,3 +15,12 @@ workspace = true
 
 [dependencies]
 croma-core = { path = "../croma-core" }
+
+[dev-dependencies]
+# Dev-only statistical benchmark harness (see croma-core's note). Plotters chain
+# dropped; `cargo bench` still works via `cargo_bench_support`.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "fmt"
+harness = false
