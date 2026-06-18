@@ -13,6 +13,10 @@ use croma_core::{AbcSpecVersion, ParseMode, ParseOptions};
 #[command(
     name = "croma",
     about = "ABC notation toolkit",
+    // `version` (bare) wires up `croma --version`, derived from CARGO_PKG_VERSION
+    // (the workspace-inherited crate version), so it stays in lockstep with the
+    // published version automatically.
+    version,
     disable_help_subcommand = false
 )]
 pub struct Cli {
