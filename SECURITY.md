@@ -2,20 +2,25 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Croma is pre-1.0. Security fixes are applied to the latest released version only.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| 0.9.x   | :white_check_mark: |
+| < 0.9   | :x:                |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+Please report security issues privately — do **not** open a public issue.
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+- Use GitHub's **private vulnerability reporting** ("Report a vulnerability" under
+  the repository's *Security* tab), or
+- email the maintainer at <removed> with details and reproduction steps.
+
+You can expect an acknowledgement within 7 days. If the report is accepted, a fix
+is prioritized for the next release and you are credited (unless you prefer to
+remain anonymous); if declined, we explain why.
+
+Croma is a local, offline conversion toolkit: it parses ABC text and emits
+MusicXML (and back). The most relevant risks are crashes, hangs, or excessive
+resource use on malformed input — those are valid reports.

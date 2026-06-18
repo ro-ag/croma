@@ -22,6 +22,8 @@ __pycache__/
 
 # Local/private analysis and generated corpora
 /docs/untracked/
+# Cloned croma-test proving suite (separate repo)
+/croma-test/
 /.direnv/
 /.devenv/
 /devenv.local.nix

@@ -1,10 +1,9 @@
 [project]
-name = "croma-python-tools"
+name = "croma-tools"
 version = "0.1.0"
 requires-python = ">=3.11"
+# croma's only in-repo Python is tools/land.py (the push/PR/merge flow), which
+# needs `requests`. The corpus-scale Python proving suite lives in croma-test.
 dependencies = [
-    "music21>=10.3.0",
-    "orjson>=3.11.9",
-    "polars>=1.41.2",
-    "pytest>=9.0.3",
+    "requests>=2.31.0",
 ]

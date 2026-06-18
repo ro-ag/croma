@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Repository split.** The corpus-scale proving suite — the Python provers, the
+  10k ABC corpus, the abc2xml comparator + whitelist/dropped baseline, the ABC
+  spec knowledge base, the divergence-triage tooling, the progress tracker, and
+  the design-decisions trail — moved to the separate, private `croma-test`
+  repository. croma is now a lean Rust toolkit that builds and tests standalone;
+  corpus-scale proofs run from croma-test. `croma-core` remains zero-dependency
+  and crates.io-publishable.
+
 ## [0.9.0] - 2026-06-17
 
 First public, crates.io-ready release of the Croma toolkit. All four workspace

@@ -57,8 +57,10 @@ or a local Nix flake; both are described in
 [`docs/development-environment.md`](docs/development-environment.md).
 
 Agents (and humans) should start each session with the idempotent bootstrap,
-which provisions the toolchain, restores the progress database, and reports
-testbed status. See [`AGENTS.md`](AGENTS.md) for the full workflow.
+which provisions the toolchain and builds the CLI. The corpus-scale proving
+suite, abc2xml comparator, and progress tracker live in the separate, private
+[croma-test](https://github.com/ro-ag/croma-test) repo. See [`AGENTS.md`](AGENTS.md)
+for the full workflow.
 
 ```sh
 tools/session_bootstrap.sh
@@ -67,5 +69,8 @@ cargo run -p croma-cli -- xml examples/basic.abc
 just check
 ```
 
-Private analysis, scratch notes, and review transcripts belong under
-`docs/untracked/`; that directory is ignored by Git.
+The corpus-scale proving suite — Python provers, the 10k ABC corpus, the abc2xml
+comparator + whitelist baseline, the progress tracker, and the design-decisions
+trail — lives in the private [croma-test](https://github.com/ro-ag/croma-test)
+repo. Clone it alongside croma with `tools/session_bootstrap.sh --with-suite`
+(into the git-ignored `croma-test/`).
