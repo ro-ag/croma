@@ -10,7 +10,7 @@
 name = "zed_croma_abc"
 version = "0.0.1"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 description = "Zed extension for ABC music notation, backed by croma-lsp."
 repository = "https://github.com/ro-ag/croma"
