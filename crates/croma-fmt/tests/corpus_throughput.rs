@@ -14,9 +14,10 @@
 //!   cargo test -p croma-fmt --release --test corpus_throughput -- --ignored --nocapture
 //! ```
 //!
-//! `tools/bench_corpus_throughput.py` is the thin wrapper that sets `ABC_ROOT`
-//! (absolute), runs this in release, and parses the `bench corpus …` summary
-//! lines. LOCAL ONLY — the corpus is external (provision it per AGENTS.md).
+//! croma-test's `tools/bench_corpus_throughput.py` is the thin wrapper that sets
+//! `ABC_ROOT` (absolute), runs this in release, and parses the `bench corpus …`
+//! summary lines. LOCAL ONLY — the corpus is external (provision it from
+//! croma-test).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,7 +52,7 @@ fn abc_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Print a stable throughput summary line for one path. Format (parsed by
-/// `tools/bench_corpus_throughput.py`):
+/// croma-test's `tools/bench_corpus_throughput.py`):
 ///
 /// ```text
 /// bench corpus <path>: <files> files, <MB> MB total, <s> s, <files/s> files/s, <MB/s> MB/s

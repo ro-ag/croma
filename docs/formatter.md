@@ -55,8 +55,9 @@ ABC_ROOT=$PWD/docs/untracked/corpus/zenodo-10k/abc \
 ```
 
 A `>= 9000` file-count guard rejects a vacuous run (mis-set `ABC_ROOT`).
-`tools/prove_fmt_lossless.py` is the complementary **black-box** proof — it
-drives the built binary over the same corpus and writes a JSON report. The two
+croma-test's `tools/prove_fmt_lossless.py` is the complementary **black-box**
+proof — it drives the built binary over the same corpus and writes a JSON
+report. The two
 are independent (in-process gate reuse vs. binary + regex pitch-seq) and agree:
 `10000 files, 0 notes_changed / 0 not_idempotent / 0 canonical_xml_changed`.
 

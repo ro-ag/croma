@@ -11,9 +11,9 @@ Croma parser/model/export backlog in this file is empty. The formerly open
 items below are either fixed with regression tests and target evidence, or
 re-verdicted with fresh evidence as not an active Croma bug.
 
-The round-trip harness (`tools/prove_abc_roundtrip.py`, local-only) remains the
-regression net for writer/model fixes: each one should keep affected tunes
-in-scope with 0 structural diffs, and must not regress the proven set.
+The round-trip harness (croma-test's `tools/prove_abc_roundtrip.py`, local-only)
+remains the regression net for writer/model fixes: each one should keep affected
+tunes in-scope with 0 structural diffs, and must not regress the proven set.
 
 ## Resolved: coverage-capping
 
@@ -90,7 +90,7 @@ in-scope with 0 structural diffs, and must not regress the proven set.
 ## Resolved: phase-33 triage ledger (2026-06-11)
 
 The forensic triage of all 15 mismatch categories produced per-cause,
-adversarially re-verified verdicts in
+adversarially re-verified verdicts in croma-test's
 `docs/comparison/abc2xml-divergences/12-phase33-triage-ledger.md` — the
 canonical record for phase-33 residuals. Phases 35-38 fixed or re-verdicted
 the active `OPEN`/`known_backlog_model_gap` entries. The remaining mismatch

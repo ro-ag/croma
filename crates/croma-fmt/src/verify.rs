@@ -2,7 +2,7 @@
 //!
 //! The ordered sequence of `(step, alter, octave)` over every sounded note is
 //! the canonical "did the notes change?" signal, mirroring
-//! `tools/prove_divergences.py`'s `pitch_seq`. Rests contribute nothing; each
+//! croma-test's `tools/prove_divergences.py`'s `pitch_seq`. Rests contribute nothing; each
 //! chord member contributes one entry in order. A formatting that preserves this
 //! sequence is lossless in the sense the project's corpus proof uses.
 

@@ -77,12 +77,16 @@ Canonical highlight/structure queries live in `queries/`:
 
 ## Coverage gate
 
-`tools/prove_grammar_coverage.py` (in the croma repo root) parses the full 10k
-ABC corpus with `tree-sitter parse --quiet` and reports the clean-parse rate and
-the top residual categories — the grammar's analog of croma's corpus proofs.
+The grammar-coverage gate lives in the **croma-test** repo
+(`tools/prove_grammar_coverage.py`) and points at this grammar via the
+`CROMA_GRAMMAR_DIR` environment variable. It parses the full 10k ABC corpus with
+`tree-sitter parse --quiet` and reports the clean-parse rate and the top residual
+categories — the grammar's analog of croma's corpus proofs.
 
 ```sh
-uv run python tools/prove_grammar_coverage.py
+# from a croma-test checkout, pointing CROMA_GRAMMAR_DIR at this grammar:
+CROMA_GRAMMAR_DIR=/path/to/croma/tree-sitter-abc \
+  uv run python tools/prove_grammar_coverage.py
 ```
 
 ## Reuse story

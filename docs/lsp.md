@@ -70,7 +70,7 @@ The five promotion-bar legs — analogous to the formatter's `10000/0` and the
 reader's `9935/9935` — are proven by an `ABC_ROOT`-gated, in-process harness
 (`crates/croma-lsp/src/corpus_proof.rs`, mirroring the formatter's
 `corpus_proof.rs`) plus an in-memory `Connection` transport test, and reported by
-the black-box wrappers `tools/prove_lsp_totality.py` /
+croma-test's black-box wrappers `tools/prove_lsp_totality.py` /
 `tools/prove_lsp_fidelity.py`:
 
 ```sh

@@ -111,12 +111,16 @@ nix develop
 
 Use `uv` for Python environments and Python command execution in this project in
 **both** environments. This matters most for corpus tooling and music21-based
-MusicXML comparison.
+MusicXML comparison. The corpus-scale Python tooling itself (provers, comparators,
+the corpus, and the tracker) lives in the separate **croma-test** repo; only
+`tools/land.py` and `tools/session_bootstrap.sh` remain here. Run the comparison
+tooling shown below from a **croma-test** checkout.
 
 Preferred patterns:
 
 ```sh
 uv sync                                       # install pinned deps (uv.lock)
+# run from the croma-test repo (corpus tooling lives there):
 uv run python tools/music21_compare.py --help
 uv run pytest
 ```

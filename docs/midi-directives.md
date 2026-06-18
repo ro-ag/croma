@@ -72,7 +72,8 @@ integer run is taken; out-of-range values are skipped.
 
 ## Verification & a known gap
 
-The raw structural comparator (`tools/music21_polars_corpus_compare.py`)
+The raw structural comparator (croma-test's
+`tools/music21_polars_corpus_compare.py`)
 extracts **no** instrument / program / channel facts from music21, and it
 compares **written** pitch (`note.pitch.alter` is the accidental alteration; it
 never calls `.toSoundingPitch()`), so `<transpose>` is invisible to it too. It
@@ -104,5 +105,5 @@ out of scope here.
 - Corpus census: `docs/untracked/phase-33/midi/inventory.md`
 - abc2xml oracle probe + per-sub-directive verdicts:
   `docs/untracked/phase-33/midi/oracle-probe.md`
-- Spec-is-driver policy:
+- Spec-is-driver policy (in the **croma-test** repo):
   `docs/comparison/abc2xml-divergences/README.md`

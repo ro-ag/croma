@@ -1,0 +1,95 @@
+name: gates
+
+# Corpus-scale proof on every croma PR: clone the croma-test proving suite,
+# build this croma checkout, provision the 10k corpus + abc2xml reference, and
+# run the full gate matrix (fmt / reader / LSP / grammar / abc2xml whitelist)
+# plus the Python tests.
+#
+# Requires a repo secret CROMA_TEST_TOKEN with read access to the private
+# ro-ag/croma-test repo (a fine-grained PAT, Contents: read). The cargo-only
+# `ci` workflow runs independently and needs no secret.
+#
+# Everything slow is cached so a warm run only pays for the gate runs:
+#   - cargo build + registry (Swatinem/rust-cache)
+#   - uv Python deps (setup-uv cache)
+#   - the tree-sitter CLI binary
+#   - the unpacked ABC corpus AND the generated abc2xml reference MusicXML
+#     (the reference is the slowest step — abc2xml over 10k files — so it is
+#     generated once and reused while the corpus archive is unchanged)
+#   - the music21 comparison cache (rolling, self-invalidating)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout croma (this PR)
+        uses: actions/checkout@v4
+
+      - name: Clone croma-test (provers + corpus)
+        uses: actions/checkout@v4
+        with:
+          repository: ro-ag/croma-test
+          token: ${{ secrets.CROMA_TEST_TOKEN }}
+          path: croma-test
+          lfs: true
+
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+
+      - name: Cache cargo build + registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install uv (with cache)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          working-directory: croma-test
+
+      - name: Cache tree-sitter CLI
+        id: ts-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/tree-sitter
+          key: tree-sitter-cli-0.26.9-${{ runner.os }}
+
+      - name: Install tree-sitter CLI
+        if: steps.ts-cache.outputs.cache-hit != 'true'
+        run: cargo install tree-sitter-cli --version 0.26.9 --locked
+
+      - name: Cache ABC corpus + abc2xml reference
+        uses: actions/cache@v4
+        with:
+          path: croma-test/docs/untracked/corpus/zenodo-10k
+          key: corpus-ref-${{ hashFiles('croma-test/docs/corpus/zenodo-10k-abc.tar.gz') }}
+
+      - name: Cache music21 comparison cache
+        uses: actions/cache@v4
+        with:
+          path: croma-test/docs/untracked/cache
+          key: compare-cache-${{ github.run_id }}
+          restore-keys: |
+            compare-cache-
+
+      - name: Run the gate matrix (incl. abc2xml whitelist)
+        working-directory: croma-test
+        env:
+          CROMA_DIR: ${{ github.workspace }}
+        run: ./bootstrap.sh --with-reference
+
+      - name: Python tests
+        working-directory: croma-test
+        env:
+          CROMA_BIN: ${{ github.workspace }}/target/debug/croma
+        run: uv run pytest -q
