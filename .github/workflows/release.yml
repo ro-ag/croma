@@ -1,0 +1,128 @@
+name: Release
+
+# Tag-triggered binary releases, plus a no-release dry-run path.
+#   push a `v*` tag    -> build the matrix, then a release job attaches the
+#                         per-platform binaries to that tag's GitHub Release.
+#   workflow_dispatch  -> build the matrix and upload the binaries as Actions
+#                         artifacts ONLY (no tag, no release): a fully reversible
+#                         dry-run proving every platform builds and names match
+#                         the Zed resolver contract (editors/zed/src/lib.rs).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            os_label: macos
+            arch: aarch64
+            ext: ""
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+            os_label: macos
+            arch: x86_64
+            ext: ""
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            os_label: linux
+            arch: x86_64
+            ext: ""
+          - name: linux-arm64
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            os_label: linux
+            arch: aarch64
+            ext: ""
+            cross_linker: gcc-aarch64-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            os_label: windows
+            arch: x86_64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Install cross linker (linux-arm64 only)
+        if: matrix.cross_linker != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cross_linker }}
+      - name: Build release binaries
+        shell: bash
+        env:
+          # Consulted only for the aarch64-linux target; inert for the others.
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --locked --target ${{ matrix.target }} -p croma-cli -p croma-lsp
+      - name: Stage named assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release"
+          os="${{ matrix.os_label }}"
+          arch="${{ matrix.arch }}"
+          ext="${{ matrix.ext }}"
+          mkdir -p dist
+          cp "$bin/croma$ext"     "dist/croma-$os-$arch$ext"
+          cp "$bin/croma-lsp$ext" "dist/croma-lsp-$os-$arch$ext"
+          # Contract guard: the croma-lsp asset name MUST equal what the Zed
+          # extension resolver (editors/zed/src/lib.rs `asset_name`) expects,
+          # croma-lsp-<os>-<arch>[.exe]; a mismatch silently breaks auto-download.
+          expected="croma-lsp-$os-$arch$ext"
+          test -f "dist/$expected" || { echo "::error::missing expected asset dist/$expected"; exit 1; }
+          ls -l dist
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: croma-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release and attach binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          ls -l dist
+          gh release create "$tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --generate-notes \
+            --verify-tag

@@ -29,7 +29,8 @@ const LSP_BINARY: &str = "croma-lsp";
 /// `croma-lsp-macos-aarch64`, `croma-lsp-linux-x86_64`,
 /// `croma-lsp-windows-x86_64.exe`, etc.
 ///
-// TODO(epic-C): reconcile this scheme with the names the release workflow uploads.
+// The release workflow (.github/workflows/release.yml) uploads assets under
+// exactly this scheme; the asset_name unit tests below pin the strings.
 pub fn asset_name(platform: (Os, Architecture)) -> String {
     let (os, arch) = platform;
     let (os, suffix) = match os {
