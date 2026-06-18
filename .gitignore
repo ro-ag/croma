@@ -19,6 +19,9 @@ target
 # Python dev tooling caches
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Local/private analysis and generated corpora
 /docs/untracked/
