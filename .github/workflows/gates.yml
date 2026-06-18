@@ -61,7 +61,7 @@ jobs:
 
       - name: Cache tree-sitter CLI
         id: ts-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/tree-sitter
           key: tree-sitter-cli-0.26.9-${{ runner.os }}
@@ -71,13 +71,13 @@ jobs:
         run: cargo install tree-sitter-cli --version 0.26.9 --locked
 
       - name: Cache ABC corpus + abc2xml reference
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: croma-test/docs/untracked/corpus/zenodo-10k
           key: corpus-ref-${{ hashFiles('croma-test/docs/corpus/zenodo-10k-abc.tar.gz') }}
 
       - name: Cache music21 comparison cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: croma-test/docs/untracked/cache
           key: compare-cache-${{ github.run_id }}
