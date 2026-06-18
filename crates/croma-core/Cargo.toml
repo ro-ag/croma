@@ -23,7 +23,7 @@ workspace = true
 musicxml-reader = ["dep:roxmltree"]
 
 [dependencies]
-roxmltree = { version = "0.20", optional = true }
+roxmltree = { version = "0.21", optional = true }
 
 [dev-dependencies]
 # Dev-only statistical benchmark harness. `default-features = false` drops the
