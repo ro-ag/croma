@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Rust crate dependencies (the workspace). croma-core stays zero-dep, so this
+  # mostly tracks the CLI/LSP deps and the dev/bench tooling.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+
+  # GitHub Actions used by the workflows (checkout, rust-cache, setup-uv, …).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci

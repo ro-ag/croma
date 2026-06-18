@@ -22,6 +22,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "0 5 * * 1" # weekly drift check (Mon 05:00 UTC) — corpus/croma-test moves
   workflow_dispatch:
 
 concurrency:

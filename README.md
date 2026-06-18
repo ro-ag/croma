@@ -1,8 +1,12 @@
 # croma
 
+[![CI](https://github.com/ro-ag/croma/actions/workflows/ci.yml/badge.svg)](https://github.com/ro-ag/croma/actions/workflows/ci.yml)
+[![gates](https://github.com/ro-ag/croma/actions/workflows/gates.yml/badge.svg)](https://github.com/ro-ag/croma/actions/workflows/gates.yml)
+[![audit](https://github.com/ro-ag/croma/actions/workflows/audit.yml/badge.svg)](https://github.com/ro-ag/croma/actions/workflows/audit.yml)
+[![crates.io](https://img.shields.io/crates/v/croma-core.svg)](https://crates.io/crates/croma-core)
+[![docs.rs](https://img.shields.io/docsrs/croma-core)](https://docs.rs/croma-core)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.96.0-orange.svg)](rust-toolchain.toml)
-[![Corpus](https://img.shields.io/badge/corpus-10k%20proven-brightgreen.svg)](#how-its-proven)
+[![corpus: 10k proven](https://img.shields.io/badge/corpus-10k%20proven-brightgreen.svg)](#how-its-proven)
 
 A Rust-first toolkit for **ABC music notation** — convert ABC to MusicXML and
 back, format it, and edit it with real language-server support. Everything is
