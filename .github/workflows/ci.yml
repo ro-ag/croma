@@ -1,9 +1,25 @@
 name: CI
 
 on:
+  # Docs-only changes don't affect the build or tests; skip CI for them. Code,
+  # workflow, and config files are absent from paths-ignore and always run.
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - ".gitattributes"
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - ".gitattributes"
   workflow_dispatch:
 
 env:
