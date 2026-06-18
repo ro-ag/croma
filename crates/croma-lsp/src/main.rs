@@ -476,12 +476,23 @@ mod transport_tests {
 
     #[test]
     fn scripted_client_drives_server_without_hanging_or_panicking() {
+        // One scripted session walks the *entire* server lifecycle end to end —
+        // handshake, edits, malformed input, every R2/R3 request, teardown — in a
+        // single test on purpose: a real editor interleaves these, so ordering and
+        // state-carry-over bugs only surface when the steps run against one another
+        // in sequence. Two properties are under test throughout (leg C, transport
+        // half): the loop NEVER hangs (every client `recv` is bounded by
+        // `RECV_TIMEOUT`, so a wedged server fails loudly instead of blocking) and
+        // it ends with 0 panics (the server thread joins cleanly at the very end).
+        // The real `run` loop drives the server on its own thread; the test plays
+        // the client over an in-memory connection.
         let (server, client) = Connection::memory();
-
-        // Run the real server loop in its own thread.
         let server_thread = thread::spawn(move || run(&server));
 
-        // Initialize, offering UTF-8 so the server negotiates it.
+        // Phase 1 — handshake. `initialize` (offering UTF-8 so the server
+        // negotiates that encoding) must return an InitializeResult; then
+        // `initialized`; then didOpen a real tune, which publishes diagnostics
+        // exactly once.
         let init_params = InitializeParams {
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
@@ -531,7 +542,8 @@ mod transport_tests {
             "didOpen should publish once"
         );
 
-        // An incremental insert.
+        // Phase 2 — edits. A well-formed incremental (ranged) insert; the server
+        // re-parses and re-publishes once.
         notify(
             &client,
             "textDocument/didChange",
@@ -558,7 +570,12 @@ mod transport_tests {
         );
         assert_eq!(drain_diagnostics(&client, 1), 1);
 
-        // A garbage didChange payload must not crash the loop.
+        // Phase 3 — malformed input the loop must shrug off. A didChange whose
+        // payload has the wrong JSON shape fails to decode and is silently dropped
+        // (no publish); we then prove the server is still alive by sending a valid
+        // change and seeing diagnostics again. That change's text is itself broken
+        // ABC ("[[[ broken é"), leaving the buffer deliberately malformed for the
+        // next phase.
         client
             .sender
             .send(Message::Notification(Notification {
@@ -589,10 +606,9 @@ mod transport_tests {
             "server survived garbage edit"
         );
 
-        // Drive each R2 request over the (now malformed mid-edit) buffer and
-        // assert the server replies without hanging or panicking. The buffer
-        // currently holds "[[[ broken é\n" from the previous garbage edit, so
-        // these run against a deliberately broken state.
+        // Phase 4 — every R2 request must REPLY (not hang, not panic) even over
+        // the malformed buffer left by Phase 3. The handlers must degrade to an
+        // empty/standard response on a broken parse rather than crash the loop.
         for (id_n, method) in [
             (10i32, "textDocument/formatting"),
             (11, "textDocument/semanticTokens/full"),
@@ -619,8 +635,10 @@ mod transport_tests {
             }
         }
 
-        // Restore a real tune and re-run the requests to assert non-empty,
-        // well-formed payloads (semantic tokens + symbols + folding present).
+        // Phase 5 — the inverse of Phase 4: restore a real tune, re-run the same
+        // handlers, and assert their payloads are now non-empty and well-formed
+        // (real semantic tokens, one "Probe" symbol, one fold, a hover on `K:`).
+        // Good input must produce real results, not just "didn't crash".
         notify(
             &client,
             "textDocument/didChange",
@@ -755,8 +773,8 @@ mod transport_tests {
             other => panic!("expected hover response, got {other:?}"),
         }
 
-        // Insert a blank line after X: so line 1 is an empty header line, then
-        // request completion there.
+        // Phase 6 — completion. Insert a blank line so line 1 is an empty header
+        // context, then assert completion there offers a field key (`K:`).
         notify(
             &client,
             "textDocument/didChange",
@@ -800,7 +818,8 @@ mod transport_tests {
             other => panic!("expected completion response, got {other:?}"),
         }
 
-        // Set up an auto-fixable buffer, then request a code action over it.
+        // Phase 7 — code action. A buffer with a fixable issue (`Q:320s`, a
+        // bare-suffix tempo) must yield exactly one `source.fixAll` action.
         notify(
             &client,
             "textDocument/didChange",
@@ -853,7 +872,8 @@ mod transport_tests {
             other => panic!("expected codeAction response, got {other:?}"),
         }
 
-        // An entirely unknown request — the server must reply (null), not hang.
+        // Phase 8 — robustness: an odd/empty-params request (a hover with `{}`)
+        // must still get a reply, never wedge the loop waiting for a response.
         let probe_id = RequestId::from(2);
         client
             .sender
@@ -868,6 +888,8 @@ mod transport_tests {
             other => panic!("expected a response to the unknown request, got {other:?}"),
         }
 
+        // Phase 9 — teardown. didClose clears diagnostics (one final publish);
+        // `shutdown` returns a response; `exit` ends the loop so the thread joins.
         notify(
             &client,
             "textDocument/didClose",
