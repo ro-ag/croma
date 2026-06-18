@@ -1,0 +1,53 @@
+name: publish
+
+# Publish the workspace crates to crates.io. Fires on a `v*` tag — the same
+# trigger as the binary release — so a tagged release auto-publishes; also
+# runnable manually via workflow_dispatch. The tag is always cut from a green
+# main, so "main is okay" is implied by the trigger.
+#
+# Crates publish in dependency order (croma-core → croma-fmt → croma-cli →
+# croma-lsp). Dependents are retried while the index propagates, and an
+# already-published version is treated as success, so the workflow is safe to
+# re-run. Requires the CARGO_REGISTRY_TOKEN repo secret.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -uo pipefail
+          publish() {
+            crate="$1"
+            for attempt in 1 2 3 4 5 6; do
+              out="$(cargo publish -p "$crate" 2>&1)"; rc=$?
+              printf '%s\n' "$out"
+              if [ "$rc" -eq 0 ]; then return 0; fi
+              if printf '%s' "$out" | grep -qiE "already (exists|uploaded)|already published|crate version .* is already"; then
+                echo "::notice::$crate is already on crates.io — skipping"
+                return 0
+              fi
+              echo "::warning::$crate publish attempt $attempt failed (rc=$rc); retrying in 30s for index propagation"
+              sleep 30
+            done
+            echo "::error::failed to publish $crate after retries"
+            return 1
+          }
+          publish croma-core
+          publish croma-fmt
+          publish croma-cli
+          publish croma-lsp
