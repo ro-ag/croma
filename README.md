@@ -41,13 +41,24 @@ Out of scope: PDF rendering and engraving layout.
 
 ## Install
 
-croma is pre-1.0 and not yet on crates.io. Build from source with the pinned
-toolchain (Rust 1.96.0, selected automatically by `rust-toolchain.toml`):
+**From crates.io:**
+
+```sh
+cargo install croma-cli      # the `croma` CLI
+cargo install croma-lsp      # the language server
+cargo add croma-core         # the library (ABC <-> MusicXML, zero-dependency)
+```
+
+**Prebuilt binaries** for macOS / Linux / Windows are attached to each
+[GitHub Release](https://github.com/ro-ag/croma/releases) — `croma-*` (CLI) and
+`croma-lsp-*` (server), one per platform.
+
+**From source** (pinned Rust 1.96.0, via `rust-toolchain.toml`):
 
 ```sh
 git clone https://github.com/ro-ag/croma
 cd croma
-cargo build --release            # builds target/release/croma (CLI) and croma-lsp
+cargo build --release        # target/release/croma (CLI) + croma-lsp
 ```
 
 A reader-less, zero-dependency CLI is available with
