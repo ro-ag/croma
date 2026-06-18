@@ -17,7 +17,7 @@
 //!   cargo test -p croma-lsp --release -- --nocapture
 //! ```
 //!
-//! `tools/prove_lsp_totality.py` is the complementary black-box wrapper that
+//! croma-test's `tools/prove_lsp_totality.py` is the complementary black-box wrapper that
 //! runs this harness and parses its summary line.
 
 use std::fs;
@@ -616,7 +616,7 @@ fn fidelity_violations(source: &str, encoding: PositionEncoding) -> Vec<String> 
 
 /// The corpus fidelity gate: legs A (diagnostics), B (formatting), D (semantic
 /// tokens) over the 10k. Reports stable summary lines parsed by
-/// `tools/prove_lsp_fidelity.py`:
+/// croma-test's `tools/prove_lsp_fidelity.py`:
 ///
 /// ```text
 /// lsp leg A diagnostics: <N> files, <M> mismatches
@@ -741,7 +741,7 @@ fn lsp_analysis_is_total_over_the_corpus() {
         }
     }
 
-    // The summary line parsed by tools/prove_lsp_totality.py. Keep the format
+    // The summary line parsed by croma-test's tools/prove_lsp_totality.py. Keep the format
     // stable: "lsp totality: N files, P panics".
     eprintln!("lsp totality: {processed} files, {panics} panics");
     if !failures.is_empty() {

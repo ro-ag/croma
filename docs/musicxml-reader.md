@@ -51,8 +51,9 @@ globally-unique-per-voice (the reader numbers them per-measure for
 **never** applied on `--format xml` nor in the XML idempotence gate, so it
 cannot perturb the write_musicxml inverse.
 
-**Structural round-trip evidence** (`tools/prove_reader_abc_roundtrip.py`,
-LOCAL-ONLY: `croma xml`→X1, `croma read X1 --format abc`→ABC', `croma xml ABC'`
+**Structural round-trip evidence** (croma-test's
+`tools/prove_reader_abc_roundtrip.py`, LOCAL-ONLY: `croma xml`→X1,
+`croma read X1 --format abc`→ABC', `croma xml ABC'`
 →X2, compare the normalized musical projection X1≡X2): **9,724 / 9,933 in-scope
 round-trip structurally (97.9%)**. The remaining 209 are adjudicated below — a
 valid-but-different Score that the lossy XML intermediate cannot always render
@@ -178,11 +179,12 @@ ABC_ROOT=/abs/path/to/abc REF_ROOT=/abs/path/to/musicxml \
 
 The self-loop (XML re-emission idempotence) proves the reader inverts croma's
 **own** writer, but never exercises **foreign** MusicXML. R2 measures reading the
-abc2xml/music21 dialect: `tools/musicxml_reverse_corpus_compare.py` runs each
-abc2xml-reference file through `croma read --format xml` (the **pure inverse**)
-and feeds the re-export + the original into the existing **music21 semantic
-comparator** (`tools/music21_polars_corpus_compare.py`, unchanged) — cross-writer
-semantic parity, not byte idempotence. (LOCAL-ONLY; corpus is external.)
+abc2xml/music21 dialect: croma-test's `tools/musicxml_reverse_corpus_compare.py`
+runs each abc2xml-reference file through `croma read --format xml` (the **pure
+inverse**) and feeds the re-export + the original into the existing **music21
+semantic comparator** (croma-test's `tools/music21_polars_corpus_compare.py`,
+unchanged) — cross-writer semantic parity, not byte idempotence. (LOCAL-ONLY;
+corpus is external.)
 
 **Three clean reader bugs the self-loop could never surface** (each gated,
 read-side only, forward + self-loop idempotence untouched at 9915/9935):

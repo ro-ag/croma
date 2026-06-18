@@ -5081,9 +5081,9 @@ mod abc_completion {
 /// and the test makes no hard count assertion on it; it exists to prove the
 /// reader is *total* over the corpus (it never panics). The **real** R1 metric
 /// — a normalized STRUCTURAL projection that ignores this ABC-only state — lives
-/// in `tools/prove_reader_abc_roundtrip.py` (the structural sibling of
-/// `tools/prove_abc_roundtrip.py`), which is where the round-trip *correctness*
-/// proof belongs.
+/// in croma-test's `tools/prove_reader_abc_roundtrip.py` (the structural sibling
+/// of croma-test's `tools/prove_abc_roundtrip.py`), which is where the round-trip
+/// *correctness* proof belongs.
 ///
 /// **Report-only**, mirroring the XML measurement's discipline: it prints
 /// `N/total` plus a first-divergence note for a few non-matches and asserts no
@@ -5162,8 +5162,9 @@ fn corpus_abc_reemission_through_xml() {
     // No hard count on the byte-identity tally: full ABC-document byte equality
     // is expected to be near-zero (write_abc emits ABC-only state absent from
     // the lossy XML round-trip), so it is not a gate. The structural proof is
-    // tools/prove_reader_abc_roundtrip.py. Here we require only that the loop is
-    // total over the corpus (no panic) and that at least one file was measured.
+    // croma-test's tools/prove_reader_abc_roundtrip.py. Here we require only that
+    // the loop is total over the corpus (no panic) and that at least one file was
+    // measured.
     assert!(
         lowered > 0,
         "expected at least one corpus file to lower and export"

@@ -15,7 +15,7 @@
 //!   cargo test -p croma-fmt --release corpus_proof -- --nocapture
 //! ```
 //!
-//! `tools/prove_fmt_lossless.py` is the complementary **black-box** proof: it
+//! croma-test's `tools/prove_fmt_lossless.py` is the complementary **black-box** proof: it
 //! drives the built binary over the same corpus and writes a JSON report. The
 //! two are independent (in-process gate reuse vs. binary + regex pitch-seq) and
 //! must agree.

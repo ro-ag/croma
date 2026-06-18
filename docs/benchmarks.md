@@ -105,8 +105,8 @@ writer and auto_fix slope down as input grows — see
 End-to-end throughput over the **real 10k corpus**, in-process (one process, corpus
 held in memory) so the number reflects library throughput, not process-spawn
 overhead. Harness: `crates/croma-fmt/tests/corpus_throughput.rs`, driven by
-`tools/bench_corpus_throughput.py`; it skips cleanly when `ABC_ROOT` is unset and
-asserts ≥ 9,000 files when set.
+croma-test's `tools/bench_corpus_throughput.py`; it skips cleanly when `ABC_ROOT`
+is unset and asserts ≥ 9,000 files when set.
 
 | path | entry point | files | wall | files/s | MB/s |
 | --- | --- | --- | --- | --- | --- |
@@ -246,14 +246,14 @@ The reader bench carries `required-features = ["musicxml-reader"]`; a plain
 
 **Corpus-scale throughput.** Point `ABC_ROOT` at the corpus; the wrapper resolves it
 to an **absolute** path (the in-process harness requires absolute, because
-`cargo test` runs with cwd = the crate dir):
+`cargo test` runs with cwd = the crate dir). From the croma-test repo:
 
 ```sh
 uv run python tools/bench_corpus_throughput.py \
   --abc-root docs/untracked/corpus/zenodo-10k/abc
 ```
 
-Equivalent direct invocation:
+Equivalent direct invocation (from the croma repo):
 
 ```sh
 ABC_ROOT="$(pwd)/docs/untracked/corpus/zenodo-10k/abc" \

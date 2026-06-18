@@ -58,7 +58,8 @@ and buys none of this reuse.
 
 - **Grammar coverage** — `tree-sitter-abc` parses the full 10k ABC corpus at
   **99.46%** clean (54 categorized, graceful-ERROR residual; `croma-lsp` semantic
-  tokens backstop). Gate: `uv run python tools/prove_grammar_coverage.py`.
+  tokens backstop). Gate (run from croma-test):
+  `uv run python tools/prove_grammar_coverage.py`.
 - **Web reuse** — headless `npm run verify:web` asserts the WASM grammar loads
   under `web-tree-sitter` and highlights with 0 root ERROR + > 0 captures.
 - **Markdown injection** — runtime-verified against `tree-sitter-markdown`:
