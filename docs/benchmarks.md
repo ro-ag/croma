@@ -96,7 +96,7 @@ criterion **median**; the bracket is the 95 % CI [low … high]. MB/s is at the 
 
 Parser, formatter and reader hold a flat MB/s across sizes (linear in input). The
 writer and auto_fix slope down as input grows — see
-[§6](#6-finding-diagnosticsexport-super-linearity).
+[§6](#6-finding-diagnostics--export-super-linearity).
 
 ---
 
@@ -148,7 +148,7 @@ just a measurement.
 **Large is a synthetic stress bucket.** 1000 lines is **4× the 244-line maximum real
 corpus file**; no real input reaches it. Here `diagnostics` measures **62.77 ms
 p99** because it runs the full ABC→MusicXML export (see
-[§6](#6-finding-diagnosticsexport-super-linearity)); this is over the 50 ms *real-size*
+[§6](#6-finding-diagnostics--export-super-linearity)); this is over the 50 ms *real-size*
 ceiling but well under the documented **150 ms backstop** for the stress bucket, and
 every other request stays in the single-to-low-double-digit ms range. `completion` is
 effectively constant (≤ 0.03 ms) across all sizes.
