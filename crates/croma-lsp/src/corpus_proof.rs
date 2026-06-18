@@ -770,21 +770,57 @@ fn lsp_analysis_is_total_over_the_corpus() {
     );
 }
 
-// Leg E: latency. diagnostics + semantic tokens on an average ~200-line file
-// must complete well under ~50 ms on a CI machine. We measure the median of 20
-// iterations (robust to a slow box / scheduler noise) and print the actual ms.
-// Run with `--release` for a representative number.
+// Leg E: latency, as a *distribution*. Every R2/R3 request handler is timed on
+// three size buckets (small ≈ 20 / avg ≈ 200 / large ≈ 1000 lines) and reported
+// as p50/p95/p99 ms. diagnostics + semantic_tokens keep a release-only ceiling
+// assertion so leg E stays a GATE: the representative 50 ms bar on small + avg
+// (both at or above real corpus sizes — the 10k corpus tops out at 244 lines, so
+// the avg 200-line bucket already exceeds the corpus p99 of 80), and a generous
+// regression backstop on the 1000-line synthetic STRESS bucket (4× the largest
+// real file, where the super-linear diagnostics path legitimately exceeds 50 ms —
+// a reported finding, not a failure). The other four requests are measured +
+// printed but not gated (they share the same parse, so a parse-time regression
+// would surface in the gated two). Run with `--release` for the bar.
 
-/// The latency ceiling (ms). The spec budget is ~50 ms on a CI machine; the real
-/// figure is expected to be «1 ms. Generous so a slow shared CI box still passes.
+/// The leg E latency ceiling (ms): the **representative-size bar**. diagnostics +
+/// semantic_tokens p99 must stay under this on the **small (≈20)** and **avg
+/// (≈200)** buckets — both at or above real-world sizes (the 10k corpus tops out
+/// at 244 lines; p99 = 80), so this is the bar the LSP promotion claim rests on.
+/// Held with wide margin: measured avg diagnostics p99 ≈ 4 ms (≈10×) and
+/// semantic_tokens p99 < 1 ms on this machine.
 const LATENCY_CEILING_MS: f64 = 50.0;
 
-/// How many iterations to time; we report the median.
-const LATENCY_ITERATIONS: usize = 20;
+/// A generous regression backstop (ms) for the **large (≈1000-line) STRESS
+/// bucket only**. 1000 dense lines is ~4× the largest real corpus file (244
+/// lines) and exists to exercise scaling, not to model a real edit. The
+/// diagnostics path (full ABC→MusicXML export inside `analyze_document`) is
+/// super-linear in input size, so its large-bucket p99 (≈57 ms on this machine)
+/// legitimately exceeds the 50 ms representative bar. That super-linearity is a
+/// *reported* benchmark finding (recorded in `docs/benchmarks.md` and the
+/// perf-backlog — this epic measures, it does not change product behavior), not a
+/// leg-E failure; this backstop only trips on a pathological blowup (a >2×
+/// regression) at stress scale. semantic_tokens stays cleanly linear, far under
+/// it.
+const LARGE_STRESS_CEILING_MS: f64 = 150.0;
 
-/// Choose the timing subject: if `ABC_ROOT` is set, the real corpus file whose
-/// line count is closest to 200; otherwise a synthesized ~200-line ABC document.
-/// Returns `(text, label)`.
+/// How many timed iterations per (request, bucket). In **release** (where the
+/// ceiling gate is enforced and the reported figure is the real one) we take 100
+/// samples so p99 lands on a distinct, meaningful sample. In **debug** the
+/// ceiling is *not* enforced and each call is ~10–20× slower (the 1000-line
+/// diagnostics call alone is hundreds of ms), so a full 100×18 cells would run
+/// for minutes; we drop to a token count there purely to keep a plain
+/// `cargo test` fast (the numbers are unrepresentative in debug anyway).
+const LATENCY_ITERATIONS: usize = if cfg!(debug_assertions) { 8 } else { 100 };
+
+/// The line counts of the three size buckets the distribution spans.
+const SMALL_LINES: usize = 20;
+const AVG_LINES: usize = 200;
+const LARGE_LINES: usize = 1_000;
+
+/// The avg-bucket timing subject: if `ABC_ROOT` is set, the real corpus file
+/// whose line count is closest to 200; otherwise a synthesized ~200-line ABC
+/// document. Returns `(text, label)`. (Small + large buckets are always
+/// synthetic so the distribution runs without the corpus.)
 fn latency_subject() -> (String, String) {
     if let Ok(root) = std::env::var("ABC_ROOT") {
         let files = abc_files(&PathBuf::from(&root));
@@ -793,7 +829,7 @@ fn latency_subject() -> (String, String) {
             let Ok(bytes) = fs::read(path) else { continue };
             let text = String::from_utf8_lossy(&bytes).into_owned();
             let lines = text.lines().count();
-            let distance = lines.abs_diff(200);
+            let distance = lines.abs_diff(AVG_LINES);
             let take = match &best {
                 Some((best_distance, _, _)) => distance < *best_distance,
                 None => true,
@@ -811,16 +847,17 @@ fn latency_subject() -> (String, String) {
             return (text, format!("corpus {name} ({lines} lines)"));
         }
     }
-    let text = synthetic_abc_200();
+    let text = synthetic_abc(AVG_LINES);
     let lines = text.lines().count();
     (text, format!("synthetic ({lines} lines)"))
 }
 
-/// A plausible ~200-line ABC document for when no corpus is available: a header
-/// plus ~190 music-body lines with a representative mix of notes, chords, grace
-/// groups, decorations, tuplets, and barlines.
-fn synthetic_abc_200() -> String {
-    let mut out = String::with_capacity(8 * 1024);
+/// A plausible ABC document of ~`total_lines` lines for when no corpus is
+/// available: a 7-line header plus body lines with a representative mix of
+/// notes, chords, grace groups, decorations, tuplets, and barlines. Generated
+/// deterministically so every run sees the same bytes.
+fn synthetic_abc(total_lines: usize) -> String {
+    let mut out = String::with_capacity(total_lines.saturating_mul(48).max(256));
     out.push_str("X:1\nT:Latency Probe\nC:croma\nM:4/4\nL:1/8\nQ:1/4=120\nK:C\n");
     let bodies = [
         "CDEF GABc | defg abc'd' | !trill!c2 B2 A2 G2 |",
@@ -828,68 +865,188 @@ fn synthetic_abc_200() -> String {
         ".C.D.E.F | G>A B<c d2 e2 | z2 c2 B2 A2 |]",
         "T2 A,B,C,D, E,F,G,A, | =c ^d _e f | C/2D/2E/2F/2 G2 |",
     ];
-    // ~190 body lines so the total is ~200 incl. the 7 header lines.
-    for i in 0..190 {
+    // The header is 7 lines; emit the remainder as body so the total matches.
+    let body_lines = total_lines.saturating_sub(7);
+    for i in 0..body_lines {
         out.push_str(bodies[i % bodies.len()]);
         out.push('\n');
     }
     out
 }
 
-/// The median of a slice of f64 (sorted copy); empty slices report 0.
-fn median(values: &[f64]) -> f64 {
+/// The `q`-th percentile (q in 0..=100) of `values` by nearest-rank on a sorted
+/// copy; empty slices report 0. Subsumes the old `median` (use `q = 50.0`).
+fn percentile(values: &[f64], q: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = sorted.len() / 2;
-    if sorted.len().is_multiple_of(2) {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
-    } else {
-        sorted[mid]
+    let n = sorted.len();
+    // Nearest-rank: rank = ceil(q/100 * n), clamped to 1..=n, then 0-indexed.
+    let q = q.clamp(0.0, 100.0);
+    let rank = ((q / 100.0) * n as f64).ceil() as usize;
+    let index = rank.clamp(1, n) - 1;
+    sorted[index]
+}
+
+/// A representative interior position that lands inside the music body of every
+/// bucket's subject (past the 7-line header, a small column onto a note) so
+/// `hover`/`completion` do real work rather than no-op'ing off the document end.
+fn body_probe_position() -> Position {
+    Position {
+        line: 9,
+        character: 2,
     }
 }
 
-#[test]
-fn lsp_leg_e_latency_under_ceiling() {
-    let (text, label) = latency_subject();
-    // Use UTF-8 (the negotiated-preferred encoding) for the headline number.
-    let encoding = PositionEncoding::Utf8;
-
-    // Warm up once (page in code paths / allocator) so the first sample is not
-    // an outlier; the warm-up result is discarded.
-    let _ = diagnostics(&text, encoding);
-    let _ = semantic_tokens(&text, encoding);
-
+/// Time `op` over `LATENCY_ITERATIONS` runs (one discarded warm-up first) and
+/// return the elapsed-ms samples. The closure's result is black-boxed so neither
+/// the call nor the work is optimized away.
+fn time_request<R>(mut op: impl FnMut() -> R) -> Vec<f64> {
+    // Warm-up (page in code paths / allocator); result discarded.
+    std::hint::black_box(op());
     let mut samples = Vec::with_capacity(LATENCY_ITERATIONS);
     for _ in 0..LATENCY_ITERATIONS {
         let start = std::time::Instant::now();
-        let diags = diagnostics(&text, encoding);
-        let tokens = semantic_tokens(&text, encoding);
+        let out = op();
         let elapsed = start.elapsed();
-        // Touch the results so the optimiser cannot elide the work.
-        std::hint::black_box((&diags, &tokens.data));
+        std::hint::black_box(out);
         samples.push(elapsed.as_secs_f64() * 1_000.0);
     }
+    samples
+}
 
-    let median_ms = median(&samples);
-    // The stable line a tools/ wrapper can parse.
+/// Print the p50/p95/p99 line for one (request, bucket) and return the p99 so the
+/// caller can apply the ceiling gate to the two gated requests.
+fn report_latency(request: &str, bucket: &str, lines: usize, samples: &[f64]) -> f64 {
+    let p50 = percentile(samples, 50.0);
+    let p95 = percentile(samples, 95.0);
+    let p99 = percentile(samples, 99.0);
     eprintln!(
-        "lsp leg E latency: {median_ms:.2} ms (~200-line file, median of {LATENCY_ITERATIONS}) [{label}]"
+        "lsp latency {request} {bucket}: p50={p50:.2} p95={p95:.2} p99={p99:.2} ms (n={}, {lines} lines)",
+        samples.len()
+    );
+    p99
+}
+
+/// Parse the `(<n> lines)` count out of a `latency_subject` label so the avg
+/// bucket reports the subject's true line count (corpus or synthetic).
+fn avg_text_lines(label: &str) -> usize {
+    label
+        .rsplit_once('(')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(AVG_LINES)
+}
+
+#[test]
+fn lsp_leg_e_latency_distribution() {
+    // Use UTF-8 (the negotiated-preferred encoding) for the headline numbers.
+    let encoding = PositionEncoding::Utf8;
+
+    // Small + large are always synthetic (corpus-independent); avg preserves the
+    // existing behavior (real corpus file nearest 200 lines when ABC_ROOT is set,
+    // else synthetic) so the corpus flavor is retained where available.
+    let (avg_text, avg_label) = latency_subject();
+    let avg_lines = avg_text_lines(&avg_label);
+    let buckets: [(&str, String, usize); 3] = [
+        ("small", synthetic_abc(SMALL_LINES), SMALL_LINES),
+        ("avg", avg_text, avg_lines),
+        ("large", synthetic_abc(LARGE_LINES), LARGE_LINES),
+    ];
+
+    eprintln!(
+        "lsp latency distribution (UTF-8, n={LATENCY_ITERATIONS} per cell; avg subject = {avg_label}):"
     );
 
-    // The leg E bar is a *release* figure on a CI machine ("Run it with
-    // `--release`"). A plain `cargo test --workspace` builds unoptimized, where
-    // the same work is an order of magnitude slower and unrepresentative — so the
-    // ceiling is only enforced for optimized builds. The number is always
-    // measured and printed regardless, so the gate is observable in either mode.
-    if cfg!(debug_assertions) {
-        eprintln!("lsp leg E: debug build — ceiling not enforced (run with --release for the bar)");
-        return;
+    // Fixed inputs reused across requests within a bucket.
+    let probe = body_probe_position();
+    let uri = Url::parse("file:///bench.abc").expect("valid bench uri");
+    let start_range = Range {
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: Position {
+            line: 0,
+            character: 0,
+        },
+    };
+
+    for (bucket, text, lines) in &buckets {
+        let text: &str = std::hint::black_box(text);
+
+        // The two GATED requests.
+        let diag_p99 = report_latency(
+            "diagnostics",
+            bucket,
+            *lines,
+            &time_request(|| diagnostics(text, encoding)),
+        );
+        let token_p99 = report_latency(
+            "semantic_tokens",
+            bucket,
+            *lines,
+            &time_request(|| semantic_tokens(text, encoding)),
+        );
+
+        // The four measured-but-NOT-gated requests. They share the same parse as
+        // the gated two, so a parse-time regression would already trip the gate
+        // above; these numbers are for the report (B3), not a bar.
+        report_latency(
+            "formatting",
+            bucket,
+            *lines,
+            &time_request(|| formatting(text, encoding)),
+        );
+        report_latency(
+            "hover",
+            bucket,
+            *lines,
+            &time_request(|| hover(text, probe, encoding)),
+        );
+        report_latency(
+            "completion",
+            bucket,
+            *lines,
+            &time_request(|| completion(text, probe, encoding)),
+        );
+        report_latency(
+            "code_action",
+            bucket,
+            *lines,
+            &time_request(|| code_actions(&uri, text, start_range, encoding)),
+        );
+
+        // The leg E bar is a *release* figure on a CI machine ("Run it with
+        // `--release`"). A plain `cargo test --workspace` builds unoptimized,
+        // where the same work is an order of magnitude slower and
+        // unrepresentative — so the ceiling is only enforced for optimized
+        // builds. The numbers are always measured and printed regardless, so the
+        // gate is observable in either mode.
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "lsp leg E [{bucket}]: debug build — ceiling not enforced (run with --release for the bar)"
+            );
+            continue;
+        }
+        // small + avg carry the representative 50 ms bar (held with ~10× margin);
+        // the large synthetic bucket carries only the generous regression backstop
+        // — diagnostics is super-linear and 1000 lines is 4× the biggest real file
+        // (244 lines), so large is reported, not held to the 50 ms bar.
+        let (ceiling, kind) = if *bucket == "large" {
+            (LARGE_STRESS_CEILING_MS, "stress backstop")
+        } else {
+            (LATENCY_CEILING_MS, "bar")
+        };
+        assert!(
+            diag_p99 < ceiling,
+            "leg E diagnostics p99 {diag_p99:.2} ms exceeds {kind} {ceiling:.0} ms on {bucket} ({lines} lines)"
+        );
+        assert!(
+            token_p99 < ceiling,
+            "leg E semantic_tokens p99 {token_p99:.2} ms exceeds {kind} {ceiling:.0} ms on {bucket} ({lines} lines)"
+        );
     }
-    assert!(
-        median_ms < LATENCY_CEILING_MS,
-        "leg E latency {median_ms:.2} ms exceeds ceiling {LATENCY_CEILING_MS} ms on {label}"
-    );
 }
