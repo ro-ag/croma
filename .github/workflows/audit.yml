@@ -1,0 +1,29 @@
+name: audit
+
+# Security advisory scan of the dependency tree (RustSec, via cargo-audit). Runs
+# on dependency changes, weekly, and on demand. croma-core is zero-dependency; the
+# CLI and LSP pull a small, maintained set — this catches any future advisory.
+
+on:
+  push:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+  schedule:
+    - cron: "0 6 * * 1" # weekly (Mon 06:00 UTC)
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
