@@ -1,11 +1,14 @@
 [package]
 name = "croma-lsp"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Language-server support for ABC using croma-core"
+readme = "README.md"
+keywords = ["abc", "music", "lsp", "language-server", "notation"]
+categories = ["development-tools"]
 
 [lib]
 path = "src/lib.rs"
@@ -18,11 +21,11 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-croma-core = { path = "../croma-core" }
+croma-core = { path = "../croma-core", version = "0.9.0" }
 # `croma-fmt` is itself zero-external-dep (path dep on croma-core only), so it
 # introduces no third-party crate; it backs `textDocument/formatting` (R2) and
 # the future `source.fixAll` code action (R3). Nothing flows into croma-core.
-croma-fmt = { path = "../croma-fmt" }
+croma-fmt = { path = "../croma-fmt", version = "0.9.0" }
 lsp-server = "0.7"
 lsp-types = "0.95"
 # `serde`/`serde_json` are shared deps of lsp-server + lsp-types; the transport
