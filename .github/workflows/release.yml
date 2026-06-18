@@ -33,8 +33,12 @@ jobs:
             os_label: macos
             arch: aarch64
             ext: ""
+          # Built on the arm64 runner via cross-compilation (Apple's toolchain
+          # targets x86_64 from an arm host with the universal SDK; the crates
+          # are pure Rust, so no extra linker is needed). This avoids the scarce
+          # Intel `macos-13` runner pool, which can queue indefinitely.
           - name: macos-x86_64
-            os: macos-13
+            os: macos-14
             target: x86_64-apple-darwin
             os_label: macos
             arch: x86_64

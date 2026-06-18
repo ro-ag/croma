@@ -67,13 +67,19 @@ trigger paths:
 
 Runners and cross-compile:
 
-- macOS arm64 / macOS x86_64 / linux-x86_64 / windows-x86_64 build **natively**
-  on their respective GitHub-hosted runners.
-- **`linux-arm64` is cross-compiled** from an x86_64 Ubuntu runner. croma's crates
-  are pure Rust, so this needs nothing more than the `gcc-aarch64-linux-gnu`
-  linker (set via `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER`); no `cross`
-  and no Docker. This means the **dry-run covers all five platforms regardless of
-  ARM-runner availability**.
+- **macOS arm64**, **linux-x86_64**, and **windows-x86_64** build **natively** on
+  their GitHub-hosted runners (`macos-14`, `ubuntu-22.04`, `windows-latest`).
+- **`macos-x86_64` is cross-compiled** on the arm64 `macos-14` runner. Apple's
+  toolchain targets x86_64 from an arm host with the universal SDK, and croma's
+  crates are pure Rust, so no extra linker is needed. This deliberately avoids the
+  scarce Intel `macos-13` runner pool, which can queue indefinitely (it stalled a
+  dry-run for 25+ min) and is being deprecated.
+- **`linux-arm64` is cross-compiled** from the x86_64 `ubuntu-22.04` runner.
+  Pure-Rust crates need only the `gcc-aarch64-linux-gnu` linker (set via
+  `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER`); no `cross`, no Docker.
+- Net: the **dry-run covers all five platforms reliably, independent of Intel-mac
+  and ARM-linux hosted-runner availability** — every target either builds natively
+  on a plentiful runner or is cross-compiled on one.
 
 Every build job ends with a **contract guard** in its "Stage named assets" step:
 after copying the binaries into `dist/` under their contract names, it asserts
