@@ -1,7 +1,7 @@
 /**
  * @file ABC music notation grammar (ABC 2.1)
  * @author croma
- * @license MIT
+ * @license Apache-2.0
  *
  * Grounded in croma's strict ABC 2.1 recognition (`MusicTokenKind` taxonomy in
  * crates/croma-core/src/syntax/music.rs and the music-line parser in

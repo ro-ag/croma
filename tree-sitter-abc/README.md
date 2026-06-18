@@ -101,4 +101,4 @@ CROMA_GRAMMAR_DIR=/path/to/croma/tree-sitter-abc \
 
 ## License
 
-MIT, as part of croma.
+Apache-2.0, as part of croma.

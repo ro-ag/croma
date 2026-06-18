@@ -2,7 +2,7 @@
   "name": "tree-sitter-abc",
   "version": "0.1.0",
   "description": "Tree-sitter grammar for ABC music notation (ABC 2.1), grounded in croma's strict recognition.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/ro-ag/croma"

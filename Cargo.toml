@@ -24,7 +24,7 @@ default-members = ["crates/croma-core", "crates/croma-cli", "crates/croma-lsp"]
 [workspace.package]
 version = "0.9.0"
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/ro-ag/croma"
 rust-version = "1.96.0"
 
