@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 use croma_core::{Diagnostic, SourceText, Span};
 use croma_fmt::{FormatOptions, format};
-use lsp_types::{Position, Range, SemanticToken, TextDocumentContentChangeEvent, Url};
+use lsp_types::{Position, Range, SemanticToken, TextDocumentContentChangeEvent, Uri};
 
 use crate::position::{PositionEncoding, position_to_byte};
 use crate::{
@@ -84,7 +84,7 @@ fn ranges_in_bounds(text: &str, encoding: PositionEncoding) -> Option<String> {
 /// sweep proves they never panic on a real (or mid-edit) corpus buffer. The
 /// caller wraps the whole sequence in `catch_unwind`, so a panic here is counted.
 fn exercise_r3_handlers(text: &str, source: &SourceText, encoding: PositionEncoding) {
-    let uri = Url::parse("file:///probe.abc").expect("valid probe uri");
+    let uri = <Uri as std::str::FromStr>::from_str("file:///probe.abc").expect("valid probe uri");
     // code_actions ignores position; run it once.
     let _ = code_actions(
         &uri,
@@ -173,7 +173,7 @@ fn ranged_change(start: Position, end: Position, text: &str) -> TextDocumentCont
 /// The sequence simulates real editing plus deliberately hostile mid-edit
 /// states: a safe mid-point truncation, a middle-line deletion, an unbalanced
 /// `"[[[\n"` insertion, and a clear-to-empty.
-fn scripted_sequence(uri: &Url, source: &str, encoding: PositionEncoding) -> Option<String> {
+fn scripted_sequence(uri: &Uri, source: &str, encoding: PositionEncoding) -> Option<String> {
     // State 0: the pristine file as opened.
     let mut store = DocumentStore::new();
     store.open(uri.clone(), source.to_string());
@@ -269,7 +269,7 @@ fn scripted_sequence(uri: &Url, source: &str, encoding: PositionEncoding) -> Opt
 /// result is in-bounds.
 fn delete_middle_line(
     store: &mut DocumentStore,
-    uri: &Url,
+    uri: &Uri,
     source: &str,
     encoding: PositionEncoding,
 ) -> Option<String> {
@@ -719,8 +719,11 @@ fn lsp_analysis_is_total_over_the_corpus() {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let uri = Url::parse(&format!("file:///{name}"))
-            .unwrap_or_else(|_| Url::parse("file:///tune.abc").expect("fallback uri is valid"));
+        let uri =
+            <Uri as std::str::FromStr>::from_str(&format!("file:///{name}")).unwrap_or_else(|_| {
+                <Uri as std::str::FromStr>::from_str("file:///tune.abc")
+                    .expect("fallback uri is valid")
+            });
 
         // Exercise both encodings; the whole sequence is panic-isolated.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -962,7 +965,7 @@ fn lsp_leg_e_latency_distribution() {
 
     // Fixed inputs reused across requests within a bucket.
     let probe = body_probe_position();
-    let uri = Url::parse("file:///bench.abc").expect("valid bench uri");
+    let uri = <Uri as std::str::FromStr>::from_str("file:///bench.abc").expect("valid bench uri");
     let start_range = Range {
         start: Position {
             line: 0,

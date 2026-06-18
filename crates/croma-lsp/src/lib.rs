@@ -15,6 +15,13 @@
 //! and spans, it never reparses (spec decision 5). Any LSP-vs-core mismatch is a
 //! bug in this adapter, not a new spec.
 
+// lsp-types 0.97's `Uri` wraps `fluent_uri::Uri`, which clippy flags as an
+// interior-mutable map key. Its `Hash`/`Eq` are over the URI string (the inner
+// cell only caches parsing), so keying `WorkspaceEdit.changes` and the
+// `DocumentStore` on it is sound — the `mutable_key_type` lint is a false
+// positive here.
+#![allow(clippy::mutable_key_type)]
+
 use croma_core::{Diagnostic, export_musicxml};
 
 pub mod code_action;

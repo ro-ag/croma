@@ -32,7 +32,7 @@ use lsp_types::{
     InitializeParams, InitializeResult, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
     SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     WorkDoneProgressOptions,
 };
 
@@ -224,21 +224,21 @@ fn handle_request(store: &DocumentStore, encoding: PositionEncoding, request: Re
 
 /// Decode the `textDocument.uri` of each request kind, logging + dropping a
 /// malformed payload. Kept per-kind so each uses its real `Params` type.
-fn formatting_uri(request: &Request) -> Option<Url> {
+fn formatting_uri(request: &Request) -> Option<Uri> {
     decode_uri::<DocumentFormattingParams>(request, |p| p.text_document)
 }
-fn semantic_tokens_uri(request: &Request) -> Option<Url> {
+fn semantic_tokens_uri(request: &Request) -> Option<Uri> {
     decode_uri::<SemanticTokensParams>(request, |p| p.text_document)
 }
-fn document_symbol_uri(request: &Request) -> Option<Url> {
+fn document_symbol_uri(request: &Request) -> Option<Uri> {
     decode_uri::<DocumentSymbolParams>(request, |p| p.text_document)
 }
-fn folding_range_uri(request: &Request) -> Option<Url> {
+fn folding_range_uri(request: &Request) -> Option<Uri> {
     decode_uri::<FoldingRangeParams>(request, |p| p.text_document)
 }
 
 /// Decode a hover request into `(uri, position)`, dropping a malformed payload.
-fn hover_request(request: &Request) -> Option<(Url, lsp_types::Position)> {
+fn hover_request(request: &Request) -> Option<(Uri, lsp_types::Position)> {
     let params = decode::<HoverParams>(request)?;
     let TextDocumentPositionParams {
         text_document,
@@ -248,7 +248,7 @@ fn hover_request(request: &Request) -> Option<(Url, lsp_types::Position)> {
 }
 
 /// Decode a completion request into `(uri, position)`.
-fn completion_request(request: &Request) -> Option<(Url, lsp_types::Position)> {
+fn completion_request(request: &Request) -> Option<(Uri, lsp_types::Position)> {
     let params = decode::<CompletionParams>(request)?;
     let TextDocumentPositionParams {
         text_document,
@@ -258,13 +258,13 @@ fn completion_request(request: &Request) -> Option<(Url, lsp_types::Position)> {
 }
 
 /// Decode a code-action request into `(uri, range)`.
-fn code_action_request(request: &Request) -> Option<(Url, lsp_types::Range)> {
+fn code_action_request(request: &Request) -> Option<(Uri, lsp_types::Range)> {
     let params = decode::<CodeActionParams>(request)?;
     Some((params.text_document.uri, params.range))
 }
 
 /// Decode a request's params and extract its document identifier's URI.
-fn decode_uri<P>(request: &Request, pick: impl FnOnce(P) -> TextDocumentIdentifier) -> Option<Url>
+fn decode_uri<P>(request: &Request, pick: impl FnOnce(P) -> TextDocumentIdentifier) -> Option<Uri>
 where
     P: serde::de::DeserializeOwned,
 {
@@ -359,14 +359,14 @@ fn handle_notification(
 }
 
 /// Compute and publish diagnostics for `uri` from its current stored text.
-fn publish(connection: &Connection, store: &DocumentStore, encoding: PositionEncoding, uri: &Url) {
+fn publish(connection: &Connection, store: &DocumentStore, encoding: PositionEncoding, uri: &Uri) {
     let text = store.get(uri).unwrap_or("");
     let diags = diagnostics(text, encoding);
     publish_diagnostics(connection, uri, diags);
 }
 
 /// Send a `textDocument/publishDiagnostics` notification.
-fn publish_diagnostics(connection: &Connection, uri: &Url, diags: Vec<lsp_types::Diagnostic>) {
+fn publish_diagnostics(connection: &Connection, uri: &Uri, diags: Vec<lsp_types::Diagnostic>) {
     let params = PublishDiagnosticsParams {
         uri: uri.clone(),
         diagnostics: diags,
@@ -424,15 +424,15 @@ mod transport_tests {
         ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
         DidOpenTextDocumentParams, GeneralClientCapabilities, InitializeParams, Position,
         PositionEncodingKind, PublishDiagnosticsParams, Range, TextDocumentContentChangeEvent,
-        TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier,
+        TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier,
     };
 
     use super::run;
 
     const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
-    fn uri() -> Url {
-        Url::parse("file:///scripted.abc").expect("valid uri")
+    fn uri() -> Uri {
+        <Uri as std::str::FromStr>::from_str("file:///scripted.abc").expect("valid uri")
     }
 
     /// Block on a client receive, failing the test on timeout so a hang is a

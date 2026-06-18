@@ -28,8 +28,8 @@ default = ["musicxml-reader"]
 musicxml-reader = ["croma-core/musicxml-reader"]
 
 [dependencies]
-croma-core = { path = "../croma-core", version = "1.0.0" }
-croma-fmt = { path = "../croma-fmt", version = "1.0.0" }
+croma-core = { path = "../croma-core", version = "1.0.1" }
+croma-fmt = { path = "../croma-fmt", version = "1.0.1" }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 owo-colors = "4"

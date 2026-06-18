@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 
 use croma_core::{SourceText, Span};
 use croma_fmt::{Change, FormatOptions, auto_fix};
-use lsp_types::{CodeAction, CodeActionKind, Range, TextEdit, Url, WorkspaceEdit};
+use lsp_types::{CodeAction, CodeActionKind, Range, TextEdit, Uri, WorkspaceEdit};
 
 use crate::position::{PositionEncoding, span_to_range};
 
@@ -34,7 +34,7 @@ const TITLE: &str = "Fix all auto-fixable problems (croma)";
 /// Returns one [`CodeAction`] of kind `source.fixAll` when `auto_fix` produced
 /// changes, else an empty list.
 pub fn code_actions(
-    uri: &Url,
+    uri: &Uri,
     source: &str,
     _range: Range,
     encoding: PositionEncoding,
@@ -85,8 +85,8 @@ mod tests {
     use super::*;
     use lsp_types::Position;
 
-    fn uri() -> Url {
-        Url::parse("file:///tune.abc").expect("valid uri")
+    fn uri() -> Uri {
+        <Uri as std::str::FromStr>::from_str("file:///tune.abc").expect("valid uri")
     }
 
     fn whole_range() -> Range {
