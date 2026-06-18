@@ -1,6 +1,6 @@
 id = "croma-abc"
 name = "croma ABC"
-version = "0.0.1"
+version = "1.0.0"
 schema_version = 1
 authors = ["Rodrigo Agurto"]
 description = "ABC music notation support for Zed: tree-sitter highlighting, folds, and the croma-lsp language server."
