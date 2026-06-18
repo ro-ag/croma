@@ -8,7 +8,7 @@
 # directly from this directory instead.
 [package]
 name = "zed_croma_abc"
-version = "0.0.1"
+version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
