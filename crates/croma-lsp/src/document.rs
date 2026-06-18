@@ -17,14 +17,14 @@
 use std::collections::HashMap;
 
 use croma_core::SourceText;
-use lsp_types::{TextDocumentContentChangeEvent, Url};
+use lsp_types::{TextDocumentContentChangeEvent, Uri};
 
 use crate::position::{PositionEncoding, position_to_byte};
 
 /// A store of open documents keyed by URI.
 #[derive(Debug, Default)]
 pub struct DocumentStore {
-    documents: HashMap<Url, String>,
+    documents: HashMap<Uri, String>,
 }
 
 impl DocumentStore {
@@ -34,18 +34,18 @@ impl DocumentStore {
     }
 
     /// Insert (or replace) the full text of `uri`, as on `textDocument/didOpen`.
-    pub fn open(&mut self, uri: Url, text: String) {
+    pub fn open(&mut self, uri: Uri, text: String) {
         self.documents.insert(uri, text);
     }
 
     /// Remove `uri` from the store, as on `textDocument/didClose`. No-op if it
     /// was not open.
-    pub fn close(&mut self, uri: &Url) {
+    pub fn close(&mut self, uri: &Uri) {
         self.documents.remove(uri);
     }
 
     /// The current text of `uri`, if open.
-    pub fn get(&self, uri: &Url) -> Option<&str> {
+    pub fn get(&self, uri: &Uri) -> Option<&str> {
         self.documents.get(uri).map(String::as_str)
     }
 
@@ -66,7 +66,7 @@ impl DocumentStore {
     /// leaves the store with valid UTF-8 and never panics.
     pub fn change(
         &mut self,
-        uri: &Url,
+        uri: &Uri,
         changes: Vec<TextDocumentContentChangeEvent>,
         encoding: PositionEncoding,
     ) -> Option<&str> {
@@ -109,8 +109,8 @@ mod tests {
     use super::*;
     use lsp_types::{Position, Range};
 
-    fn uri() -> Url {
-        Url::parse("file:///tune.abc").expect("valid test uri")
+    fn uri() -> Uri {
+        <Uri as std::str::FromStr>::from_str("file:///tune.abc").expect("valid test uri")
     }
 
     fn change_at(range: Option<Range>, text: &str) -> TextDocumentContentChangeEvent {

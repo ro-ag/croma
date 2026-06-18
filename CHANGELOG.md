@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-18
+
+### Changed
+
+- Adopt **lsp-types 0.97** in `croma-lsp` (migrate the removed `Url` to the new
+  `Uri` type; key the document store and workspace edits on it).
+- Dependency updates: `roxmltree` 0.20→0.21, `anstream` 0.6→1.0, `criterion`
+  (dev) 0.5→0.8, plus GitHub Actions bumps (checkout, cache, setup-uv,
+  upload/download-artifact).
+
+### CI
+
+- The `gates` workflow now skips on Dependabot PRs (they can't read the
+  `CROMA_TEST_TOKEN` secret needed to clone croma-test); `ci` + `audit` still
+  gate those PRs.
+
 ## [1.0.0] - 2026-06-18
 
 First **public** release. The four crates (`croma-core`, `croma-fmt`,

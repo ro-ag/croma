@@ -32,6 +32,9 @@ concurrency:
 
 jobs:
   gates:
+    # Dependabot/fork PRs can't read CROMA_TEST_TOKEN, so the croma-test clone
+    # would fail. Skip gates for them; ci + audit still gate those PRs.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout croma (this PR)
