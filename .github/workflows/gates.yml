@@ -19,9 +19,26 @@ name: gates
 #   - the music21 comparison cache (rolling, self-invalidating)
 
 on:
+  # Docs-only changes can't move a corpus gate, so skip the slow matrix for
+  # them. Code, workflow, and config files are absent from paths-ignore and
+  # always run; the weekly schedule re-proves drift regardless.
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - ".gitattributes"
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+      - "NOTICE"
+      - ".gitignore"
+      - ".gitattributes"
   schedule:
     - cron: "0 5 * * 1" # weekly drift check (Mon 05:00 UTC) — corpus/croma-test moves
   workflow_dispatch:
