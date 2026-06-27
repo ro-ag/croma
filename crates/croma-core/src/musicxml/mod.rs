@@ -109,6 +109,7 @@ pub(crate) struct NoteWrite<'a> {
     attachments: &'a EventAttachments,
     chord_member: bool,
     measure_rest: bool,
+    unpitched: bool,
     grace: bool,
     grace_slash: bool,
 }
@@ -129,6 +130,7 @@ pub(crate) struct MeasureSequence<'score> {
     staff: StaffId,
     expected_duration: Option<Fraction>,
     actual_duration: Fraction,
+    unpitched: bool,
     events: Vec<SequenceEvent<'score>>,
 }
 

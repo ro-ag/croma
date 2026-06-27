@@ -175,10 +175,11 @@ pub struct Voice {
 }
 
 /// A score-level MIDI instrument projected from a voice's `%%MIDI program` /
-/// `channel` / `control` directives.
+/// `channel` / `control` / `midi-unpitched` directives.
 ///
 /// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; the score-meaningful
-/// fields (instrument identity, channel, CC7 volume, CC10 pan) are
+/// fields (instrument identity, channel, CC7 volume, CC10 pan, unpitched
+/// percussion key) are
 /// forward-translated to MusicXML `<score-instrument>` / `<midi-instrument>`
 /// while the raw directive text stays in [`ScoreMetadata::preserved_directives`]
 /// for round-trip / formatter use.
@@ -198,6 +199,9 @@ pub struct MidiInstrumentModel {
     /// MIDI CC10 (pan) value 0-127 from `%%MIDI control 10 <n>`, rendered as
     /// `<midi-instrument><pan>` (`n / 127 * 180 - 90`). `None` when unset.
     pub pan_cc: Option<u8>,
+    /// MusicXML `<midi-unpitched>` value for unpitched percussion playback
+    /// (1-128). `None` when the instrument is pitched or unspecified.
+    pub midi_unpitched: Option<u8>,
     /// Source span of the directive that last set this instrument.
     pub span: Span,
 }
@@ -210,6 +214,7 @@ impl MidiInstrumentModel {
             || self.channel.is_some()
             || self.volume_cc.is_some()
             || self.pan_cc.is_some()
+            || self.midi_unpitched.is_some()
     }
 }
 

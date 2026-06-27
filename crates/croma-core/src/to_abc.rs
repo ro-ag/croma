@@ -161,6 +161,7 @@ fn voice_header_line(voice: &crate::model::Voice) -> String {
 /// - `program <channel> <prog>` when both are set, else `program <prog>`,
 ///   else a standalone `channel <n>`;
 /// - `control 7 <vol>` (CC7 volume) / `control 10 <pan>` (CC10 pan);
+/// - `midi-unpitched <n>` for MusicXML-origin unpitched percussion maps;
 /// - `transpose <n>` for `%%MIDI transpose`.
 ///
 /// Program/channel values are written in the same conventions the parser reads
@@ -181,6 +182,9 @@ fn midi_directive_lines(voice: &crate::model::Voice) -> String {
         }
         if let Some(pan) = midi.pan_cc {
             s.push_str(&format!("%%MIDI control 10 {pan}\n"));
+        }
+        if let Some(unpitched) = midi.midi_unpitched {
+            s.push_str(&format!("%%MIDI midi-unpitched {unpitched}\n"));
         }
     }
     if let Some(transpose) = voice.midi_transpose {

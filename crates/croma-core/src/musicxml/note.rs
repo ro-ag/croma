@@ -65,6 +65,7 @@ impl<'score> MusicXmlWriter<'score> {
                             attachments,
                             chord_member: chord_member || note.chord_member,
                             measure_rest: false,
+                            unpitched: sequence.unpitched,
                             grace: false,
                             grace_slash: false,
                         },
@@ -91,6 +92,7 @@ impl<'score> MusicXmlWriter<'score> {
                                 timed.duration,
                                 rest,
                             ),
+                            unpitched: false,
                             grace: false,
                             grace_slash: false,
                         },
@@ -148,6 +150,7 @@ impl<'score> MusicXmlWriter<'score> {
                             attachments,
                             chord_member: chord_member || *chord,
                             measure_rest: false,
+                            unpitched: sequence.unpitched,
                             grace: false,
                             grace_slash: false,
                         },
@@ -174,6 +177,7 @@ impl<'score> MusicXmlWriter<'score> {
                                 timed.duration,
                                 &rest,
                             ),
+                            unpitched: false,
                             grace: false,
                             grace_slash: false,
                         },
@@ -235,6 +239,7 @@ impl<'score> MusicXmlWriter<'score> {
                     attachments: &attachments,
                     chord_member: index > 0,
                     measure_rest: false,
+                    unpitched: sequence.unpitched,
                     grace: false,
                     grace_slash: false,
                 },
@@ -269,7 +274,11 @@ impl<'score> MusicXmlWriter<'score> {
             }
         }
         if let Some(pitch) = note.pitch {
-            self.write_pitch(pitch);
+            if note.unpitched {
+                self.write_unpitched(pitch);
+            } else {
+                self.write_pitch(pitch);
+            }
         } else if note.measure_rest {
             self.xml.empty("rest", &[("measure", "yes")]);
         } else {
@@ -348,6 +357,15 @@ impl<'score> MusicXmlWriter<'score> {
         }
         self.xml.text_element("octave", &pitch.octave.to_string());
         self.xml.end("pitch");
+    }
+
+    fn write_unpitched(&mut self, pitch: &Pitch) {
+        self.xml.start("unpitched", &[]);
+        self.xml
+            .text_element("display-step", &pitch.step.to_string());
+        self.xml
+            .text_element("display-octave", &pitch.octave.to_string());
+        self.xml.end("unpitched");
     }
 
     fn write_ties(&mut self, ties: &[crate::model::TieAttachment]) {

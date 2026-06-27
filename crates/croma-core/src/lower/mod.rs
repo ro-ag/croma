@@ -1424,15 +1424,17 @@ fn preserved_directive_model(syntax: &PreservedDirectiveSyntax) -> PreservedDire
 }
 
 /// Forward-translate the score-meaningful `%%MIDI` sub-directives (`program` /
-/// `channel` / `control` CC7-CC10 → [`MidiInstrumentModel`]; `transpose` →
-/// `midi_transpose`) onto each timeline. Both the line-start `%%MIDI ...` form
+/// `channel` / `control` CC7-CC10 / `midi-unpitched` →
+/// [`MidiInstrumentModel`]; `transpose` → `midi_transpose`) onto each timeline.
+/// Both the line-start `%%MIDI ...` form
 /// (in `preserved_directives`) and the inline `[I: MIDI=...]` form (a music-line
 /// item) are projected, respecting per-voice scoping: a directive attaches to
 /// the voice of the nearest preceding `V:` declaration (header or body) by
 /// source position, or the first/default voice if it precedes every `V:`.
 ///
 /// `%%MIDI` is an abc2midi convention, not part of ABC 2.1; only the
-/// score-meaningful sub-directives are projected. Line-start directives still
+/// score-meaningful sub-directives are projected. `midi-unpitched` is croma's
+/// MusicXML-origin carrier for percussion maps. Line-start directives still
 /// survive verbatim in `preserved_directives` for round-trip and the formatter.
 fn project_voice_midi(
     voices: &mut [VoiceTimeline],
@@ -1515,6 +1517,7 @@ fn project_voice_midi(
                 channel: None,
                 volume_cc: None,
                 pan_cc: None,
+                midi_unpitched: None,
                 span,
             });
         apply_midi_instrument_directive(args, span, model);
@@ -1534,11 +1537,11 @@ fn project_voice_midi(
 }
 
 /// Update `model` from one `%%MIDI` directive value, parsing the
-/// score-translatable `program` / `channel` / `control` (CC7 volume, CC10 pan)
-/// sub-directives. A trailing `%` comment and any non-numeric trailing words are
-/// ignored, matching abc2midi's lenient leading-integer parse; out-of-range
-/// values are skipped. Last write wins, so a later directive in the same voice
-/// overrides an earlier one.
+/// score-translatable `program` / `channel` / `control` (CC7 volume, CC10 pan) /
+/// `midi-unpitched` sub-directives. A trailing `%` comment and any non-numeric
+/// trailing words are ignored, matching abc2midi's lenient leading-integer
+/// parse; out-of-range values are skipped. Last write wins, so a later directive
+/// in the same voice overrides an earlier one.
 fn apply_midi_instrument_directive(value: &str, span: Span, model: &mut MidiInstrumentModel) {
     let head = value.split('%').next().unwrap_or(value);
     let mut tokens = head.split_whitespace();
@@ -1591,6 +1594,18 @@ fn apply_midi_instrument_directive(value: &str, span: Span, model: &mut MidiInst
                     }
                     _ => {}
                 }
+            }
+        }
+        // Croma extension for MusicXML-origin percussion: carry the
+        // MusicXML 1-based MIDI unpitched key through the ABC leg.
+        "midi-unpitched" => {
+            if let Some(value) = tokens
+                .next()
+                .and_then(leading_u8)
+                .filter(|value| (1..=128).contains(value))
+            {
+                model.midi_unpitched = Some(value);
+                model.span = span;
             }
         }
         // Every other sub-directive is playback-only: not score-translated.
