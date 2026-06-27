@@ -551,6 +551,43 @@ fn foreign_multi_voice_part_synthesizes_parenthesized_score_group() {
 }
 
 #[test]
+fn foreign_voice_numbers_survive_abc_projection() {
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\"><part-name>Piano</part-name></score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+        "    <backup><duration>4</duration></backup>\n",
+        "    <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><voice>5</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score (P1 P1#5)\n"),
+        "imported sparse MusicXML voice numbers must be visible in the ABC ownership group; got:\n{abc}"
+    );
+
+    let roundtrip = export_musicxml(&abc).expect("sparse voice ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<voice>5</voice>"),
+        "ABC->MusicXML must preserve imported voice 5, not renumber it to voice 2:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        !roundtrip.musicxml.contains("<voice>2</voice>"),
+        "imported sparse voice 5 must not be normalized to sequential voice 2:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn backup_forward_durations_are_read() {
     // A multi-voice bar forces a <backup> between the two voices; reading the
     // backup duration keeps onsets aligned so the bar re-emits identically.

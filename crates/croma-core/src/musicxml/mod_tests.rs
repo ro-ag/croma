@@ -3925,6 +3925,30 @@ fn staves_parenthesis_group_merges_voices_into_one_part() {
 }
 
 #[test]
+fn reader_style_hash_voice_ids_preserve_musicxml_voice_numbers() {
+    let source = concat!(
+        "X:1\nL:1/4\n%%score (P1 P1#5)\n",
+        "V:P1\nV:P1#5\nK:C\n",
+        "V:P1\nC |\n",
+        "V:P1#5\nG |\n",
+    );
+    let export = export_musicxml(source).expect("reader-style voice ids should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<part id="), 1);
+    assert!(
+        export.musicxml.contains("<voice>5</voice>"),
+        "reader-style voice id P1#5 must emit MusicXML voice 5, not voice 2:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export.musicxml.contains("<voice>2</voice>"),
+        "reader-style voice id P1#5 must not be normalized to voice 2:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn slur_number_collision_shared_part_uses_distinct_musicxml_numbers() {
     let source = concat!(
         "X:1\nM:4/4\nL:1/4\n%%staves 1 (2 3)\n",

@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{
     BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, MidiInstrumentModel, Part, Score,
@@ -123,7 +123,8 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.start("part", &[("id", id.as_str())]);
         let mut pending_left_repeat = false;
         let measure_ids = part_measure_ids(part);
-        let overlay_voice_numbers = overlay_voice_numbers(part);
+        let voice_numbers = part_voice_numbers(part);
+        let overlay_voice_numbers = overlay_voice_numbers(part, &voice_numbers);
         let ending_stops = ending_stop_schedule(part, &measure_ids);
         for (measure_position, measure_id) in measure_ids.iter().enumerate() {
             let number = measure_id.number.to_string();
@@ -175,7 +176,8 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_multiple_rest_measure_style(count);
             }
 
-            let sequences = measure_sequences(part, *measure_id, &overlay_voice_numbers);
+            let sequences =
+                measure_sequences(part, *measure_id, &voice_numbers, &overlay_voice_numbers);
             for (sequence_index, sequence) in sequences.iter().enumerate() {
                 let cursor = self.write_sequence(sequence, part);
                 if sequence_index + 1 < sequences.len() && cursor != Fraction::zero() {
@@ -455,11 +457,15 @@ fn part_measure_refs(part: &Part, id: MeasureId) -> Vec<&Measure> {
 fn measure_sequences<'score>(
     part: &'score Part,
     id: MeasureId,
+    voice_numbers: &[String],
     overlay_voice_numbers: &BTreeMap<(usize, usize), String>,
 ) -> Vec<MeasureSequence<'score>> {
     let mut sequences = Vec::new();
     for (voice_index, voice) in part.voices.iter().enumerate() {
-        let voice_number = (voice_index + 1).to_string();
+        let voice_number = voice_numbers
+            .get(voice_index)
+            .cloned()
+            .unwrap_or_else(|| (voice_index + 1).to_string());
         let slur_voice_key = voice.id.value.clone();
         let events = voice
             .events
@@ -535,9 +541,51 @@ fn measure_sequences<'score>(
     sequences
 }
 
-fn overlay_voice_numbers(part: &Part) -> BTreeMap<(usize, usize), String> {
+fn part_voice_numbers(part: &Part) -> Vec<String> {
+    let mut used = BTreeSet::new();
+    let mut next = 1u32;
+    part.voices
+        .iter()
+        .map(|voice| {
+            if let Some(number) = reader_style_voice_number(&part.id.value, &voice.id.value)
+                .filter(|number| !used.contains(number))
+            {
+                used.insert(number.clone());
+                return number;
+            }
+            let number = next_free_voice_number(&used, &mut next);
+            used.insert(number.clone());
+            number
+        })
+        .collect()
+}
+
+fn reader_style_voice_number(part_id: &str, voice_id: &str) -> Option<String> {
+    if voice_id == part_id {
+        return Some("1".to_owned());
+    }
+    let prefix = format!("{part_id}#");
+    let suffix = voice_id.strip_prefix(&prefix)?.trim();
+    (!suffix.is_empty()).then(|| suffix.to_owned())
+}
+
+fn next_free_voice_number(used: &BTreeSet<String>, next: &mut u32) -> String {
+    loop {
+        let number = next.to_string();
+        *next += 1;
+        if !used.contains(&number) {
+            return number;
+        }
+    }
+}
+
+fn overlay_voice_numbers(
+    part: &Part,
+    base_voice_numbers: &[String],
+) -> BTreeMap<(usize, usize), String> {
     let mut numbers = BTreeMap::new();
-    let mut next = part.voices.len() + 1;
+    let mut used = base_voice_numbers.iter().cloned().collect::<BTreeSet<_>>();
+    let mut next = 1u32;
     for (voice_index, voice) in part.voices.iter().enumerate() {
         for measure in &voice.measures {
             for (overlay_index, overlay) in measure.overlays.iter().enumerate() {
@@ -547,8 +595,8 @@ fn overlay_voice_numbers(part: &Part) -> BTreeMap<(usize, usize), String> {
                 numbers
                     .entry((voice_index, overlay_index))
                     .or_insert_with(|| {
-                        let number = next.to_string();
-                        next += 1;
+                        let number = next_free_voice_number(&used, &mut next);
+                        used.insert(number.clone());
                         number
                     });
             }
