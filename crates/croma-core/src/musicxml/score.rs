@@ -68,14 +68,18 @@ impl<'score> MusicXmlWriter<'score> {
         let instruments: Vec<(String, String, MidiInstrumentModel)> = part
             .voices
             .iter()
-            .filter_map(|voice| voice.midi_instrument)
-            .filter(MidiInstrumentModel::has_content)
+            .filter_map(|voice| {
+                let midi = voice.midi_instrument?;
+                midi.has_content().then_some((voice, midi))
+            })
             .enumerate()
-            .map(|(seq, midi)| {
-                let name = midi.program.map_or_else(
-                    || fallback_name.clone(),
-                    |program| gm_program_name(program).to_owned(),
-                );
+            .map(|(seq, (voice, midi))| {
+                let name = voice_instrument_name(voice).unwrap_or_else(|| {
+                    midi.program.map_or_else(
+                        || fallback_name.clone(),
+                        |program| gm_program_name(program).to_owned(),
+                    )
+                });
                 (format!("{part_id}-I{}", seq + 1), name, midi)
             })
             .collect();
@@ -105,10 +109,7 @@ impl<'score> MusicXmlWriter<'score> {
                     .text_element("volume", &format!("{:.2}", f64::from(volume) / 1.27));
             }
             if let Some(pan) = midi.pan_cc {
-                self.xml.text_element(
-                    "pan",
-                    &format!("{:.2}", f64::from(pan) / 127.0 * 180.0 - 90.0),
-                );
+                self.xml.text_element("pan", &musicxml_pan_from_cc(pan));
             }
             self.xml.end("midi-instrument");
         }
@@ -267,6 +268,25 @@ fn part_name(part: &Part, score: &Score) -> String {
             })
         })
         .unwrap_or_else(|| "Music".to_owned())
+}
+
+fn musicxml_pan_from_cc(pan: u8) -> String {
+    if pan == 64 {
+        "0.00".to_owned()
+    } else {
+        format!("{:.2}", f64::from(pan) / 127.0 * 180.0 - 90.0)
+    }
+}
+
+fn voice_instrument_name(voice: &crate::model::Voice) -> Option<String> {
+    voice
+        .properties
+        .nm
+        .as_ref()
+        .or(voice.properties.name.as_ref())
+        .map(|line| line.text.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
 /// General MIDI program name for a 0-based program number, used for the

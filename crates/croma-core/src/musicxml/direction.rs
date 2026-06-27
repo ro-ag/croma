@@ -37,8 +37,8 @@ impl<'score> MusicXmlWriter<'score> {
 
     /// Emit a `Q:` tempo as a MusicXML `<metronome>` direction (matching the
     /// abc2xml reference), falling back to plain `<words>` when the field has no
-    /// numeric tempo. A `<sound tempo=...>` is always emitted: quarter-notes per
-    /// minute for a numeric tempo, or a default of 120 for text-only tempos.
+    /// numeric tempo. Numeric tempos also emit a `<sound tempo=...>` playback
+    /// value; text-only `Q:` fields do not synthesize a default playback tempo.
     pub(crate) fn write_tempo_direction(&mut self, tempo: &TempoModel) {
         let beat_unit = tempo.beat.and_then(beat_unit_model);
         // A numeric tempo we cannot map to a beat unit falls back to words using
@@ -70,12 +70,11 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.end("metronome");
             self.xml.end("direction-type");
         }
-        let sound_tempo = match tempo.beat {
-            Some(beat) => sound_tempo_qpm(beat),
-            None => 120.0,
-        };
-        self.xml
-            .empty("sound", &[("tempo", &format!("{sound_tempo:.2}"))]);
+        if let Some(beat) = tempo.beat {
+            let sound_tempo = sound_tempo_qpm(beat);
+            self.xml
+                .empty("sound", &[("tempo", &format!("{sound_tempo:.2}"))]);
+        }
         self.xml.end("direction");
     }
 

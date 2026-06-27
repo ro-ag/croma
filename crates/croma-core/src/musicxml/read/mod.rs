@@ -94,6 +94,8 @@
 //! `Measure.multiple_rest` (attached to voice 1, the voice the writer reads it
 //! from). See `docs/musicxml-reader.md` for the small documented residual.
 
+use std::collections::BTreeMap;
+
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
@@ -260,23 +262,27 @@ impl Reader {
             }
             score.parts.push(outcome.part);
         }
+        project_part_names_to_voice_properties(&mut score);
 
         // P1a: synthesize `%%score` directives from recovered `<part-group>`
-        // spans. This is ABC-path only: `write_score_partwise` (the `--format xml`
-        // pure-inverse path) does not consult `metadata.directives`, so the
-        // directive is inert for the self-loop and reverse-parity gates.
+        // spans and from multi-voice MusicXML parts. This is ABC-path only:
+        // `write_score_partwise` (the `--format xml` pure-inverse path) does not
+        // consult `metadata.directives`, so the directive is inert for the
+        // self-loop and reverse-parity gates.
         // Voice-id alignment: the first (index 0) voice of each `<score-part
         // id="P1">` gets `voice_id_value("P1", "1", 0) = "P1"`, which is exactly
         // the part id. `write_abc` emits `V:P1` for that voice, so the synthesised
         // `%%score [P1 P2 …]` references the same ids that `V:` headers use.
         // Fix 3: pass the full ordered part-id list so ungrouped parts are
         // included as bare voice-id tokens in their document-order positions.
-        let all_part_ids: Vec<&str> = part_list_result
-            .entries
+        let part_score_blocks = part_score_blocks(&score);
+        let all_part_ids: Vec<&str> = score
+            .parts
             .iter()
-            .map(|e| e.id.as_str())
+            .map(|part| part.id.value.as_str())
             .collect();
-        if let Some(directive) = synthesize_score_directive(&part_list_result.groups, &all_part_ids)
+        if let Some(directive) =
+            synthesize_score_directive(&part_list_result.groups, &all_part_ids, &part_score_blocks)
         {
             score.metadata.directives.push(directive);
         }
@@ -669,15 +675,20 @@ impl Reader {
     /// - `<pan>p` -> `pan_cc = round((p + 90) * 127 / 180)` (forward `{:.2}` of
     ///   `cc/127*180 - 90`).
     ///
-    /// `<instrument-name>` is intentionally **not** read: on the forward side it
-    /// is derived (the GM name when a program exists, else the part name), so
-    /// recovering `program` (or leaving it `None`) regenerates the identical name
-    /// on re-write. The `0..=127` float-stability test proves the CC inverses are
-    /// idempotent. An instrument with no recovered field is dropped (the writer
-    /// would not have emitted it).
-    fn read_midi_instruments(&mut self, score_part: Node<'_, '_>) -> Vec<MidiInstrumentModel> {
+    /// The matching `<score-instrument>/<instrument-name>` is read by id and
+    /// projected into ABC `V:nm`, preserving human playback/sheet names that
+    /// cannot be recovered from General MIDI program numbers.
+    fn read_midi_instruments(&mut self, score_part: Node<'_, '_>) -> Vec<PartListInstrument> {
+        let names = score_instrument_names(score_part);
         children_named(score_part, "midi-instrument")
-            .filter_map(|node| self.read_midi_instrument(node))
+            .filter_map(|node| {
+                let midi = self.read_midi_instrument(node)?;
+                let name = node
+                    .attribute("id")
+                    .and_then(|id| names.get(id))
+                    .map(String::to_owned);
+                Some(PartListInstrument { midi, name })
+            })
             .collect()
     }
 
@@ -886,17 +897,25 @@ impl Reader {
                 // carried `%%MIDI` sound metadata, in voice order; attach each
                 // recovered instrument to the voice at the same index. A voice
                 // with no instrument keeps `None` (no extra `<midi-instrument>`).
-                let midi_instrument = entry.and_then(|entry| entry.instruments.get(index).copied());
+                let part_list_instrument = entry.and_then(|entry| entry.instruments.get(index));
+                let midi_instrument = part_list_instrument.map(|instrument| instrument.midi);
+                let instrument_name = part_list_instrument
+                    .and_then(|instrument| instrument.name.as_ref())
+                    .filter(|name| !name.trim().is_empty())
+                    .map(|name| text_line(name.clone()));
                 // Only the first (staff) voice carries the header clef/transpose
                 // and its ABC `transpose=` property; extra voices share the staff
                 // but the writer reads clef/transpose from the FIRST qualifying
                 // voice per part, so leaving extras default reproduces the single
                 // `<clef>`/`<transpose>` emission.
-                let (init_props, transpose) = if index == 0 {
+                let (mut init_props, transpose) = if index == 0 {
                     (initial_properties.clone(), midi_transpose)
                 } else {
                     (VoicePropertiesModel::default(), None)
                 };
+                if let Some(instrument_name) = instrument_name {
+                    init_props.nm.get_or_insert(instrument_name);
+                }
                 let voice_id = VoiceId {
                     value: voice_id_value(&id, &accumulator.voice, index),
                     span: READER_SPAN,
@@ -2010,16 +2029,15 @@ impl Reader {
     /// [`MusicXmlWriter::write_direction_type`] (coda/segno) and
     /// [`MusicXmlWriter::write_wedge`].
     ///
-    /// A **tempo** direction carries a `<metronome>` (and/or a tempo `<words>` +
-    /// `<sound>`) and is voice-less; it becomes a [`TempoModel`] the caller routes
-    /// to the header or to a `TempoChange`. Every other direction is voice-bearing
-    /// and reconstructs an [`EventAttachments`] fragment (annotation words, or a
-    /// dynamics/coda/segno/wedge decoration) for the following event.
+    /// A **tempo** direction carries a `<metronome>`, a playback `<sound tempo>`,
+    /// or voice-less tempo `<words>`; it becomes a [`TempoModel`] the caller
+    /// routes to the header or to a `TempoChange`. Every other direction is
+    /// voice-bearing and reconstructs an [`EventAttachments`] fragment
+    /// (annotation words, or a dynamics/coda/segno/wedge decoration) for the
+    /// following event.
     fn read_direction(&mut self, direction: Node<'_, '_>) -> ParsedDirection {
-        // A `<metronome>` (or a tempo `<words>` accompanied by a `<sound>` and no
-        // `<voice>`) is a tempo direction. Detect the metronome first; a bare
-        // tempo-words direction is handled by the words branch below only when it
-        // is NOT a tempo (i.e. it has a `<voice>`).
+        // Tempo directions are voice-less. Voice-bearing words fall through to
+        // annotations/decorations below.
         if let Some(tempo) = self.read_tempo_direction(direction) {
             return ParsedDirection::Tempo(tempo);
         }
@@ -2124,20 +2142,17 @@ impl Reader {
     /// direction is not a tempo (so the caller treats it as a plain words /
     /// decoration direction).
     ///
-    /// The writer emits two tempo shapes, both **voice-less** and always carrying
-    /// a `<sound tempo=...>`:
+    /// The writer emits two tempo shapes, both **voice-less**:
     /// - a **numeric** tempo: an optional tempo `<words>` (`tempo.text`) then a
     ///   `<metronome>` (`<beat-unit>` + optional `<beat-unit-dot/>` +
-    ///   `<per-minute>`). The reader recovers `text` from the words and `beat`
-    ///   from the metronome.
+    ///   `<per-minute>`) plus `<sound tempo=...>`. The reader recovers `text`
+    ///   from the words and `beat` from the metronome.
     /// - a **text-only** tempo (no numeric beat): just a tempo `<words>` + the
-    ///   `<sound>` (the `tempo.text`-only `TempoModel`, beat `None`). The reader
-    ///   recovers `text` and leaves `beat = None`.
+    ///   `tempo.text`-only `TempoModel`, beat `None`. The reader recovers `text`
+    ///   and leaves `beat = None`.
     ///
-    /// The voice-less + `<sound>` shape is what distinguishes a tempo direction
-    /// from a regular annotation `<words>` direction (which is voice-bearing and
-    /// has no `<sound>`). A `<metronome>` whose `<beat-unit>`/`<per-minute>`
-    /// cannot be parsed yields `None`.
+    /// Voice-bearing `<words>` are regular annotations. A `<metronome>` whose
+    /// `<beat-unit>`/`<per-minute>` cannot be parsed yields `None`.
     fn read_tempo_direction(&mut self, direction: Node<'_, '_>) -> Option<TempoModel> {
         // A voice-bearing direction is never a tempo (tempo directions carry no
         // `<voice>`); bail so it is reconstructed as an annotation/decoration.
@@ -2153,21 +2168,58 @@ impl Reader {
                 .map(|words| raw_text(words).to_owned())
         };
 
+        let sound_beat =
+            child_element(direction, "sound").and_then(|sound| self.read_sound_tempo_beat(sound));
+
         if let Some(metronome) = descendants_named(direction, "metronome").next() {
-            let beat = self.read_tempo_beat(metronome)?;
+            if let Some(beat) = self.read_tempo_beat(metronome) {
+                return Some(TempoModel {
+                    text: words(),
+                    beat: Some(beat),
+                    source_span: READER_SPAN,
+                });
+            }
+            if let Some(beat) = sound_beat {
+                return Some(TempoModel {
+                    text: words(),
+                    beat: Some(beat),
+                    source_span: READER_SPAN,
+                });
+            }
+            return None;
+        }
+
+        // No metronome: foreign MusicXML often carries playback tempo only as
+        // `<sound tempo="...">`. Project that to ABC's quarter-note `Q:` form.
+        // A historical croma text-only Q export used words plus default
+        // `<sound tempo="120">`; keep reading that as text-only, not numeric.
+        if child_element(direction, "sound").is_some() {
+            let text = words();
+            let beat = match (text.as_ref(), sound_beat) {
+                // Preserve the historical croma text-only tempo shape:
+                // Q:"Andante" -> <words>Andante</words><sound tempo="120.00"/>.
+                // There is no metronome, so the default 120 sound is a playback
+                // fallback rather than source-significant numeric tempo.
+                (
+                    Some(_),
+                    Some(TempoBeat {
+                        beat_numerator: 1,
+                        beat_denominator: 4,
+                        bpm: 120,
+                    }),
+                ) => None,
+                _ => sound_beat,
+            };
+            if beat.is_none() && text.is_none() {
+                return None;
+            }
             return Some(TempoModel {
-                text: words(),
-                beat: Some(beat),
+                text,
+                beat,
                 source_span: READER_SPAN,
             });
         }
-
-        // No metronome: a text-only tempo is a voice-less words direction WITH a
-        // `<sound>` (the writer's `tempo.text`-only fallback). Without a `<sound>`
-        // it is an ordinary words annotation, not a tempo.
-        if child_element(direction, "sound").is_some()
-            && let Some(text) = words()
-        {
+        if let Some(text) = words().filter(|text| !text.trim().is_empty()) {
             return Some(TempoModel {
                 text: Some(text),
                 beat: None,
@@ -2207,12 +2259,14 @@ impl Reader {
         } else {
             (1, base_denominator)
         };
-        let bpm = match child_text(metronome, "per-minute").map(|t| t.parse::<u32>()) {
-            Some(Ok(bpm)) => bpm,
+        let bpm = match child_text(metronome, "per-minute")
+            .and_then(|text| self.parse_tempo_bpm(text, "per-minute"))
+        {
+            Some(bpm) => bpm,
             _ => {
                 self.warn(
                     "musicxml.read.invalid_per_minute",
-                    "<per-minute> is missing or not a non-negative integer; tempo ignored",
+                    "<per-minute> is missing or not a non-negative finite number; tempo ignored",
                 );
                 return None;
             }
@@ -2222,6 +2276,48 @@ impl Reader {
             beat_denominator,
             bpm,
         })
+    }
+
+    /// Read `<sound tempo>` as quarter-notes per minute. ABC's `Q:` model stores
+    /// integer BPM, so a decimal value is rounded with a diagnostic.
+    fn read_sound_tempo_beat(&mut self, sound: Node<'_, '_>) -> Option<TempoBeat> {
+        let bpm = self.parse_tempo_bpm(sound.attribute("tempo")?, "sound tempo")?;
+        Some(TempoBeat {
+            beat_numerator: 1,
+            beat_denominator: 4,
+            bpm,
+        })
+    }
+
+    fn parse_tempo_bpm(&mut self, text: &str, label: &str) -> Option<u32> {
+        let trimmed = text.trim();
+        let value = match trimmed.parse::<f64>() {
+            Ok(value) if value.is_finite() && value >= 0.0 => value,
+            _ => {
+                self.warn(
+                    "musicxml.read.invalid_tempo",
+                    format!("<{label}> `{trimmed}` is not a non-negative finite number"),
+                );
+                return None;
+            }
+        };
+        let rounded = value.round();
+        if rounded > f64::from(u32::MAX) {
+            self.warn(
+                "musicxml.read.invalid_tempo",
+                format!("<{label}> `{trimmed}` is too large for ABC tempo BPM"),
+            );
+            return None;
+        }
+        if (value - rounded).abs() > f64::EPSILON {
+            self.warn(
+                "musicxml.read.fractional_tempo",
+                format!(
+                    "<{label}> `{trimmed}` has fractional BPM; rounded to {rounded} for ABC Q:"
+                ),
+            );
+        }
+        Some(rounded as u32)
     }
 
     /// S5b: invert [`MusicXmlWriter::write_harmony`]. The writer emits a chord
@@ -2698,7 +2794,12 @@ impl Reader {
 struct PartListEntry {
     id: String,
     name: Option<String>,
-    instruments: Vec<MidiInstrumentModel>,
+    instruments: Vec<PartListInstrument>,
+}
+
+struct PartListInstrument {
+    midi: MidiInstrumentModel,
+    name: Option<String>,
 }
 
 /// P1a: one `<part-group>` span recovered from the `<part-list>`.
@@ -2722,6 +2823,16 @@ struct PartGroupEntry {
 struct PartListResult {
     entries: Vec<PartListEntry>,
     groups: Vec<PartGroupEntry>,
+}
+
+fn score_instrument_names(score_part: Node<'_, '_>) -> BTreeMap<String, String> {
+    children_named(score_part, "score-instrument")
+        .filter_map(|node| {
+            let id = node.attribute("id")?.to_owned();
+            let name = child_text(node, "instrument-name")?.trim();
+            (!name.is_empty()).then(|| (id, name.to_owned()))
+        })
+        .collect()
 }
 
 /// S6d: accumulates one voice's reconstruction across a part's measures — its
@@ -2770,6 +2881,70 @@ fn voice_id_value(part_id: &str, voice: &str, index: usize) -> String {
     }
 }
 
+fn project_part_names_to_voice_properties(score: &mut Score) {
+    let single_part = score.parts.len() == 1;
+    let title = score.metadata.title.as_ref().map(|title| title.text.trim());
+    for part in &mut score.parts {
+        let Some(name) = part
+            .name
+            .clone()
+            .filter(|line| !line.text.trim().is_empty())
+        else {
+            continue;
+        };
+        if single_part && title.is_some_and(|title| title == name.text.trim()) {
+            continue;
+        }
+        let Some(voice) = part.voices.first_mut() else {
+            continue;
+        };
+        if voice.initial_properties.name.is_none() {
+            voice.initial_properties.name = Some(name.clone());
+        }
+        if voice.properties.name.is_none() {
+            voice.properties.name = Some(name);
+        }
+    }
+}
+
+struct PartScoreBlock {
+    part_id: String,
+    text: String,
+    multi_voice: bool,
+}
+
+fn part_score_blocks(score: &Score) -> Vec<PartScoreBlock> {
+    score
+        .parts
+        .iter()
+        .map(|part| {
+            let voice_ids = part
+                .voices
+                .iter()
+                .map(|voice| voice.id.value.as_str())
+                .collect::<Vec<_>>();
+            let text = match voice_ids.as_slice() {
+                [] => part.id.value.clone(),
+                [id] => (*id).to_owned(),
+                ids => format!("({})", ids.join(" ")),
+            };
+            PartScoreBlock {
+                part_id: part.id.value.clone(),
+                text,
+                multi_voice: voice_ids.len() > 1,
+            }
+        })
+        .collect()
+}
+
+fn part_score_block_text(part_id: &str, part_score_blocks: &[PartScoreBlock]) -> String {
+    part_score_blocks
+        .iter()
+        .find(|block| block.part_id == part_id)
+        .map(|block| block.text.clone())
+        .unwrap_or_else(|| part_id.to_owned())
+}
+
 /// P1a: build one `%%score` [`ScoreDirectiveModel`] from the list of recovered
 /// `<part-group>` spans, or `None` when there are no groups.
 ///
@@ -2804,8 +2979,10 @@ fn voice_id_value(part_id: &str, voice: &str, index: usize) -> String {
 fn synthesize_score_directive(
     groups: &[PartGroupEntry],
     all_part_ids: &[&str],
+    part_score_blocks: &[PartScoreBlock],
 ) -> Option<ScoreDirectiveModel> {
-    if groups.is_empty() {
+    let has_multi_voice_part = part_score_blocks.iter().any(|block| block.multi_voice);
+    if groups.is_empty() && !has_multi_voice_part {
         return None;
     }
 
@@ -2813,7 +2990,7 @@ fn synthesize_score_directive(
     // Strategy: find the outermost group (largest part_ids set), then for each
     // position in its part_ids list, check if there is a sub-group starting at
     // that position and substitute the sub-group's bracketed form.
-    let text = build_score_text(groups, all_part_ids);
+    let text = build_score_text(groups, all_part_ids, part_score_blocks);
     if text.is_empty() {
         return None;
     }
@@ -2862,9 +3039,17 @@ fn synthesize_score_directive(
 ///    top-level group (they were consumed by the group block in step 4).
 ///
 /// 5. Join all collected tokens with `" "`.
-fn build_score_text(groups: &[PartGroupEntry], all_part_ids: &[&str]) -> String {
+fn build_score_text(
+    groups: &[PartGroupEntry],
+    all_part_ids: &[&str],
+    part_score_blocks: &[PartScoreBlock],
+) -> String {
     if groups.is_empty() {
-        return String::new();
+        return all_part_ids
+            .iter()
+            .map(|id| part_score_block_text(id, part_score_blocks))
+            .collect::<Vec<_>>()
+            .join(" ");
     }
 
     // Step 1: find top-level groups — not a strict subset of any other group.
@@ -2890,9 +3075,9 @@ fn build_score_text(groups: &[PartGroupEntry], all_part_ids: &[&str]) -> String 
     if top_level_indices.len() == 1 && all_grouped {
         let idx = top_level_indices[0];
         if groups.len() == 1 {
-            return render_group(&groups[idx]);
+            return render_group(&groups[idx], part_score_blocks);
         }
-        return render_group_with_subs(&groups[idx], groups, idx);
+        return render_group_with_subs(&groups[idx], groups, idx, part_score_blocks);
     }
 
     // Step 2: stable document order for top-level groups.  Build a global part
@@ -2933,9 +3118,9 @@ fn build_score_text(groups: &[PartGroupEntry], all_part_ids: &[&str]) -> String 
         let g = &groups[idx];
         if let Some(first) = g.part_ids.first() {
             let block = if groups.len() == 1 {
-                render_group(g)
+                render_group(g, part_score_blocks)
             } else {
-                render_group_with_subs(g, groups, idx)
+                render_group_with_subs(g, groups, idx, part_score_blocks)
             };
             top_by_first.insert(first.as_str(), (block, &g.part_ids));
         }
@@ -2957,7 +3142,7 @@ fn build_score_text(groups: &[PartGroupEntry], all_part_ids: &[&str]) -> String 
             }
         } else {
             // Ungrouped part: emit as bare voice-id token.
-            result_tokens.push(id.to_owned());
+            result_tokens.push(part_score_block_text(id, part_score_blocks));
         }
     }
 
@@ -2971,6 +3156,7 @@ fn render_group_with_subs(
     group: &PartGroupEntry,
     all_groups: &[PartGroupEntry],
     self_idx: usize,
+    part_score_blocks: &[PartScoreBlock],
 ) -> String {
     // Build a map: first part_id of each sub-group → (rendered block, all sub ids).
     let mut sub_blocks: std::collections::HashMap<&str, (String, &[String])> = Default::default();
@@ -2981,7 +3167,10 @@ fn render_group_with_subs(
         // Sub-group: all of g's parts are in `group`, AND g is not the group itself.
         let is_sub = g.part_ids.iter().all(|id| group.part_ids.contains(id));
         if is_sub {
-            sub_blocks.insert(g.part_ids[0].as_str(), (render_group(g), &g.part_ids));
+            sub_blocks.insert(
+                g.part_ids[0].as_str(),
+                (render_group(g, part_score_blocks), &g.part_ids),
+            );
         }
     }
 
@@ -2999,7 +3188,7 @@ fn render_group_with_subs(
             skip_remaining = sub_ids.len().saturating_sub(1);
             tokens.push(block.clone());
         } else {
-            tokens.push(id.clone());
+            tokens.push(part_score_block_text(id, part_score_blocks));
         }
     }
     let inner = tokens.join(" ");
@@ -3011,10 +3200,15 @@ fn render_group_with_subs(
 }
 
 /// Render one group as its bracketed string, e.g. `[P1 P2 P3]` or `{P1 P2}`.
-fn render_group(group: &PartGroupEntry) -> String {
+fn render_group(group: &PartGroupEntry, part_score_blocks: &[PartScoreBlock]) -> String {
     let open = open_char(group.symbol);
     let close = close_char(group.symbol);
-    let ids = group.part_ids.join(" ");
+    let ids = group
+        .part_ids
+        .iter()
+        .map(|id| part_score_block_text(id, part_score_blocks))
+        .collect::<Vec<_>>()
+        .join(" ");
     if open == '\0' {
         ids
     } else {

@@ -1104,13 +1104,13 @@ fn tempo_bare_leading_digits_with_space_stays_words() {
 }
 
 #[test]
-fn tempo_text_only_stays_words_with_default_sound() {
+fn tempo_text_only_stays_words_without_synthetic_sound() {
     let source = "X:1\nM:4/4\nL:1/4\nQ:\"Slow\"\nK:C\nC4|\n";
     let export = export_musicxml(source).expect("tempo score should export");
 
     assert_balanced_xml(&export.musicxml);
     assert!(export.musicxml.contains("<words>Slow</words>"));
-    assert!(export.musicxml.contains("<sound tempo=\"120.00\""));
+    assert!(!export.musicxml.contains("<sound tempo=\"120.00\""));
     assert_eq!(count(&export.musicxml, "<metronome>"), 0);
 }
 
@@ -1149,7 +1149,7 @@ fn later_header_tempo_overrides_earlier_header_tempo() {
 
     assert_balanced_xml(&export.musicxml);
     assert!(export.musicxml.contains("<words>Animato</words>"));
-    assert!(export.musicxml.contains("<sound tempo=\"120.00\""));
+    assert!(!export.musicxml.contains("<sound tempo=\"120.00\""));
     assert_eq!(count(&export.musicxml, "<metronome>"), 0);
     assert!(!export.musicxml.contains("<per-minute>120</per-minute>"));
 }
@@ -1217,6 +1217,23 @@ fn midi_program_header_emits_score_and_midi_instrument() {
     assert!(!export.musicxml.contains("<midi-channel>"));
     // Instrument identity is part-list metadata, never visible staff text.
     assert!(!export.musicxml.contains("<words>"));
+}
+
+#[test]
+fn midi_instrument_prefers_voice_instrument_name_metadata() {
+    let source =
+        "X:1\nT:T\nL:1/8\nV:1 name=\"Staff\" nm=\"Solo Violin\"\n%%MIDI program 40\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("named MIDI voice should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<part-name>Staff</part-name>"));
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name>Solo Violin</instrument-name>"),
+        "voice nm/name should preserve the human instrument name instead of forcing GM fallback:\n{}",
+        export.musicxml
+    );
 }
 
 #[test]
@@ -1336,6 +1353,14 @@ fn midi_control_cc10_becomes_midi_pan() {
     let right = export_musicxml("X:1\nT:T\nL:1/8\n%%MIDI control 10 127\nK:C\nCDEF|\n")
         .expect("control 10 127 should export");
     assert!(right.musicxml.contains("<pan>90.00</pan>"));
+
+    let center = export_musicxml("X:1\nT:T\nL:1/8\n%%MIDI control 10 64\nK:C\nCDEF|\n")
+        .expect("control 10 64 should export");
+    assert!(
+        center.musicxml.contains("<pan>0.00</pan>"),
+        "center CC10 should emit exact MusicXML center pan, got:\n{}",
+        center.musicxml
+    );
 }
 
 #[test]

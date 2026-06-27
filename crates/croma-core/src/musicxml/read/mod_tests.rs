@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::model::{Fraction, Score, TimedEventKind};
 use crate::musicxml::read::read_musicxml;
 use crate::musicxml::write_score_partwise;
-use crate::{export_musicxml, write_musicxml};
+use crate::{AbcWriteOptions, export_musicxml, write_abc, write_musicxml};
 
 /// `export_musicxml` for ABC that is expected to lower cleanly.
 fn export(abc: &str) -> String {
@@ -485,6 +485,72 @@ fn multi_part_skeleton_round_trips_with_names() {
 }
 
 #[test]
+fn foreign_part_names_project_to_voice_headers() {
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\"><part-name>Flute</part-name></score-part>\n",
+        "    <score-part id=\"P2\"><part-name>Cello</part-name></score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "  <part id=\"P2\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+
+    assert!(
+        abc.contains("V:P1 name=\"Flute\"\n"),
+        "MusicXML part-name must survive into ABC voice metadata; got:\n{abc}"
+    );
+    assert!(
+        abc.contains("V:P2 name=\"Cello\"\n"),
+        "MusicXML part-name must survive into ABC voice metadata; got:\n{abc}"
+    );
+}
+
+#[test]
+fn foreign_multi_voice_part_synthesizes_parenthesized_score_group() {
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\"><part-name>Piano</part-name></score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+        "    <backup><duration>4</duration></backup>\n",
+        "    <note><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+
+    assert!(
+        abc.contains("%%score (P1 P1#2)\n"),
+        "multiple MusicXML voices in one part must stay grouped in ABC; got:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc).expect("grouped ABC should export");
+    assert_eq!(
+        roundtrip.musicxml.matches("<score-part id=").count(),
+        1,
+        "ABC->MusicXML must keep the two voices in one score-part:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn backup_forward_durations_are_read() {
     // A multi-voice bar forces a <backup> between the two voices; reading the
     // backup duration keeps onsets aligned so the bar re-emits identically.
@@ -811,15 +877,15 @@ fn control7_volume_reconstructs_cc() {
 
 #[test]
 fn control10_pan_reconstructs_cc() {
-    // %%MIDI control 10 64 -> <pan>0.71</pan>; inverse round((0.71+90)*127/180)==64.
+    // %%MIDI control 10 64 is the MIDI center; MusicXML center is exactly 0.
     let abc = "X:1\nT:Pan\nL:1/4\nK:C\n%%MIDI control 10 64\nC\n";
     let x1 = export(abc);
     assert!(
-        x1.contains("<pan>0.71</pan>"),
-        "precondition: control 10 64 emits pan 0.71"
+        x1.contains("<pan>0.00</pan>"),
+        "precondition: control 10 64 emits exact center pan"
     );
     let midi = first_midi(&assert_idempotent_s3(abc));
-    assert_eq!(midi.pan_cc, Some(64), "<pan>0.71 inverts to CC 64");
+    assert_eq!(midi.pan_cc, Some(64), "<pan>0.00 inverts to CC 64");
 }
 
 #[test]
@@ -1471,17 +1537,18 @@ fn header_tempo_with_text_reconstructs_words_and_beat() {
 
 #[test]
 fn header_text_only_tempo_reconstructs_words_no_beat() {
-    // Q:"Andante" with NO numeric tempo -> a voice-less <words> + <sound> header
+    // Q:"Andante" with NO numeric tempo -> a voice-less <words> header
     // direction (no <metronome>). The reader must reconstruct a tempo_model with
-    // text and beat=None so write_tempo_direction re-emits the words + the default
-    // <sound tempo="120.00"/>, NOT a voice-bearing annotation direction.
+    // text and beat=None so write_tempo_direction re-emits the words without a
+    // synthetic default <sound tempo="120.00"/>, NOT a voice-bearing annotation
+    // direction.
     let abc = "X:1\nT:TextTempo\nQ:\"Andante\"\nM:4/4\nL:1/4\nK:C\nC D E F |\n";
     let x1 = export(abc);
     assert!(
         x1.contains("<words>Andante</words>")
-            && x1.contains("<sound tempo=\"120.00\"/>")
+            && !x1.contains("<sound tempo=\"120.00\"/>")
             && !x1.contains("<metronome>"),
-        "precondition: a text-only tempo emits words + sound, no metronome"
+        "precondition: a text-only tempo emits words only, no sound/metronome"
     );
     let score = assert_idempotent_s5(abc);
     let tempo = score
@@ -4251,6 +4318,13 @@ mod abc_completion {
         score
     }
 
+    /// Reconstruct a Score from foreign MusicXML and run the ABC completion pass.
+    fn completed_from_xml(xml: &str) -> Score {
+        let mut score = read_musicxml(xml).value;
+        complete_score_for_abc(&mut score);
+        score
+    }
+
     /// Lower an ABC fixture to a Score (panicking on a lower failure).
     fn lower(abc: &str) -> Score {
         let document = parse_document(abc, ParseOptions::default()).value;
@@ -4319,6 +4393,135 @@ mod abc_completion {
             }
         }
         durations
+    }
+
+    #[test]
+    fn foreign_sound_tempo_without_metronome_projects_to_numeric_q() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><words>Fast</words></direction-type>\n",
+            "        <sound tempo=\"132\"/>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("Q:\"Fast\" 1/4=132\n"),
+            "foreign <sound tempo> must survive MusicXML -> ABC as a numeric Q field; got:\n{abc}"
+        );
+    }
+
+    #[test]
+    fn foreign_tempo_text_is_normalized_to_one_line_q() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><words>\nSwing\n</words></direction-type>\n",
+            "        <direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>112</per-minute></metronome></direction-type>\n",
+            "        <sound tempo=\"112\"/>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("Q:\"Swing\" 1/4=112\n"),
+            "tempo text with XML whitespace must not split the ABC Q field; got:\n{abc}"
+        );
+        assert!(
+            !abc.contains("Q:\"\n"),
+            "tempo text must be normalized before ABC quoting; got:\n{abc}"
+        );
+    }
+
+    #[test]
+    fn foreign_bare_sound_tempo_projects_to_numeric_q() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction><sound tempo=\"96\"/></direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("Q:1/4=96\n"),
+            "a bare foreign <sound tempo> must not be dropped; got:\n{abc}"
+        );
+    }
+
+    #[test]
+    fn foreign_midi_instrument_projects_to_midi_directives() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list>\n",
+            "    <score-part id=\"P1\">\n",
+            "      <part-name>T</part-name>\n",
+            "      <score-instrument id=\"P1-I1\"><instrument-name>Piano</instrument-name></score-instrument>\n",
+            "      <midi-instrument id=\"P1-I1\">\n",
+            "        <midi-channel>2</midi-channel>\n",
+            "        <midi-program>41</midi-program>\n",
+            "        <volume>78.7402</volume>\n",
+            "        <pan>0</pan>\n",
+            "      </midi-instrument>\n",
+            "    </score-part>\n",
+            "  </part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("%%MIDI program 2 40\n"),
+            "MusicXML midi-program 41 must project to 0-based ABC program 40 with channel 2; got:\n{abc}"
+        );
+        assert!(
+            abc.contains("%%MIDI control 7 100\n"),
+            "MusicXML volume 78.7402 must project to MIDI CC7 100; got:\n{abc}"
+        );
+        assert!(
+            abc.contains("%%MIDI control 10 64\n"),
+            "MusicXML pan 0 must project to centered MIDI CC10 64; got:\n{abc}"
+        );
+        assert!(
+            abc.contains("V:P1 name=\"T\" nm=\"Piano\"\n"),
+            "MusicXML part/instrument names must survive into ABC voice metadata; got:\n{abc}"
+        );
     }
 
     #[test]
@@ -5192,6 +5395,20 @@ fn minimal_part(id: &str) -> String {
     )
 }
 
+/// Minimal part XML with two voices sharing one MusicXML part.
+fn minimal_two_voice_part(id: &str) -> String {
+    format!(
+        "  <part id=\"{id}\">\n    <measure number=\"1\">\
+         \n      <attributes><divisions>4</divisions></attributes>\
+         \n      <note><pitch><step>C</step><octave>4</octave></pitch>\
+         \n        <duration>4</duration><voice>1</voice><type>quarter</type></note>\
+         \n      <backup><duration>4</duration></backup>\
+         \n      <note><pitch><step>E</step><octave>4</octave></pitch>\
+         \n        <duration>4</duration><voice>2</voice><type>quarter</type></note>\
+         \n    </measure>\n  </part>\n"
+    )
+}
+
 #[test]
 fn part_group_bracket_synthesizes_score_directive() {
     // A `<part-group type="start"><group-symbol>bracket</group-symbol>` wrapping
@@ -5244,6 +5461,52 @@ fn part_group_bracket_synthesizes_score_directive() {
     assert!(
         abc.contains("%%score [P1 P2 P3]\n"),
         "write_abc must emit `%%score [P1 P2 P3]` for the bracket group; got:\n{abc}"
+    );
+}
+
+#[test]
+fn part_group_with_multi_voice_part_uses_one_combined_score_directive() {
+    // The bracket is a visual group; the parenthesized P1 voices are semantic
+    // part ownership. Both must live in the same %%score directive.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <part-group number=\"1\" type=\"start\">\n",
+        "      <group-symbol>bracket</group-symbol>\n",
+        "    </part-group>\n",
+        "    <score-part id=\"P1\"><part-name/></score-part>\n",
+        "    <score-part id=\"P2\"><part-name/></score-part>\n",
+        "    <part-group number=\"1\" type=\"stop\"/>\n",
+        "  </part-list>\n",
+    );
+    let parts = format!("{}{}", minimal_two_voice_part("P1"), minimal_part("P2"));
+    let xml = format!("{xml}{parts}</score-partwise>\n");
+    let score = read_musicxml(&xml).value;
+
+    assert_eq!(
+        score.metadata.directives.len(),
+        1,
+        "mixed visual and ownership grouping must synthesize one %%score directive"
+    );
+    let directive_text = &score.metadata.directives[0].value.text;
+    assert_eq!(
+        directive_text, "[(P1 P1#2) P2]",
+        "bracket group must preserve P1 voice ownership inside the visual group"
+    );
+
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%score [(P1 P1#2) P2]\n"),
+        "write_abc must emit the combined %%score directive; got:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc).expect("combined score directive should export");
+    assert_eq!(
+        roundtrip.musicxml.matches("<score-part id=").count(),
+        2,
+        "ABC->MusicXML must keep P1 voices in one part and P2 in the other:\n{}",
+        roundtrip.musicxml
     );
 }
 
@@ -5338,8 +5601,8 @@ fn part_group_nested_synthesizes_score_directive() {
 
 #[test]
 fn no_part_group_synthesizes_no_score_directive() {
-    // A MusicXML file with NO `<part-group>` must not synthesize any %%score
-    // directive — no spurious output, no change from the pre-change behavior.
+    // A MusicXML file with NO `<part-group>` and only single-voice parts must
+    // not synthesize any %%score directive — no spurious output.
     let xml = concat!(
         "<?xml version=\"1.0\"?>\n",
         "<score-partwise>\n",
