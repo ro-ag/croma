@@ -68,7 +68,7 @@ integer run is taken; out-of-range values are skipped.
 |---|---|---|
 | Mid-tune program change → visible `<words>prog: N</words>` | **not emitted** | abc2xml renders a raw MIDI program number as visible staff text; this is an abc2xml-ism, not standard notation. The affected corpus files are already adjudicated as `dropped.csv` "equivalence" (croma correctly ignores the optional directive). croma emits the part-list instrument identity but not the visible `prog:` words. |
 | `%%MIDI drummap` percussion | **not mimicked** | ABC 2.1 standardises only the drum clef and has no special percussion notes; abc2xml's `<midi-unpitched>`/`x`-notehead percussion is a non-standard extension (`dropped.csv` `abc2xml-percussion-extension`). 1 corpus file. |
-| MusicXML → Score *reader* (import `<midi-instrument>`/`<transpose>` back into the model) | separate epic | The reverse direction; out of scope for forward translation. |
+| MusicXML → Score *reader* (import `<midi-instrument>`/`<transpose>` back into the model) | **done** (separate epic) | The reverse direction; was out of scope for *forward* translation, since implemented. The writer now emits the `%%MIDI` inverse (see "Writer inverse" below), so the full MusicXML → ABC → MusicXML round-trip preserves instrument routing. |
 
 ## Verification & a known gap
 
@@ -94,11 +94,18 @@ neither risky nor a lever. Correctness is therefore verified by targeted
 `croma-core` unit tests plus byte-level parity spot-checks against abc2xml, not
 by the whitelist — these are output-fidelity features, not match-rate movers.
 
-**Projection-coverage gap (writer side):** the ABC writer re-emits `%%MIDI`
-verbatim from `preserved_directives`; it has no inverse of the MusicXML
-projection (it does not read `Voice::midi_instrument`). A MusicXML→Score reader
-that imports `<midi-instrument>` back into the model is a separate epic and is
-out of scope here.
+**Writer inverse (round-trip closure):** the Score→ABC writer (`to_abc.rs`) emits
+the score-meaningful `%%MIDI` directives back from `Voice::midi_instrument` /
+`Voice::midi_transpose` — the inverse of the MusicXML projection — as line-start
+directives placed directly after each voice's `V:` switch (`program <chan> <prog>`
+/ `program <prog>` / `channel <n>`, `control 7`/`control 10`, `transpose <n>`),
+in the same conventions the forward parser reads back. Combined with the
+MusicXML→Score reader (which imports `<midi-instrument>`/`<transpose>` into the
+model), this closes the MusicXML → ABC → MusicXML round-trip: instrument routing
+(program, channel, CC7 volume, CC10 pan, transpose) survives the ABC leg instead
+of collapsing every part to a single default channel. This is independent of the
+verbatim `preserved_directives` path (path 1), which feeds `croma fmt` — a
+separate source-preserving formatter that does not go through `to_abc`.
 
 ## References
 
