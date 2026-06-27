@@ -55,7 +55,7 @@ fn tempo_display(tempo: &crate::model::TempoModel) -> String {
     let mut out = String::new();
     if let Some(text) = &tempo.text {
         out.push('"');
-        out.push_str(text);
+        out.push_str(&abc_quoted_text(text));
         out.push('"');
     }
     if let Some(beat) = &tempo.beat {
@@ -70,6 +70,14 @@ fn tempo_display(tempo: &crate::model::TempoModel) -> String {
     out
 }
 
+fn abc_quoted_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
 /// Unit note length: ABC 2.1 default — measure duration < 3/4 → 1/16, else 1/8.
 fn unit_length(score: &Score) -> Rational {
     let small = Rational::new(1, 16);
@@ -81,11 +89,8 @@ fn unit_length(score: &Score) -> Rational {
 }
 
 fn tempo_field(score: &Score) -> Option<String> {
-    let beat = score.metadata.tempo_model.as_ref()?.beat.as_ref()?;
-    Some(format!(
-        "{}/{}={}",
-        beat.beat_numerator, beat.beat_denominator, beat.bpm
-    ))
+    let display = tempo_display(score.metadata.tempo_model.as_ref()?);
+    (!display.is_empty()).then_some(display)
 }
 
 fn write_body(score: &Score, unit: Rational) -> String {
