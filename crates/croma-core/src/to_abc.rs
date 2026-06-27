@@ -100,6 +100,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
             if !single {
                 body.push_str(&voice_header_line(voice));
             }
+            body.push_str(&midi_directive_lines(voice));
             body.push_str(&write_voice(voice, unit));
         }
     }
@@ -144,6 +145,42 @@ fn voice_header_line(voice: &crate::model::Voice) -> String {
         s.push_str(&format!(" middle={}", middle.text));
     }
     s.push('\n');
+    s
+}
+
+/// Re-emit a voice's score-meaningful `%%MIDI` directives as line-start tune
+/// directives, inverting the forward translation in `lower`. Placed directly
+/// after the voice's `V:` switch so the re-parse scopes them to this voice.
+/// Each line is the canonical spelling the forward parser reads back into the
+/// same [`MidiInstrumentModel`]:
+/// - `program <channel> <prog>` when both are set, else `program <prog>`,
+///   else a standalone `channel <n>`;
+/// - `control 7 <vol>` (CC7 volume) / `control 10 <pan>` (CC10 pan);
+/// - `transpose <n>` for `%%MIDI transpose`.
+///
+/// Program/channel values are written in the same conventions the parser reads
+/// (0-based GM program, 1-16 channel), so the round-trip is value-for-value.
+fn midi_directive_lines(voice: &crate::model::Voice) -> String {
+    let mut s = String::new();
+    if let Some(midi) = &voice.midi_instrument {
+        match (midi.channel, midi.program) {
+            (Some(channel), Some(program)) => {
+                s.push_str(&format!("%%MIDI program {channel} {program}\n"));
+            }
+            (None, Some(program)) => s.push_str(&format!("%%MIDI program {program}\n")),
+            (Some(channel), None) => s.push_str(&format!("%%MIDI channel {channel}\n")),
+            (None, None) => {}
+        }
+        if let Some(volume) = midi.volume_cc {
+            s.push_str(&format!("%%MIDI control 7 {volume}\n"));
+        }
+        if let Some(pan) = midi.pan_cc {
+            s.push_str(&format!("%%MIDI control 10 {pan}\n"));
+        }
+    }
+    if let Some(transpose) = voice.midi_transpose {
+        s.push_str(&format!("%%MIDI transpose {transpose}\n"));
+    }
     s
 }
 
@@ -1194,6 +1231,48 @@ mod tests {
         assert!(abc.contains("\nL:1/8\n"));
         assert!(abc.contains("\nK:C\n"));
         assert!(abc.contains("\nT:Tune\n"));
+    }
+
+    /// `(program, channel, volume_cc, pan_cc)` — a [`MidiInstrumentModel`]
+    /// stripped of its source span, which legitimately differs after re-parsing.
+    type MidiFields = (Option<u8>, Option<u8>, Option<u8>, Option<u8>);
+
+    /// Score-meaningful MIDI fields per voice, comparable across a write ->
+    /// re-parse cycle (span excluded).
+    fn midi_seq(score: &crate::Score) -> Vec<(Option<MidiFields>, Option<i16>)> {
+        let mut v = Vec::new();
+        for p in &score.parts {
+            for voice in &p.voices {
+                let instrument = voice
+                    .midi_instrument
+                    .map(|m| (m.program, m.channel, m.volume_cc, m.pan_cc));
+                v.push((instrument, voice.midi_transpose));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn midi_instrument_directives_roundtrip() {
+        // `%%MIDI program`/`channel`/`control` CC7-10/`transpose` carry
+        // score-meaningful sound metadata (forward-translated to MusicXML
+        // `<midi-instrument>`). The writer must re-emit them per voice so a Score
+        // that carries them — e.g. one built by the MusicXML reader — survives a
+        // write -> re-parse cycle instead of collapsing every voice to channel 1.
+        let src = concat!(
+            "X:1\nL:1/8\nK:C\n",
+            "V:1\n%%MIDI program 1 52\n%%MIDI control 7 80\n%%MIDI control 10 64\n",
+            "%%MIDI transpose -12\nCDEF\n",
+            "V:2\n%%MIDI program 2 0\nGABc\n",
+        );
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        assert!(
+            abc.contains("%%MIDI program 1 52"),
+            "writer dropped the MIDI instrument: {abc:?}"
+        );
+        let s2 = score_of(&abc);
+        assert_eq!(midi_seq(&s1), midi_seq(&s2), "MIDI round-trip via {abc:?}");
     }
 
     #[test]
