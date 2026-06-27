@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-06-27
+
+### Fixed
+
+- **Score→ABC writer now emits per-voice `%%MIDI` directives.** The writer
+  (`croma read` / `croma musicxml2abc`) dropped `Voice::midi_instrument` /
+  `Voice::midi_transpose`, so a `MusicXML → ABC → MusicXML` round-trip lost all
+  instrument routing and collapsed every part onto the default channel. It now
+  re-emits `%%MIDI program`/`channel`/`control 7`/`control 10`/`transpose` after
+  each voice's `V:` switch — the inverse of the forward MusicXML projection — so
+  program, channel and transpose survive value-for-value. ([#189])
+
+[#189]: https://github.com/ro-ag/croma/issues/189
+
 ## [1.0.1] - 2026-06-18
 
 ### Changed
