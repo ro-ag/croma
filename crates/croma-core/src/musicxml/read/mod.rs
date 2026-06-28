@@ -1319,8 +1319,10 @@ impl Reader {
                 }
                 "forward" => {
                     if let Some(duration) = self.read_duration(child, divisions) {
+                        let from = cursor;
                         cursor = cursor.checked_add(duration);
                         let state = voice_state(&mut voices, &current_voice);
+                        mark_clef_cursor_restore_for_abc(&mut state.events, from, cursor);
                         state.max_cursor = max_fraction(state.max_cursor, cursor);
                     }
                 }
@@ -1618,6 +1620,7 @@ impl Reader {
         ClefChangeModel {
             clef: text_line(text),
             source_span: READER_SPAN,
+            musicxml_cursor_back: None,
         }
     }
 
@@ -5167,6 +5170,29 @@ fn push_musicxml_forward_carrier(
             ..EventAttachments::default()
         },
     });
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn mark_clef_cursor_restore_for_abc(events: &mut [TimedEvent], from: Fraction, to: Fraction) {
+    if !from.less_than(to) {
+        return;
+    }
+    let cursor_back = subtract_fraction(to, from);
+    for event in events.iter_mut().rev() {
+        if abc_event_advances_cursor(&event.kind) {
+            break;
+        }
+        if event.onset != from {
+            continue;
+        }
+        if let TimedEventKind::ClefChange(clef) = &mut event.kind
+            && clef.musicxml_cursor_back.is_none()
+        {
+            clef.musicxml_cursor_back = Some(cursor_back);
+            event.onset = to;
+            break;
+        }
+    }
 }
 
 #[cfg(feature = "musicxml-reader")]

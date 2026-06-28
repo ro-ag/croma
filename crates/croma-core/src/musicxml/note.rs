@@ -117,7 +117,13 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 TimedEventKind::MeterChange(meter) => self.write_mid_tune_meter(meter),
                 TimedEventKind::ClefChange(clef) => {
-                    self.write_mid_tune_clef(clef, sequence.staff, part)
+                    if let Some(cursor_back) = clef.musicxml_cursor_back {
+                        self.write_backup(cursor_back);
+                        self.write_mid_tune_clef(clef, sequence.staff, part);
+                        self.write_forward(cursor_back);
+                    } else {
+                        self.write_mid_tune_clef(clef, sequence.staff, part);
+                    }
                 }
                 TimedEventKind::TempoChange(tempo) => self.write_tempo_direction(tempo),
                 TimedEventKind::SectionLabel(label) => self.write_rehearsal_direction(label),

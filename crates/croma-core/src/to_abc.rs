@@ -3,8 +3,8 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::{
-    AlignedLyric, EventAttachments, KeySignatureModel, Measure, MeterModel, TempoBeatRole,
-    TempoModel, TieRole,
+    AlignedLyric, ClefChangeModel, EventAttachments, KeySignatureModel, Measure, MeterModel,
+    TempoBeatRole, TempoModel, TieRole,
 };
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
@@ -183,6 +183,24 @@ fn musicxml_forward_instruction() -> &'static str {
 
 fn musicxml_after_grace_instruction() -> &'static str {
     "croma-after-grace"
+}
+
+fn clef_cursor_instruction(clef: &ClefChangeModel) -> Option<String> {
+    let cursor_back = clef.musicxml_cursor_back?;
+    let mut out = String::from("croma-clef-cursor");
+    if needs_hex_inline_carrier(&clef.clef.text) {
+        out.push_str(&format!(" clef-hex={}", hex_utf8(&clef.clef.text)));
+    } else {
+        out.push_str(&format!(
+            " clef=\"{}\"",
+            abc_carrier_quoted(&clef.clef.text)
+        ));
+    }
+    out.push_str(&format!(
+        " back-n={} back-d={}",
+        cursor_back.numerator, cursor_back.denominator
+    ));
+    Some(out)
 }
 
 fn barline_style_instruction(kind: BarlineKind) -> Option<&'static str> {
@@ -768,7 +786,11 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 }
                 out.push_str(&format!("[M:{}] ", meter.display));
             }
-            TimedEventKind::ClefChange(_) => {}
+            TimedEventKind::ClefChange(clef) => {
+                if let Some(instruction) = clef_cursor_instruction(clef) {
+                    out.push_str(&format!("[I:{instruction}] "));
+                }
+            }
             TimedEventKind::TempoChange(tempo) => {
                 if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly
                     && let Some(instruction) = sound_tempo_instruction(tempo)
