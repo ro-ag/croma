@@ -4449,7 +4449,13 @@ fn read_multiple_rest(attributes: Node<'_, '_>) -> Option<u32> {
 ///    then its repeat-ending opens, then its content, then its trailing
 ///    barlines). The split-token re-join (`||:`/`[|:`) and left/right placement in
 ///    `write_abc` then round-trip these events to the same ABC.
-/// 2. **Key display.** When `metadata.key` is present with an empty `display`,
+/// 2. **Zero-duration direction prefixes.** MusicXML can attach a pending
+///    `<harmony>` / words / decoration run to a zero-duration `<direction>` event
+///    such as `<rehearsal>` or a mid-tune tempo. `write_musicxml` reads those
+///    attachments on that event, but `write_abc` only renders prefix attachments on
+///    notes, rests, and chords. Move those ABC-prefix channels forward to the next
+///    sounded/rest event in the same measure so the ABC projection keeps them.
+/// 3. **Key display.** When `metadata.key` is present with an empty `display`,
 ///    set the canonical circle-of-fifths MAJOR spelling for its `fifths` (e.g.
 ///    `-3 -> "Eb"`, `+2 -> "D"`, `0 -> "C"`). Mode and original spelling are
 ///    unrecoverable from XML and irrelevant to the structural gate: a canonical
@@ -4460,10 +4466,11 @@ fn read_multiple_rest(attributes: Node<'_, '_>) -> Option<u32> {
 /// This is applied ONLY on the ABC path; the `--format xml` projection keeps the
 /// pure-inverse `write_musicxml(read_musicxml(xml))` it depends on, and the XML
 /// idempotence gate (which calls `write_musicxml` directly) never sees it. The
-/// mutation is structurally invisible to MusicXML re-emission: `write_musicxml`
-/// reads barlines from `Measure.barlines` (not the events) and the key from
-/// `fifths` (not `display`), so the spliced events and the filled `display` are
-/// inert there.
+/// barline/key-display mutations are structurally invisible to MusicXML
+/// re-emission: `write_musicxml` reads barlines from `Measure.barlines` (not the
+/// events) and the key from `fifths` (not `display`). The zero-duration prefix
+/// move intentionally serves only the ABC path, and direct MusicXML output never
+/// calls this completion pass.
 #[cfg(feature = "musicxml-reader")]
 pub fn complete_score_for_abc(score: &mut Score) {
     if let Some(key) = score.metadata.key.as_mut()
@@ -4476,6 +4483,7 @@ pub fn complete_score_for_abc(score: &mut Score) {
         for voice in &mut part.voices {
             renumber_voice_tuplet_pair_ids(voice);
             reproject_grace_slurs_for_abc(voice);
+            reproject_zero_duration_prefixes_for_abc(voice);
             synthesize_voice_barline_events(voice);
             // A mid-tune `[K:..]` is reconstructed as a `KeyChange` event whose
             // `display` is empty for the same reason the header key's is (the
@@ -4534,6 +4542,83 @@ fn move_header_playback_tempo_to_first_voice(score: &mut Score) {
             attachments: EventAttachments::default(),
         },
     );
+}
+
+/// Move prefix-only attachments from zero-duration direction events to the next
+/// note/rest/chord in the same measure for ABC projection.
+///
+/// The MusicXML reader deliberately stores a pending harmony/direction run on the
+/// zero-duration event that consumed it (`TempoChange` / `SectionLabel`) because
+/// `write_musicxml` emits that event's attachments before the event itself. ABC has
+/// no equivalent attachment site: `write_abc` prints prefixes only for notes, rests,
+/// and chords. This projection-only pass therefore moves just those prefix channels
+/// forward to the next renderable event. Direct MusicXML re-emission never sees this
+/// pass.
+#[cfg(feature = "musicxml-reader")]
+fn reproject_zero_duration_prefixes_for_abc(voice: &mut Voice) {
+    let mut moves: Vec<EventAttachments> = (0..voice.events.len())
+        .map(|_| EventAttachments::default())
+        .collect();
+
+    for index in 0..voice.events.len() {
+        if !zero_duration_direction_event_carries_prefixes(&voice.events[index]) {
+            continue;
+        }
+        let measure = voice.events[index].measure.index;
+        let Some(target) = next_abc_prefix_anchor(voice, index + 1, measure) else {
+            continue;
+        };
+        let moved = take_abc_prefix_attachments(&mut voice.events[index].attachments);
+        moves[target].extend(moved);
+    }
+
+    for (index, moved) in moves.into_iter().enumerate() {
+        if !abc_prefix_attachments_are_empty(&moved) {
+            prepend_attachments(&mut voice.events[index].attachments, moved);
+        }
+    }
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn zero_duration_direction_event_carries_prefixes(event: &TimedEvent) -> bool {
+    matches!(
+        event.kind,
+        TimedEventKind::TempoChange(_) | TimedEventKind::SectionLabel(_)
+    ) && !abc_prefix_attachments_are_empty(&event.attachments)
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn next_abc_prefix_anchor(voice: &Voice, start: usize, measure: u32) -> Option<usize> {
+    for index in start..voice.events.len() {
+        let event = &voice.events[index];
+        if event.measure.index != measure {
+            break;
+        }
+        if matches!(
+            event.kind,
+            TimedEventKind::Note(_) | TimedEventKind::Rest(_) | TimedEventKind::Chord(_)
+        ) {
+            return Some(index);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn abc_prefix_attachments_are_empty(attachments: &EventAttachments) -> bool {
+    attachments.chord_symbols.is_empty()
+        && attachments.annotations.is_empty()
+        && attachments.decorations.is_empty()
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn take_abc_prefix_attachments(attachments: &mut EventAttachments) -> EventAttachments {
+    EventAttachments {
+        chord_symbols: std::mem::take(&mut attachments.chord_symbols),
+        annotations: std::mem::take(&mut attachments.annotations),
+        decorations: std::mem::take(&mut attachments.decorations),
+        ..EventAttachments::default()
+    }
 }
 
 /// P2: re-project a voice's grace-group slurs into the channels `write_abc`
