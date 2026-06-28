@@ -1866,6 +1866,101 @@ fn foreign_spanner_notations_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_tuplet_display_survives_abc_projection() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Part</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note>
+        <pitch><step>D</step><alter>-1</alter><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>half</type>
+        <time-modification>
+          <actual-notes>4</actual-notes>
+          <normal-notes>2</normal-notes>
+        </time-modification>
+        <notations>
+          <tuplet type="start" bracket="yes">
+            <tuplet-actual>
+              <tuplet-number>2</tuplet-number>
+              <tuplet-type>quarter</tuplet-type>
+            </tuplet-actual>
+            <tuplet-normal>
+              <tuplet-number>2</tuplet-number>
+              <tuplet-type>quarter</tuplet-type>
+            </tuplet-normal>
+          </tuplet>
+        </notations>
+      </note>
+      <note>
+        <pitch><step>A</step><alter>-1</alter><octave>3</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>half</type>
+        <time-modification>
+          <actual-notes>4</actual-notes>
+          <normal-notes>2</normal-notes>
+        </time-modification>
+        <notations><tuplet type="stop"/></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let report = read_musicxml(xml);
+    let score = report.value;
+    let carrier = "musicxml-tuplet-detail-v1-byes-a2-quarter-0-n2-quarter-0";
+    assert!(
+        attachments_at(&score, 0)
+            .decorations
+            .iter()
+            .any(|decoration| decoration.name == carrier),
+        "tuplet display carrier should survive in the reconstructed model"
+    );
+
+    let expected = [
+        "<tuplet type=\"start\" bracket=\"yes\">",
+        "<tuplet-actual>",
+        "<tuplet-number>2</tuplet-number>",
+        "<tuplet-type>quarter</tuplet-type>",
+        "<tuplet-normal>",
+    ];
+    let direct_xml = write_score_partwise(&score).value;
+    for tag in expected {
+        assert!(
+            direct_xml.contains(tag),
+            "{tag} should re-emit directly after MusicXML read:\n{direct_xml}"
+        );
+    }
+
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains(&format!("!{carrier}!")),
+        "carrier should survive in the ABC projection:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc)
+        .expect("ABC projection of tuplet display carrier should export")
+        .musicxml;
+    for tag in expected {
+        assert!(
+            roundtrip.contains(tag),
+            "{tag} should survive MusicXML -> ABC -> MusicXML:\n{roundtrip}"
+        );
+    }
+}
+
+#[test]
 fn trill_ornament_round_trips() {
     let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C\n!trill!C D E F |\n";
     let x1 = export(abc);

@@ -114,6 +114,8 @@ use crate::parse::ParseReport;
 
 use roxmltree::{Document, Node, ParsingOptions};
 
+use super::notation::tuplet_display_decoration_name;
+
 /// Sentinel span for every model field the reader cannot reconstruct from the
 /// XML (the writer never emits source spans, so the idempotence gate is
 /// span-agnostic). Equivalent to `Span::new(0, 0)`, written as a struct literal
@@ -2100,6 +2102,7 @@ impl Reader {
         // the grouped `<ornaments>`/`<technical>`/`<articulations>` blocks and
         // the bare `<fermata>`/`<arpeggiate>` elements.
         if let Some(notations) = notations {
+            self.read_tuplet_display_carriers(notations, &mut attachments.decorations);
             self.read_decorations(notations, &mut attachments.decorations);
         }
 
@@ -2732,6 +2735,59 @@ impl Reader {
             .and_then(|raw| raw.trim().parse::<u32>().ok())
             .unwrap_or(1);
         Some((role, number))
+    }
+
+    fn read_tuplet_display_carriers(
+        &mut self,
+        notations: Node<'_, '_>,
+        out: &mut Vec<DecorationAttachment>,
+    ) {
+        for tuplet in children_named(notations, "tuplet") {
+            if tuplet.attribute("type") != Some("start") {
+                continue;
+            }
+            let actual = child_element(tuplet, "tuplet-actual")
+                .and_then(|element| self.read_tuplet_display_detail(element));
+            let normal = child_element(tuplet, "tuplet-normal")
+                .and_then(|element| self.read_tuplet_display_detail(element));
+            let bracket = tuplet.attribute("bracket");
+            if bracket.is_none() && actual.is_none() && normal.is_none() {
+                continue;
+            }
+            let name = match tuplet_display_decoration_name(bracket, actual, normal) {
+                Some(name) => name,
+                None => {
+                    self.warn(
+                        "musicxml.read.unsupported_tuplet_display",
+                        "<tuplet> display metadata has no ABC carrier inverse; skipped",
+                    );
+                    continue;
+                }
+            };
+            out.push(named_decoration(&name));
+        }
+    }
+
+    fn read_tuplet_display_detail<'a>(
+        &mut self,
+        element: Node<'a, '_>,
+    ) -> Option<(&'a str, &'a str, usize)> {
+        let number = child_element(element, "tuplet-number").and_then(node_text);
+        let note_type = child_element(element, "tuplet-type").and_then(node_text);
+        let dots = children_named(element, "tuplet-dot").count();
+        match (number, note_type) {
+            (Some(number), Some(note_type)) => Some((number, note_type, dots)),
+            _ => {
+                self.warn(
+                    "musicxml.read.unsupported_tuplet_display",
+                    format!(
+                        "<{}> is missing tuplet-number or tuplet-type; skipped",
+                        element.tag_name().name()
+                    ),
+                );
+                None
+            }
+        }
     }
 
     /// Read a note's `<time-modification>` as an `(actual_notes, normal_notes)`
