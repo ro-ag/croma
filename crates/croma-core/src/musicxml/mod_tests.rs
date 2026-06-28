@@ -906,6 +906,34 @@ fn fingering_arpeggio_and_slide_decorations_emit_notations_not_words() {
 }
 
 #[test]
+fn extended_articulation_decorations_emit_notations_not_words() {
+    // These MusicXML articulation elements have direct empty-element spellings
+    // and appear in the PDMX residuals; keep them as note-attached notations.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n!caesura!z !detached-legato!D !falloff!E !doit!F|\n";
+    let export = export_musicxml(source).expect("extended articulations should export");
+
+    assert_balanced_xml(&export.musicxml);
+    for tag in ["caesura", "detached-legato", "falloff", "doit"] {
+        assert_eq!(
+            count(&export.musicxml, &format!("<{tag}/>")),
+            1,
+            "{tag} should emit as an articulation"
+        );
+        assert!(
+            !export.musicxml.contains(&format!("<words>{tag}</words>")),
+            "{tag} decoration should not be emitted as words"
+        );
+    }
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported extended articulations should not warn"
+    );
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).
