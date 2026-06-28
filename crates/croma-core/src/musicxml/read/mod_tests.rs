@@ -4175,9 +4175,7 @@ fn chord_member_decoration_round_trips() {
 #[test]
 fn two_chords_in_a_measure_round_trip() {
     // [CE][GB] : two chords back to back. Each must reconstruct as its own
-    // ChordEvent with the right first-member attachments (this exercises the
-    // writer's per-chord first-member attachment lookup, which keys on
-    // source_span — so the reader must give each chord a distinct source span).
+    // ChordEvent with the right first-member and per-member attachments.
     let abc = "X:1\nT:C\nM:4/4\nL:1/4\nK:C\n[CE]2 [GB]2 z4|\n";
     let score = assert_idempotent_s6c(abc);
     let chords = score.parts[0].voices[0]
@@ -5071,6 +5069,49 @@ mod abc_completion {
         let roundtrip =
             export_musicxml(&abc).expect("duplicate same-verse lyric ABC projection should export");
         assert_same_note_verse_lyrics(&roundtrip.musicxml, &["By", "John"]);
+    }
+
+    #[test]
+    fn foreign_chord_head_lyric_keeps_alignment_in_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>lead</text></lyric></note>\n",
+            "      <note><chord/><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "      <note><pitch><step>G</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("w:lead *"),
+            "the chord-head lyric must align to the first ABC lyric slot:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("chord-head lyric ABC should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        let lyric = measure
+            .find("<text>lead</text>")
+            .unwrap_or_else(|| panic!("roundtrip must keep the lyric:\n{}", roundtrip.musicxml));
+        let chord_member = measure
+            .find("<chord/>")
+            .unwrap_or_else(|| panic!("roundtrip must keep the chord:\n{}", roundtrip.musicxml));
+        assert!(
+            lyric < chord_member,
+            "lyric must stay on the chord head, before the chord member note:\n{}",
+            roundtrip.musicxml
+        );
     }
 
     #[test]

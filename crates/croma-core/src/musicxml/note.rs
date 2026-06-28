@@ -75,7 +75,7 @@ impl<'score> MusicXmlWriter<'score> {
                     );
                 }
                 TimedEventKind::Chord(chord) => {
-                    self.write_chord(chord, sequence, part, tuplet_numbers);
+                    self.write_chord(chord, attachments, sequence, part, tuplet_numbers);
                 }
                 TimedEventKind::Rest(rest) => {
                     if timed.attachments.musicxml_forward {
@@ -206,6 +206,7 @@ impl<'score> MusicXmlWriter<'score> {
     fn write_chord(
         &mut self,
         chord: &ChordEvent,
+        event_attachments: &EventAttachments,
         sequence: &MeasureSequence<'score>,
         part: &Part,
         tuplet_numbers: &TupletNumbers,
@@ -220,16 +221,7 @@ impl<'score> MusicXmlWriter<'score> {
         }
         for (index, member) in chord.members.iter().enumerate() {
             let attachments = if index == 0 {
-                sequence
-                    .events
-                    .iter()
-                    .find_map(|event| match event {
-                        SequenceEvent::Timed(timed) if timed.source == chord.source_span => {
-                            Some(timed.attachments.clone())
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or_else(EventAttachments::default)
+                event_attachments.clone()
             } else {
                 member.attachments.clone()
             };

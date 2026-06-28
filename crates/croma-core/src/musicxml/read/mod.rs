@@ -77,8 +77,9 @@
 //! `<chord/>` member note folds into the previous main event
 //! ([`Reader::fold_chord_member`]) as a [`TimedEventKind::Chord`] carrying one
 //! [`crate::model::ChordMemberEvent`] per member (pitch/duration/written-accidental
-//! /per-member attachments); each chord gets a distinct synthetic `source_span` so
-//! the writer's first-member attachment lookup resolves correctly.
+//! /per-member attachments). The chord head keeps its `TimedEvent` attachments and
+//! source order; the chord itself gets a distinct synthetic `source_span` only for
+//! diagnostics on the grouped event.
 //!
 //! **S6d (multi-voice + multiple-rest):** the writer interleaves a part's
 //! multiple voices with `<backup>` and a per-sequence `<voice>` number. The
@@ -1924,16 +1925,15 @@ impl Reader {
     ///
     /// **Attachment placement.** The chord's `TimedEvent.attachments` stay equal to
     /// the first member's attachments (what the writer reads for the index-0 note
-    /// via the `source`-keyed lookup and for `write_harmony_and_directions` /
-    /// `write_grace_groups`), and each member also keeps its own attachments
-    /// ([`ChordMemberEvent::attachments`]) so per-member ties/decorations re-emit.
+    /// and for `write_harmony_and_directions` / `write_grace_groups`), and each
+    /// member also keeps its own attachments ([`ChordMemberEvent::attachments`]) so
+    /// per-member ties/decorations re-emit.
     ///
     /// **Span discipline (idempotence-invisible).** The chord is given a DISTINCT
-    /// `source_span`, mirrored on its `TimedEvent.source`, so the writer's
-    /// `write_chord` first-member lookup (`timed.source == chord.source_span`)
-    /// resolves to THIS chord rather than another same-`READER_SPAN` event. The
-    /// writer never emits spans, so the synthetic span is invisible to the
-    /// idempotence gate.
+    /// `source_span` for diagnostics that point at the grouped event. The
+    /// surrounding `TimedEvent.source` keeps the first note's source so ABC lyric
+    /// alignment preserves the reader's voice order. The writer never emits spans,
+    /// so the synthetic span is invisible to the idempotence gate.
     fn fold_chord_member(
         &mut self,
         events: &mut [TimedEvent],
@@ -1970,9 +1970,8 @@ impl Reader {
         match &mut event.kind {
             TimedEventKind::Note(first) => {
                 // Promote the lone note to a chord: the first member inherits the
-                // event's attachments (the writer's index-0 source-keyed lookup
-                // returns exactly those), and the event's source becomes the
-                // chord's distinct span so that lookup resolves here.
+                // event's attachments, while the event keeps its original source
+                // for ABC lyric alignment.
                 let span_start = *next_chord_span_start;
                 *next_chord_span_start = next_chord_span_start.saturating_add(1);
                 let source_span = Span {
@@ -1986,7 +1985,6 @@ impl Reader {
                     source_span: READER_SPAN,
                     attachments: event.attachments.clone(),
                 };
-                event.source = source_span;
                 event.kind = TimedEventKind::Chord(ChordEvent {
                     members: vec![first_member, member],
                     source_span,
@@ -3442,12 +3440,9 @@ impl Default for VoiceMeasureState {
             grace_builder: None,
             pending_graces: Vec::new(),
             last_main_event: None,
-            // S6c: each reconstructed chord needs a DISTINCT `source_span` so the
-            // writer's `write_chord` first-member lookup resolves to it; a high
-            // monotonic base keeps these clear of the zero-duration mid-tune
-            // change events (which keep `start == 0` and must sort BEFORE a note
-            // at the same onset). Voices never share a span comparison, so each
-            // voice's chord spans starting at the same base is safe.
+            // S6c: each reconstructed chord gets a distinct diagnostic span for
+            // the grouped event. The TimedEvent itself keeps the first note's
+            // source so ABC lyric alignment remains in voice order.
             next_chord_span_start: 1_000_000,
         }
     }
