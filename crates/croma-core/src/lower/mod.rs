@@ -29,7 +29,7 @@ use crate::model::{
     MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
     ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
     Staff, StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine,
-    TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
+    TimelineEventKind, TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -593,6 +593,16 @@ impl MultiVoiceLowering {
                     parse_musicxml_sequence_backup_instruction(&inline.value.value)
                 {
                     self.current_state().pending_musicxml_sequence_backup = Some(duration);
+                    return;
+                }
+                if let Some(tuplet) = parse_musicxml_tuplet_instruction(&inline.value.value) {
+                    self.current_state().push_musicxml_tuplet(
+                        tuplet.source_pair_id,
+                        tuplet.actual_notes,
+                        tuplet.normal_notes,
+                        tuplet.role,
+                        inline.value.span,
+                    );
                     return;
                 }
                 if parse_musicxml_after_grace_instruction(&inline.value.value) {
@@ -1955,6 +1965,45 @@ fn parse_musicxml_sequence_backup_instruction(value: &str) -> Option<Fraction> {
         .or_else(|| parse_croma_u32(&fields, "denominator"))
         .filter(|value| *value > 0)?;
     Some(Fraction::new(numerator, denominator))
+}
+
+struct MusicXmlTupletInstruction {
+    source_pair_id: u32,
+    actual_notes: u32,
+    normal_notes: u32,
+    role: TupletRole,
+}
+
+fn parse_musicxml_tuplet_instruction(value: &str) -> Option<MusicXmlTupletInstruction> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-musicxml-tuplet")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let source_pair_id = parse_croma_u32(&fields, "id")
+        .or_else(|| parse_croma_u32(&fields, "pair"))
+        .or_else(|| parse_croma_u32(&fields, "pair-id"))?;
+    let actual_notes = parse_croma_u32(&fields, "actual")
+        .or_else(|| parse_croma_u32(&fields, "actual-notes"))
+        .or_else(|| parse_croma_u32(&fields, "a"))
+        .filter(|value| *value > 0)?;
+    let normal_notes = parse_croma_u32(&fields, "normal")
+        .or_else(|| parse_croma_u32(&fields, "normal-notes"))
+        .or_else(|| parse_croma_u32(&fields, "n"))
+        .filter(|value| *value > 0)?;
+    let role = match fields.get("role").map(|value| value.trim()) {
+        Some("start") => TupletRole::Start,
+        Some("continue") => TupletRole::Continue,
+        Some("stop") => TupletRole::Stop,
+        _ => return None,
+    };
+    Some(MusicXmlTupletInstruction {
+        source_pair_id,
+        actual_notes,
+        normal_notes,
+        role,
+    })
 }
 
 fn parse_musicxml_after_grace_instruction(value: &str) -> bool {
