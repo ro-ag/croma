@@ -487,8 +487,13 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                     .collect();
                 let uniform = lengths.windows(2).all(|w| w[0] == w[1]);
                 out.push('[');
-                for (member, len) in chord.members.iter().zip(&lengths) {
+                for (member_index, (member, len)) in chord.members.iter().zip(&lengths).enumerate()
+                {
                     let written = shifted(&member.pitch, shift);
+                    out.push_str(&chord_member_prefix(
+                        &member.attachments,
+                        (member_index == 0).then_some(&merged),
+                    ));
                     out.push_str(note_accidental(
                         member.written_accidental.as_ref().map(|m| m.kind),
                     ));
@@ -992,6 +997,28 @@ fn decoration_str(name: &str) -> String {
     } else {
         format!("!{name}!")
     }
+}
+
+/// Decorations that belong to a specific chord member emit inside `[...]`.
+/// The first member often duplicates the event-level attachment used by whole
+/// chord decorations, so skip names already emitted by the chord prefix.
+fn chord_member_prefix(
+    attachments: &crate::EventAttachments,
+    event_attachments: Option<&crate::EventAttachments>,
+) -> String {
+    let mut out = String::new();
+    for decoration in &attachments.decorations {
+        if event_attachments.is_some_and(|event_attachments| {
+            event_attachments
+                .decorations
+                .iter()
+                .any(|event_decoration| event_decoration.name == decoration.name)
+        }) {
+            continue;
+        }
+        out.push_str(&decoration_str(&decoration.name));
+    }
+    out
 }
 
 /// Attachments emitted AFTER a note/rest (length suffix already written): the
