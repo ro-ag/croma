@@ -94,6 +94,10 @@ fn lyric_extend_instruction(verse: u32) -> String {
     format!("croma-lyric-extend verse={verse}")
 }
 
+fn meter_restatement_instruction() -> &'static str {
+    "croma-meter-restatement"
+}
+
 fn abc_quoted_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -496,6 +500,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 out.push_str(&format!("[K:{}] ", key.display));
             }
             TimedEventKind::MeterChange(meter) => {
+                if meter.preserve_restatement {
+                    out.push_str(&format!("[I:{}] ", meter_restatement_instruction()));
+                }
                 out.push_str(&format!("[M:{}] ", meter.display));
             }
             TimedEventKind::ClefChange(_) => {}

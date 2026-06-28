@@ -3674,6 +3674,20 @@ fn mid_tune_key_and_meter_changes_reach_the_score() {
 }
 
 #[test]
+fn redundant_meter_change_is_canonicalized_for_plain_abc() {
+    let (tune, diagnostics) = tune_for("X:1\nM:4/4\nL:1/4\nK:C\nC [M:4/4]D|\n");
+
+    assert!(
+        diagnostics.is_empty(),
+        "plain redundant meter change should not warn: {diagnostics:?}"
+    );
+    assert!(
+        part_meter_change_displays(&tune.score, 0).is_empty(),
+        "plain ABC keeps the existing canonicalization and does not record a no-op meter change"
+    );
+}
+
+#[test]
 fn nospace_header_key_global_accidentals_preserve_base_key() {
     let source = "X:1\nL:1/4\nK:D_B^g\nCDEF|\n";
     let (tune, diagnostics) = tune_for(source);
