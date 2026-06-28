@@ -2,9 +2,9 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::accidental::{KeyAccidentalPolicy, MeasureAccidental, key_accidental_policy};
 use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference};
 use crate::model::{
-    Accidental, AccidentalMark, AnnotationPlacementModel, BarlineKind, DecorationAttachment,
-    DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent, GraceEventKind,
-    GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind,
+    Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind,
+    DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
+    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind,
     MusicXmlInstrumentRef, Pitch, RestEvent, SlurAttachment, SlurRole, TextAttachment, VoiceId,
     VoicePropertiesModel,
 };
@@ -137,6 +137,10 @@ pub(crate) struct LoweringState {
     /// the next timed note/rest/chord event. `w:` lyric alignment applies them
     /// to the matching verse syllable after the music body has lowered.
     pub(crate) pending_musicxml_lyric_extends: Vec<u32>,
+    /// Croma MusicXML-origin `[I:croma-lyric-duplicate ...]` carriers waiting
+    /// for the next timed note/rest/chord event. `w:` carries the primary
+    /// syllable; these carry same-note same-verse siblings ABC cannot spell.
+    pub(crate) pending_musicxml_lyric_duplicates: Vec<AlignedLyric>,
     /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
     /// the next `[M:...]` field in this voice.
     pub(crate) pending_musicxml_meter_restatement: bool,
@@ -216,6 +220,7 @@ impl LoweringState {
             pending_musicxml_instrument: None,
             pending_musicxml_harmony_text: None,
             pending_musicxml_lyric_extends: Vec::new(),
+            pending_musicxml_lyric_duplicates: Vec::new(),
             pending_musicxml_meter_restatement: false,
         }
     }
@@ -263,6 +268,9 @@ impl LoweringState {
         attachments
             .lyric_same_note_extends
             .append(&mut self.pending_musicxml_lyric_extends);
+        attachments
+            .lyric_same_note_duplicates
+            .append(&mut self.pending_musicxml_lyric_duplicates);
         attachments
     }
 
@@ -1269,6 +1277,7 @@ fn attachment_bundle_model(
         instrument: None,
         lyrics: Vec::new(),
         lyric_same_note_extends: Vec::new(),
+        lyric_same_note_duplicates: Vec::new(),
         symbols: Vec::new(),
         ties: Vec::new(),
         slurs: Vec::new(),

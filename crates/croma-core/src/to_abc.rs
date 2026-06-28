@@ -2,7 +2,7 @@
 //!
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
-use crate::model::{EventAttachments, TempoBeatRole, TempoModel, TieRole};
+use crate::model::{AlignedLyric, EventAttachments, TempoBeatRole, TempoModel, TieRole};
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -92,6 +92,33 @@ fn harmony_text_instruction(text: &str) -> String {
 
 fn lyric_extend_instruction(verse: u32) -> String {
     format!("croma-lyric-extend verse={verse}")
+}
+
+fn lyric_duplicate_instruction(lyric: &AlignedLyric) -> String {
+    let mut out = format!("croma-lyric-duplicate verse={}", lyric.verse);
+    if needs_hex_inline_carrier(&lyric.text) {
+        out.push_str(&format!(" text-hex={}", hex_utf8(&lyric.text)));
+    } else {
+        out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(&lyric.text)));
+    }
+    if lyric.same_note_extend {
+        out.push_str(" extend=1");
+    }
+    out
+}
+
+fn needs_hex_inline_carrier(text: &str) -> bool {
+    text.chars().any(|c| c == ']' || c == '%' || c.is_control())
+}
+
+fn hex_utf8(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(text.len() * 2);
+    for byte in text.as_bytes() {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn meter_restatement_instruction() -> &'static str {
@@ -706,9 +733,18 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
             abc_carrier_quoted(instrument.id.as_str())
         ));
     }
+    let mut primary_lyric_verses = Vec::new();
     for lyric in &attachments.lyrics {
-        if lyric.control == crate::model::LyricControl::Syllable && lyric.same_note_extend {
-            out.push_str(&format!("[I:{}]", lyric_extend_instruction(lyric.verse)));
+        if lyric.control != crate::model::LyricControl::Syllable {
+            continue;
+        }
+        if primary_lyric_verses.contains(&lyric.verse) {
+            out.push_str(&format!("[I:{}]", lyric_duplicate_instruction(lyric)));
+        } else {
+            primary_lyric_verses.push(lyric.verse);
+            if lyric.same_note_extend {
+                out.push_str(&format!("[I:{}]", lyric_extend_instruction(lyric.verse)));
+            }
         }
     }
     // Event slur-opens next, then quoted strings — both `"G7"(DE)` and
@@ -811,15 +847,19 @@ fn lyric_lines(events: &[LyricAlignEvent<'_>]) -> Vec<String> {
     for (pos, event) in events.iter().enumerate() {
         // Chord lyrics are duplicated onto the first member; read the
         // event-level copy only.
+        let mut syllable_verses = std::collections::BTreeSet::new();
         for lyric in &event.attachments.lyrics {
             max_verse = max_verse.max(lyric.verse);
             let slot = &mut verses
                 .entry(lyric.verse)
                 .or_insert_with(|| vec![None; total])[pos];
             match lyric.control {
-                LyricControl::Syllable => slot
-                    .get_or_insert_with(String::new)
-                    .push_str(&lyric_escape(&lyric.text)),
+                LyricControl::Syllable => {
+                    if syllable_verses.insert(lyric.verse) {
+                        slot.get_or_insert_with(String::new)
+                            .push_str(&lyric_escape(&lyric.text));
+                    }
+                }
                 LyricControl::Hyphen => {
                     // At most one written hyphen per slot: extra Hyphen
                     // attachments are XML-invisible, and a second `-` in the
