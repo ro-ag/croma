@@ -1727,6 +1727,145 @@ fn foreign_technical_values_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_spanner_notations_survive_abc_projection() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Part</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>6</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><glissando line-type="wavy" number="1" type="start">gliss.</glissando></notations>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><glissando line-type="wavy" number="1" type="stop"/></notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><slide line-type="solid" number="1" type="start">gliss.</slide></notations>
+      </note>
+      <note>
+        <pitch><step>F</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><slide line-type="solid" number="1" type="stop"/></notations>
+      </note>
+      <note>
+        <pitch><step>G</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><ornaments><wavy-line type="start" number="1"/><wavy-line type="stop" number="1"/></ornaments></notations>
+      </note>
+      <note>
+        <pitch><step>A</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let report = read_musicxml(xml);
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "musicxml.read.unsupported_notation"),
+        "spanner notations must read without unsupported-notation diagnostics: {:?}",
+        report.diagnostics
+    );
+    let score = report.value;
+    let expected = [
+        (
+            0,
+            "musicxml-glissando-start-wavy-1-hex-676c6973732e",
+            "<glissando type=\"start\" number=\"1\" line-type=\"wavy\">gliss.</glissando>",
+        ),
+        (
+            1,
+            "musicxml-glissando-stop-wavy-1",
+            "<glissando type=\"stop\" number=\"1\" line-type=\"wavy\"/>",
+        ),
+        (
+            2,
+            "musicxml-slide-start-solid-1-hex-676c6973732e",
+            "<slide type=\"start\" number=\"1\" line-type=\"solid\">gliss.</slide>",
+        ),
+        (
+            3,
+            "musicxml-slide-stop-solid-1",
+            "<slide type=\"stop\" number=\"1\" line-type=\"solid\"/>",
+        ),
+        (
+            4,
+            "musicxml-wavy-line-start-1",
+            "<wavy-line type=\"start\" number=\"1\"/>",
+        ),
+        (
+            4,
+            "musicxml-wavy-line-stop-1",
+            "<wavy-line type=\"stop\" number=\"1\"/>",
+        ),
+    ];
+    for (index, name, _) in expected {
+        assert!(
+            attachments_at(&score, index)
+                .decorations
+                .iter()
+                .any(|decoration| decoration.name == name),
+            "{name} should survive in the reconstructed model"
+        );
+    }
+
+    let direct_xml = write_score_partwise(&score).value;
+    for (_, _, tag) in expected {
+        assert!(
+            direct_xml.contains(tag),
+            "{tag} should re-emit directly after MusicXML read:\n{direct_xml}"
+        );
+    }
+
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    for (_, name, _) in expected {
+        assert!(
+            abc.contains(&format!("!{name}!")),
+            "{name} should survive in the ABC projection:\n{abc}"
+        );
+    }
+    let roundtrip = export_musicxml(&abc)
+        .expect("ABC projection of spanner carriers should export")
+        .musicxml;
+    for (_, _, tag) in expected {
+        assert!(
+            roundtrip.contains(tag),
+            "{tag} should survive MusicXML -> ABC -> MusicXML:\n{roundtrip}"
+        );
+    }
+}
+
+#[test]
 fn trill_ornament_round_trips() {
     let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C\n!trill!C D E F |\n";
     let x1 = export(abc);

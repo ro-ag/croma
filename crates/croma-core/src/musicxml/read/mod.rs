@@ -2781,6 +2781,7 @@ impl Reader {
                     out.push(named_decoration(name));
                 }
                 "arpeggiate" => out.push(named_decoration("arpeggio")),
+                "glissando" | "slide" => self.push_direct_spanner(child, out),
                 // `<tied>`/`<slur>`/`<tuplet>` are handled above; anything else
                 // is a later-stage or unsupported notation.
                 _ => {}
@@ -2792,6 +2793,24 @@ impl Reader {
     /// `<technical>` / `<articulations>`) to its [`DecorationAttachment`].
     fn push_decoration(&mut self, element: Node<'_, '_>, out: &mut Vec<DecorationAttachment>) {
         let tag = element.tag_name().name();
+        if tag == "wavy-line" {
+            let wavy_type = element.attribute("type").unwrap_or("start");
+            let number = element.attribute("number").unwrap_or("1");
+            if matches!(wavy_type, "start" | "stop" | "continue")
+                && !number.is_empty()
+                && number.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                out.push(named_decoration(&format!(
+                    "musicxml-wavy-line-{wavy_type}-{number}"
+                )));
+                return;
+            }
+            self.warn(
+                "musicxml.read.unsupported_notation",
+                format!("<wavy-line type=\"{wavy_type}\" number=\"{number}\"> has no ABC decoration inverse; skipped"),
+            );
+            return;
+        }
         // `<fingering>N` is the one text-bearing technical: its inverse is the
         // ABC decoration whose name is the digit text (`!0!`..`!5!`).
         if tag == "fingering" {
@@ -2858,6 +2877,32 @@ impl Reader {
                 format!("<{tag}> has no ABC decoration inverse; skipped"),
             ),
         }
+    }
+
+    fn push_direct_spanner(&mut self, element: Node<'_, '_>, out: &mut Vec<DecorationAttachment>) {
+        let tag = element.tag_name().name();
+        let spanner_type = element.attribute("type").unwrap_or("start");
+        let line_type = element.attribute("line-type").unwrap_or("solid");
+        let number = element.attribute("number").unwrap_or("1");
+        if matches!(spanner_type, "start" | "stop")
+            && matches!(line_type, "solid" | "dashed" | "dotted" | "wavy")
+            && !number.is_empty()
+            && number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            let text = node_text(element)
+                .map(|text| format!("-hex-{}", hex_utf8(text)))
+                .unwrap_or_default();
+            out.push(named_decoration(&format!(
+                "musicxml-{tag}-{spanner_type}-{line_type}-{number}{text}"
+            )));
+            return;
+        }
+        self.warn(
+            "musicxml.read.unsupported_notation",
+            format!(
+                "<{tag} type=\"{spanner_type}\" line-type=\"{line_type}\" number=\"{number}\"> has no ABC decoration inverse; skipped"
+            ),
+        );
     }
 
     /// Inverse of [`Accidental::musicxml_name`]. An unrecognised name warns and
