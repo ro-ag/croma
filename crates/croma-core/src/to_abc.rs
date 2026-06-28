@@ -378,6 +378,8 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                     out.push_str(&overlay_str(segment, unit, shift));
                 }
             }
+            let missing_start = current_measure.map_or(0, |prev| prev.saturating_add(1));
+            write_sparse_voice_measure_gaps(&mut out, missing_start, m);
             current_measure = Some(m);
             measure_event_seen = false;
         }
@@ -549,6 +551,16 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
         body.push('\n');
     }
     body
+}
+
+/// Preserve sparse MusicXML-origin voices that first appear after measure 1 (or
+/// skip interior measures). ABC voice lines start at their first token, so a
+/// missing measure index must be held with an inert spacer measure; `y` anchors
+/// the measure on re-parse but emits no MusicXML note/rest.
+fn write_sparse_voice_measure_gaps(out: &mut String, start: u32, end: u32) {
+    for _ in start..end {
+        out.push_str("y | ");
+    }
 }
 
 /// Per-event tuplet open markers (`"(p:q:r"` at each group's first event).
