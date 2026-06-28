@@ -8,7 +8,7 @@ use crate::model::{
 
 use super::{
     BarlineLocation, EndingType, MeasureSequence, MusicXmlWriter, SequenceEvent,
-    barline::EndingDisplay,
+    attributes::initial_key_for_part, barline::EndingDisplay,
 };
 
 impl<'score> MusicXmlWriter<'score> {
@@ -146,7 +146,9 @@ impl<'score> MusicXmlWriter<'score> {
 
     pub(crate) fn write_part(&mut self, part: &'score Part, part_index: usize) {
         let id = part_xml_id(part, part_index);
-        self.active_key = self.score.metadata.key.clone();
+        self.active_key = initial_key_for_part(part)
+            .cloned()
+            .or_else(|| self.score.metadata.key.clone());
         self.slur_numbers = Default::default();
         self.lyric_hyphen_open.clear();
         self.xml.start("part", &[("id", id.as_str())]);

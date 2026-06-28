@@ -253,12 +253,16 @@ impl Reader {
         // `metadata.tempo_model`. `read_part` reports the captured header tempo so
         // a voice-less tempo direction before part 1's first note becomes the
         // header model rather than a mid-tune `TempoChange`.
+        let header_key = score.metadata.key.clone();
+        let header_meter = score.metadata.meter.clone();
         for (part_index, part_node) in children_named(root, "part").enumerate() {
             let outcome = self.read_part(
                 part_node,
                 score.divisions,
                 &part_list_result.entries,
                 part_index == 0,
+                header_key.as_ref(),
+                header_meter.as_ref(),
             );
             if let Some(tempo) = outcome.header_tempo {
                 score.metadata.tempo_model.get_or_insert(tempo);
@@ -378,44 +382,54 @@ impl Reader {
         }
     }
 
-    /// Invert [`MusicXmlWriter::write_time_element`]. The writer maps
-    /// `meter.display` -> `<time>` via `meter_parts`; the reader reconstructs a
-    /// `display` that maps back to the same element. `symbol="common"` -> `"C"`,
-    /// `symbol="cut"` -> `"C|"`; otherwise reassemble `beats/beat-type` pairs
-    /// (joined with `+` when compound). `MeterModel.display` is the only field the
-    /// writer reads, so `duration`/`free_meter` get documented defaults.
+    /// Invert [`MusicXmlWriter::write_time_element`]. ABC has shorthand for
+    /// common/cut time, but MusicXML stores the optional `symbol` separately
+    /// from the actual `beats`/`beat-type` pair. Preserve both: use `C`/`C|` only
+    /// for the exact shorthand pairs, otherwise keep the numeric display and
+    /// carry the MusicXML symbol alongside it.
     fn read_meter(&mut self, time_node: Node<'_, '_>) -> Option<MeterModel> {
-        let display = match time_node.attribute("symbol") {
-            Some("common") => "C".to_owned(),
-            Some("cut") => "C|".to_owned(),
-            _ => {
-                let mut parts: Vec<String> = Vec::new();
-                let mut pending_beats: Option<String> = None;
-                for child in element_children(time_node) {
-                    match child.tag_name().name() {
-                        "beats" => pending_beats = node_text(child).map(str::to_owned),
-                        "beat-type" => {
-                            if let (Some(beats), Some(beat_type)) =
-                                (pending_beats.take(), node_text(child))
-                            {
-                                parts.push(format!("{beats}/{beat_type}"));
-                            }
-                        }
-                        _ => {}
+        let time_symbol = match time_node.attribute("symbol") {
+            Some("common") => Some("common".to_owned()),
+            Some("cut") => Some("cut".to_owned()),
+            _ => None,
+        };
+        let mut parts: Vec<String> = Vec::new();
+        let mut pending_beats: Option<String> = None;
+        for child in element_children(time_node) {
+            match child.tag_name().name() {
+                "beats" => pending_beats = node_text(child).map(str::to_owned),
+                "beat-type" => {
+                    if let (Some(beats), Some(beat_type)) = (pending_beats.take(), node_text(child))
+                    {
+                        parts.push(format!("{beats}/{beat_type}"));
                     }
                 }
-                if parts.is_empty() {
+                _ => {}
+            }
+        }
+        let display = if parts.is_empty() {
+            match time_symbol.as_deref() {
+                Some("common") => "C".to_owned(),
+                Some("cut") => "C|".to_owned(),
+                _ => {
                     self.warn(
                         "musicxml.read.empty_time",
                         "<time> has no beats/beat-type pairs; meter not reconstructed",
                     );
                     return None;
                 }
-                parts.join("+")
+            }
+        } else {
+            let display = parts.join("+");
+            match (time_symbol.as_deref(), display.as_str()) {
+                (Some("common"), "4/4") => "C".to_owned(),
+                (Some("cut"), "2/2") => "C|".to_owned(),
+                _ => display,
             }
         };
         Some(MeterModel {
             display,
+            time_symbol,
             duration: None,
             free_meter: false,
             preserve_restatement: true,
@@ -824,6 +838,8 @@ impl Reader {
         divisions: u32,
         part_list: &[PartListEntry],
         capture_header_tempo: bool,
+        score_header_key: Option<&KeySignatureModel>,
+        score_header_meter: Option<&MeterModel>,
     ) -> PartOutcome {
         let id = part_node.attribute("id").unwrap_or_default().to_owned();
         let entry = part_list.iter().find(|entry| entry.id == id);
@@ -927,6 +943,16 @@ impl Reader {
         let header_attributes = children_named(part_node, "measure")
             .next()
             .and_then(|measure| child_element(measure, "attributes"));
+        let initial_key = header_attributes
+            .and_then(|attributes| child_element(attributes, "key"))
+            .map(|key| self.read_key(key))
+            .filter(|key| !score_header_key.is_some_and(|header| key.structurally_matches(header)));
+        let initial_meter = header_attributes
+            .and_then(|attributes| child_element(attributes, "time"))
+            .and_then(|time| self.read_meter(time))
+            .filter(|meter| {
+                !score_header_meter.is_some_and(|header| meter.structurally_matches(header))
+            });
         let mut initial_properties = VoicePropertiesModel::default();
         let mut midi_transpose = None;
         if let Some(attributes) = header_attributes {
@@ -978,6 +1004,8 @@ impl Reader {
                 Voice {
                     id: voice_id,
                     staff: staff_id,
+                    initial_key: (index == 0).then(|| initial_key.clone()).flatten(),
+                    initial_meter: (index == 0).then(|| initial_meter.clone()).flatten(),
                     initial_properties: init_props.clone(),
                     properties: init_props,
                     measures: accumulator.measures,
@@ -4741,6 +4769,11 @@ pub fn complete_score_for_abc(score: &mut Score) {
     move_header_playback_tempo_to_first_voice(score);
     for part in &mut score.parts {
         for voice in &mut part.voices {
+            if let Some(key) = voice.initial_key.as_mut()
+                && key.display.is_empty()
+            {
+                key.display = key_display_for_abc(key);
+            }
             renumber_voice_tuplet_pair_ids(voice);
             reproject_grace_slurs_for_abc(voice);
             reproject_zero_duration_prefixes_for_abc(voice);
@@ -4760,7 +4793,8 @@ pub fn complete_score_for_abc(score: &mut Score) {
                     key.display = key_display_for_abc(key);
                 }
             }
-            complete_pitch_accidentals_for_abc(voice, header_key.as_ref());
+            let voice_initial_key = voice.initial_key.clone().or_else(|| header_key.clone());
+            complete_pitch_accidentals_for_abc(voice, voice_initial_key.as_ref());
         }
     }
 }

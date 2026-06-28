@@ -15,7 +15,7 @@ pub(crate) use crate::lower::voice::{
 };
 
 use crate::diagnostic::{Diagnostic, Span};
-use crate::lower::accidental::accidental_from_field_sign;
+use crate::lower::accidental::{accidental_from_field_sign, key_accidental_policy_from_model};
 use crate::lower::align::{align_lyrics, align_symbols};
 use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    AccidentalPolicy, AccidentalScope, AlignedLyric, BarlineKind, ClefChangeModel, Event,
-    EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom,
+    Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, BarlineKind, ClefChangeModel,
+    Event, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom,
     LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef,
     MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
     ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
@@ -34,7 +34,7 @@ use crate::model::{
 use crate::parse::ParseReport;
 use crate::parse::field::{
     FieldState, KeyAccidental, KeyMode, KeySignature, KeyTonicAccidental, Meter, MeterKind,
-    Spanned, StemDirection, UnitNoteLength, VoiceDefinition, VoiceProperties,
+    Spanned, StemDirection, UnitNoteLength, VoiceDefinition, VoiceProperties, parse_meter,
 };
 use crate::syntax::tune::ScoreLineBreak;
 use crate::syntax::{
@@ -261,9 +261,13 @@ impl MultiVoiceLowering {
                 line: line.clone(),
             }),
             MusicFieldLineKind::SectionLabel(label) => self.apply_section_label(label),
+            MusicFieldLineKind::Unknown(value) => {
+                if let Some(symbol) = parse_time_symbol_instruction(&value.value) {
+                    self.current_state().pending_musicxml_time_symbol = Some(symbol);
+                }
+            }
             MusicFieldLineKind::PostTuneText(_)
             | MusicFieldLineKind::Score(_)
-            | MusicFieldLineKind::Unknown(_)
             | MusicFieldLineKind::Other => {}
         }
     }
@@ -285,11 +289,12 @@ impl MultiVoiceLowering {
     }
 
     fn apply_current_voice_meter_change(&mut self, meter: &Spanned<Meter>) {
-        let preserve_restatement = {
+        let (preserve_restatement, time_symbol) = {
             let voice = self.current_state();
             let preserve = voice.pending_musicxml_meter_restatement;
             voice.pending_musicxml_meter_restatement = false;
-            preserve
+            let time_symbol = voice.pending_musicxml_time_symbol.take();
+            (preserve, time_symbol)
         };
         if !self.validate_meter_change(meter) {
             return;
@@ -300,6 +305,8 @@ impl MultiVoiceLowering {
         // measure accidental ledger must survive a mid-tune `M:` field.
         let mut model = meter_model(meter);
         model.preserve_restatement = preserve_restatement;
+        model.time_symbol = time_symbol;
+        let has_time_symbol = model.time_symbol.is_some();
         let header = self.header_meter_display.clone();
         let duration = meter_duration(&meter.value);
         let voice = self.current_state();
@@ -311,6 +318,7 @@ impl MultiVoiceLowering {
         // `[M:..]` once per voice line, and re-applications would otherwise
         // stack duplicate events.
         if preserve_restatement
+            || has_time_symbol
             || effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str())
         {
             voice.lowered.push(LoweredEvent::MeterChange(model));
@@ -534,6 +542,23 @@ impl MultiVoiceLowering {
                 ));
             }
             'I' => {
+                if let Some(meter) =
+                    parse_initial_meter_instruction(&inline.value.value, inline.value.span)
+                {
+                    let state = self.current_state();
+                    state.meter_duration = meter.duration;
+                    state.initial_meter = Some(meter);
+                    return;
+                }
+                if let Some(key) =
+                    parse_initial_key_instruction(&inline.value.value, inline.value.span)
+                {
+                    let state = self.current_state();
+                    state.key_accidentals = key_accidental_policy_from_model(&key);
+                    state.current_key = None;
+                    state.initial_key = Some(key);
+                    return;
+                }
                 if let Some(instrument) =
                     parse_note_instrument_instruction(&inline.value.value, inline.value.span)
                 {
@@ -579,6 +604,10 @@ impl MultiVoiceLowering {
                 }
                 if parse_meter_restatement_instruction(&inline.value.value) {
                     self.current_state().pending_musicxml_meter_restatement = true;
+                    return;
+                }
+                if let Some(symbol) = parse_time_symbol_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_time_symbol = Some(symbol);
                     return;
                 }
                 if let Some(display_number) = parse_measure_number_instruction(&inline.value.value)
@@ -1082,6 +1111,7 @@ pub(crate) struct ScoreModelInput<'a> {
     pub source_span: Span,
     pub field_state: &'a FieldState,
     pub voices: &'a [VoiceTimeline],
+    pub header_time_symbol: Option<String>,
     pub score_directives: &'a [ScoreDirectiveModel],
     pub preserved_directives: &'a [PreservedDirective],
     pub post_tune_lyrics: &'a [TextLine],
@@ -1247,7 +1277,11 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
                 )
             }),
             tempo: input.tempo,
-            meter: input.field_state.meter.as_ref().map(meter_model),
+            meter: input.field_state.meter.as_ref().map(|meter| {
+                let mut model = meter_model(meter);
+                model.time_symbol = input.header_time_symbol.clone();
+                model
+            }),
             key: input.field_state.key.as_ref().map(key_signature_model),
             directives: input.score_directives.to_vec(),
             preserved_directives: input.preserved_directives.to_vec(),
@@ -1292,6 +1326,7 @@ fn meter_model(meter: &Spanned<Meter>) -> MeterModel {
     let duration = meter_duration(&meter.value);
     MeterModel {
         display: meter.value.raw.clone(),
+        time_symbol: None,
         duration,
         free_meter: duration.is_none(),
         preserve_restatement: false,
@@ -1835,6 +1870,17 @@ fn parse_meter_restatement_instruction(value: &str) -> bool {
     rest.is_empty() || rest.starts_with(char::is_whitespace)
 }
 
+fn parse_time_symbol_instruction(value: &str) -> Option<String> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-time-symbol")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let symbol = fields.get("symbol")?;
+    matches!(symbol.as_str(), "common" | "cut").then(|| symbol.clone())
+}
+
 fn parse_musicxml_forward_instruction(value: &str) -> bool {
     let value = value.trim();
     let Some(rest) = value.strip_prefix("croma-musicxml-forward") else {
@@ -1864,6 +1910,78 @@ fn parse_measure_number_instruction(value: &str) -> Option<String> {
             .clone()
     };
     (!display_number.trim().is_empty()).then_some(display_number)
+}
+
+fn parse_initial_key_instruction(value: &str, span: Span) -> Option<KeySignatureModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-initial-key")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let fifths = parse_croma_i8(&fields, "fifths")?;
+    let explicit_accidentals = fields
+        .get("accidentals")
+        .map(|value| parse_initial_key_accidentals(value, span))
+        .unwrap_or_default();
+    Some(KeySignatureModel {
+        display: String::new(),
+        fifths,
+        explicit_accidentals,
+        source_span: span,
+    })
+}
+
+fn parse_initial_meter_instruction(value: &str, span: Span) -> Option<MeterModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-initial-meter")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let display = fields.get("display")?.trim();
+    if display.is_empty() {
+        return None;
+    }
+    let parsed = parse_meter(display);
+    let mut meter = meter_model(&Spanned::new(parsed, span));
+    meter.time_symbol = fields
+        .get("symbol")
+        .filter(|symbol| matches!(symbol.as_str(), "common" | "cut"))
+        .cloned();
+    Some(meter)
+}
+
+fn parse_initial_key_accidentals(value: &str, span: Span) -> Vec<KeyAccidentalModel> {
+    value
+        .split(',')
+        .filter_map(|item| {
+            let (step, alter) = item.split_once(':')?;
+            let step = step.trim().chars().next()?.to_ascii_uppercase();
+            let alter = alter.trim().parse::<i8>().ok()?;
+            let accidental = accidental_from_alter(alter)?;
+            Some(KeyAccidentalModel {
+                step,
+                accidental,
+                source_span: span,
+            })
+        })
+        .collect()
+}
+
+fn accidental_from_alter(alter: i8) -> Option<Accidental> {
+    match alter {
+        -2 => Some(Accidental::DoubleFlat),
+        -1 => Some(Accidental::Flat),
+        0 => Some(Accidental::Natural),
+        1 => Some(Accidental::Sharp),
+        2 => Some(Accidental::DoubleSharp),
+        _ => None,
+    }
+}
+
+fn parse_croma_i8(fields: &BTreeMap<String, String>, key: &str) -> Option<i8> {
+    fields.get(key)?.trim().parse::<i8>().ok()
 }
 
 fn parse_croma_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {

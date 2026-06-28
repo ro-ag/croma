@@ -7,10 +7,10 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.start("attributes", &[]);
         self.xml
             .text_element("divisions", &self.score.divisions.max(1).to_string());
-        if let Some(key) = &self.score.metadata.key.clone() {
+        if let Some(key) = initial_key_for_part(part).or(self.score.metadata.key.as_ref()) {
             self.write_key_element(key);
         }
-        if let Some(meter) = &self.score.metadata.meter.clone() {
+        if let Some(meter) = initial_meter_for_part(part).or(self.score.metadata.meter.as_ref()) {
             self.write_time_element(meter);
         }
         if part.staves.len() > 1 {
@@ -47,7 +47,12 @@ impl<'score> MusicXmlWriter<'score> {
         let Some(parts) = meter_parts(&meter.display) else {
             return;
         };
-        let attrs = parts.symbol.map(|symbol| [("symbol", symbol)]);
+        let symbol = meter
+            .time_symbol
+            .as_deref()
+            .filter(|symbol| matches!(*symbol, "common" | "cut"))
+            .or(parts.symbol);
+        let attrs = symbol.map(|symbol| [("symbol", symbol)]);
         let attrs_slice = attrs.as_ref().map_or(&[][..], |attrs| &attrs[..]);
         self.xml.start("time", attrs_slice);
         for part in parts.parts {
@@ -154,6 +159,18 @@ impl<'score> MusicXmlWriter<'score> {
             return;
         }
     }
+}
+
+pub(crate) fn initial_key_for_part(part: &Part) -> Option<&crate::model::KeySignatureModel> {
+    part.voices
+        .iter()
+        .find_map(|voice| voice.initial_key.as_ref())
+}
+
+pub(crate) fn initial_meter_for_part(part: &Part) -> Option<&crate::model::MeterModel> {
+    part.voices
+        .iter()
+        .find_map(|voice| voice.initial_meter.as_ref())
 }
 
 struct MeterParts {

@@ -2,7 +2,10 @@
 //!
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
-use crate::model::{AlignedLyric, EventAttachments, Measure, TempoBeatRole, TempoModel, TieRole};
+use crate::model::{
+    AlignedLyric, EventAttachments, KeySignatureModel, Measure, MeterModel, TempoBeatRole,
+    TempoModel, TieRole,
+};
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -24,6 +27,9 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     // `M:` is optional in ABC; a tune without one must not gain a synthetic
     // meter.
     if let Some(meter) = &meta.meter {
+        if let Some(instruction) = time_symbol_instruction(meter) {
+            out.push_str(&format!("I:{instruction}\n"));
+        }
         out.push_str(&format!("M:{}\n", meter.display));
     }
     let unit = unit_length(score);
@@ -158,8 +164,72 @@ fn meter_restatement_instruction() -> &'static str {
     "croma-meter-restatement"
 }
 
+fn time_symbol_instruction(meter: &MeterModel) -> Option<String> {
+    let symbol = meter.time_symbol.as_deref()?;
+    if !matches!(symbol, "common" | "cut") {
+        return None;
+    }
+    if (symbol == "common" && meter.display.trim() == "C")
+        || (symbol == "cut" && meter.display.trim() == "C|")
+    {
+        return None;
+    }
+    Some(format!("croma-time-symbol symbol={symbol}"))
+}
+
 fn musicxml_forward_instruction() -> &'static str {
     "croma-musicxml-forward"
+}
+
+fn initial_key_instruction(key: &KeySignatureModel) -> String {
+    let mut out = format!("croma-initial-key fifths={}", key.fifths);
+    if !key.explicit_accidentals.is_empty() {
+        let accidentals = key
+            .explicit_accidentals
+            .iter()
+            .map(|accidental| format!("{}:{}", accidental.step, accidental.accidental.alter()))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&format!(" accidentals={accidentals}"));
+    }
+    out
+}
+
+fn initial_key_carrier(score: &Score, key: &KeySignatureModel) -> Option<String> {
+    if score
+        .metadata
+        .key
+        .as_ref()
+        .is_some_and(|header| key.structurally_matches(header))
+    {
+        return None;
+    }
+    Some(initial_key_instruction(key))
+}
+
+fn initial_meter_instruction(meter: &MeterModel) -> String {
+    let mut out = format!(
+        "croma-initial-meter display=\"{}\"",
+        abc_carrier_quoted(&meter.display)
+    );
+    if let Some(symbol) = meter.time_symbol.as_deref()
+        && matches!(symbol, "common" | "cut")
+    {
+        out.push_str(&format!(" symbol={symbol}"));
+    }
+    out
+}
+
+fn initial_meter_carrier(score: &Score, meter: &MeterModel) -> Option<String> {
+    if score
+        .metadata
+        .meter
+        .as_ref()
+        .is_some_and(|header| meter.structurally_matches(header))
+    {
+        return None;
+    }
+    Some(initial_meter_instruction(meter))
 }
 
 fn measure_number_instruction(display_number: &str) -> String {
@@ -248,6 +318,16 @@ fn write_body(score: &Score, unit: Rational) -> String {
             if part_index == 0
                 && voice_index == 0
                 && let Some(instruction) = initial_tempo_instruction(score)
+            {
+                body.push_str(&format!("[I:{instruction}] "));
+            }
+            if let Some(key) = &voice.initial_key
+                && let Some(instruction) = initial_key_carrier(score, key)
+            {
+                body.push_str(&format!("[I:{instruction}] "));
+            }
+            if let Some(meter) = &voice.initial_meter
+                && let Some(instruction) = initial_meter_carrier(score, meter)
             {
                 body.push_str(&format!("[I:{instruction}] "));
             }
@@ -633,6 +713,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 out.push_str(&format!("[K:{}] ", key.display));
             }
             TimedEventKind::MeterChange(meter) => {
+                if let Some(instruction) = time_symbol_instruction(meter) {
+                    out.push_str(&format!("[I:{instruction}] "));
+                }
                 if meter.preserve_restatement {
                     out.push_str(&format!("[I:{}] ", meter_restatement_instruction()));
                 }

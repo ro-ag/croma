@@ -46,6 +46,51 @@ pub(crate) fn key_accidental_policy(key: Option<&KeySignature>) -> Vec<KeyAccide
     accidentals
 }
 
+pub(crate) fn key_accidental_policy_from_model(
+    key: &crate::model::KeySignatureModel,
+) -> Vec<KeyAccidentalPolicy> {
+    let key_span = key.source_span;
+    let mut accidentals: Vec<KeyAccidentalPolicy> = if key.fifths > 0 {
+        ['F', 'C', 'G', 'D', 'A', 'E', 'B']
+            .into_iter()
+            .take(key.fifths as usize)
+            .map(|step| KeyAccidentalPolicy {
+                step,
+                accidental: Accidental::Sharp,
+                span: key_span,
+            })
+            .collect()
+    } else if key.fifths < 0 {
+        ['B', 'E', 'A', 'D', 'G', 'C', 'F']
+            .into_iter()
+            .take(key.fifths.unsigned_abs() as usize)
+            .map(|step| KeyAccidentalPolicy {
+                step,
+                accidental: Accidental::Flat,
+                span: key_span,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for explicit in &key.explicit_accidentals {
+        if let Some(existing) = accidentals
+            .iter_mut()
+            .find(|entry| entry.step == explicit.step)
+        {
+            existing.accidental = explicit.accidental;
+            existing.span = explicit.source_span;
+        } else {
+            accidentals.push(KeyAccidentalPolicy {
+                step: explicit.step,
+                accidental: explicit.accidental,
+                span: explicit.source_span,
+            });
+        }
+    }
+    accidentals
+}
+
 fn key_signature_accidentals(key: &KeySignature) -> Vec<KeyAccidentalPolicy> {
     let fifths = key_fifths(key);
     let key_span = Span::new(0, 0);
