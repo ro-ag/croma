@@ -81,18 +81,13 @@ impl<'score> MusicXmlWriter<'score> {
                 .iter()
                 .filter_map(decoration_notation)
                 .collect::<Vec<_>>();
-            let kinds = |want: fn(NotationKind) -> Option<&'static str>| {
-                notation_kinds
-                    .iter()
-                    .copied()
-                    .filter_map(want)
-                    .collect::<Vec<_>>()
+            let kinds = |want: fn(&NotationKind) -> Option<&'static str>| {
+                notation_kinds.iter().filter_map(want).collect::<Vec<_>>()
             };
             // MusicXML groups these per category, in schema order: ornaments,
             // technical, articulations, fermata, then arpeggiate.
             let ornaments = notation_kinds
                 .iter()
-                .copied()
                 .filter(|kind| {
                     matches!(
                         kind,
@@ -123,7 +118,6 @@ impl<'score> MusicXmlWriter<'score> {
             });
             let technical = notation_kinds
                 .iter()
-                .copied()
                 .filter(|kind| {
                     matches!(
                         kind,
@@ -151,13 +145,13 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 self.xml.end("articulations");
             }
-            for kind in notation_kinds.iter().copied() {
+            for kind in &notation_kinds {
                 if let NotationKind::Fermata(fermata_type) = kind {
                     self.xml.empty("fermata", &[("type", fermata_type)]);
                 }
             }
             for kind in notation_kinds {
-                if kind == NotationKind::Arpeggiate {
+                if matches!(kind, NotationKind::Arpeggiate) {
                     self.xml.empty("arpeggiate", &[]);
                 }
             }
@@ -180,7 +174,7 @@ impl<'score> MusicXmlWriter<'score> {
 }
 
 /// MusicXML `<notations>` category and element for an ABC `!decoration!`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NotationKind {
     /// Inside `<ornaments>` (e.g. trill, mordent, turn).
     Ornament(&'static str),
@@ -189,10 +183,7 @@ pub(crate) enum NotationKind {
     /// Inside `<technical>` (e.g. up-bow, down-bow, open string).
     Technical(&'static str),
     /// Text inside a `<technical>` child element (e.g. fingering).
-    TechnicalText {
-        name: &'static str,
-        text: &'static str,
-    },
+    TechnicalText { name: &'static str, text: String },
     /// A `<fermata>` element with the given type attribute.
     Fermata(&'static str),
     /// A value-bearing MusicXML `<ornaments><tremolo type="...">N</tremolo>`.
@@ -236,32 +227,89 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
         "+" | "plus" => NotationKind::Technical("stopped"),
         "0" => NotationKind::TechnicalText {
             name: "fingering",
-            text: "0",
+            text: "0".to_owned(),
         },
         "1" => NotationKind::TechnicalText {
             name: "fingering",
-            text: "1",
+            text: "1".to_owned(),
         },
         "2" => NotationKind::TechnicalText {
             name: "fingering",
-            text: "2",
+            text: "2".to_owned(),
         },
         "3" => NotationKind::TechnicalText {
             name: "fingering",
-            text: "3",
+            text: "3".to_owned(),
         },
         "4" => NotationKind::TechnicalText {
             name: "fingering",
-            text: "4",
+            text: "4".to_owned(),
         },
         "5" => NotationKind::TechnicalText {
             name: "fingering",
-            text: "5",
+            text: "5".to_owned(),
         },
         "arpeggio" => NotationKind::Arpeggiate,
         "slide" => NotationKind::Articulation("scoop"),
-        _ => return tremolo_notation(decoration.name.as_str()),
+        _ => {
+            return tremolo_notation(decoration.name.as_str())
+                .or_else(|| technical_value_notation(decoration.name.as_str()));
+        }
     })
+}
+
+fn technical_value_notation(name: &str) -> Option<NotationKind> {
+    if let Some(text) = name.strip_prefix("musicxml-tech-string-") {
+        return decimal_technical_text("string", text);
+    }
+    if let Some(text) = name.strip_prefix("musicxml-tech-fret-") {
+        return decimal_technical_text("fret", text);
+    }
+    let hex = name.strip_prefix("musicxml-tech-fingering-hex-")?;
+    let text = decode_hex_utf8(hex)?;
+    (!text.is_empty()).then_some(NotationKind::TechnicalText {
+        name: "fingering",
+        text,
+    })
+}
+
+fn decimal_technical_text(name: &'static str, text: &str) -> Option<NotationKind> {
+    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())).then_some(
+        NotationKind::TechnicalText {
+            name,
+            text: text.to_owned(),
+        },
+    )
+}
+
+fn decode_hex_utf8(hex: &str) -> Option<String> {
+    if hex.is_empty() || !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks_exact(2) {
+        let hi = hex_digit(chunk[0])?;
+        let lo = hex_digit(chunk[1])?;
+        bytes.push((hi << 4) | lo);
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    text.chars().all(is_xml_char).then_some(text)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn is_xml_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{9}' | '\u{A}' | '\u{D}' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}'
+    )
 }
 
 fn tremolo_notation(name: &str) -> Option<NotationKind> {
