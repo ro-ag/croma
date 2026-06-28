@@ -1179,31 +1179,13 @@ impl Reader {
                     }
                 }
                 "direction" => {
+                    let mut tempo_to_apply = None;
+                    let mut event_attachments = None;
                     match self.read_direction(child) {
-                        // A voice-less tempo direction: the header tempo when it
-                        // precedes part 1's first note, else a mid-tune change.
-                        ParsedDirection::Tempo(tempo) => {
-                            if capture_header_tempo && !seen_note && header_tempo.is_none() {
-                                header_tempo = Some(tempo);
-                            } else {
-                                // The writer emits a TempoChange's own attachments
-                                // (any directions right before it) before the
-                                // metronome, so the buffered directions belong to
-                                // this zero-duration event. A tempo is voice-less
-                                // but lowers within a voice's sequence; route it to
-                                // the active region's voice.
-                                let state = voice_state_at(&mut voices, &current_voice, cursor);
-                                state.events.push(TimedEvent {
-                                    measure: measure_id,
-                                    onset: cursor,
-                                    duration: Fraction::zero(),
-                                    source: READER_SPAN,
-                                    kind: TimedEventKind::TempoChange(tempo),
-                                    attachments: std::mem::take(&mut state.pending),
-                                });
-                                // S6e: this tempo change consumed the pending run.
-                                state.pending_insert_index = None;
-                            }
+                        ParsedDirection::Tempo(tempo) => tempo_to_apply = Some(tempo),
+                        ParsedDirection::TempoAndEvent(tempo, attachments) => {
+                            tempo_to_apply = Some(tempo);
+                            event_attachments = Some(attachments);
                         }
                         // A `<rehearsal>` section label: push a zero-duration
                         // SectionLabel at the active region's voice/cursor,
@@ -1234,21 +1216,50 @@ impl Reader {
                             // This label consumed any pending run, like the tempo
                             // change above.
                             state.pending_insert_index = None;
+                            continue;
                         }
                         // A voice-bearing direction (annotation words, dynamics,
                         // coda/segno, wedge): buffer it for the next event of its
                         // `<voice>` (falling back to the active region's voice).
                         ParsedDirection::Event(attachments) => {
-                            let voice = direction_voice_number(child)
-                                .unwrap_or_else(|| current_voice.clone());
-                            current_voice = voice.clone();
-                            let state = voice_state_at(&mut voices, &voice, cursor);
-                            // S6e: anchor a new pending run at the current event
-                            // index before buffering (see the harmony arm).
-                            state.mark_pending_position();
-                            state.pending.extend(*attachments);
+                            event_attachments = Some(attachments)
                         }
                         ParsedDirection::Ignored => {}
+                    }
+                    // A voice-less tempo direction: the header tempo when it
+                    // precedes part 1's first note, else a mid-tune change.
+                    if let Some(tempo) = tempo_to_apply {
+                        if capture_header_tempo && !seen_note && header_tempo.is_none() {
+                            header_tempo = Some(tempo);
+                        } else {
+                            // The writer emits a TempoChange's own attachments
+                            // (any directions right before it) before the
+                            // metronome, so the buffered directions belong to
+                            // this zero-duration event. A tempo is voice-less
+                            // but lowers within a voice's sequence; route it to
+                            // the active region's voice.
+                            let state = voice_state_at(&mut voices, &current_voice, cursor);
+                            state.events.push(TimedEvent {
+                                measure: measure_id,
+                                onset: cursor,
+                                duration: Fraction::zero(),
+                                source: READER_SPAN,
+                                kind: TimedEventKind::TempoChange(tempo),
+                                attachments: std::mem::take(&mut state.pending),
+                            });
+                            // S6e: this tempo change consumed the pending run.
+                            state.pending_insert_index = None;
+                        }
+                    }
+                    if let Some(attachments) = event_attachments {
+                        let voice =
+                            direction_voice_number(child).unwrap_or_else(|| current_voice.clone());
+                        current_voice = voice.clone();
+                        let state = voice_state_at(&mut voices, &voice, cursor);
+                        // S6e: anchor a new pending run at the current event
+                        // index before buffering (see the harmony arm).
+                        state.mark_pending_position();
+                        state.pending.extend(*attachments);
                     }
                 }
                 "forward" => {
@@ -2104,9 +2115,7 @@ impl Reader {
     fn read_direction(&mut self, direction: Node<'_, '_>) -> ParsedDirection {
         // Tempo directions are voice-less. Voice-bearing words fall through to
         // annotations/decorations below.
-        if let Some(tempo) = self.read_tempo_direction(direction) {
-            return ParsedDirection::Tempo(tempo);
-        }
+        let tempo = self.read_tempo_direction(direction);
 
         let mut attachments = EventAttachments::default();
         let placement = direction.attribute("placement");
@@ -2114,6 +2123,9 @@ impl Reader {
             for element in element_children(direction_type) {
                 match element.tag_name().name() {
                     "words" => {
+                        if tempo.is_some() {
+                            continue;
+                        }
                         // R3: a placement-LESS `<direction><words>` in croma's own
                         // output is a chord-symbol that `write_chord_symbol`
                         // *demoted* (a non-chord string like `tr`/`Trio` that
@@ -2143,6 +2155,7 @@ impl Reader {
                                 .push(annotation_from_words(element, placement)),
                         }
                     }
+                    "metronome" if tempo.is_some() => {}
                     "dynamics" => {
                         for dynamic in element_children(element) {
                             match dynamic_decoration_name(dynamic.tag_name().name()) {
@@ -2197,7 +2210,9 @@ impl Reader {
             && attachments.decorations.is_empty()
             && attachments.chord_symbols.is_empty()
         {
-            ParsedDirection::Ignored
+            tempo.map_or(ParsedDirection::Ignored, ParsedDirection::Tempo)
+        } else if let Some(tempo) = tempo {
+            ParsedDirection::TempoAndEvent(tempo, Box::new(attachments))
         } else {
             ParsedDirection::Event(Box::new(attachments))
         }
@@ -3477,6 +3492,9 @@ enum ParsedDirection {
     /// A voice-less tempo direction (`<metronome>`); the caller routes it to the
     /// header `tempo_model` or a mid-tune `TempoChange`.
     Tempo(TempoModel),
+    /// A foreign direction that combines a voice-less tempo carrier with
+    /// note-bound directions. The caller routes both halves independently.
+    TempoAndEvent(TempoModel, Box<EventAttachments>),
     /// A voice-bearing direction reconstructed into attachments (annotation
     /// words, dynamics, coda/segno, wedge) for the following event.
     Event(Box<EventAttachments>),
@@ -4030,12 +4048,29 @@ fn dynamic_decoration_name(element: &str) -> Option<&'static str> {
         "p" => "p",
         "pp" => "pp",
         "ppp" => "ppp",
+        "pppp" => "pppp",
+        "ppppp" => "ppppp",
+        "pppppp" => "pppppp",
         "f" => "f",
         "ff" => "ff",
         "fff" => "fff",
+        "ffff" => "ffff",
+        "fffff" => "fffff",
+        "ffffff" => "ffffff",
         "mp" => "mp",
         "mf" => "mf",
+        "sf" => "sf",
+        "sfp" => "sfp",
+        "sfpp" => "sfpp",
+        "fp" => "fp",
+        "rf" => "rf",
+        "rfz" => "rfz",
         "sfz" => "sfz",
+        "sffz" => "sffz",
+        "fz" => "fz",
+        "n" => "n",
+        "pf" => "pf",
+        "sfzp" => "sfzp",
         _ => return None,
     })
 }

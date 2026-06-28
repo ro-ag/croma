@@ -1913,6 +1913,24 @@ fn dynamic_sforzando_reconstructs() {
 }
 
 #[test]
+fn extended_dynamics_reconstruct() {
+    let abc = "X:1\nT:ExtendedDyn\nM:4/4\nL:1/4\nK:C\n!pppp!C !ffffff!D !fp!E !rf!F |\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<pppp/>")
+            && x1.contains("<ffffff/>")
+            && x1.contains("<fp/>")
+            && x1.contains("<rf/>"),
+        "precondition: extended ABC dynamics emit matching MusicXML dynamics"
+    );
+    let score = assert_idempotent_s5(abc);
+    assert_eq!(attachments_at(&score, 0).decorations[0].name, "pppp");
+    assert_eq!(attachments_at(&score, 1).decorations[0].name, "ffffff");
+    assert_eq!(attachments_at(&score, 2).decorations[0].name, "fp");
+    assert_eq!(attachments_at(&score, 3).decorations[0].name, "rf");
+}
+
+#[test]
 fn crescendo_wedge_reconstructs_open_and_close() {
     // !<(! opens a crescendo wedge, !<)! closes it: two voice-bearing
     // <direction><wedge> elements. The reader must reconstruct a "crescendo("
@@ -4947,6 +4965,49 @@ mod abc_completion {
                 && roundtrip.musicxml.contains("<sound tempo=\"132.00\"")
                 && !roundtrip.musicxml.contains("<metronome>"),
             "playback-only sound tempo must not gain a printed metronome:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_direction_with_tempo_and_dynamic_preserves_both() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><words>rall</words></direction-type>\n",
+            "        <direction-type><dynamics><f/></dynamics></direction-type>\n",
+            "        <sound tempo=\"120\"/>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-sound-tempo bpm=120 beat-n=1 beat-d=4 text=\"rall\"]"),
+            "mixed direction must keep playback tempo carrier:\n{abc}"
+        );
+        assert!(
+            abc.contains("!f!C"),
+            "mixed direction must keep co-located dynamic on the next note:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("mixed tempo+dynamic ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains("<words>rall</words>")
+                && roundtrip.musicxml.contains("<sound tempo=\"120.00\"/>")
+                && roundtrip.musicxml.contains("<dynamics>")
+                && roundtrip.musicxml.contains("<f/>"),
+            "MusicXML round trip must preserve tempo and dynamic:\n{}",
             roundtrip.musicxml
         );
     }
