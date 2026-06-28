@@ -61,6 +61,7 @@ impl VoiceTimelineBuilder {
             meter_duration,
             measures: vec![VoiceMeasureTimeline {
                 index: 0,
+                display_number: None,
                 span: Span::new(0, 0),
                 events: Vec::new(),
                 overlays: Vec::new(),
@@ -196,6 +197,9 @@ impl VoiceTimelineBuilder {
                     symbols: Vec::new(),
                     attachments: EventAttachments::default(),
                 });
+            }
+            LoweredEvent::MeasureNumber { display_number, .. } => {
+                self.current_measure_mut().display_number = Some(display_number);
             }
             LoweredEvent::Untimed(Event::Spacer { span }) => {
                 let onset = self.onset;
@@ -390,6 +394,7 @@ impl VoiceTimelineBuilder {
         self.last_group_onset = Fraction::zero();
         self.measures.push(VoiceMeasureTimeline {
             index: self.measure_index,
+            display_number: None,
             span: Span::new(span.end, span.end),
             events: Vec::new(),
             overlays: Vec::new(),

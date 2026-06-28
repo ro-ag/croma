@@ -90,6 +90,7 @@ fn semantic_measure_from_timeline(
 
     Measure {
         id,
+        display_number: measure.display_number.clone(),
         source_span: measure.span,
         expected_duration,
         actual_duration,

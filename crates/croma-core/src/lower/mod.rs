@@ -93,7 +93,8 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::MeterChange(_)
         | LoweredEvent::ClefChange(_)
         | LoweredEvent::TempoChange(_)
-        | LoweredEvent::SectionLabel { .. } => divisions,
+        | LoweredEvent::SectionLabel { .. }
+        | LoweredEvent::MeasureNumber { .. } => divisions,
     });
     let events = all_lowered
         .into_iter()
@@ -106,7 +107,8 @@ pub(crate) fn lower_tune_music(
             | LoweredEvent::MeterChange(_)
             | LoweredEvent::ClefChange(_)
             | LoweredEvent::TempoChange(_)
-            | LoweredEvent::SectionLabel { .. } => None,
+            | LoweredEvent::SectionLabel { .. }
+            | LoweredEvent::MeasureNumber { .. } => None,
         })
         .collect();
     let meter_duration = lowering.meter_duration;
@@ -577,6 +579,13 @@ impl MultiVoiceLowering {
                 }
                 if parse_meter_restatement_instruction(&inline.value.value) {
                     self.current_state().pending_musicxml_meter_restatement = true;
+                    return;
+                }
+                if let Some(display_number) = parse_measure_number_instruction(&inline.value.value)
+                {
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::MeasureNumber { display_number });
                     return;
                 }
                 // `[I:...]` instructions are typeset/display directives (e.g.
@@ -1832,6 +1841,29 @@ fn parse_musicxml_forward_instruction(value: &str) -> bool {
         return false;
     };
     rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
+fn parse_measure_number_instruction(value: &str) -> Option<String> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-measure-number")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let display_number = if let Some(hex) = fields
+        .get("n-hex")
+        .or_else(|| fields.get("number-hex"))
+        .or_else(|| fields.get("label-hex"))
+    {
+        parse_croma_hex_utf8(hex)?
+    } else {
+        fields
+            .get("n")
+            .or_else(|| fields.get("number"))
+            .or_else(|| fields.get("label"))?
+            .clone()
+    };
+    (!display_number.trim().is_empty()).then_some(display_number)
 }
 
 fn parse_croma_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {

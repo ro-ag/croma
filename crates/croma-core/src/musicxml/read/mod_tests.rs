@@ -6446,6 +6446,175 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_measure_number_zero_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"0\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>60</per-minute></metronome></direction-type>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-measure-number n=0]"),
+            "MusicXML measure number 0 needs a private ABC carrier:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("measure-number carrier should export");
+        let measure_zero = measure_block(&roundtrip.musicxml, "0");
+        assert!(
+            measure_zero.contains("<per-minute>60</per-minute>"),
+            "header tempo must stay in source measure number 0:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_restarted_measure_numbers_preserve_tempo_positions() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"1\">\n",
+            "      <direction placement=\"above\"><direction-type><words>Allegro</words></direction-type></direction>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("| [I:croma-measure-number n=1]"),
+            "restarted source measure numbers need a carrier on the later measure:\n{abc}"
+        );
+        assert_eq!(
+            write_abc(&lower(&abc), AbcWriteOptions::default()),
+            abc,
+            "the measure-number carrier should be an ABC fixed point"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("measure-number carrier should export");
+        assert_eq!(
+            roundtrip.musicxml.matches("<measure number=\"1\">").count(),
+            2,
+            "both source measure numbers should survive:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            roundtrip
+                .musicxml
+                .split("<measure number=\"1\">")
+                .nth(2)
+                .is_some_and(|tail| tail.contains("<words>Allegro</words>")),
+            "the Allegro direction must remain in the repeated measure number 1:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_nonnumeric_measure_numbers_survive_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"X1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\"><direction-type><words>Scene</words></direction-type></direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"X2\">\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-measure-number n=X1]")
+                && abc.contains("[I:croma-measure-number n=X2]"),
+            "nonnumeric source measure numbers need private ABC carriers:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("measure-number carrier should export");
+        let measure_x1 = measure_block(&roundtrip.musicxml, "X1");
+        assert!(
+            measure_x1.contains("<words>Scene</words>"),
+            "Scene direction must remain in source measure X1:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            roundtrip.musicxml.contains("<measure number=\"X2\">"),
+            "second nonnumeric source measure number should survive:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_pickup_measure_number_survives_before_leading_repeat() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"0\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "      <direction placement=\"above\"><direction-type><words>Adagio</words></direction-type><sound tempo=\"92\"/></direction>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"1\">\n",
+            "      <barline location=\"left\"><bar-style>heavy-light</bar-style><repeat direction=\"forward\"/></barline>\n",
+            "      <note><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("|: [I:croma-measure-number n=1]"),
+            "the next measure's label carrier must follow its leading repeat:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("measure-number carrier should export");
+        let pickup = measure_block(&roundtrip.musicxml, "0");
+        assert!(
+            pickup.contains("<words>Adagio</words>") && pickup.contains("<sound tempo=\"92.00\"/>"),
+            "pickup tempo must remain in source measure number 0:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_midi_instrument_projects_to_midi_directives() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
