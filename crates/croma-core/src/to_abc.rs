@@ -200,6 +200,12 @@ fn clef_cursor_instruction(clef: &ClefChangeModel) -> Option<String> {
         " back-n={} back-d={}",
         cursor_back.numerator, cursor_back.denominator
     ));
+    if let Some(pre_backup) = clef.musicxml_cursor_pre_backup {
+        out.push_str(&format!(
+            " pre-back-n={} pre-back-d={}",
+            pre_backup.numerator, pre_backup.denominator
+        ));
+    }
     Some(out)
 }
 

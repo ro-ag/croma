@@ -890,6 +890,7 @@ impl MultiVoiceLowering {
                 .push(LoweredEvent::ClefChange(ClefChangeModel {
                     source_span: clef.span,
                     clef,
+                    musicxml_cursor_pre_backup: None,
                     musicxml_cursor_back: None,
                 }));
         }
@@ -1121,6 +1122,7 @@ fn key_clef_change_model(properties: &VoiceProperties) -> Option<ClefChangeModel
     properties.clef.as_ref().map(|clef| ClefChangeModel {
         clef: text_line_from_spanned(clef),
         source_span: clef.span,
+        musicxml_cursor_pre_backup: None,
         musicxml_cursor_back: None,
     })
 }
@@ -1955,9 +1957,15 @@ fn parse_clef_cursor_instruction(value: &str, span: Span) -> Option<ClefChangeMo
     };
     let back_n = parse_croma_u32(&fields, "back-n").filter(|value| *value > 0)?;
     let back_d = parse_croma_u32(&fields, "back-d").filter(|value| *value > 0)?;
+    let pre_backup = parse_croma_u32(&fields, "pre-back-n")
+        .zip(parse_croma_u32(&fields, "pre-back-d"))
+        .filter(|(_, denominator)| *denominator > 0)
+        .map(|(numerator, denominator)| Fraction::new(numerator, denominator))
+        .unwrap_or_else(|| Fraction::new(back_n, back_d));
     (!clef.trim().is_empty()).then(|| ClefChangeModel {
         clef: TextLine { text: clef, span },
         source_span: span,
+        musicxml_cursor_pre_backup: Some(pre_backup),
         musicxml_cursor_back: Some(Fraction::new(back_n, back_d)),
     })
 }

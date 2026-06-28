@@ -1125,6 +1125,7 @@ impl Reader {
                     let voice = note_voice_number(child).unwrap_or_else(|| current_voice.clone());
                     current_voice = voice.clone();
                     let state = voice_state_at(&mut voices, &voice, cursor);
+                    state.cursor_restore_base = None;
                     // S6c: a `<grace>` note joins the open grace run (starting one
                     // if needed) and produces NO timed event. It is finalised when
                     // the following main note or the measure end is reached.
@@ -1322,7 +1323,12 @@ impl Reader {
                         let from = cursor;
                         cursor = cursor.checked_add(duration);
                         let state = voice_state(&mut voices, &current_voice);
-                        mark_clef_cursor_restore_for_abc(&mut state.events, from, cursor);
+                        mark_clef_cursor_restore_for_abc(
+                            &mut state.events,
+                            from,
+                            cursor,
+                            &mut state.cursor_restore_base,
+                        );
                         state.max_cursor = max_fraction(state.max_cursor, cursor);
                     }
                 }
@@ -1331,6 +1337,8 @@ impl Reader {
                     // note's `<voice>` decides which voice receives the resulting
                     // onset.
                     if let Some(duration) = self.read_duration(child, divisions) {
+                        let state = voice_state(&mut voices, &current_voice);
+                        state.cursor_restore_base = Some(cursor);
                         cursor = subtract_fraction(cursor, duration);
                     }
                 }
@@ -1620,6 +1628,7 @@ impl Reader {
         ClefChangeModel {
             clef: text_line(text),
             source_span: READER_SPAN,
+            musicxml_cursor_pre_backup: None,
             musicxml_cursor_back: None,
         }
     }
@@ -3658,6 +3667,7 @@ struct VoiceMeasureState {
     events: Vec<TimedEvent>,
     cursor: Fraction,
     max_cursor: Fraction,
+    cursor_restore_base: Option<Fraction>,
     measure_rest_duration: Option<Fraction>,
     pending: EventAttachments,
     /// S6e: the index in `events` at which a surviving `pending` run (one with no
@@ -3682,6 +3692,7 @@ impl Default for VoiceMeasureState {
             events: Vec::new(),
             cursor: Fraction::zero(),
             max_cursor: Fraction::zero(),
+            cursor_restore_base: None,
             measure_rest_duration: None,
             pending: EventAttachments::default(),
             pending_insert_index: None,
@@ -5173,10 +5184,17 @@ fn push_musicxml_forward_carrier(
 }
 
 #[cfg(feature = "musicxml-reader")]
-fn mark_clef_cursor_restore_for_abc(events: &mut [TimedEvent], from: Fraction, to: Fraction) {
+fn mark_clef_cursor_restore_for_abc(
+    events: &mut [TimedEvent],
+    from: Fraction,
+    to: Fraction,
+    cursor_restore_base: &mut Option<Fraction>,
+) {
     if !from.less_than(to) {
         return;
     }
+    let base = cursor_restore_base.unwrap_or(to);
+    let pre_backup = subtract_fraction(base, from);
     let cursor_back = subtract_fraction(to, from);
     for event in events.iter_mut().rev() {
         if abc_event_advances_cursor(&event.kind) {
@@ -5188,8 +5206,9 @@ fn mark_clef_cursor_restore_for_abc(events: &mut [TimedEvent], from: Fraction, t
         if let TimedEventKind::ClefChange(clef) = &mut event.kind
             && clef.musicxml_cursor_back.is_none()
         {
+            clef.musicxml_cursor_pre_backup = Some(pre_backup);
             clef.musicxml_cursor_back = Some(cursor_back);
-            event.onset = to;
+            *cursor_restore_base = Some(to);
             break;
         }
     }

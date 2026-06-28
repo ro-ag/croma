@@ -25,6 +25,17 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_event(event, sequence, part, &tuplet_numbers, true);
                 continue;
             }
+            if let Some((clef, pre_backup, cursor_forward)) = event.clef_cursor_script() {
+                let attachments = event.attachments();
+                self.write_harmony_and_directions(attachments, sequence, part);
+                self.write_grace_groups(attachments, sequence, part, &tuplet_numbers);
+                self.write_backup(pre_backup);
+                cursor = cursor.subtract(pre_backup);
+                self.write_mid_tune_clef(clef, sequence.staff, part);
+                self.write_forward(cursor_forward);
+                cursor = cursor.checked_add(cursor_forward);
+                continue;
+            }
             if cursor.less_than(onset) {
                 self.write_forward(onset.subtract(cursor));
                 cursor = onset;

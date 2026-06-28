@@ -6176,6 +6176,57 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_chained_clef_cursor_before_rest_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>12</duration><voice>1</voice><type>half</type><dot/></note>\n",
+            "      <backup><duration>10</duration></backup>\n",
+            "      <attributes><clef><sign>F</sign><line>4</line></clef></attributes>\n",
+            "      <forward><duration>8</duration></forward>\n",
+            "      <attributes><clef><sign>G</sign><line>2</line></clef></attributes>\n",
+            "      <forward><duration>2</duration></forward>\n",
+            "      <note><rest/><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip =
+            export_musicxml(&abc).expect("chained clef cursor carrier ABC should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        let bass_sign = measure.find("<sign>F</sign>").unwrap_or_else(|| {
+            panic!("roundtrip must keep the bass clef:\n{}", roundtrip.musicxml)
+        });
+        let bass_clef = measure[..bass_sign]
+            .rfind("<clef>")
+            .unwrap_or_else(|| panic!("bass clef sign must be inside a clef block:\n{measure}"));
+        let treble_sign = measure[bass_sign..]
+            .find("<sign>G</sign>")
+            .map(|offset| bass_sign + offset)
+            .unwrap_or_else(|| panic!("roundtrip must keep the second treble clef:\n{measure}"));
+        let treble_clef = measure[..treble_sign]
+            .rfind("<clef>")
+            .unwrap_or_else(|| panic!("treble clef sign must be inside a clef block:\n{measure}"));
+        let first_forward = measure[bass_clef..treble_clef]
+            .find("<forward>")
+            .map(|offset| bass_clef + offset)
+            .unwrap_or_else(|| panic!("bass clef must be followed by a forward:\n{measure}"));
+        assert!(
+            !measure[first_forward..treble_clef].contains("<backup>"),
+            "chained clef cursor restore must not insert a backup between the two clefs:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_trailing_forward_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
