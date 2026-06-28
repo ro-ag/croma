@@ -1448,6 +1448,46 @@ fn non_midi_inline_instruction_emits_no_instrument() {
 }
 
 #[test]
+fn croma_note_instrument_carrier_emits_note_instrument_ids() {
+    let source = concat!(
+        "X:1\n",
+        "T:Perc\n",
+        "L:1/4\n",
+        "K:C\n",
+        "%%croma-musicxml-instrument id=\"P1-I1\" name=\"Snare Drum\" channel=10 midi-unpitched=39\n",
+        "%%croma-musicxml-instrument id=\"P1-I2\" name=\"Wood Block\" channel=10 midi-unpitched=76\n",
+        "[I:croma-note-instrument id=\"P1-I1\"]D [I:croma-note-instrument id=\"P1-I2\"]C |\n",
+    );
+    let export = export_musicxml(source).expect("croma note instrument carrier should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export.musicxml.contains("<score-instrument id=\"P1-I1\">")
+            && export
+                .musicxml
+                .contains("<instrument-name>Snare Drum</instrument-name>")
+            && export
+                .musicxml
+                .contains("<midi-unpitched>39</midi-unpitched>")
+            && export.musicxml.contains("<score-instrument id=\"P1-I2\">")
+            && export
+                .musicxml
+                .contains("<instrument-name>Wood Block</instrument-name>")
+            && export
+                .musicxml
+                .contains("<midi-unpitched>76</midi-unpitched>"),
+        "part-list instrument metadata must come from croma carriers:\n{}",
+        export.musicxml
+    );
+    assert!(
+        export.musicxml.contains("<instrument id=\"P1-I1\"/>")
+            && export.musicxml.contains("<instrument id=\"P1-I2\"/>"),
+        "note-level instrument refs must be emitted before <voice>:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn midi_transpose_emits_transpose_attribute_without_shifting_pitch() {
     // `%%MIDI transpose <n>` is an abc2midi playback transpose that abc2xml maps
     // to MusicXML `<attributes><transpose><chromatic>n` (written-vs-sounding

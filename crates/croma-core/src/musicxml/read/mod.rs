@@ -95,20 +95,19 @@
 //! `Measure.multiple_rest` (attached to voice 1, the voice the writer reads it
 //! from). See `docs/musicxml-reader.md` for the small documented residual.
 
-use std::collections::BTreeMap;
-
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
     AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent, ClefChangeModel,
     DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, GraceEvent,
     GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
-    LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel, NoteEvent,
-    Part, PartId, Pitch, RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility,
-    Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel,
-    ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment,
-    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
-    Voice, VoiceId, VoicePropertiesModel,
+    LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel,
+    MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part, PartId, Pitch,
+    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
+    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
+    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment, TextLine,
+    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
+    VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -607,7 +606,7 @@ impl Reader {
                 "score-part" => {
                     let id = child.attribute("id").unwrap_or_default().to_owned();
                     let name = child_text(child, "part-name").map(str::to_owned);
-                    let instruments = self.read_midi_instruments(child);
+                    let instruments = self.read_part_instruments(child);
                     // Add this part id to every open group (outer → inner).
                     for (_, _, ids) in &mut open_groups {
                         ids.push(id.clone());
@@ -666,9 +665,9 @@ impl Reader {
     }
 
     /// Invert [`MusicXmlWriter::write_part_instruments`]: read every
-    /// `<midi-instrument>` child of a `<score-part>` into a
-    /// [`MidiInstrumentModel`] (one per voice that carried `%%MIDI` sound
-    /// metadata). The exact inverses of the writer's emission are:
+    /// `<score-instrument>` / `<midi-instrument>` child of a `<score-part>` into
+    /// explicit part instrument metadata. The exact inverses of the writer's
+    /// MIDI emission are:
     ///
     /// - `<midi-channel>n` -> `channel = n`,
     /// - `<midi-program>N` -> `program = N - 1` (forward is `program + 1`),
@@ -677,21 +676,62 @@ impl Reader {
     ///   `cc/127*180 - 90`),
     /// - `<midi-unpitched>n` -> `midi_unpitched = n`.
     ///
-    /// The matching `<score-instrument>/<instrument-name>` is read by id and
-    /// projected into ABC `V:nm`, preserving human playback/sheet names that
-    /// cannot be recovered from General MIDI program numbers.
-    fn read_midi_instruments(&mut self, score_part: Node<'_, '_>) -> Vec<PartListInstrument> {
-        let names = score_instrument_names(score_part);
-        children_named(score_part, "midi-instrument")
-            .filter_map(|node| {
-                let midi = self.read_midi_instrument(node)?;
-                let name = node
-                    .attribute("id")
-                    .and_then(|id| names.get(id))
-                    .map(String::to_owned);
-                Some(PartListInstrument { midi, name })
-            })
-            .collect()
+    /// Score-instrument-only entries are kept too, because their human names
+    /// carry sheet/playback identity even when no MIDI payload is present.
+    fn read_part_instruments(
+        &mut self,
+        score_part: Node<'_, '_>,
+    ) -> Vec<MusicXmlPartInstrumentModel> {
+        let mut instruments: Vec<MusicXmlPartInstrumentModel> = Vec::new();
+        for node in children_named(score_part, "score-instrument") {
+            let Some(id) = node
+                .attribute("id")
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            let name = child_text(node, "instrument-name")
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| TextLine {
+                    text: name.to_owned(),
+                    span: READER_SPAN,
+                });
+            instruments.push(MusicXmlPartInstrumentModel {
+                id: id.to_owned(),
+                name,
+                midi: None,
+                span: READER_SPAN,
+            });
+        }
+
+        for node in children_named(score_part, "midi-instrument") {
+            let Some(id) = node
+                .attribute("id")
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            else {
+                continue;
+            };
+            let Some(midi) = self.read_midi_instrument(node) else {
+                continue;
+            };
+            if let Some(instrument) = instruments
+                .iter_mut()
+                .find(|instrument| instrument.id == id)
+            {
+                instrument.midi = Some(midi);
+            } else {
+                instruments.push(MusicXmlPartInstrumentModel {
+                    id: id.to_owned(),
+                    name: None,
+                    midi: Some(midi),
+                    span: READER_SPAN,
+                });
+            }
+        }
+        instruments
     }
 
     fn read_midi_instrument(&mut self, node: Node<'_, '_>) -> Option<MidiInstrumentModel> {
@@ -913,11 +953,10 @@ impl Reader {
                 // recovered instrument to the voice at the same index. A voice
                 // with no instrument keeps `None` (no extra `<midi-instrument>`).
                 let part_list_instrument = entry.and_then(|entry| entry.instruments.get(index));
-                let midi_instrument = part_list_instrument.map(|instrument| instrument.midi);
+                let midi_instrument = part_list_instrument.and_then(|instrument| instrument.midi);
                 let instrument_name = part_list_instrument
-                    .and_then(|instrument| instrument.name.as_ref())
-                    .filter(|name| !name.trim().is_empty())
-                    .map(|name| text_line(name.clone()));
+                    .and_then(|instrument| instrument.name.clone())
+                    .filter(|name| !name.text.trim().is_empty());
                 // Only the first (staff) voice carries the header clef/transpose
                 // and its ABC `transpose=` property; extra voices share the staff
                 // but the writer reads clef/transpose from the FIRST qualifying
@@ -958,6 +997,9 @@ impl Reader {
                     span: READER_SPAN,
                 },
                 name,
+                instruments: entry
+                    .map(|entry| entry.instruments.clone())
+                    .unwrap_or_default(),
                 staves: vec![Staff {
                     id: staff_id,
                     voices: staff_voice_ids,
@@ -1204,7 +1246,7 @@ impl Reader {
                             // S6e: anchor a new pending run at the current event
                             // index before buffering (see the harmony arm).
                             state.mark_pending_position();
-                            state.pending.extend(attachments);
+                            state.pending.extend(*attachments);
                         }
                         ParsedDirection::Ignored => {}
                     }
@@ -1976,7 +2018,10 @@ impl Reader {
         open_tuplets: &mut OpenTuplets,
         events: &mut [TimedEvent],
     ) -> EventAttachments {
-        let mut attachments = EventAttachments::default();
+        let mut attachments = EventAttachments {
+            instrument: self.read_note_instrument_ref(note_node),
+            ..EventAttachments::default()
+        };
         let notations = child_element(note_node, "notations");
 
         // Ties: the writer emits BOTH a `<note>`-level `<tie>` (no number) and a
@@ -2036,6 +2081,19 @@ impl Reader {
         self.read_lyrics(note_node, &mut attachments.lyrics);
 
         attachments
+    }
+
+    fn read_note_instrument_ref(
+        &mut self,
+        note_node: Node<'_, '_>,
+    ) -> Option<MusicXmlInstrumentRef> {
+        children_named(note_node, "instrument").find_map(|instrument| {
+            let id = instrument.attribute("id")?.trim();
+            (!id.is_empty()).then(|| MusicXmlInstrumentRef {
+                id: id.to_owned(),
+                span: READER_SPAN,
+            })
+        })
     }
 
     /// S5a: classify one `<direction>` and reconstruct its model contribution,
@@ -2148,7 +2206,7 @@ impl Reader {
         {
             ParsedDirection::Ignored
         } else {
-            ParsedDirection::Event(attachments)
+            ParsedDirection::Event(Box::new(attachments))
         }
     }
 
@@ -2845,12 +2903,7 @@ impl Reader {
 struct PartListEntry {
     id: String,
     name: Option<String>,
-    instruments: Vec<PartListInstrument>,
-}
-
-struct PartListInstrument {
-    midi: MidiInstrumentModel,
-    name: Option<String>,
+    instruments: Vec<MusicXmlPartInstrumentModel>,
 }
 
 /// P1a: one `<part-group>` span recovered from the `<part-list>`.
@@ -2874,16 +2927,6 @@ struct PartGroupEntry {
 struct PartListResult {
     entries: Vec<PartListEntry>,
     groups: Vec<PartGroupEntry>,
-}
-
-fn score_instrument_names(score_part: Node<'_, '_>) -> BTreeMap<String, String> {
-    children_named(score_part, "score-instrument")
-        .filter_map(|node| {
-            let id = node.attribute("id")?.to_owned();
-            let name = child_text(node, "instrument-name")?.trim();
-            (!name.is_empty()).then(|| (id, name.to_owned()))
-        })
-        .collect()
 }
 
 /// S6d: accumulates one voice's reconstruction across a part's measures — its
@@ -3446,7 +3489,7 @@ enum ParsedDirection {
     Tempo(TempoModel),
     /// A voice-bearing direction reconstructed into attachments (annotation
     /// words, dynamics, coda/segno, wedge) for the following event.
-    Event(EventAttachments),
+    Event(Box<EventAttachments>),
     /// A `<rehearsal>` section label (abc2xml's encoding of a body/inline `P:`);
     /// the caller pushes it as a zero-duration [`TimedEventKind::SectionLabel`].
     SectionLabel(String),

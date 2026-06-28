@@ -101,9 +101,12 @@ fn write_body(score: &Score, unit: Rational) -> String {
         && score.parts[0].voices[0].properties == crate::model::VoicePropertiesModel::default();
     let mut body = String::new();
     for part in &score.parts {
-        for voice in &part.voices {
+        for (voice_index, voice) in part.voices.iter().enumerate() {
             if !single {
                 body.push_str(&voice_header_line(voice));
+            }
+            if voice_index == 0 {
+                body.push_str(&musicxml_instrument_directive_lines(part));
             }
             body.push_str(&midi_directive_lines(voice));
             body.push_str(&write_voice(voice, unit));
@@ -191,6 +194,51 @@ fn midi_directive_lines(voice: &crate::model::Voice) -> String {
         s.push_str(&format!("%%MIDI transpose {transpose}\n"));
     }
     s
+}
+
+fn musicxml_instrument_directive_lines(part: &crate::model::Part) -> String {
+    let mut s = String::new();
+    for instrument in &part.instruments {
+        if instrument.id.trim().is_empty() {
+            continue;
+        }
+        s.push_str("%%croma-musicxml-instrument");
+        s.push_str(&format!(
+            " id=\"{}\"",
+            abc_carrier_quoted(instrument.id.as_str())
+        ));
+        if let Some(name) = &instrument.name
+            && !name.text.trim().is_empty()
+        {
+            s.push_str(&format!(
+                " name=\"{}\"",
+                abc_carrier_quoted(name.text.as_str())
+            ));
+        }
+        if let Some(midi) = &instrument.midi {
+            if let Some(channel) = midi.channel {
+                s.push_str(&format!(" channel={channel}"));
+            }
+            if let Some(program) = midi.program {
+                s.push_str(&format!(" program={program}"));
+            }
+            if let Some(volume) = midi.volume_cc {
+                s.push_str(&format!(" volume-cc={volume}"));
+            }
+            if let Some(pan) = midi.pan_cc {
+                s.push_str(&format!(" pan-cc={pan}"));
+            }
+            if let Some(unpitched) = midi.midi_unpitched {
+                s.push_str(&format!(" midi-unpitched={unpitched}"));
+            }
+        }
+        s.push('\n');
+    }
+    s
+}
+
+fn abc_carrier_quoted(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Replicates the parser's written->stored octave shift for a voice's
@@ -600,6 +648,12 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
         // as stored — shifting them here would drift one octave per
         // round-trip in `clef=±8`/`octave=`/`middle=` voices.
         out.push_str(&grace_str(grace));
+    }
+    if let Some(instrument) = &attachments.instrument {
+        out.push_str(&format!(
+            "[I:croma-note-instrument id=\"{}\"]",
+            abc_carrier_quoted(instrument.id.as_str())
+        ));
     }
     // Event slur-opens next, then quoted strings — both `"G7"(DE)` and
     // `("G7"DE)` now parse with the chord symbol bound to `D`; the slur-first

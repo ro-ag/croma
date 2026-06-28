@@ -647,6 +647,80 @@ fn foreign_single_unpitched_instrument_round_trips() {
 }
 
 #[test]
+fn foreign_single_voice_multi_instrument_map_round_trips() {
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\">\n",
+        "      <part-name>Percussion</part-name>\n",
+        "      <score-instrument id=\"P1-I1\"><instrument-name>Snare Drum</instrument-name></score-instrument>\n",
+        "      <score-instrument id=\"P1-I2\"><instrument-name>Wood Block</instrument-name></score-instrument>\n",
+        "      <midi-instrument id=\"P1-I1\"><midi-channel>10</midi-channel><midi-unpitched>39</midi-unpitched></midi-instrument>\n",
+        "      <midi-instrument id=\"P1-I2\"><midi-channel>10</midi-channel><midi-unpitched>76</midi-unpitched></midi-instrument>\n",
+        "    </score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note>\n",
+        "      <unpitched><display-step>D</display-step><display-octave>5</display-octave></unpitched>\n",
+        "      <duration>4</duration><instrument id=\"P1-I1\"/><voice>1</voice><type>quarter</type>\n",
+        "    </note>\n",
+        "    <note>\n",
+        "      <unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched>\n",
+        "      <duration>4</duration><instrument id=\"P1-I2\"/><voice>1</voice><type>quarter</type>\n",
+        "    </note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%croma-musicxml-instrument id=\"P1-I1\" name=\"Snare Drum\"")
+            && abc.contains("midi-unpitched=39")
+            && abc.contains("%%croma-musicxml-instrument id=\"P1-I2\" name=\"Wood Block\"")
+            && abc.contains("midi-unpitched=76"),
+        "MusicXML part-list instruments must survive into the ABC carrier; got:\n{abc}"
+    );
+    assert!(
+        abc.contains("[I:croma-note-instrument id=\"P1-I1\"]")
+            && abc.contains("[I:croma-note-instrument id=\"P1-I2\"]"),
+        "per-note MusicXML instrument refs must survive into the ABC carrier; got:\n{abc}"
+    );
+
+    let roundtrip = export_musicxml(&abc).expect("multi-instrument ABC carrier should export");
+    assert!(
+        roundtrip
+            .musicxml
+            .contains("<score-instrument id=\"P1-I1\">")
+            && roundtrip
+                .musicxml
+                .contains("<instrument-name>Snare Drum</instrument-name>")
+            && roundtrip
+                .musicxml
+                .contains("<midi-unpitched>39</midi-unpitched>")
+            && roundtrip
+                .musicxml
+                .contains("<score-instrument id=\"P1-I2\">")
+            && roundtrip
+                .musicxml
+                .contains("<instrument-name>Wood Block</instrument-name>")
+            && roundtrip
+                .musicxml
+                .contains("<midi-unpitched>76</midi-unpitched>"),
+        "ABC->MusicXML must preserve all part-list instruments:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        roundtrip.musicxml.contains("<instrument id=\"P1-I1\"/>")
+            && roundtrip.musicxml.contains("<instrument id=\"P1-I2\"/>"),
+        "ABC->MusicXML must preserve per-note instrument ids:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn backup_forward_durations_are_read() {
     // A multi-voice bar forces a <backup> between the two voices; reading the
     // backup duration keeps onsets aligned so the bar re-emits identically.

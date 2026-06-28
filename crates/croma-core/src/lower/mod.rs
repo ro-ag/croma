@@ -25,10 +25,11 @@ use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
     AccidentalPolicy, AccidentalScope, BarlineKind, ClefChangeModel, Event, EventAttachments,
     Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind,
-    MeterModel, MidiInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    Staff, StaffId, StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel,
-    VoiceTimeline, lcm,
+    MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part,
+    PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
+    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
+    StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline,
+    lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -522,6 +523,12 @@ impl MultiVoiceLowering {
                 ));
             }
             'I' => {
+                if let Some(instrument) =
+                    parse_note_instrument_instruction(&inline.value.value, inline.value.span)
+                {
+                    self.current_state().pending_musicxml_instrument = Some(instrument);
+                    return;
+                }
                 // `[I:...]` instructions are typeset/display directives (e.g.
                 // abcm2ps `[I:setbarnb ...]`, `[I:tuplets ...]`) that do not
                 // change how music lowers; abc2xml skips them too. Dropped,
@@ -1130,12 +1137,14 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
                         .or_else(|| voice.properties.nm.clone())
                 })
                 .or_else(|| single_voice.then(|| input.title.clone()).flatten());
+            let instruments = part_musicxml_instruments(input.voices, voice_indices);
             Part {
                 id: PartId {
                     value: format!("P{}", part_index + 1),
                     span: input.source_span,
                 },
                 name,
+                instruments,
                 staves,
                 voices: semantic_voices,
                 source_span: input.source_span,
@@ -1150,6 +1159,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
                 span: input.source_span,
             },
             name: input.title.clone(),
+            instruments: Vec::new(),
             staves: vec![Staff {
                 id: StaffId {
                     value: 1,
@@ -1194,6 +1204,27 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
             source_span: input.source_span,
         },
     }
+}
+
+fn part_musicxml_instruments(
+    voices: &[VoiceTimeline],
+    voice_indices: &[usize],
+) -> Vec<MusicXmlPartInstrumentModel> {
+    let mut instruments = Vec::new();
+    for &voice_index in voice_indices {
+        let Some(voice) = voices.get(voice_index) else {
+            continue;
+        };
+        for instrument in &voice.musicxml_instruments {
+            if !instruments
+                .iter()
+                .any(|existing: &MusicXmlPartInstrumentModel| existing.id == instrument.id)
+            {
+                instruments.push(instrument.clone());
+            }
+        }
+    }
+    instruments
 }
 
 fn meter_model(meter: &Spanned<Meter>) -> MeterModel {
@@ -1505,6 +1536,28 @@ fn project_voice_midi(
 
     let mut instrument_by_voice: BTreeMap<&str, MidiInstrumentModel> = BTreeMap::new();
     let mut transpose_by_voice: BTreeMap<&str, i16> = BTreeMap::new();
+    let mut musicxml_instruments_by_voice: BTreeMap<&str, Vec<MusicXmlPartInstrumentModel>> =
+        BTreeMap::new();
+    for directive in &tune_music.preserved_directives {
+        if directive
+            .name
+            .value
+            .eq_ignore_ascii_case("croma-musicxml-instrument")
+            && let Some(instrument) =
+                parse_musicxml_part_instrument_directive(&directive.value.value, directive.span)
+        {
+            let voice_id = voice_at(directive.span.start);
+            let instruments = musicxml_instruments_by_voice.entry(voice_id).or_default();
+            if let Some(existing) = instruments
+                .iter()
+                .position(|existing| existing.id == instrument.id)
+            {
+                instruments[existing] = instrument;
+            } else {
+                instruments.push(instrument);
+            }
+        }
+    }
     for (voice_id, args, span) in directives {
         if let Some(transpose) = parse_midi_transpose(args) {
             transpose_by_voice.insert(voice_id, transpose);
@@ -1533,7 +1586,145 @@ fn project_voice_midi(
         if let Some(transpose) = transpose_by_voice.get(voice.id.value.as_str()) {
             voice.midi_transpose = Some(*transpose);
         }
+        if let Some(instruments) = musicxml_instruments_by_voice.get(voice.id.value.as_str()) {
+            voice.musicxml_instruments = instruments.clone();
+        }
     }
+}
+
+fn parse_musicxml_part_instrument_directive(
+    value: &str,
+    span: Span,
+) -> Option<MusicXmlPartInstrumentModel> {
+    let fields = parse_croma_key_values(value);
+    let id = fields.get("id")?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let name = fields
+        .get("name")
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| TextLine {
+            text: name.clone(),
+            span,
+        });
+    let midi = MidiInstrumentModel {
+        program: parse_croma_u8(&fields, "program").filter(|value| *value <= 127),
+        channel: parse_croma_u8(&fields, "channel").filter(|value| (1..=16).contains(value)),
+        volume_cc: parse_croma_u8(&fields, "volume-cc")
+            .or_else(|| parse_croma_u8(&fields, "volume"))
+            .filter(|value| *value <= 127),
+        pan_cc: parse_croma_u8(&fields, "pan-cc")
+            .or_else(|| parse_croma_u8(&fields, "pan"))
+            .filter(|value| *value <= 127),
+        midi_unpitched: parse_croma_u8(&fields, "midi-unpitched")
+            .filter(|value| (1..=128).contains(value)),
+        span,
+    };
+    Some(MusicXmlPartInstrumentModel {
+        id: id.to_owned(),
+        name,
+        midi: midi.has_content().then_some(midi),
+        span,
+    })
+}
+
+fn parse_note_instrument_instruction(value: &str, span: Span) -> Option<MusicXmlInstrumentRef> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-note-instrument")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let id = fields.get("id")?.trim();
+    (!id.is_empty()).then(|| MusicXmlInstrumentRef {
+        id: id.to_owned(),
+        span,
+    })
+}
+
+fn parse_croma_u8(fields: &BTreeMap<String, String>, key: &str) -> Option<u8> {
+    fields
+        .get(key)?
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .and_then(|value| {
+            if value <= u16::from(u8::MAX) {
+                Some(value as u8)
+            } else {
+                None
+            }
+        })
+}
+
+fn parse_croma_key_values(value: &str) -> BTreeMap<String, String> {
+    let mut fields = BTreeMap::new();
+    let mut chars = value.char_indices().peekable();
+    while let Some((_, ch)) = chars.peek().copied() {
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        let key_start = chars.peek().map(|(index, _)| *index).unwrap_or(value.len());
+        while let Some((_, ch)) = chars.peek().copied() {
+            if ch == '=' || ch.is_whitespace() {
+                break;
+            }
+            chars.next();
+        }
+        let key_end = chars.peek().map(|(index, _)| *index).unwrap_or(value.len());
+        while let Some((_, ch)) = chars.peek().copied() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            chars.next();
+        }
+        if chars.next_if(|(_, ch)| *ch == '=').is_none() {
+            while let Some((_, ch)) = chars.peek().copied() {
+                if ch.is_whitespace() {
+                    break;
+                }
+                chars.next();
+            }
+            continue;
+        }
+        while let Some((_, ch)) = chars.peek().copied() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            chars.next();
+        }
+        let mut field_value = String::new();
+        if chars.next_if(|(_, ch)| *ch == '"').is_some() {
+            let mut escaped = false;
+            for (_, ch) in chars.by_ref() {
+                if escaped {
+                    field_value.push(ch);
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    break;
+                } else {
+                    field_value.push(ch);
+                }
+            }
+        } else {
+            while let Some((_, ch)) = chars.peek().copied() {
+                if ch.is_whitespace() {
+                    break;
+                }
+                field_value.push(ch);
+                chars.next();
+            }
+        }
+        let key = value[key_start..key_end].to_ascii_lowercase();
+        if !key.is_empty() {
+            fields.insert(key, field_value);
+        }
+    }
+    fields
 }
 
 /// Update `model` from one `%%MIDI` directive value, parsing the

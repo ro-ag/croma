@@ -306,6 +306,13 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.text_element("duration", &duration.to_string());
         }
         self.write_ties(&note.attachments.ties);
+        if note.pitch.is_some()
+            && !note.grace
+            && let Some(instrument) = &note.attachments.instrument
+        {
+            self.xml
+                .empty("instrument", &[("id", instrument.id.as_str())]);
+        }
         self.xml.text_element("voice", &sequence.voice_number);
         if !omit_inexpressible_measure_rest_spelling {
             self.xml.text_element("type", spelling.note_type);

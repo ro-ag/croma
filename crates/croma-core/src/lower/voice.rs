@@ -4,8 +4,9 @@ use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_re
 use crate::model::{
     Accidental, AccidentalMark, AnnotationPlacementModel, BarlineKind, DecorationAttachment,
     DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent, GraceEventKind,
-    GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind, Pitch, RestEvent,
-    SlurAttachment, SlurRole, TextAttachment, VoiceId, VoicePropertiesModel,
+    GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind,
+    MusicXmlInstrumentRef, Pitch, RestEvent, SlurAttachment, SlurRole, TextAttachment, VoiceId,
+    VoicePropertiesModel,
 };
 use crate::parse::field::KeySignature;
 use crate::syntax::{
@@ -126,6 +127,9 @@ pub(crate) struct LoweringState {
     /// Decorations (`!f!`, `!trill!`, ...) in the same flushed-ahead situation
     /// (ABC 2.1 §4.14: a decoration precedes the symbol it decorates).
     pub(crate) pending_decorations: Vec<DecorationSyntax>,
+    /// Croma MusicXML-origin `[I:croma-note-instrument ...]` carrier waiting for
+    /// the next timed note/rest/chord event.
+    pub(crate) pending_musicxml_instrument: Option<MusicXmlInstrumentRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +203,7 @@ impl LoweringState {
             pending_chord_symbols: Vec::new(),
             pending_annotations: Vec::new(),
             pending_decorations: Vec::new(),
+            pending_musicxml_instrument: None,
         }
     }
 
@@ -242,6 +247,9 @@ impl LoweringState {
                 .collect();
             decorations.append(&mut attachments.decorations);
             attachments.decorations = decorations;
+        }
+        if attachments.instrument.is_none() {
+            attachments.instrument = self.pending_musicxml_instrument.take();
         }
         attachments
     }
@@ -1249,6 +1257,7 @@ fn attachment_bundle_model(
             .iter()
             .map(decoration_attachment_model)
             .collect(),
+        instrument: None,
         lyrics: Vec::new(),
         symbols: Vec::new(),
         ties: Vec::new(),
