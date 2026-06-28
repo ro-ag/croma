@@ -1,8 +1,34 @@
 use super::{MeasureSequence, MusicXmlWriter};
+use crate::model::TextAttachment;
 
 impl<'score> MusicXmlWriter<'score> {
-    pub(crate) fn write_chord_symbol(&mut self, text: &str, sequence: &MeasureSequence<'score>) {
-        if self.write_harmony(text) {
+    pub(crate) fn write_chord_symbol(
+        &mut self,
+        symbol: &TextAttachment,
+        sequence: &MeasureSequence<'score>,
+    ) {
+        self.write_chord_symbol_text(
+            &symbol.text,
+            symbol.musicxml_harmony_text.as_deref(),
+            sequence,
+        );
+    }
+
+    pub(crate) fn write_plain_chord_symbol(
+        &mut self,
+        text: &str,
+        sequence: &MeasureSequence<'score>,
+    ) {
+        self.write_chord_symbol_text(text, None, sequence);
+    }
+
+    fn write_chord_symbol_text(
+        &mut self,
+        text: &str,
+        musicxml_harmony_text: Option<&str>,
+        sequence: &MeasureSequence<'score>,
+    ) {
+        if self.write_harmony(text, musicxml_harmony_text) {
             return;
         }
         let words = text.trim();
@@ -16,7 +42,11 @@ impl<'score> MusicXmlWriter<'score> {
         }
     }
 
-    pub(crate) fn write_harmony(&mut self, text: &str) -> bool {
+    pub(crate) fn write_harmony(
+        &mut self,
+        text: &str,
+        musicxml_harmony_text: Option<&str>,
+    ) -> bool {
         let Some(chord) = parse_chord_symbol(text) else {
             return false;
         };
@@ -29,8 +59,15 @@ impl<'score> MusicXmlWriter<'score> {
                 .text_element("root-alter", &chord.root_alter.to_string());
         }
         self.xml.end("root");
-        self.xml
-            .text_element_attrs("kind", &[("text", text)], chord.kind);
+        if let Some("") = musicxml_harmony_text {
+            self.xml.text_element("kind", chord.kind);
+        } else {
+            self.xml.text_element_attrs(
+                "kind",
+                &[("text", musicxml_harmony_text.unwrap_or(text))],
+                chord.kind,
+            );
+        }
         if let Some(bass_step) = chord.bass_step {
             self.xml.start("bass", &[]);
             self.xml.text_element("bass-step", &bass_step.to_string());

@@ -82,6 +82,14 @@ fn sound_tempo_instruction(tempo: &TempoModel) -> Option<String> {
     Some(out)
 }
 
+fn harmony_text_instruction(text: &str) -> String {
+    if text.is_empty() {
+        "croma-harmony-text textless=1".to_owned()
+    } else {
+        format!("croma-harmony-text text=\"{}\"", abc_carrier_quoted(text))
+    }
+}
+
 fn abc_quoted_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -688,6 +696,9 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
     // text never starts with one, so the parser re-distinguishes them; both
     // simply re-emit as `"<text>"`.
     for chord_symbol in &attachments.chord_symbols {
+        if let Some(text) = &chord_symbol.musicxml_harmony_text {
+            out.push_str(&format!("[I:{}]", harmony_text_instruction(text)));
+        }
         out.push_str(&quoted_str(&chord_symbol.text));
     }
     // `s:`-aligned chord symbols re-emit INLINE: the exporter routes both

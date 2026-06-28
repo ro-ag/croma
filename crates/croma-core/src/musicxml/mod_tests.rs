@@ -80,6 +80,25 @@ fn slash_chord_symbols_export_bass_step_and_alter() {
 }
 
 #[test]
+fn harmony_text_carriers_bind_to_each_chord_symbol() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "[I:croma-harmony-text textless=1]\"A\"",
+        "[I:croma-harmony-text textless=1]\"B\"C4|\n",
+    );
+    let export = export_musicxml(source).expect("harmony text carriers should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<harmony>"), 2);
+    assert_eq!(count(&export.musicxml, "<kind>major</kind>"), 2);
+    assert!(!export.musicxml.contains("<kind text=\"A\">major</kind>"));
+    assert!(!export.musicxml.contains("<kind text=\"B\">major</kind>"));
+}
+
+#[test]
 fn malformed_quoted_chord_strings_export_as_words_not_fake_harmony() {
     let source = "X:1\nM:4/4\nL:1/4\nK:C\n\"(A7)\"C \"C/\"D|\n";
     let export = export_musicxml(source).expect("malformed chord text should export");

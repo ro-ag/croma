@@ -2378,10 +2378,11 @@ impl Reader {
     /// symbol's `<harmony>` (`<root>`, `<kind text="…">`, optional `<bass>`,
     /// `<degree>`s) from the ABC chord-symbol *string*, and crucially preserves
     /// that exact original string as the `<kind text="…">` attribute. The reader
-    /// therefore reconstructs the [`TextAttachment`] directly from `text`: re-parsing
-    /// it through `parse_chord_symbol` reproduces the identical `<root>`/`<kind>`/
-    /// `<bass>`/`<degree>` tree byte-for-byte, so no kind-value→suffix inversion is
-    /// needed. (The writer only ever emits `<harmony>` when the string parses as a
+    /// reconstructs croma-owned `<kind text>` directly when it starts with a
+    /// complete ABC chord root. Foreign MusicXML also uses `text` as a quality
+    /// suffix (`text="dim"`, `text="7"`) while the root lives in `<root>`; those
+    /// must be synthesised from the tree so ABC receives a complete playable chord
+    /// symbol. (The writer only ever emits `<harmony>` when the string parses as a
     /// chord; a non-chord string is emitted as a `<direction><words>` instead, which
     /// the S5a direction reader already round-trips as an annotation.)
     ///
@@ -2396,9 +2397,18 @@ impl Reader {
     /// re-export stable. A `<kind>` value croma cannot model and that carries no
     /// usable text content is skipped with a diagnostic — never invented.
     fn read_harmony(&mut self, harmony: Node<'_, '_>) -> Option<TextAttachment> {
-        let text = match child_element(harmony, "kind").and_then(|kind| kind.attribute("text")) {
-            Some(text) => text.to_owned(),
-            None => self.synthesise_chord_symbol(harmony)?,
+        let kind_text = child_element(harmony, "kind").and_then(|kind| kind.attribute("text"));
+        let (text, musicxml_harmony_text) = match kind_text {
+            Some(text)
+                if starts_with_abc_chord_root(text) || child_element(harmony, "root").is_none() =>
+            {
+                (text.to_owned(), None)
+            }
+            Some(text) => (
+                self.synthesise_chord_symbol(harmony)?,
+                Some(text.to_owned()),
+            ),
+            None => (self.synthesise_chord_symbol(harmony)?, Some(String::new())),
         };
         Some(TextAttachment {
             text,
@@ -2406,6 +2416,7 @@ impl Reader {
             // A chord symbol carries no placement (the writer's `<harmony>` has no
             // placement attribute); the lowering's chord_symbols are placement-less.
             placement: None,
+            musicxml_harmony_text,
         })
     }
 
@@ -3968,6 +3979,7 @@ fn annotation_from_words(words: Node<'_, '_>, placement: Option<&str>) -> TextAt
         text: format!("{prefix}{text}"),
         span: READER_SPAN,
         placement: placement_model,
+        musicxml_harmony_text: None,
     }
 }
 
@@ -4008,6 +4020,7 @@ fn demoted_chord_symbol_from_words(
         text: text.to_owned(),
         span: READER_SPAN,
         placement: None,
+        musicxml_harmony_text: None,
     })
 }
 
@@ -4368,6 +4381,10 @@ fn tempo_words(direction: Node<'_, '_>) -> Option<String> {
         })
         .collect();
     (!words.is_empty()).then_some(words.join(" "))
+}
+
+fn starts_with_abc_chord_root(text: &str) -> bool {
+    matches!(text.trim_start().chars().next(), Some('A'..='G'))
 }
 
 /// S6d: the numeric value of a `<voice>` string for ordering. A non-numeric
