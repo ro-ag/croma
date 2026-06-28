@@ -983,6 +983,75 @@ fn musicxml_tremolo_carriers_emit_ornament_text_not_words() {
 }
 
 #[test]
+fn musicxml_technical_carriers_emit_technical_text_not_words() {
+    // String/fret and non-standard fingering text have no native ABC spelling.
+    // Preserve them through explicit MusicXML carrier decorations.
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "!musicxml-tech-string-4!!musicxml-tech-fret-11!C ",
+        "!musicxml-tech-fingering-hex-45!D ",
+        "!musicxml-tech-fingering-hex-310a320a2d!E F|\n",
+    );
+    let export = export_musicxml(source).expect("technical carriers should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<string>4</string>"), 1);
+    assert_eq!(count(&export.musicxml, "<fret>11</fret>"), 1);
+    assert_eq!(count(&export.musicxml, "<fingering>E</fingering>"), 1);
+    assert_eq!(count(&export.musicxml, "<fingering>1\n2\n-</fingering>"), 1);
+    for text in [
+        "musicxml-tech-string-4",
+        "musicxml-tech-fret-11",
+        "musicxml-tech-fingering-hex-45",
+        "musicxml-tech-fingering-hex-310a320a2d",
+    ] {
+        assert!(
+            !export.musicxml.contains(&format!("<words>{text}</words>")),
+            "{text} carrier should not be emitted as words"
+        );
+    }
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported technical carriers should not warn"
+    );
+}
+
+#[test]
+fn invalid_musicxml_technical_carrier_does_not_emit_invalid_xml_text() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "!musicxml-tech-fingering-hex-01!C D E F|\n",
+    );
+    let export = export_musicxml(source).expect("invalid carrier should not break export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export.musicxml.contains('\u{1}'),
+        "invalid XML character from carrier must not reach MusicXML output"
+    );
+    assert!(
+        !export.musicxml.contains("<fingering>"),
+        "invalid carrier should not emit a fingering element"
+    );
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "invalid carrier should fall back to an unsupported-decoration diagnostic"
+    );
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).

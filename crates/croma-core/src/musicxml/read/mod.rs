@@ -2801,9 +2801,30 @@ impl Reader {
                 out.push(named_decoration(text));
                 return;
             }
+            if let Some(text) = node_text(element) {
+                out.push(named_decoration(&format!(
+                    "musicxml-tech-fingering-hex-{}",
+                    hex_utf8(text)
+                )));
+            } else {
+                self.warn(
+                    "musicxml.read.unsupported_fingering",
+                    "<fingering> lacks text; skipped",
+                );
+            }
+            return;
+        }
+        if matches!(tag, "string" | "fret") {
+            if let Some(text) = node_text(element)
+                && !text.is_empty()
+                && text.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                out.push(named_decoration(&format!("musicxml-tech-{tag}-{text}")));
+                return;
+            }
             self.warn(
-                "musicxml.read.unsupported_fingering",
-                "<fingering> text is not 0-5; no ABC decoration inverse, skipped",
+                "musicxml.read.unsupported_notation",
+                format!("<{tag}> lacks decimal text; skipped"),
             );
             return;
         }
@@ -4441,6 +4462,16 @@ fn node_text<'a>(node: Node<'a, '_>) -> Option<&'a str> {
 /// for an empty element like `<creator type="composer"></creator>`.
 fn raw_text<'a>(node: Node<'a, '_>) -> &'a str {
     node.text().unwrap_or("")
+}
+
+fn hex_utf8(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(text.len() * 2);
+    for byte in text.as_bytes() {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 /// The trimmed text of the first `name` child element of `node`.

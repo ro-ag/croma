@@ -1612,6 +1612,121 @@ fn foreign_tremolos_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_technical_values_survive_abc_projection() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Part</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><technical><string>4</string><fret>11</fret></technical></notations>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><technical><fingering>E</fingering></technical></notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><technical><fingering>1
+2
+-</fingering></technical></notations>
+      </note>
+      <note>
+        <pitch><step>F</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><technical><string>1</string></technical></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let report = read_musicxml(xml);
+    assert!(
+        !report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "musicxml.read.unsupported_notation"
+                || diagnostic.code == "musicxml.read.unsupported_fingering"
+        }),
+        "technical values must read without unsupported-notation diagnostics: {:?}",
+        report.diagnostics
+    );
+    let score = report.value;
+    let expected = [
+        (0, "musicxml-tech-string-4"),
+        (0, "musicxml-tech-fret-11"),
+        (1, "musicxml-tech-fingering-hex-45"),
+        (2, "musicxml-tech-fingering-hex-310a320a2d"),
+        (3, "musicxml-tech-string-1"),
+    ];
+    for (index, name) in expected {
+        assert!(
+            attachments_at(&score, index)
+                .decorations
+                .iter()
+                .any(|decoration| decoration.name == name),
+            "{name} should survive in the reconstructed model"
+        );
+    }
+
+    let direct_xml = write_score_partwise(&score).value;
+    for tag in [
+        "<string>4</string>",
+        "<fret>11</fret>",
+        "<fingering>E</fingering>",
+        "<fingering>1\n2\n-</fingering>",
+        "<string>1</string>",
+    ] {
+        assert!(
+            direct_xml.contains(tag),
+            "{tag} should re-emit directly after MusicXML read:\n{direct_xml}"
+        );
+    }
+
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    for (_, name) in expected {
+        assert!(
+            abc.contains(&format!("!{name}!")),
+            "{name} should survive in the ABC projection:\n{abc}"
+        );
+    }
+    let roundtrip = export_musicxml(&abc)
+        .expect("ABC projection of technical carriers should export")
+        .musicxml;
+    for tag in [
+        "<string>4</string>",
+        "<fret>11</fret>",
+        "<fingering>E</fingering>",
+        "<fingering>1\n2\n-</fingering>",
+        "<string>1</string>",
+    ] {
+        assert!(
+            roundtrip.contains(tag),
+            "{tag} should survive MusicXML -> ABC -> MusicXML:\n{roundtrip}"
+        );
+    }
+}
+
+#[test]
 fn trill_ornament_round_trips() {
     let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C\n!trill!C D E F |\n";
     let x1 = export(abc);
