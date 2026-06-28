@@ -4482,6 +4482,7 @@ pub fn complete_score_for_abc(score: &mut Score) {
     {
         key.display = key_display_for_abc(key);
     }
+    let header_key = score.metadata.key.clone();
     move_header_playback_tempo_to_first_voice(score);
     for part in &mut score.parts {
         for voice in &mut part.voices {
@@ -4503,8 +4504,157 @@ pub fn complete_score_for_abc(score: &mut Score) {
                     key.display = key_display_for_abc(key);
                 }
             }
+            complete_pitch_accidentals_for_abc(voice, header_key.as_ref());
         }
     }
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&KeySignatureModel>) {
+    let mut current_key = header_key.cloned();
+    let mut current_measure: Option<u32> = None;
+    let mut measure_accidentals: std::collections::BTreeMap<(char, i8), i8> =
+        std::collections::BTreeMap::new();
+
+    for event in &mut voice.events {
+        if current_measure != Some(event.measure.index) {
+            current_measure = Some(event.measure.index);
+            measure_accidentals.clear();
+        }
+
+        let abc_pitch_anchor = matches!(
+            event.kind,
+            TimedEventKind::Note(_) | TimedEventKind::Chord(_) | TimedEventKind::Rest(_)
+        );
+        if abc_pitch_anchor {
+            complete_grace_group_accidentals_for_abc(
+                &mut event.attachments.grace_groups,
+                current_key.as_ref(),
+                &mut measure_accidentals,
+            );
+        }
+
+        match &mut event.kind {
+            TimedEventKind::Note(note) => complete_note_accidental_for_abc(
+                note.pitch,
+                &mut note.written_accidental,
+                current_key.as_ref(),
+                &mut measure_accidentals,
+            ),
+            TimedEventKind::Chord(chord) => {
+                for member in &mut chord.members {
+                    complete_note_accidental_for_abc(
+                        member.pitch,
+                        &mut member.written_accidental,
+                        current_key.as_ref(),
+                        &mut measure_accidentals,
+                    );
+                }
+            }
+            TimedEventKind::KeyChange(key) => {
+                current_key = Some(key.clone());
+            }
+            _ => {}
+        }
+
+        if abc_pitch_anchor {
+            complete_grace_group_accidentals_for_abc(
+                &mut event.attachments.after_grace_groups,
+                current_key.as_ref(),
+                &mut measure_accidentals,
+            );
+        }
+    }
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn complete_grace_group_accidentals_for_abc(
+    groups: &mut [GraceGroupAttachment],
+    current_key: Option<&KeySignatureModel>,
+    measure_accidentals: &mut std::collections::BTreeMap<(char, i8), i8>,
+) {
+    for group in groups {
+        for grace in &mut group.events {
+            match &mut grace.kind {
+                GraceEventKind::Note(note) => complete_note_accidental_for_abc(
+                    note.pitch,
+                    &mut note.written_accidental,
+                    current_key,
+                    measure_accidentals,
+                ),
+                GraceEventKind::Chord(notes) => {
+                    for note in notes {
+                        complete_note_accidental_for_abc(
+                            note.pitch,
+                            &mut note.written_accidental,
+                            current_key,
+                            measure_accidentals,
+                        );
+                    }
+                }
+                GraceEventKind::Rest(_) => {}
+            }
+        }
+    }
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn complete_note_accidental_for_abc(
+    pitch: Pitch,
+    written_accidental: &mut Option<AccidentalMark>,
+    current_key: Option<&KeySignatureModel>,
+    measure_accidentals: &mut std::collections::BTreeMap<(char, i8), i8>,
+) {
+    let step = pitch.step.to_ascii_uppercase();
+    let ledger_key = (step, pitch.octave);
+    if written_accidental.is_none() {
+        let implied_alter = measure_accidentals
+            .get(&ledger_key)
+            .copied()
+            .unwrap_or_else(|| key_signature_alter(current_key, step));
+        if implied_alter != pitch.alter
+            && let Some(kind) = accidental_from_alter(pitch.alter)
+        {
+            *written_accidental = Some(AccidentalMark {
+                kind,
+                explicit: true,
+                courtesy: false,
+                source: READER_SPAN,
+            });
+        }
+    }
+    if written_accidental.is_some() {
+        measure_accidentals.insert(ledger_key, pitch.alter);
+    }
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn key_signature_alter(key: Option<&KeySignatureModel>, step: char) -> i8 {
+    let Some(key) = key else {
+        return 0;
+    };
+    if let Some(explicit) = key
+        .explicit_accidentals
+        .iter()
+        .rev()
+        .find(|accidental| accidental.step.eq_ignore_ascii_case(&step))
+    {
+        return explicit.accidental.alter();
+    }
+    const SHARPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+    const FLATS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+    if key.fifths > 0 {
+        let count = usize::from(key.fifths.unsigned_abs()).min(SHARPS.len());
+        if SHARPS[..count].contains(&step) {
+            return 1;
+        }
+    } else if key.fifths < 0 {
+        let count = usize::from(key.fifths.unsigned_abs()).min(FLATS.len());
+        if FLATS[..count].contains(&step) {
+            return -1;
+        }
+    }
+    0
 }
 
 #[cfg(feature = "musicxml-reader")]

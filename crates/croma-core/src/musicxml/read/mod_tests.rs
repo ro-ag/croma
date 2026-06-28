@@ -5077,6 +5077,45 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_pitch_alter_without_accidental_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>F</step><alter>1</alter><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "      <note><grace/><pitch><step>C</step><alter>1</alter><octave>5</octave></pitch>",
+            "<voice>1</voice><type>eighth</type></note>\n",
+            "      <note><pitch><step>D</step><octave>5</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("^F") && abc.contains("{^c}"),
+            "ABC projection must spell MusicXML <alter> values that lack <accidental>:\n{abc}"
+        );
+        assert_eq!(
+            pitch_sequence(&lower(&abc)),
+            pitch_sequence(&score),
+            "MusicXML <alter> values must survive through ABC re-lowering:\n{abc}"
+        );
+        let roundtrip = export_musicxml(&abc).expect("altered pitch ABC should export");
+        assert!(
+            roundtrip.musicxml.matches("<alter>1</alter>").count() >= 2,
+            "main and grace altered pitches must survive XML->ABC->XML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_words_sound_120_without_metronome_keeps_playback_tempo() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
