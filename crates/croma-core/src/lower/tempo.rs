@@ -1,7 +1,7 @@
 //! Tempo (`Q:`) field parsing into the semantic tempo model.
 
 use crate::diagnostic::Span;
-use crate::model::{Fraction, TempoBeat, TempoModel};
+use crate::model::{Fraction, TempoBeat, TempoBeatRole, TempoModel};
 
 /// Parse an ABC `Q:` tempo field (ABC 2.1 §3.1.8) into a structured model.
 ///
@@ -39,6 +39,7 @@ pub(crate) fn parse_tempo_model(
     Some(TempoModel {
         text,
         beat,
+        beat_role: TempoBeatRole::PrintedMetronome,
         source_span: span,
     })
 }

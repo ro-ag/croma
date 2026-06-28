@@ -2,7 +2,7 @@
 //!
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
-use crate::model::{EventAttachments, TieRole};
+use crate::model::{EventAttachments, TempoBeatRole, TempoModel, TieRole};
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -70,6 +70,18 @@ fn tempo_display(tempo: &crate::model::TempoModel) -> String {
     out
 }
 
+fn sound_tempo_instruction(tempo: &TempoModel) -> Option<String> {
+    let beat = tempo.beat?;
+    let mut out = format!(
+        "croma-sound-tempo bpm={} beat-n={} beat-d={}",
+        beat.bpm, beat.beat_numerator, beat.beat_denominator
+    );
+    if let Some(text) = &tempo.text {
+        out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
+    }
+    Some(out)
+}
+
 fn abc_quoted_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -89,7 +101,11 @@ fn unit_length(score: &Score) -> Rational {
 }
 
 fn tempo_field(score: &Score) -> Option<String> {
-    let display = tempo_display(score.metadata.tempo_model.as_ref()?);
+    let tempo = score.metadata.tempo_model.as_ref()?;
+    if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly {
+        return None;
+    }
+    let display = tempo_display(tempo);
     (!display.is_empty()).then_some(display)
 }
 
@@ -470,7 +486,13 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             }
             TimedEventKind::ClefChange(_) => {}
             TimedEventKind::TempoChange(tempo) => {
-                out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
+                if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly
+                    && let Some(instruction) = sound_tempo_instruction(tempo)
+                {
+                    out.push_str(&format!("[I:{instruction}] "));
+                } else {
+                    out.push_str(&format!("[Q:{}] ", tempo_display(tempo)));
+                }
             }
             TimedEventKind::SectionLabel(label) => {
                 // If the label contains `[` or `]` it cannot be safely emitted

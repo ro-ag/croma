@@ -71,7 +71,18 @@ pub struct TempoModel {
     pub text: Option<String>,
     /// Beat unit and bpm, when the field carries a numeric tempo.
     pub beat: Option<TempoBeat>,
+    /// Whether the numeric tempo was a visible metronome or playback-only
+    /// MusicXML `<sound tempo>`. ABC `Q:` creates visible metronomes; imported
+    /// playback-only tempo uses a croma carrier so the round trip does not print
+    /// a metronome that was absent from the source.
+    pub beat_role: TempoBeatRole,
     pub source_span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TempoBeatRole {
+    PrintedMetronome,
+    PlaybackSoundOnly,
 }
 
 /// The numeric component of a tempo: a beat-unit fraction and its bpm.
