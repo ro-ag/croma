@@ -1237,6 +1237,26 @@ fn midi_instrument_prefers_voice_instrument_name_metadata() {
 }
 
 #[test]
+fn midi_instrument_preserves_explicit_empty_voice_instrument_name() {
+    let source = "X:1\nT:T\nL:1/8\nV:1 name=\"Staff\" nm=\"\"\n%%MIDI program 40\nK:C\nCDEF|\n";
+    let export = export_musicxml(source).expect("empty-named MIDI voice should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name></instrument-name>"),
+        "explicit empty voice nm/name should not fall back to the GM program name:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export.musicxml.contains("violin"),
+        "explicit empty voice nm/name must be authoritative over GM fallback:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn midi_program_two_integer_form_sets_channel_and_program() {
     // `%%MIDI program <chan> <prog>` (the two-integer corpus form) sets both the
     // MIDI channel and the program. abc2xml: <midi-channel>1 + <midi-program>6
@@ -1483,6 +1503,42 @@ fn croma_note_instrument_carrier_emits_note_instrument_ids() {
         export.musicxml.contains("<instrument id=\"P1-I1\"/>")
             && export.musicxml.contains("<instrument id=\"P1-I2\"/>"),
         "note-level instrument refs must be emitted before <voice>:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
+fn croma_instrument_carrier_preserves_explicit_empty_name() {
+    let source = concat!(
+        "X:1\n",
+        "T:Empty Name\n",
+        "L:1/4\n",
+        "K:C\n",
+        "%%croma-musicxml-instrument id=\"P1-I1\" name=\"\" channel=1 program=0 volume-cc=100 pan-cc=64\n",
+        "[I:croma-note-instrument id=\"P1-I1\"]C |\n",
+    );
+    let export =
+        export_musicxml(source).expect("empty-name croma instrument carrier should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<instrument-name></instrument-name>"),
+        "explicit empty instrument name must remain empty:\n{}",
+        export.musicxml
+    );
+    assert!(
+        export.musicxml.contains("<midi-channel>1</midi-channel>")
+            && export.musicxml.contains("<midi-program>1</midi-program>")
+            && export.musicxml.contains("<volume>78.74</volume>")
+            && export.musicxml.contains("<pan>0.00</pan>"),
+        "empty-name croma carrier must preserve the sibling MIDI fields:\n{}",
+        export.musicxml
+    );
+    assert!(
+        !export.musicxml.contains("acoustic_grand_piano"),
+        "empty croma instrument name must not fall back to the GM program name:\n{}",
         export.musicxml
     );
 }

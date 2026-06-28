@@ -1601,13 +1601,10 @@ fn parse_musicxml_part_instrument_directive(
     if id.is_empty() {
         return None;
     }
-    let name = fields
-        .get("name")
-        .filter(|name| !name.trim().is_empty())
-        .map(|name| TextLine {
-            text: name.clone(),
-            span,
-        });
+    let name = fields.get("name").map(|name| TextLine {
+        text: name.clone(),
+        span,
+    });
     let midi = MidiInstrumentModel {
         program: parse_croma_u8(&fields, "program").filter(|value| *value <= 127),
         channel: parse_croma_u8(&fields, "channel").filter(|value| (1..=16).contains(value)),

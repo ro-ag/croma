@@ -93,8 +93,7 @@ impl<'score> MusicXmlWriter<'score> {
                         let name = instrument
                             .name
                             .as_ref()
-                            .map(|name| name.text.trim().to_owned())
-                            .filter(|name| !name.is_empty())
+                            .map(|name| name.text.clone())
                             .or_else(|| {
                                 instrument
                                     .midi
@@ -316,9 +315,7 @@ fn voice_instrument_name(voice: &crate::model::Voice) -> Option<String> {
         .nm
         .as_ref()
         .or(voice.properties.name.as_ref())
-        .map(|line| line.text.trim())
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned)
+        .map(|line| line.text.clone())
 }
 
 /// General MIDI program name for a 0-based program number, used for the

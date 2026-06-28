@@ -207,9 +207,7 @@ fn musicxml_instrument_directive_lines(part: &crate::model::Part) -> String {
             " id=\"{}\"",
             abc_carrier_quoted(instrument.id.as_str())
         ));
-        if let Some(name) = &instrument.name
-            && !name.text.trim().is_empty()
-        {
+        if let Some(name) = &instrument.name {
             s.push_str(&format!(
                 " name=\"{}\"",
                 abc_carrier_quoted(name.text.as_str())

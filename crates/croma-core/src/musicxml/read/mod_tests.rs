@@ -721,6 +721,64 @@ fn foreign_single_voice_multi_instrument_map_round_trips() {
 }
 
 #[test]
+fn foreign_empty_instrument_name_does_not_gain_gm_fallback() {
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\">\n",
+        "      <part-name></part-name>\n",
+        "      <score-instrument id=\"P1-I1\"><instrument-name></instrument-name></score-instrument>\n",
+        "      <midi-instrument id=\"P1-I1\">\n",
+        "        <midi-channel>1</midi-channel>\n",
+        "        <midi-program>1</midi-program>\n",
+        "        <volume>78.74</volume>\n",
+        "        <pan>0.00</pan>\n",
+        "      </midi-instrument>\n",
+        "    </score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><instrument id=\"P1-I1\"/><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%croma-musicxml-instrument id=\"P1-I1\" name=\"\""),
+        "an explicit empty MusicXML instrument name must survive into ABC as name=\"\"; got:\n{abc}"
+    );
+
+    let roundtrip = export_musicxml(&abc).expect("empty-name instrument carrier should export");
+    assert!(
+        roundtrip
+            .musicxml
+            .contains("<instrument-name></instrument-name>"),
+        "ABC->MusicXML must preserve the explicit empty instrument name:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        roundtrip
+            .musicxml
+            .contains("<midi-channel>1</midi-channel>")
+            && roundtrip
+                .musicxml
+                .contains("<midi-program>1</midi-program>")
+            && roundtrip.musicxml.contains("<volume>78.74</volume>")
+            && roundtrip.musicxml.contains("<pan>0.00</pan>"),
+        "empty-name round-trip must preserve the sibling MIDI fields:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        !roundtrip.musicxml.contains("acoustic_grand_piano"),
+        "explicit empty instrument names must not be replaced by a GM fallback:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn backup_forward_durations_are_read() {
     // A multi-voice bar forces a <backup> between the two voices; reading the
     // backup duration keeps onsets aligned so the bar re-emits identically.
