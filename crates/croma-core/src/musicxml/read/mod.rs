@@ -2570,6 +2570,7 @@ impl Reader {
                     text: String::new(),
                     span: READER_SPAN,
                     control: LyricControl::Extender,
+                    same_note_extend: false,
                 });
                 continue;
             }
@@ -2590,6 +2591,7 @@ impl Reader {
                 text: raw_text(text_node).to_owned(),
                 span: READER_SPAN,
                 control: LyricControl::Syllable,
+                same_note_extend: child_element(lyric, "extend").is_some(),
             });
             // A begin/middle syllabic is the writer's signal that the note's model
             // lyrics carry a trailing Hyphen; reconstruct it so the same syllabic
@@ -2604,6 +2606,7 @@ impl Reader {
                     text: "-".to_owned(),
                     span: READER_SPAN,
                     control: LyricControl::Hyphen,
+                    same_note_extend: false,
                 });
             }
         }

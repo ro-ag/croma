@@ -133,6 +133,10 @@ pub(crate) struct LoweringState {
     /// Croma MusicXML-origin `[I:croma-harmony-text ...]` carrier waiting for
     /// the next chord-symbol attachment.
     pub(crate) pending_musicxml_harmony_text: Option<String>,
+    /// Croma MusicXML-origin `[I:croma-lyric-extend ...]` carriers waiting for
+    /// the next timed note/rest/chord event. `w:` lyric alignment applies them
+    /// to the matching verse syllable after the music body has lowered.
+    pub(crate) pending_musicxml_lyric_extends: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +212,7 @@ impl LoweringState {
             pending_decorations: Vec::new(),
             pending_musicxml_instrument: None,
             pending_musicxml_harmony_text: None,
+            pending_musicxml_lyric_extends: Vec::new(),
         }
     }
 
@@ -251,6 +256,9 @@ impl LoweringState {
         if attachments.instrument.is_none() {
             attachments.instrument = self.pending_musicxml_instrument.take();
         }
+        attachments
+            .lyric_same_note_extends
+            .append(&mut self.pending_musicxml_lyric_extends);
         attachments
     }
 
@@ -1256,6 +1264,7 @@ fn attachment_bundle_model(
             .collect(),
         instrument: None,
         lyrics: Vec::new(),
+        lyric_same_note_extends: Vec::new(),
         symbols: Vec::new(),
         ties: Vec::new(),
         slurs: Vec::new(),
