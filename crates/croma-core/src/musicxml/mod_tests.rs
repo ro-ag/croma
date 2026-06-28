@@ -1052,6 +1052,109 @@ fn invalid_musicxml_technical_carrier_does_not_emit_invalid_xml_text() {
 }
 
 #[test]
+fn musicxml_spanner_carriers_emit_notations_not_words() {
+    let source = concat!(
+        "X:1\n",
+        "M:6/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "!musicxml-glissando-start-wavy-1-hex-676c6973732e!C ",
+        "!musicxml-glissando-stop-wavy-1!D ",
+        "!musicxml-slide-start-solid-1-hex-676c6973732e!E ",
+        "!musicxml-slide-stop-solid-1!F ",
+        "!musicxml-wavy-line-start-1!!musicxml-wavy-line-stop-1!G A|\n",
+    );
+    let export = export_musicxml(source).expect("spanner carriers should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(
+            &export.musicxml,
+            "<glissando type=\"start\" number=\"1\" line-type=\"wavy\">gliss.</glissando>"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &export.musicxml,
+            "<glissando type=\"stop\" number=\"1\" line-type=\"wavy\"/>"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &export.musicxml,
+            "<slide type=\"start\" number=\"1\" line-type=\"solid\">gliss.</slide>"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &export.musicxml,
+            "<slide type=\"stop\" number=\"1\" line-type=\"solid\"/>"
+        ),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<wavy-line type=\"start\" number=\"1\"/>"),
+        1
+    );
+    assert_eq!(
+        count(&export.musicxml, "<wavy-line type=\"stop\" number=\"1\"/>"),
+        1
+    );
+    for text in [
+        "musicxml-glissando-start-wavy-1-hex-676c6973732e",
+        "musicxml-glissando-stop-wavy-1",
+        "musicxml-slide-start-solid-1-hex-676c6973732e",
+        "musicxml-slide-stop-solid-1",
+        "musicxml-wavy-line-start-1",
+        "musicxml-wavy-line-stop-1",
+    ] {
+        assert!(
+            !export.musicxml.contains(&format!("<words>{text}</words>")),
+            "{text} carrier should not be emitted as words"
+        );
+    }
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported spanner carriers should not warn"
+    );
+}
+
+#[test]
+fn invalid_musicxml_spanner_carrier_does_not_emit_invalid_xml_text() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "!musicxml-glissando-start-wavy-1-hex-01!C D E F|\n",
+    );
+    let export = export_musicxml(source).expect("invalid carrier should not break export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export.musicxml.contains('\u{1}'),
+        "invalid XML character from carrier must not reach MusicXML output"
+    );
+    assert!(
+        !export.musicxml.contains("<glissando"),
+        "invalid carrier should not emit a glissando element"
+    );
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "invalid carrier should fall back to an unsupported-decoration diagnostic"
+    );
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).

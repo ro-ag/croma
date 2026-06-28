@@ -86,12 +86,35 @@ impl<'score> MusicXmlWriter<'score> {
             };
             // MusicXML groups these per category, in schema order: ornaments,
             // technical, articulations, fermata, then arpeggiate.
+            for kind in &notation_kinds {
+                if let NotationKind::Spanner {
+                    element,
+                    spanner_type,
+                    line_type,
+                    number,
+                    text,
+                } = kind
+                {
+                    let attrs = [
+                        ("type", *spanner_type),
+                        ("number", number.as_str()),
+                        ("line-type", *line_type),
+                    ];
+                    if text.is_empty() {
+                        self.xml.empty(element, &attrs);
+                    } else {
+                        self.xml.text_element_attrs(element, &attrs, text);
+                    }
+                }
+            }
             let ornaments = notation_kinds
                 .iter()
                 .filter(|kind| {
                     matches!(
                         kind,
-                        NotationKind::Ornament(_) | NotationKind::Tremolo { .. }
+                        NotationKind::Ornament(_)
+                            | NotationKind::Tremolo { .. }
+                            | NotationKind::WavyLine { .. }
                     )
                 })
                 .collect::<Vec<_>>();
@@ -100,6 +123,9 @@ impl<'score> MusicXmlWriter<'score> {
                 for kind in ornaments {
                     match kind {
                         NotationKind::Ornament(name) => self.xml.empty(name, &[]),
+                        NotationKind::WavyLine { wavy_type, number } => self
+                            .xml
+                            .empty("wavy-line", &[("type", wavy_type), ("number", number)]),
                         NotationKind::Tremolo {
                             tremolo_type,
                             marks,
@@ -191,6 +217,19 @@ pub(crate) enum NotationKind {
         tremolo_type: &'static str,
         marks: &'static str,
     },
+    /// A MusicXML `<glissando>` or `<slide>` notation.
+    Spanner {
+        element: &'static str,
+        spanner_type: &'static str,
+        line_type: &'static str,
+        number: String,
+        text: String,
+    },
+    /// A MusicXML `<ornaments><wavy-line .../>` notation.
+    WavyLine {
+        wavy_type: &'static str,
+        number: String,
+    },
     /// A note/chord arpeggiation mark.
     Arpeggiate,
 }
@@ -253,9 +292,80 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
         "slide" => NotationKind::Articulation("scoop"),
         _ => {
             return tremolo_notation(decoration.name.as_str())
-                .or_else(|| technical_value_notation(decoration.name.as_str()));
+                .or_else(|| technical_value_notation(decoration.name.as_str()))
+                .or_else(|| spanner_notation(decoration.name.as_str()));
         }
     })
+}
+
+fn spanner_notation(name: &str) -> Option<NotationKind> {
+    if let Some(rest) = name.strip_prefix("musicxml-glissando-") {
+        return direct_spanner_notation("glissando", rest);
+    }
+    if let Some(rest) = name.strip_prefix("musicxml-slide-") {
+        return direct_spanner_notation("slide", rest);
+    }
+    let rest = name.strip_prefix("musicxml-wavy-line-")?;
+    let (wavy_type, number) = rest.split_once('-')?;
+    if number.contains('-') {
+        return None;
+    }
+    Some(NotationKind::WavyLine {
+        wavy_type: wavy_type_attr(wavy_type)?,
+        number: decimal_text(number)?.to_owned(),
+    })
+}
+
+fn direct_spanner_notation(element: &'static str, rest: &str) -> Option<NotationKind> {
+    let (head, text) = match rest.split_once("-hex-") {
+        Some((head, hex)) => (head, decode_hex_utf8(hex)?),
+        None => (rest, String::new()),
+    };
+    let mut parts = head.split('-');
+    let spanner_type = direct_spanner_type_attr(parts.next()?)?;
+    let line_type = line_type_attr(parts.next()?)?;
+    let number = decimal_text(parts.next()?)?.to_owned();
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(NotationKind::Spanner {
+        element,
+        spanner_type,
+        line_type,
+        number,
+        text,
+    })
+}
+
+fn direct_spanner_type_attr(value: &str) -> Option<&'static str> {
+    match value {
+        "start" => Some("start"),
+        "stop" => Some("stop"),
+        _ => None,
+    }
+}
+
+fn wavy_type_attr(value: &str) -> Option<&'static str> {
+    match value {
+        "start" => Some("start"),
+        "stop" => Some("stop"),
+        "continue" => Some("continue"),
+        _ => None,
+    }
+}
+
+fn line_type_attr(value: &str) -> Option<&'static str> {
+    match value {
+        "solid" => Some("solid"),
+        "dashed" => Some("dashed"),
+        "dotted" => Some("dotted"),
+        "wavy" => Some("wavy"),
+        _ => None,
+    }
+}
+
+fn decimal_text(text: &str) -> Option<&str> {
+    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())).then_some(text)
 }
 
 fn technical_value_notation(name: &str) -> Option<NotationKind> {
@@ -274,12 +384,10 @@ fn technical_value_notation(name: &str) -> Option<NotationKind> {
 }
 
 fn decimal_technical_text(name: &'static str, text: &str) -> Option<NotationKind> {
-    (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())).then_some(
-        NotationKind::TechnicalText {
-            name,
-            text: text.to_owned(),
-        },
-    )
+    decimal_text(text).map(|text| NotationKind::TechnicalText {
+        name,
+        text: text.to_owned(),
+    })
 }
 
 fn decode_hex_utf8(hex: &str) -> Option<String> {
