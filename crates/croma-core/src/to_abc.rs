@@ -125,6 +125,10 @@ fn meter_restatement_instruction() -> &'static str {
     "croma-meter-restatement"
 }
 
+fn musicxml_forward_instruction() -> &'static str {
+    "croma-musicxml-forward"
+}
+
 fn abc_quoted_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -732,6 +736,9 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
             "[I:croma-note-instrument id=\"{}\"]",
             abc_carrier_quoted(instrument.id.as_str())
         ));
+    }
+    if attachments.musicxml_forward {
+        out.push_str(&format!("[I:{}]", musicxml_forward_instruction()));
     }
     let mut primary_lyric_verses = Vec::new();
     for lyric in &attachments.lyrics {

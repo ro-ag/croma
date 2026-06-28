@@ -78,6 +78,10 @@ impl<'score> MusicXmlWriter<'score> {
                     self.write_chord(chord, sequence, part, tuplet_numbers);
                 }
                 TimedEventKind::Rest(rest) => {
+                    if timed.attachments.musicxml_forward {
+                        self.write_forward(timed.duration);
+                        return;
+                    }
                     self.write_note(
                         NoteWrite {
                             pitch: None,
