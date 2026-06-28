@@ -588,6 +588,65 @@ fn foreign_voice_numbers_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_single_unpitched_instrument_round_trips() {
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\">\n",
+        "      <part-name>Percussion</part-name>\n",
+        "      <score-instrument id=\"P1-I1\"><instrument-name>Wood Block</instrument-name></score-instrument>\n",
+        "      <midi-instrument id=\"P1-I1\">\n",
+        "        <midi-channel>10</midi-channel>\n",
+        "        <midi-unpitched>76</midi-unpitched>\n",
+        "      </midi-instrument>\n",
+        "    </score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note>\n",
+        "      <unpitched><display-step>C</display-step><display-octave>5</display-octave></unpitched>\n",
+        "      <duration>4</duration><voice>1</voice><type>quarter</type>\n",
+        "      <instrument id=\"P1-I1\"/>\n",
+        "    </note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("%%MIDI midi-unpitched 76"),
+        "MusicXML <midi-unpitched> must survive the ABC leg; got:\n{abc}"
+    );
+
+    let roundtrip = export_musicxml(&abc).expect("unpitched ABC carrier should export");
+    assert!(
+        roundtrip
+            .musicxml
+            .contains("<midi-unpitched>76</midi-unpitched>"),
+        "ABC->MusicXML must preserve the unpitched MIDI map:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        roundtrip.musicxml.contains("<unpitched>")
+            && roundtrip
+                .musicxml
+                .contains("<display-step>C</display-step>")
+            && roundtrip
+                .musicxml
+                .contains("<display-octave>5</display-octave>"),
+        "the note must remain an unpitched display note, not disappear or become a pitched note:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        !roundtrip.musicxml.contains("<pitch>"),
+        "single unpitched percussion note must not round-trip as a pitched note:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn backup_forward_durations_are_read() {
     // A multi-voice bar forces a <backup> between the two voices; reading the
     // backup duration keeps onsets aligned so the bar re-emits identically.
@@ -945,6 +1004,23 @@ fn full_midi_instrument_reconstructs_all_fields() {
     assert_eq!(midi.channel, Some(1));
     assert_eq!(midi.volume_cc, Some(100));
     assert_eq!(midi.pan_cc, Some(30));
+}
+
+#[test]
+fn midi_unpitched_reconstructs_and_writes_unpitched_notes() {
+    let abc = "X:1\nT:Block\nL:1/4\nK:C\n%%MIDI channel 10\n%%MIDI midi-unpitched 76\nc\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<midi-unpitched>76</midi-unpitched>"),
+        "precondition: midi-unpitched emits a MusicXML percussion map"
+    );
+    assert!(
+        x1.contains("<unpitched>") && !x1.contains("<pitch>"),
+        "precondition: a voice-level unpitched MIDI map emits notes as <unpitched>, not <pitch>:\n{x1}"
+    );
+    let midi = first_midi(&assert_idempotent_s3(abc));
+    assert_eq!(midi.channel, Some(10));
+    assert_eq!(midi.midi_unpitched, Some(76));
 }
 
 #[test]

@@ -26,10 +26,11 @@
 //! `initial_properties.clef`, and `<transpose><chromatic>` -> `midi_transpose`.
 //! **S3:** the `<part-list>` MIDI instruments — `<score-instrument>` /
 //! `<midi-instrument>` (`<midi-channel>`, 1-based `<midi-program>`, `<volume>`,
-//! `<pan>`) -> [`MidiInstrumentModel`] on the owning voice. This closes the
-//! forward/reverse `%%MIDI` loop (the epic's motivator): a `%%MIDI program` /
-//! `channel` / `control` directive (line-start or inline `[I:MIDI=...]`) now
-//! survives ABC -> XML -> [`Score`] -> XML byte-for-byte.
+//! `<pan>`, `<midi-unpitched>`) -> [`MidiInstrumentModel`] on the owning voice.
+//! This closes the forward/reverse `%%MIDI` loop (the epic's motivator): a
+//! `%%MIDI program` / `channel` / `control` / `midi-unpitched` directive
+//! (line-start or inline `[I:MIDI=...]`) now survives ABC -> XML -> [`Score`] ->
+//! XML byte-for-byte.
 //!
 //! **S4:** the per-`<note>` `<notations>` block and `<time-modification>` —
 //! `<tied>`/`<tie>` -> [`TieAttachment`], `<slur>` -> [`SlurAttachment`]
@@ -673,7 +674,8 @@ impl Reader {
     /// - `<midi-program>N` -> `program = N - 1` (forward is `program + 1`),
     /// - `<volume>v` -> `volume_cc = round(v * 1.27)` (forward `{:.2}` of `cc/1.27`),
     /// - `<pan>p` -> `pan_cc = round((p + 90) * 127 / 180)` (forward `{:.2}` of
-    ///   `cc/127*180 - 90`).
+    ///   `cc/127*180 - 90`),
+    /// - `<midi-unpitched>n` -> `midi_unpitched = n`.
     ///
     /// The matching `<score-instrument>/<instrument-name>` is read by id and
     /// projected into ABC `V:nm`, preserving human playback/sheet names that
@@ -716,12 +718,25 @@ impl Reader {
             .and_then(|text| self.cc_from_float(text, "volume", |v| v * 1.27));
         let pan_cc = child_text(node, "pan")
             .and_then(|text| self.cc_from_float(text, "pan", |p| (p + 90.0) * 127.0 / 180.0));
+        let midi_unpitched = child_text(node, "midi-unpitched").and_then(|text| {
+            let raw = self.parse_u16(text, "midi-unpitched")?;
+            if (1..=128).contains(&raw) {
+                u8::try_from(raw).ok()
+            } else {
+                self.warn(
+                    "musicxml.read.invalid_midi_unpitched",
+                    format!("<midi-unpitched> `{raw}` is outside the valid 1-128 range; ignored"),
+                );
+                None
+            }
+        });
 
         let model = MidiInstrumentModel {
             program,
             channel,
             volume_cc,
             pan_cc,
+            midi_unpitched,
             span: READER_SPAN,
         };
         // Drop an instrument that recovered nothing the writer would emit (so it
@@ -2734,7 +2749,16 @@ impl Reader {
     }
 
     fn read_pitch(&mut self, note_node: Node<'_, '_>) -> Option<Pitch> {
-        let pitch_node = child_element(note_node, "pitch")?;
+        if let Some(pitch_node) = child_element(note_node, "pitch") {
+            return self.read_pitched_note(pitch_node);
+        }
+        if let Some(unpitched_node) = child_element(note_node, "unpitched") {
+            return self.read_unpitched_note(unpitched_node);
+        }
+        None
+    }
+
+    fn read_pitched_note(&mut self, pitch_node: Node<'_, '_>) -> Option<Pitch> {
         let step = child_text(pitch_node, "step")
             .and_then(|text| text.trim().chars().next())
             .or_else(|| {
@@ -2761,6 +2785,33 @@ impl Reader {
         Some(Pitch {
             step,
             alter,
+            octave,
+            spelling_source: READER_SPAN,
+        })
+    }
+
+    fn read_unpitched_note(&mut self, unpitched_node: Node<'_, '_>) -> Option<Pitch> {
+        let step = child_text(unpitched_node, "display-step")
+            .and_then(|text| text.trim().chars().next())
+            .or_else(|| {
+                self.warn(
+                    "musicxml.read.unpitched_missing_display_step",
+                    "<unpitched> has no usable <display-step>; note skipped",
+                );
+                None
+            })?;
+        let octave = child_text(unpitched_node, "display-octave")
+            .and_then(|text| text.trim().parse::<i8>().ok())
+            .or_else(|| {
+                self.warn(
+                    "musicxml.read.unpitched_missing_display_octave",
+                    "<unpitched> has no usable <display-octave>; note skipped",
+                );
+                None
+            })?;
+        Some(Pitch {
+            step,
+            alter: 0,
             octave,
             spelling_source: READER_SPAN,
         })

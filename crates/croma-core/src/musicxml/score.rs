@@ -58,11 +58,12 @@ impl<'score> MusicXmlWriter<'score> {
 
     /// Emit `<score-instrument>` / `<midi-instrument>` for each voice in this
     /// part that carries score-translatable `%%MIDI` sound metadata (program,
-    /// channel, CC7 volume, or CC10 pan). The instrument name is the General MIDI
-    /// name when a program is present, otherwise the part name (never abc2xml's
-    /// literal "no name" filler). abc2midi/GM programs are 0-based; the MusicXML
-    /// `<midi-program>` is 1-based (GM+1). `<volume>` is `cc / 1.27` and `<pan>`
-    /// is `cc / 127 * 180 - 90`, matching abc2xml.
+    /// channel, CC7 volume, CC10 pan, or MusicXML-origin `midi-unpitched`). The
+    /// instrument name is the General MIDI name when a program is present,
+    /// otherwise the part name (never abc2xml's literal "no name" filler).
+    /// abc2midi/GM programs are 0-based; the MusicXML `<midi-program>` is
+    /// 1-based (GM+1). `<volume>` is `cc / 1.27` and `<pan>` is
+    /// `cc / 127 * 180 - 90`, matching abc2xml.
     fn write_part_instruments(&mut self, part: &Part, part_id: &str) {
         let fallback_name = part_name(part, self.score);
         let instruments: Vec<(String, String, MidiInstrumentModel)> = part
@@ -103,6 +104,10 @@ impl<'score> MusicXmlWriter<'score> {
             if let Some(program) = midi.program {
                 self.xml
                     .text_element("midi-program", &(u16::from(program) + 1).to_string());
+            }
+            if let Some(unpitched) = midi.midi_unpitched {
+                self.xml
+                    .text_element("midi-unpitched", &unpitched.to_string());
             }
             if let Some(volume) = midi.volume_cc {
                 self.xml
@@ -497,6 +502,10 @@ fn measure_sequences<'score>(
                 actual_duration: measure
                     .map(|measure| measure.actual_duration)
                     .unwrap_or_else(Fraction::zero),
+                unpitched: voice
+                    .midi_instrument
+                    .and_then(|midi| midi.midi_unpitched)
+                    .is_some(),
                 events,
             });
         }
@@ -527,6 +536,10 @@ fn measure_sequences<'score>(
                     staff: voice.staff,
                     expected_duration: Some(overlay.expected_duration),
                     actual_duration: overlay.actual_duration,
+                    unpitched: voice
+                        .midi_instrument
+                        .and_then(|midi| midi.midi_unpitched)
+                        .is_some(),
                     events: overlay_events,
                 });
             }
