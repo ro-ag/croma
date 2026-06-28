@@ -1413,6 +1413,101 @@ fn accent_articulation_round_trips() {
 }
 
 #[test]
+fn foreign_extended_articulations_survive_abc_projection() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Part</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note>
+        <rest/>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><articulations><caesura/></articulations></notations>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><articulations><detached-legato/></articulations></notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><articulations><falloff/></articulations></notations>
+      </note>
+      <note>
+        <pitch><step>F</step><octave>4</octave></pitch>
+        <duration>4</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+        <notations><articulations><doit/></articulations></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let report = read_musicxml(xml);
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "musicxml.read.unsupported_notation"),
+        "extended articulations must read without unsupported-notation diagnostics: {:?}",
+        report.diagnostics
+    );
+    let score = report.value;
+    let expected = ["caesura", "detached-legato", "falloff", "doit"];
+    for (index, name) in expected.iter().enumerate() {
+        assert!(
+            attachments_at(&score, index)
+                .decorations
+                .iter()
+                .any(|decoration| decoration.name == *name),
+            "{name} should survive in the reconstructed model"
+        );
+    }
+
+    let direct_xml = write_score_partwise(&score).value;
+    for tag in expected {
+        assert!(
+            direct_xml.contains(&format!("<{tag}/>")),
+            "{tag} should re-emit directly after MusicXML read:\n{direct_xml}"
+        );
+    }
+
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    for name in expected {
+        assert!(
+            abc.contains(&format!("!{name}!")),
+            "{name} should survive in the ABC projection:\n{abc}"
+        );
+    }
+    let roundtrip = export_musicxml(&abc)
+        .expect("ABC projection of extended articulations should export")
+        .musicxml;
+    for tag in expected {
+        assert!(
+            roundtrip.contains(&format!("<{tag}/>")),
+            "{tag} should survive MusicXML -> ABC -> MusicXML:\n{roundtrip}"
+        );
+    }
+}
+
+#[test]
 fn trill_ornament_round_trips() {
     let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C\n!trill!C D E F |\n";
     let x1 = export(abc);

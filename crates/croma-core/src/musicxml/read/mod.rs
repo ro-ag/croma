@@ -4001,6 +4001,10 @@ fn decoration_for_notation_element(element: &str) -> Option<&'static str> {
         "strong-accent" => "marcato",
         "breath-mark" => "breath",
         "scoop" => "slide",
+        "caesura" => "caesura",
+        "detached-legato" => "detached-legato",
+        "falloff" => "falloff",
+        "doit" => "doit",
         // Ornaments.
         "trill-mark" => "trill",
         "mordent" => "mordent",
