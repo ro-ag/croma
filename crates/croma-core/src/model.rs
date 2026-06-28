@@ -256,6 +256,10 @@ pub struct MeasureId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Measure {
     pub id: MeasureId,
+    /// MusicXML-origin `<measure number>` display label. ABC-origin scores use
+    /// the numeric [`MeasureId::number`]; imported MusicXML can use labels such
+    /// as `0`, repeated movement-local numbers, or `X1`.
+    pub display_number: Option<String>,
     pub source_span: Span,
     pub expected_duration: Option<Rational>,
     pub actual_duration: Rational,
@@ -623,6 +627,7 @@ pub enum StemDirectionModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceMeasureTimeline {
     pub index: u32,
+    pub display_number: Option<String>,
     pub span: Span,
     pub events: Vec<VoiceTimedEvent>,
     pub overlays: Vec<OverlaySegment>,

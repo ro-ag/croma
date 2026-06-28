@@ -156,14 +156,14 @@ impl<'score> MusicXmlWriter<'score> {
         let overlay_voice_numbers = overlay_voice_numbers(part, &voice_numbers);
         let ending_stops = ending_stop_schedule(part, &measure_ids);
         for (measure_position, measure_id) in measure_ids.iter().enumerate() {
-            let number = measure_id.number.to_string();
+            let measure_refs = part_measure_refs(part, *measure_id);
+            let number = measure_display_number(&measure_refs, *measure_id);
             self.xml.start("measure", &[("number", number.as_str())]);
             if measure_position == 0 {
                 self.write_attributes(part);
                 self.write_initial_directions(part_index == 0);
             }
 
-            let measure_refs = part_measure_refs(part, *measure_id);
             let left_barlines = unique_barlines(&measure_refs, true);
             let endings = unique_endings(&measure_refs);
             // A left forward-repeat is either deferred from a previous
@@ -479,6 +479,15 @@ fn part_measure_refs(part: &Part, id: MeasureId) -> Vec<&Measure> {
         .flat_map(|voice| &voice.measures)
         .filter(|measure| measure.id == id)
         .collect()
+}
+
+fn measure_display_number(measures: &[&Measure], id: MeasureId) -> String {
+    measures
+        .iter()
+        .find_map(|measure| measure.display_number.as_deref())
+        .filter(|number| !number.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| id.number.to_string())
 }
 
 fn measure_sequences<'score>(

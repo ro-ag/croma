@@ -891,6 +891,7 @@ impl Reader {
                 accumulator.events.extend(voice_measure.events);
                 accumulator.measures.push(Measure {
                     id: measure_id,
+                    display_number: outcome.measure.display_number.clone(),
                     source_span: READER_SPAN,
                     expected_duration: voice_measure.expected_duration,
                     actual_duration: voice_measure.actual_duration,
@@ -1078,6 +1079,11 @@ impl Reader {
         // It is a measure-level glyph hint (`Measure.multiple_rest`), not a
         // key/meter/clef change.
         let mut multiple_rest: Option<u32> = None;
+        let display_number = measure_node
+            .attribute("number")
+            .map(str::trim)
+            .filter(|number| !number.is_empty())
+            .map(ToOwned::to_owned);
 
         for child in element_children(measure_node) {
             match child.tag_name().name() {
@@ -1469,6 +1475,7 @@ impl Reader {
             header_tempo,
             measure: Measure {
                 id: measure_id,
+                display_number,
                 source_span: READER_SPAN,
                 // The measure skeleton's own duration belongs to voice 1; the
                 // per-voice durations are carried in `VoiceMeasure` and applied at

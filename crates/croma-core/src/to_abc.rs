@@ -2,7 +2,7 @@
 //!
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
-use crate::model::{AlignedLyric, EventAttachments, TempoBeatRole, TempoModel, TieRole};
+use crate::model::{AlignedLyric, EventAttachments, Measure, TempoBeatRole, TempoModel, TieRole};
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -160,6 +160,38 @@ fn meter_restatement_instruction() -> &'static str {
 
 fn musicxml_forward_instruction() -> &'static str {
     "croma-musicxml-forward"
+}
+
+fn measure_number_instruction(display_number: &str) -> String {
+    let mut out = "croma-measure-number".to_owned();
+    if needs_hex_inline_carrier(display_number) {
+        out.push_str(&format!(" n-hex={}", hex_utf8(display_number)));
+    } else if display_number.chars().any(char::is_whitespace) {
+        out.push_str(&format!(" n=\"{}\"", abc_carrier_quoted(display_number)));
+    } else {
+        out.push_str(&format!(" n={display_number}"));
+    }
+    out
+}
+
+fn measure_number_carrier(measure: &Measure) -> Option<String> {
+    let display_number = measure.display_number.as_deref()?.trim();
+    if display_number.is_empty() {
+        return None;
+    }
+    let canonical_number = measure.id.index.saturating_add(1).to_string();
+    (display_number != canonical_number).then(|| measure_number_instruction(display_number))
+}
+
+fn barline_starts_measure(kind: BarlineKind) -> bool {
+    matches!(
+        kind,
+        BarlineKind::Regular | BarlineKind::Initial | BarlineKind::RepeatStart
+    )
+}
+
+fn carrier_follows_leading_barline(kind: &TimedEventKind, joined: Option<&str>) -> bool {
+    matches!(kind, TimedEventKind::Barline(barline) if joined.is_some() || barline_starts_measure(barline.kind))
 }
 
 fn abc_quoted_text(text: &str) -> String {
@@ -410,6 +442,13 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
         }
     }
     let (markers, scales) = tuplet_layout(&voice.events);
+    let measure_number_carriers = voice
+        .measures
+        .iter()
+        .filter_map(|measure| {
+            measure_number_carrier(measure).map(|carrier| (measure.id.index, carrier))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     // Adjacent barline pairs that lowering splits out of ONE source token must
     // be re-joined on emission: `||:` -> [Double, RepeatStart] and `[|:` ->
     // [Initial, RepeatStart]. Both halves of a split token share the SAME
@@ -449,6 +488,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
         if skip[idx] {
             continue;
         }
+        let mut measure_carrier_after_barline = None;
         // Measure transition without a closing barline: flush that measure's
         // overlays before anything from the new measure is emitted.
         let m = event.measure.index;
@@ -464,6 +504,13 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             write_sparse_voice_measure_gaps(&mut out, missing_start, m);
             current_measure = Some(m);
             measure_event_seen = false;
+            if let Some(carrier) = measure_number_carriers.get(&m) {
+                if carrier_follows_leading_barline(&event.kind, joined[idx]) {
+                    measure_carrier_after_barline = Some(carrier.as_str());
+                } else {
+                    out.push_str(&format!("[I:{carrier}] "));
+                }
+            }
         }
         // A barline that is not the very first event of its measure closes it
         // (even a barline-only measure: `| & ... |`); flush overlays before it.
@@ -567,6 +614,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::Barline(b) => {
                 out.push_str(joined[idx].unwrap_or_else(|| barline_str(b.kind)));
                 out.push(' ');
+                if let Some(carrier) = measure_carrier_after_barline {
+                    out.push_str(&format!("[I:{carrier}] "));
+                }
             }
             TimedEventKind::RepeatEnding(r) => {
                 out.push_str(&ending_str(r));

@@ -36,6 +36,10 @@ pub(crate) enum LoweredEvent {
         label: String,
         span: Span,
     },
+    /// MusicXML-origin source measure label for the current ABC measure.
+    MeasureNumber {
+        display_number: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
