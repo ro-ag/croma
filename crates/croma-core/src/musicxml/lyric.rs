@@ -15,6 +15,9 @@ impl<'score> MusicXmlWriter<'score> {
                     let syllabic = self.syllabic_for_lyric(lyric, voice_key, lyrics);
                     self.xml.text_element("syllabic", syllabic);
                     self.xml.text_element("text", &lyric.text);
+                    if lyric.same_note_extend {
+                        self.xml.empty("extend", &[]);
+                    }
                 }
                 LyricControl::Hyphen => {}
                 LyricControl::Extender => {

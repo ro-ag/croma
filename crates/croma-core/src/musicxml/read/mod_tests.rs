@@ -4773,6 +4773,20 @@ mod abc_completion {
         score
     }
 
+    fn lyric_block<'a>(xml: &'a str, text: &str) -> &'a str {
+        let text_pos = xml
+            .find(&format!("<text>{text}</text>"))
+            .unwrap_or_else(|| panic!("lyric text {text:?} not found in:\n{xml}"));
+        let start = xml[..text_pos]
+            .rfind("<lyric")
+            .expect("lyric text should be inside a lyric block");
+        let end = xml[text_pos..]
+            .find("</lyric>")
+            .map(|offset| text_pos + offset + "</lyric>".len())
+            .expect("lyric block should close");
+        &xml[start..end]
+    }
+
     /// Lower an ABC fixture to a Score (panicking on a lower failure).
     fn lower(abc: &str) -> Score {
         let document = parse_document(abc, ParseOptions::default()).value;
@@ -4886,6 +4900,91 @@ mod abc_completion {
             "playback-only sound tempo must not gain a printed metronome:\n{}",
             roundtrip.musicxml
         );
+    }
+
+    #[test]
+    fn foreign_lyric_text_with_same_note_extend_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>non</text><extend/></lyric>",
+            "</note>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let direct_xml = write_score_partwise(&read_musicxml(xml).value).value;
+        let direct_lyric = lyric_block(&direct_xml, "non");
+        assert!(
+            direct_lyric.contains("<text>non</text>") && direct_lyric.contains("<extend/>"),
+            "direct MusicXML read/write must keep text+extend in one lyric block:\n{direct_xml}"
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-lyric-extend verse=1]C"),
+            "ABC projection needs a croma carrier because w: cannot spell same-note lyric extend:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("lyric same-note extend carrier should export");
+        let roundtrip_lyric = lyric_block(&roundtrip.musicxml, "non");
+        assert!(
+            roundtrip_lyric.contains("<text>non</text>") && roundtrip_lyric.contains("<extend/>"),
+            "MusicXML round trip must keep text+extend in one lyric block:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_multi_verse_same_note_lyric_extends_survive_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>one</text><extend/></lyric>",
+            "<lyric number=\"2\"><syllabic>single</syllabic><text>two</text><extend/></lyric>",
+            "</note>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-lyric-extend verse=1]")
+                && abc.contains("[I:croma-lyric-extend verse=2]"),
+            "ABC projection should preserve each verse's same-note extend carrier:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("multi-verse lyric same-note extends should export");
+        for text in ["one", "two"] {
+            let lyric = lyric_block(&roundtrip.musicxml, text);
+            assert!(
+                lyric.contains(&format!("<text>{text}</text>")) && lyric.contains("<extend/>"),
+                "MusicXML round trip must keep text+extend for lyric {text:?}:\n{}",
+                roundtrip.musicxml
+            );
+        }
     }
 
     #[test]

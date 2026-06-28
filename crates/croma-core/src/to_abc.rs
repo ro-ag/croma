@@ -90,6 +90,10 @@ fn harmony_text_instruction(text: &str) -> String {
     }
 }
 
+fn lyric_extend_instruction(verse: u32) -> String {
+    format!("croma-lyric-extend verse={verse}")
+}
+
 fn abc_quoted_text(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -682,6 +686,11 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
             "[I:croma-note-instrument id=\"{}\"]",
             abc_carrier_quoted(instrument.id.as_str())
         ));
+    }
+    for lyric in &attachments.lyrics {
+        if lyric.control == crate::model::LyricControl::Syllable && lyric.same_note_extend {
+            out.push_str(&format!("[I:{}]", lyric_extend_instruction(lyric.verse)));
+        }
     }
     // Event slur-opens next, then quoted strings — both `"G7"(DE)` and
     // `("G7"DE)` now parse with the chord symbol bound to `D`; the slur-first

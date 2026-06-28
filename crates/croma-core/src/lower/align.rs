@@ -138,6 +138,7 @@ fn align_lyric_line(
                             text: token.text.clone(),
                             span: token.span,
                             control: LyricControl::Syllable,
+                            same_note_extend: false,
                         },
                     );
                     position += 1;
@@ -169,6 +170,7 @@ fn align_lyric_line(
                             text: token.text.clone(),
                             span: token.span,
                             control: LyricControl::Hyphen,
+                            same_note_extend: false,
                         },
                     );
                 }
@@ -183,6 +185,7 @@ fn align_lyric_line(
                             text: String::new(),
                             span: token.span,
                             control: LyricControl::Extender,
+                            same_note_extend: false,
                         },
                     );
                     position += 1;
@@ -476,8 +479,18 @@ fn advance_bar_marker(
     next
 }
 
-fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, lyric: AlignedLyric) {
+fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, mut lyric: AlignedLyric) {
     if let Some(event) = alignable_event_mut(voice, reference) {
+        if lyric.control == LyricControl::Syllable
+            && let Some(index) = event
+                .attachments
+                .lyric_same_note_extends
+                .iter()
+                .position(|verse| *verse == lyric.verse)
+        {
+            event.attachments.lyric_same_note_extends.remove(index);
+            lyric.same_note_extend = true;
+        }
         event.attachments.lyrics.push(lyric.clone());
         event.lyrics.push(lyric);
     }

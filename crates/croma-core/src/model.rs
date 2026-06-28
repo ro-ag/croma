@@ -374,6 +374,7 @@ pub struct EventAttachments {
     pub decorations: Vec<DecorationAttachment>,
     pub instrument: Option<MusicXmlInstrumentRef>,
     pub lyrics: Vec<AlignedLyric>,
+    pub lyric_same_note_extends: Vec<u32>,
     pub symbols: Vec<AlignedSymbol>,
     pub ties: Vec<TieAttachment>,
     pub slurs: Vec<SlurAttachment>,
@@ -389,6 +390,7 @@ impl EventAttachments {
             && self.decorations.is_empty()
             && self.instrument.is_none()
             && self.lyrics.is_empty()
+            && self.lyric_same_note_extends.is_empty()
             && self.symbols.is_empty()
             && self.ties.is_empty()
             && self.slurs.is_empty()
@@ -405,6 +407,8 @@ impl EventAttachments {
             self.instrument = other.instrument;
         }
         self.lyrics.extend(other.lyrics);
+        self.lyric_same_note_extends
+            .extend(other.lyric_same_note_extends);
         self.symbols.extend(other.symbols);
         self.ties.extend(other.ties);
         self.slurs.extend(other.slurs);
@@ -673,6 +677,10 @@ pub struct AlignedLyric {
     pub text: String,
     pub span: Span,
     pub control: LyricControl,
+    /// Foreign MusicXML can put `<text>` and `<extend/>` in the same `<lyric>`
+    /// element. ABC `w:` cannot spell that directly, so croma preserves it with
+    /// a private inline carrier when projecting MusicXML to ABC.
+    pub same_note_extend: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

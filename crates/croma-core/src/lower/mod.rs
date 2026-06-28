@@ -533,6 +533,12 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_harmony_text = Some(harmony_text);
                     return;
                 }
+                if let Some(verse) = parse_lyric_extend_instruction(&inline.value.value) {
+                    self.current_state()
+                        .pending_musicxml_lyric_extends
+                        .push(verse);
+                    return;
+                }
                 if let Some(tempo) =
                     parse_sound_tempo_instruction(&inline.value.value, inline.value.span)
                 {
@@ -1665,6 +1671,16 @@ fn parse_harmony_text_instruction(value: &str) -> Option<String> {
         return Some(String::new());
     }
     fields.get("text").cloned()
+}
+
+fn parse_lyric_extend_instruction(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-lyric-extend")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    parse_croma_u32(&fields, "verse").filter(|verse| *verse > 0)
 }
 
 fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> {
