@@ -3743,6 +3743,37 @@ fn grace_groups_at(score: &Score, index: usize) -> &[crate::model::GraceGroupAtt
         .grace_groups
 }
 
+fn grace_note_decoration_names(
+    group: &crate::model::GraceGroupAttachment,
+    event_index: usize,
+) -> Vec<&str> {
+    use crate::model::GraceEventKind;
+    match &group.events[event_index].kind {
+        GraceEventKind::Note(note) => note
+            .decorations
+            .iter()
+            .map(|decoration| decoration.name.as_str())
+            .collect(),
+        other => panic!("expected a grace Note, got {other:?}"),
+    }
+}
+
+fn grace_chord_member_decoration_names(
+    group: &crate::model::GraceGroupAttachment,
+    event_index: usize,
+    member_index: usize,
+) -> Vec<&str> {
+    use crate::model::GraceEventKind;
+    match &group.events[event_index].kind {
+        GraceEventKind::Chord(members) => members[member_index]
+            .decorations
+            .iter()
+            .map(|decoration| decoration.name.as_str())
+            .collect(),
+        other => panic!("expected a grace Chord, got {other:?}"),
+    }
+}
+
 #[test]
 fn single_grace_round_trips_and_reconstructs_group() {
     use crate::model::GraceEventKind;
@@ -3772,6 +3803,53 @@ fn single_grace_round_trips_and_reconstructs_group() {
         }
         other => panic!("expected a grace Note, got {other:?}"),
     }
+}
+
+#[test]
+fn grace_note_decorations_round_trip() {
+    // Decorations inside the grace braces bind to the grace note itself, not the
+    // following main note. This covers the PDMX residuals where grace-note
+    // fermata/staccato/fingering notations were silently dropped.
+    let abc = "X:1\nT:GDeco\nL:1/4\nK:C\n{!staccato!!4!a}!fermata!G\n";
+    let x1 = export(abc);
+    assert!(
+        x1.contains("<staccato/>") && x1.contains("<fingering>4</fingering>"),
+        "precondition: grace-note decorations emit MusicXML notations on the grace note:\n{x1}"
+    );
+    let score = assert_idempotent_s6c(abc);
+    let names = grace_note_decoration_names(&grace_groups_at(&score, 0)[0], 0);
+    assert!(
+        names.contains(&"staccato") && names.contains(&"4"),
+        "the grace note keeps its own decorations, got {names:?}"
+    );
+    assert!(
+        attachments_at(&score, 0)
+            .decorations
+            .iter()
+            .any(|decoration| decoration.name == "fermata"),
+        "the following main note keeps its separate fermata"
+    );
+}
+
+#[test]
+fn grace_dynamic_decoration_round_trip() {
+    // Dynamics are MusicXML directions, not note-local notations. When the ABC
+    // dynamic is inside the grace braces, it belongs to the grace note; when it
+    // precedes the grace group, it still belongs to the following principal note.
+    let abc = "X:1\nT:GDyn\nL:1/4\nK:C\n{!p!a}!f!G\n";
+    let score = assert_idempotent_s6c(abc);
+    let names = grace_note_decoration_names(&grace_groups_at(&score, 0)[0], 0);
+    assert_eq!(
+        names,
+        vec!["p"],
+        "the grace note keeps its own dynamic decoration"
+    );
+    let principal = &attachments_at(&score, 0).decorations;
+    assert_eq!(principal.len(), 1, "one decoration on the principal note");
+    assert_eq!(
+        principal[0].name, "f",
+        "the principal note keeps the dynamic outside the grace braces"
+    );
 }
 
 #[test]
@@ -3920,6 +3998,28 @@ fn grace_chord_round_trips_and_reconstructs_members() {
 }
 
 #[test]
+fn grace_chord_member_decorations_round_trip() {
+    let abc = "X:1\nT:GChordDeco\nM:4/4\nL:1/4\nK:C\n{[C!trill!EG]}A B C D|\n";
+    let score = assert_idempotent_s6c(abc);
+    let group = &grace_groups_at(&score, 0)[0];
+    assert_eq!(
+        grace_chord_member_decoration_names(group, 0, 0),
+        Vec::<&str>::new(),
+        "the first grace chord member has no decoration"
+    );
+    assert_eq!(
+        grace_chord_member_decoration_names(group, 0, 1),
+        vec!["trill"],
+        "the second grace chord member keeps its trill"
+    );
+    assert_eq!(
+        grace_chord_member_decoration_names(group, 0, 2),
+        Vec::<&str>::new(),
+        "the third grace chord member has no decoration"
+    );
+}
+
+#[test]
 fn grace_rest_round_trips() {
     use crate::model::{GraceEventKind, RestVisibility};
     // {x}G : a grace REST (invisible x rest) -> <note print-object="no"><grace/>
@@ -3972,6 +4072,32 @@ fn after_grace_at_measure_end_binds_to_preceding_note() {
             .grace_groups
             .is_empty(),
         "the trailing grace is an after-grace, not a before-grace"
+    );
+}
+
+#[test]
+fn after_grace_note_decorations_round_trip() {
+    // Trailing grace groups use `after_grace_groups`, so guard that decorated
+    // after-grace notes keep their notations too.
+    let abc = "X:1\nT:TrailingDeco\nM:4/4\nL:1/8\nK:C\nTe6{!staccato!d!4!e}|d2f f2f|\n";
+    let score = assert_idempotent_s6c(abc);
+    let after = &score.parts[0].voices[0].events[0]
+        .attachments
+        .after_grace_groups;
+    assert_eq!(
+        after.len(),
+        1,
+        "one after-grace group on the principal note"
+    );
+    assert_eq!(
+        grace_note_decoration_names(&after[0], 0),
+        vec!["staccato"],
+        "first after-grace note keeps staccato"
+    );
+    assert_eq!(
+        grace_note_decoration_names(&after[0], 1),
+        vec!["4"],
+        "second after-grace note keeps fingering"
     );
 }
 
@@ -6144,6 +6270,52 @@ mod abc_completion {
             }
         }
         starts
+    }
+
+    #[test]
+    fn foreign_grace_note_decorations_survive_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><grace/><pitch><step>B</step><octave>4</octave></pitch>",
+            "<voice>1</voice><type>eighth</type>",
+            "<notations><fermata type=\"upright\"/><articulations><staccato/></articulations></notations>",
+            "</note>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let names = grace_note_decoration_names(
+            &score.parts[0].voices[0].events[0].attachments.grace_groups[0],
+            0,
+        );
+        assert_eq!(
+            names,
+            vec!["fermata", "staccato"],
+            "foreign grace-note notations reconstruct onto the grace note"
+        );
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("{!fermata!!staccato!B}C2"),
+            "foreign grace-note decorations must remain inside the grace braces:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("decorated grace-note ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains("<fermata type=\"upright\"/>")
+                && roundtrip.musicxml.contains("<staccato/>"),
+            "MusicXML round trip must preserve grace-note notations:\n{}",
+            roundtrip.musicxml
+        );
     }
 
     #[test]

@@ -1400,6 +1400,9 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
         }
         match &grace.kind {
             GraceEventKind::Note(note) => {
+                for deco in &note.decorations {
+                    out.push_str(&decoration_str(&deco.name));
+                }
                 out.push_str(note_accidental(
                     note.written_accidental.as_ref().map(|m| m.kind),
                 ));
@@ -1410,6 +1413,9 @@ fn grace_str(group: &crate::model::GraceGroupAttachment) -> String {
             GraceEventKind::Chord(members) => {
                 out.push('[');
                 for note in members {
+                    for deco in &note.decorations {
+                        out.push_str(&decoration_str(&deco.name));
+                    }
                     out.push_str(note_accidental(
                         note.written_accidental.as_ref().map(|m| m.kind),
                     ));

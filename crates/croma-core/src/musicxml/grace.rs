@@ -1,5 +1,6 @@
 use crate::model::{
-    EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment, Part,
+    EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment, GraceNoteEvent,
+    Part,
 };
 
 use super::{
@@ -64,7 +65,7 @@ impl<'score> MusicXmlWriter<'score> {
         for event in &group.events {
             match &event.kind {
                 GraceEventKind::Note(note) => {
-                    let attachments = grace_note_attachments(group, event, first_note);
+                    let attachments = grace_event_attachments(group, event, first_note, note);
                     self.write_grace_note(
                         GraceNoteWrite {
                             note,
@@ -85,7 +86,7 @@ impl<'score> MusicXmlWriter<'score> {
                     first_chord_member = false;
                 }
                 GraceEventKind::Rest(rest) => {
-                    let attachments = grace_note_attachments(group, event, first_note);
+                    let attachments = grace_rest_attachments(group, event, first_note);
                     self.write_note(
                         NoteWrite {
                             pitch: None,
@@ -111,9 +112,9 @@ impl<'score> MusicXmlWriter<'score> {
                     let mut event_first_note = true;
                     for note in notes {
                         let attachments = if event_first_note {
-                            grace_note_attachments(group, event, first_note)
+                            grace_event_attachments(group, event, first_note, note)
                         } else {
-                            EventAttachments::default()
+                            grace_member_attachments(note)
                         };
                         self.write_grace_note(
                             GraceNoteWrite {
@@ -166,10 +167,24 @@ impl<'score> MusicXmlWriter<'score> {
             part,
             tuplet_numbers,
         );
+        // Direction-class grace decorations follow the grace note; directions
+        // before a grace run are principal-note prefixes.
+        self.write_harmony_and_directions(attachments, sequence, part);
     }
 }
 
-fn grace_note_attachments(
+fn grace_event_attachments(
+    group: &GraceGroupAttachment,
+    event: &GraceEvent,
+    first_note: bool,
+    note: &GraceNoteEvent,
+) -> EventAttachments {
+    let mut attachments = grace_rest_attachments(group, event, first_note);
+    attachments.decorations = note.decorations.clone();
+    attachments
+}
+
+fn grace_rest_attachments(
     group: &GraceGroupAttachment,
     event: &GraceEvent,
     first_note: bool,
@@ -181,6 +196,13 @@ fn grace_note_attachments(
     slurs.extend(event.slurs.iter().copied());
     EventAttachments {
         slurs,
+        ..EventAttachments::default()
+    }
+}
+
+fn grace_member_attachments(note: &GraceNoteEvent) -> EventAttachments {
+    EventAttachments {
+        decorations: note.decorations.clone(),
         ..EventAttachments::default()
     }
 }

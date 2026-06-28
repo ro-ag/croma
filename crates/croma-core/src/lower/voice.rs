@@ -1454,6 +1454,12 @@ fn grace_note_event_model(note: &NoteSyntax, state: &mut LoweringState) -> Grace
                 .map(|accidental| accidental.span)
                 .unwrap_or(note.span),
         }),
+        decorations: note
+            .attachments
+            .decorations
+            .iter()
+            .map(decoration_attachment_model)
+            .collect(),
         length_multiplier: length_multiplier(note.length.as_ref()),
     }
 }
