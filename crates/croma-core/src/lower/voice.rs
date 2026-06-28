@@ -589,6 +589,19 @@ impl LoweringState {
                 attachments
                     .tuplets
                     .append(&mut self.pending_musicxml_tuplets);
+                // Same for lyric carriers the reader flushes before a chord:
+                // a same-note `<extend/>` melisma (`[I:croma-lyric-extend ...]`)
+                // and a repeated same-verse `<lyric>` (`[I:croma-lyric-duplicate
+                // ...]`) bind to the chord head, mirroring the note/rest path
+                // (`take_timed_attachments`). Omitting this dropped the hold and
+                // the duplicate credit lyrics on chord-led notes (PDMX lyric
+                // cluster).
+                attachments
+                    .lyric_same_note_extends
+                    .append(&mut self.pending_musicxml_lyric_extends);
+                attachments
+                    .lyric_same_note_duplicates
+                    .append(&mut self.pending_musicxml_lyric_duplicates);
             }
             let octave =
                 lowered_octave(&member.note).saturating_add(voice_octave_shift(&self.properties));
