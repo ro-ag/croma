@@ -77,9 +77,42 @@ fn sound_tempo_instruction(tempo: &TempoModel) -> Option<String> {
         beat.bpm, beat.beat_numerator, beat.beat_denominator
     );
     if let Some(text) = &tempo.text {
-        out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
+        if needs_hex_inline_carrier(text) {
+            out.push_str(&format!(" text-hex={}", hex_utf8(text)));
+        } else {
+            out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
+        }
     }
     Some(out)
+}
+
+fn tempo_instruction(tempo: &TempoModel) -> Option<String> {
+    if tempo.text.is_none() && tempo.beat.is_none() {
+        return None;
+    }
+    let role = match tempo.beat_role {
+        TempoBeatRole::PrintedMetronome => "printed",
+        TempoBeatRole::PlaybackSoundOnly => "sound",
+    };
+    let mut out = format!("croma-tempo role={role}");
+    if let Some(text) = &tempo.text {
+        if needs_hex_inline_carrier(text) {
+            out.push_str(&format!(" text-hex={}", hex_utf8(text)));
+        } else {
+            out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
+        }
+    }
+    if let Some(beat) = tempo.beat {
+        out.push_str(&format!(
+            " bpm={} beat-n={} beat-d={}",
+            beat.bpm, beat.beat_numerator, beat.beat_denominator
+        ));
+    }
+    Some(out)
+}
+
+fn tempo_needs_instruction(tempo: &TempoModel) -> bool {
+    tempo.text.as_deref().is_some_and(needs_hex_inline_carrier)
 }
 
 fn harmony_text_instruction(text: &str) -> String {
@@ -149,11 +182,19 @@ fn unit_length(score: &Score) -> Rational {
 
 fn tempo_field(score: &Score) -> Option<String> {
     let tempo = score.metadata.tempo_model.as_ref()?;
-    if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly {
+    if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly || tempo_needs_instruction(tempo) {
         return None;
     }
     let display = tempo_display(tempo);
     (!display.is_empty()).then_some(display)
+}
+
+fn initial_tempo_instruction(score: &Score) -> Option<String> {
+    let tempo = score.metadata.tempo_model.as_ref()?;
+    if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly || !tempo_needs_instruction(tempo) {
+        return None;
+    }
+    tempo_instruction(tempo)
 }
 
 fn write_body(score: &Score, unit: Rational) -> String {
@@ -163,7 +204,7 @@ fn write_body(score: &Score, unit: Rational) -> String {
         && score.parts[0].voices[0].id.value == "1"
         && score.parts[0].voices[0].properties == crate::model::VoicePropertiesModel::default();
     let mut body = String::new();
-    for part in &score.parts {
+    for (part_index, part) in score.parts.iter().enumerate() {
         for (voice_index, voice) in part.voices.iter().enumerate() {
             if !single {
                 body.push_str(&voice_header_line(voice));
@@ -172,6 +213,12 @@ fn write_body(score: &Score, unit: Rational) -> String {
                 body.push_str(&musicxml_instrument_directive_lines(part));
             }
             body.push_str(&midi_directive_lines(voice));
+            if part_index == 0
+                && voice_index == 0
+                && let Some(instruction) = initial_tempo_instruction(score)
+            {
+                body.push_str(&format!("[I:{instruction}] "));
+            }
             body.push_str(&write_voice(voice, unit));
         }
     }
@@ -545,6 +592,10 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::TempoChange(tempo) => {
                 if tempo.beat_role == TempoBeatRole::PlaybackSoundOnly
                     && let Some(instruction) = sound_tempo_instruction(tempo)
+                {
+                    out.push_str(&format!("[I:{instruction}] "));
+                } else if tempo_needs_instruction(tempo)
+                    && let Some(instruction) = tempo_instruction(tempo)
                 {
                     out.push_str(&format!("[I:{instruction}] "));
                 } else {

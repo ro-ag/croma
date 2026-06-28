@@ -560,6 +560,13 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_forward = true;
                     return;
                 }
+                if let Some(tempo) = parse_tempo_instruction(&inline.value.value, inline.value.span)
+                {
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::TempoChange(tempo));
+                    return;
+                }
                 if let Some(tempo) =
                     parse_sound_tempo_instruction(&inline.value.value, inline.value.span)
                 {
@@ -1731,6 +1738,52 @@ fn parse_lyric_duplicate_instruction(value: &str, span: Span) -> Option<AlignedL
     })
 }
 
+fn parse_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-tempo")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let text = if let Some(hex) = fields.get("text-hex") {
+        parse_croma_hex_utf8(hex)
+    } else {
+        fields.get("text").filter(|text| !text.is_empty()).cloned()
+    };
+    let beat = parse_croma_u32(&fields, "bpm")
+        .or_else(|| parse_croma_u32(&fields, "tempo"))
+        .map(|bpm| {
+            let beat_numerator = parse_croma_u32(&fields, "beat-n")
+                .or_else(|| parse_croma_u32(&fields, "beat-numerator"))
+                .unwrap_or(1);
+            let beat_denominator = parse_croma_u32(&fields, "beat-d")
+                .or_else(|| parse_croma_u32(&fields, "beat-denominator"))
+                .unwrap_or(4);
+            (bpm, beat_numerator, beat_denominator)
+        })
+        .filter(|(_, beat_numerator, beat_denominator)| {
+            *beat_numerator > 0 && *beat_denominator > 0
+        })
+        .map(|(bpm, beat_numerator, beat_denominator)| TempoBeat {
+            beat_numerator,
+            beat_denominator,
+            bpm,
+        });
+    if text.is_none() && beat.is_none() {
+        return None;
+    }
+    let beat_role = match fields.get("role").map(String::as_str) {
+        Some("sound" | "playback" | "playback-sound-only") => TempoBeatRole::PlaybackSoundOnly,
+        _ => TempoBeatRole::PrintedMetronome,
+    };
+    Some(TempoModel {
+        text,
+        beat,
+        beat_role,
+        source_span: span,
+    })
+}
+
 fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> {
     let value = value.trim();
     let rest = value.strip_prefix("croma-sound-tempo")?;
@@ -1748,8 +1801,13 @@ fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> 
     if beat_numerator == 0 || beat_denominator == 0 {
         return None;
     }
+    let text = if let Some(hex) = fields.get("text-hex") {
+        parse_croma_hex_utf8(hex)
+    } else {
+        fields.get("text").filter(|text| !text.is_empty()).cloned()
+    };
     Some(TempoModel {
-        text: fields.get("text").filter(|text| !text.is_empty()).cloned(),
+        text,
         beat: Some(TempoBeat {
             beat_numerator,
             beat_denominator,

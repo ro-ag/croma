@@ -23,14 +23,16 @@ pub(crate) fn parse_tempo_model(
 ) -> Option<TempoModel> {
     // Extract the first quoted string as the tempo text; tempo numerics live in
     // the unquoted remainder (in any position relative to the text).
+    let closed_quote = has_closed_quote(raw);
     let (text, remainder) = extract_quoted_text(raw);
     let beat = parse_tempo_beat(&remainder, unit_note_length);
     if beat.is_none() {
         // No numeric tempo: only treat the field as a structured tempo when it
         // is exactly one quoted string (`Q:"Andante"`). Anything else stays raw
         // words via the writer's fallback.
-        let is_clean_quoted = matches!(raw.trim().as_bytes(), [b'"', .., b'"'])
-            && raw.trim().len() >= 2
+        let is_clean_quoted = raw.trim_start().starts_with('"')
+            && remainder.trim().is_empty()
+            && closed_quote
             && text.is_some();
         if !is_clean_quoted {
             return None;
@@ -49,7 +51,7 @@ pub(crate) fn parse_tempo_model(
 /// warns so the lenient recovery is never silent.
 pub(crate) fn has_unterminated_quote(raw: &str) -> bool {
     match raw.find('"') {
-        Some(open) => !raw[open + 1..].contains('"'),
+        Some(open) => find_unescaped_quote(&raw[open + 1..]).is_none(),
         None => false,
     }
 }
@@ -61,16 +63,59 @@ fn extract_quoted_text(raw: &str) -> (Option<String>, String) {
         return (None, raw.to_owned());
     };
     let rest = &raw[open + 1..];
-    let Some(close_rel) = rest.find('"') else {
+    let Some(close_rel) = find_unescaped_quote(rest) else {
         // Unterminated quote: treat the remainder as text, leave nothing numeric.
-        return (Some(rest.trim().to_owned()), raw[..open].to_owned());
+        return (
+            Some(unescape_quoted_text(rest).trim().to_owned()),
+            raw[..open].to_owned(),
+        );
     };
-    let text = rest[..close_rel].trim().to_owned();
+    let text = unescape_quoted_text(&rest[..close_rel]).trim().to_owned();
     let mut remainder = raw[..open].to_owned();
     remainder.push(' ');
     remainder.push_str(&rest[close_rel + 1..]);
     let text = (!text.is_empty()).then_some(text);
     (text, remainder)
+}
+
+fn find_unescaped_quote(text: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (index, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn has_closed_quote(raw: &str) -> bool {
+    raw.find('"')
+        .and_then(|open| find_unescaped_quote(&raw[open + 1..]))
+        .is_some()
+}
+
+fn unescape_quoted_text(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some(escaped @ ('"' | '\\')) => out.push(escaped),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 /// Parse the numeric portion of a `Q:` field into a [`TempoBeat`].
