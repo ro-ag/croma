@@ -5126,7 +5126,7 @@ fn preserve_voice_onset_gaps_for_abc(voice: &mut Voice) {
             if abc_event_advances_cursor(&event.kind) {
                 cursor = event.onset.checked_add(event.duration);
             } else if abc_event_has_position(&event.kind) {
-                cursor = event.onset;
+                cursor = max_fraction(cursor, event.onset);
             }
             rebuilt.push(event);
         }

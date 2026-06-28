@@ -6065,6 +6065,43 @@ mod abc_completion {
     }
 
     #[test]
+    fn backup_positioned_meter_restatement_does_not_synthesize_forward() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <backup><duration>16</duration></backup>\n",
+            "      <attributes><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>E</step><octave>3</octave></pitch>",
+            "<duration>16</duration><voice>5</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            !abc.contains("[I:croma-musicxml-forward]"),
+            "a restatement after a backup must not rewind the ABC gap cursor and create a fake forward:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("backup-positioned meter restatement should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        assert!(
+            measure.contains("<backup>") && !measure.contains("<forward>"),
+            "roundtrip must keep the backup into voice 5 without inventing a forward:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_trailing_forward_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
