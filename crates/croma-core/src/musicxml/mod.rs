@@ -1,8 +1,8 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 use crate::model::{
-    AccidentalMark, DecorationAttachment, EventAttachments, Fraction, GraceNoteEvent, Pitch,
-    RestEvent, RestVisibility, Score, SlurRole, StaffId, TimedEvent, TimedEventKind,
-    TimelineEventKind, TupletAttachment, VoiceTimedEvent,
+    AccidentalMark, ClefChangeModel, DecorationAttachment, EventAttachments, Fraction,
+    GraceNoteEvent, Pitch, RestEvent, RestVisibility, Score, SlurRole, StaffId, TimedEvent,
+    TimedEventKind, TimelineEventKind, TupletAttachment, VoiceTimedEvent,
 };
 use crate::parse::ParseReport;
 
@@ -152,6 +152,20 @@ impl SequenceEvent<'_> {
         match self {
             Self::Timed(event) => event.duration,
             Self::Overlay(event) => event.duration,
+        }
+    }
+
+    fn clef_cursor_script(&self) -> Option<(&ClefChangeModel, Fraction, Fraction)> {
+        match self {
+            Self::Timed(event) => match &event.kind {
+                TimedEventKind::ClefChange(clef) => Some((
+                    clef,
+                    clef.musicxml_cursor_pre_backup?,
+                    clef.musicxml_cursor_back?,
+                )),
+                _ => None,
+            },
+            Self::Overlay(_) => None,
         }
     }
 

@@ -127,6 +127,7 @@ impl KeySignatureModel {
 pub struct ClefChangeModel {
     pub clef: TextLine,
     pub source_span: Span,
+    pub musicxml_cursor_pre_backup: Option<Fraction>,
     pub musicxml_cursor_back: Option<Fraction>,
 }
 
