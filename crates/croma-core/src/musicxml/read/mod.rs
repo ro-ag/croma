@@ -691,13 +691,10 @@ impl Reader {
             else {
                 continue;
             };
-            let name = child_text(node, "instrument-name")
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .map(|name| TextLine {
-                    text: name.to_owned(),
-                    span: READER_SPAN,
-                });
+            let name = child_element(node, "instrument-name").map(|name| TextLine {
+                text: raw_text(name).to_owned(),
+                span: READER_SPAN,
+            });
             instruments.push(MusicXmlPartInstrumentModel {
                 id: id.to_owned(),
                 name,
@@ -954,9 +951,8 @@ impl Reader {
                 // with no instrument keeps `None` (no extra `<midi-instrument>`).
                 let part_list_instrument = entry.and_then(|entry| entry.instruments.get(index));
                 let midi_instrument = part_list_instrument.and_then(|instrument| instrument.midi);
-                let instrument_name = part_list_instrument
-                    .and_then(|instrument| instrument.name.clone())
-                    .filter(|name| !name.text.trim().is_empty());
+                let instrument_name =
+                    part_list_instrument.and_then(|instrument| instrument.name.clone());
                 // Only the first (staff) voice carries the header clef/transpose
                 // and its ABC `transpose=` property; extra voices share the staff
                 // but the writer reads clef/transpose from the FIRST qualifying
