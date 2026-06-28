@@ -2225,10 +2225,11 @@ impl Reader {
         if child_element(direction, "voice").is_some() {
             return None;
         }
-        // The tempo words (if any) are the `<words>` of direction-types that do
-        // NOT contain the metronome. Foreign MusicXML can split one visible
-        // tempo label across multiple `<words>` siblings, including whitespace
-        // placeholders; normalize that to the single ABC Q: text croma can carry.
+        // The tempo words (if any) are the voice-less direction's `<words>`.
+        // Foreign MusicXML can split one visible tempo label across multiple
+        // `<words>` siblings, including whitespace placeholders, or put the words
+        // in the same `<direction-type>` as the metronome; normalize that to the
+        // single ABC tempo text slot croma can carry.
         let words = || tempo_words(direction);
 
         let sound_beat =
@@ -4367,7 +4368,6 @@ fn direction_voice_number(direction: Node<'_, '_>) -> Option<String> {
 /// normalize to the nonempty text that can survive the ABC leg.
 fn tempo_words(direction: Node<'_, '_>) -> Option<String> {
     let words: Vec<String> = children_named(direction, "direction-type")
-        .filter(|dt| child_element(*dt, "metronome").is_none())
         .flat_map(|dt| children_named(dt, "words"))
         .filter_map(|word| {
             let text = raw_text(word)

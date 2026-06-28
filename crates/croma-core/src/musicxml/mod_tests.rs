@@ -1134,6 +1134,19 @@ fn tempo_text_only_stays_words_without_synthetic_sound() {
 }
 
 #[test]
+fn tempo_text_preserves_unknown_backslash_escape() {
+    let source = "X:1\nM:4/4\nL:1/4\nQ:\"a\\q\"\nK:C\nC4|\n";
+    let export = export_musicxml(source).expect("tempo score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export.musicxml.contains("<words>a\\q</words>"),
+        "unknown backslash escapes in Q: text must preserve the literal backslash:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn sound_tempo_carrier_emits_playback_without_metronome() {
     let source = concat!(
         "X:1\n",

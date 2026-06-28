@@ -5490,6 +5490,166 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_tempo_text_with_quotes_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction><direction-type>",
+            "<words>(robot and elaborated melody for \"funky town\" on D.C)</words>",
+            "</direction-type></direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("Q:\"(robot and elaborated melody for \\\"funky town\\\" on D.C)\""),
+            "ABC projection must escape embedded tempo quotes:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("quoted tempo text ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains(
+                "<words>(robot and elaborated melody for &quot;funky town&quot; on D.C)</words>"
+            ),
+            "roundtrip must preserve embedded tempo quotes:\nABC:\n{abc}\nXML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_mid_tune_tempo_text_with_bracket_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <direction><direction-type>",
+            "<words>Notes: Air - [Bass] bracket</words>",
+            "<metronome><beat-unit>quarter</beat-unit><per-minute>84</per-minute></metronome>",
+            "</direction-type></direction>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains(
+                "[I:croma-tempo role=printed text-hex=4e6f7465733a20416972202d205b426173735d20627261636b6574 bpm=84 beat-n=1 beat-d=4]"
+            ),
+            "ABC projection must carry the bracketed tempo text and beat through a safe carrier:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("bracketed tempo text ABC projection should export");
+        assert!(
+            roundtrip
+                .musicxml
+                .contains("<words>Notes: Air - [Bass] bracket</words>")
+                && roundtrip.musicxml.contains("<per-minute>84</per-minute>"),
+            "roundtrip must preserve tempo text containing ']' and its beat:\nABC:\n{abc}\nXML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_header_tempo_text_with_percent_uses_safe_carrier() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction><direction-type>",
+            "<words>50% swing</words>",
+            "<metronome><beat-unit>quarter</beat-unit><per-minute>100</per-minute></metronome>",
+            "</direction-type></direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            !abc.contains("Q:\"50% swing\""),
+            "tempo text containing '%' must not be emitted through raw Q: syntax:\n{abc}"
+        );
+        assert!(
+            abc.contains(
+                "[I:croma-tempo role=printed text-hex=353025207377696e67 bpm=100 beat-n=1 beat-d=4]"
+            ),
+            "header tempo text containing '%' must use a safe carrier:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("percent tempo text ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains("<words>50% swing</words>")
+                && roundtrip.musicxml.contains("<per-minute>100</per-minute>"),
+            "roundtrip must preserve header tempo text containing '%' and its beat:\nABC:\n{abc}\nXML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_mid_tune_tempo_text_with_percent_uses_safe_carrier() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <direction><direction-type>",
+            "<words>50% swing</words>",
+            "</direction-type></direction>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            !abc.contains("[Q:\"50% swing\"]"),
+            "mid-tune tempo text containing '%' must not be emitted through raw inline Q: syntax:\n{abc}"
+        );
+        assert!(
+            abc.contains("[I:croma-tempo role=printed text-hex=353025207377696e67]"),
+            "mid-tune tempo text containing '%' must use a safe carrier:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("percent tempo text ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains("<words>50% swing</words>"),
+            "roundtrip must preserve mid-tune tempo text containing '%':\nABC:\n{abc}\nXML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_bare_sound_tempo_projects_to_sound_tempo_carrier() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
@@ -5510,6 +5670,43 @@ mod abc_completion {
         assert!(
             abc.contains("[I:croma-sound-tempo bpm=96 beat-n=1 beat-d=4]"),
             "a bare foreign <sound tempo> must not be dropped or printed as Q:; got:\n{abc}"
+        );
+    }
+
+    #[test]
+    fn foreign_sound_tempo_text_with_bracket_uses_safe_carrier() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "      <direction><direction-type>",
+            "<words>Push [rit.]</words>",
+            "</direction-type><sound tempo=\"72\"/></direction>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains(
+                "[I:croma-sound-tempo bpm=72 beat-n=1 beat-d=4 text-hex=50757368205b7269742e5d]"
+            ),
+            "playback-only tempo text containing ']' must use a safe carrier:\n{abc}"
+        );
+        let roundtrip = export_musicxml(&abc).expect("bracketed sound-tempo carrier should export");
+        assert!(
+            roundtrip.musicxml.contains("<words>Push [rit.]</words>")
+                && roundtrip.musicxml.contains("<sound tempo=\"72.00\"/>"),
+            "roundtrip must preserve playback-only tempo text and sound tempo:\nABC:\n{abc}\nXML:\n{}",
+            roundtrip.musicxml
         );
     }
 
