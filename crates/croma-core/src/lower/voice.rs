@@ -6,7 +6,7 @@ use crate::model::{
     DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
     GraceEventKind, GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind,
     MusicXmlInstrumentRef, Pitch, RepeatEndingCloseModel, RestEvent, SlurAttachment, SlurRole,
-    TextAttachment, VoiceId, VoicePropertiesModel,
+    TextAttachment, TupletAttachment, TupletRole, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::field::KeySignature;
 use crate::syntax::{
@@ -152,6 +152,11 @@ pub(crate) struct LoweringState {
     /// the next timed rest event. The rest advances ABC time; MusicXML emits it
     /// back as `<forward>` instead of `<note><rest>`.
     pub(crate) pending_musicxml_forward: bool,
+    /// Croma MusicXML-origin tuplets that ABC cannot spell directly, waiting for
+    /// the next timed event.
+    pub(crate) pending_musicxml_tuplets: Vec<TupletAttachment>,
+    /// Source carrier pair id -> lowering pair id for private MusicXML tuplets.
+    pub(crate) musicxml_tuplet_pair_ids: Vec<(u32, u32)>,
     /// Croma MusicXML-origin source backup amount before this voice sequence.
     /// ABC cannot spell a MusicXML `<backup>` that overshoots the prior cursor,
     /// so the first timed event carries it back to the MusicXML writer.
@@ -251,6 +256,8 @@ impl LoweringState {
             pending_musicxml_lyric_extends: Vec::new(),
             pending_musicxml_lyric_duplicates: Vec::new(),
             pending_musicxml_forward: false,
+            pending_musicxml_tuplets: Vec::new(),
+            musicxml_tuplet_pair_ids: Vec::new(),
             pending_musicxml_sequence_backup: None,
             pending_musicxml_after_grace: false,
             pending_musicxml_barline_kind: None,
@@ -313,6 +320,46 @@ impl LoweringState {
             attachments.musicxml_sequence_backup = self.pending_musicxml_sequence_backup.take();
         }
         attachments
+            .tuplets
+            .append(&mut self.pending_musicxml_tuplets);
+        attachments
+    }
+
+    pub(crate) fn push_musicxml_tuplet(
+        &mut self,
+        source_pair_id: u32,
+        actual_notes: u32,
+        normal_notes: u32,
+        role: TupletRole,
+        span: Span,
+    ) {
+        let pair_id = self.musicxml_tuplet_pair_id(source_pair_id);
+        self.pending_musicxml_tuplets.push(TupletAttachment {
+            pair_id,
+            actual_notes,
+            normal_notes,
+            role,
+            span,
+        });
+        if role == TupletRole::Stop {
+            self.musicxml_tuplet_pair_ids
+                .retain(|(source, _)| *source != source_pair_id);
+        }
+    }
+
+    fn musicxml_tuplet_pair_id(&mut self, source_pair_id: u32) -> u32 {
+        if let Some((_, pair_id)) = self
+            .musicxml_tuplet_pair_ids
+            .iter()
+            .find(|(source, _)| *source == source_pair_id)
+        {
+            return *pair_id;
+        }
+        let pair_id = self.next_tuplet_id;
+        self.next_tuplet_id = self.next_tuplet_id.saturating_add(1);
+        self.musicxml_tuplet_pair_ids
+            .push((source_pair_id, pair_id));
+        pair_id
     }
 
     pub(crate) fn flush_pending_barline_directions(
@@ -533,6 +580,15 @@ impl LoweringState {
                     decorations.append(&mut attachments.decorations);
                     attachments.decorations = decorations;
                 }
+                // Wide MusicXML tuplets ABC cannot spell ride in on private
+                // `[I:croma-musicxml-tuplet ...]` carriers flushed ahead of this
+                // chord. Like the note/rest path (`take_timed_attachments`), drain
+                // them onto the chord head so the `<time-modification>`/`<tuplet>`
+                // survive re-export; the writer mirrors normal chord tuplets,
+                // which also carry on the head.
+                attachments
+                    .tuplets
+                    .append(&mut self.pending_musicxml_tuplets);
             }
             let octave =
                 lowered_octave(&member.note).saturating_add(voice_octave_shift(&self.properties));

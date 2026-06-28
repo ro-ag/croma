@@ -7645,6 +7645,166 @@ mod abc_completion {
         );
     }
 
+    #[test]
+    fn foreign_wide_tuplet_survives_abc_projection_without_invalid_marker() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>480</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification>",
+            "<notations><tuplet type=\"start\" bracket=\"no\" show-number=\"none\"/></notations></note>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>F</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>G</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>A</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>B</step><octave>4</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>C</step><octave>5</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>D</step><octave>5</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification></note>\n",
+            "      <note><pitch><step>E</step><octave>5</octave></pitch>",
+            "<duration>48</duration><voice>1</voice><type>eighth</type>",
+            "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification>",
+            "<notations><tuplet type=\"stop\" number=\"1\"/></notations></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let direct = read_musicxml(xml).value;
+        let completed = completed_from_xml(xml);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        assert!(
+            !projected.contains("(10:2"),
+            "ABC projection must not emit parser-invalid wide tuplets:\n{projected}"
+        );
+        assert!(
+            projected.contains("[I:croma-musicxml-tuplet "),
+            "wide MusicXML tuplets need a private carrier:\n{projected}"
+        );
+
+        let reparsed = lower(&projected);
+        assert_eq!(
+            played_duration_sequence(&reparsed),
+            played_duration_sequence(&direct),
+            "sounding durations must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+
+        let roundtrip = export_musicxml(&projected).expect("wide-tuplet carrier ABC should export");
+        assert!(
+            roundtrip
+                .musicxml
+                .contains("<actual-notes>10</actual-notes>")
+                && roundtrip
+                    .musicxml
+                    .contains("<normal-notes>2</normal-notes>")
+                && roundtrip
+                    .musicxml
+                    .contains("<tuplet type=\"start\" bracket=\"no\"/>")
+                && roundtrip
+                    .musicxml
+                    .contains("<tuplet type=\"stop\" number=\"1\"/>"),
+            "roundtrip must keep the 10:2 MusicXML tuplet:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_wide_tuplet_on_chord_survives_abc_projection() {
+        // Same 10:2 group as the sibling test, but the tuplet's start and stop
+        // roles land on CHORDS, not single notes. The carrier must reach the
+        // chord head so the `<time-modification>` and `<tuplet>` bracket survive
+        // the XML -> ABC -> XML projection.
+        let tm = "<time-modification><actual-notes>10</actual-notes><normal-notes>2</normal-notes></time-modification>";
+        let mut body = String::new();
+        body.push_str(&format!(
+            "<note><pitch><step>C</step><octave>4</octave></pitch><duration>48</duration><voice>1</voice><type>eighth</type>{tm}<notations><tuplet type=\"start\" bracket=\"no\" show-number=\"none\"/></notations></note>"
+        ));
+        body.push_str(&format!(
+            "<note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>48</duration><voice>1</voice><type>eighth</type>{tm}</note>"
+        ));
+        for (step, octave) in [
+            ("D", "4"),
+            ("E", "4"),
+            ("F", "4"),
+            ("G", "4"),
+            ("A", "4"),
+            ("B", "4"),
+            ("C", "5"),
+            ("D", "5"),
+        ] {
+            body.push_str(&format!(
+                "<note><pitch><step>{step}</step><octave>{octave}</octave></pitch><duration>48</duration><voice>1</voice><type>eighth</type>{tm}</note>"
+            ));
+        }
+        body.push_str(&format!(
+            "<note><pitch><step>E</step><octave>5</octave></pitch><duration>48</duration><voice>1</voice><type>eighth</type>{tm}<notations><tuplet type=\"stop\" number=\"1\"/></notations></note>"
+        ));
+        body.push_str(&format!(
+            "<note><chord/><pitch><step>G</step><octave>5</octave></pitch><duration>48</duration><voice>1</voice><type>eighth</type>{tm}</note>"
+        ));
+        let xml = format!(
+            "<?xml version=\"1.0\"?>\n<score-partwise>\n  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n  <part id=\"P1\">\n    <measure number=\"1\">\n      <attributes><divisions>480</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n      {body}\n    </measure>\n  </part>\n</score-partwise>\n"
+        );
+
+        let direct = read_musicxml(&xml).value;
+        let completed = completed_from_xml(&xml);
+        let projected = write_abc(&completed, AbcWriteOptions::default());
+        assert!(
+            !projected.contains("(10:2"),
+            "ABC projection must not emit parser-invalid wide tuplets:\n{projected}"
+        );
+        assert!(
+            projected.contains("[I:croma-musicxml-tuplet "),
+            "wide MusicXML tuplets need a private carrier:\n{projected}"
+        );
+
+        let reparsed = lower(&projected);
+        assert_eq!(
+            played_duration_sequence(&reparsed),
+            played_duration_sequence(&direct),
+            "sounding durations must survive XML -> ABC -> Score; abc {projected:?}"
+        );
+
+        let roundtrip = export_musicxml(&projected).expect("wide-tuplet carrier ABC should export");
+        assert!(
+            roundtrip
+                .musicxml
+                .contains("<actual-notes>10</actual-notes>")
+                && roundtrip
+                    .musicxml
+                    .contains("<normal-notes>2</normal-notes>")
+                && roundtrip
+                    .musicxml
+                    .contains("<tuplet type=\"start\" bracket=\"no\"/>")
+                && roundtrip
+                    .musicxml
+                    .contains("<tuplet type=\"stop\" number=\"1\"/>"),
+            "roundtrip must keep the 10:2 MusicXML tuplet when it lands on a chord:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
     // --- P1: empty / all-spacer trailing measure preservation ---------------
 
     /// The (slur-start, slur-stop) pair_id count across a lowered Score, used to

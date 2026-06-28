@@ -4,7 +4,7 @@
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::{
     AlignedLyric, ClefChangeModel, EventAttachments, Fraction, KeySignatureModel, Measure,
-    MeterModel, TempoBeatRole, TempoModel, TieRole,
+    MeterModel, TempoBeatRole, TempoModel, TieRole, TupletAttachment, TupletRole,
 };
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
@@ -185,6 +185,22 @@ fn musicxml_sequence_backup_instruction(duration: Fraction) -> String {
     format!(
         "croma-musicxml-sequence-backup n={} d={}",
         duration.numerator, duration.denominator
+    )
+}
+
+fn abc_tuplet_actual_supported(actual_notes: u32) -> bool {
+    (2..=9).contains(&actual_notes)
+}
+
+fn musicxml_tuplet_instruction(tuplet: TupletAttachment) -> String {
+    let role = match tuplet.role {
+        TupletRole::Start => "start",
+        TupletRole::Continue => "continue",
+        TupletRole::Stop => "stop",
+    };
+    format!(
+        "croma-musicxml-tuplet id={} actual={} normal={} role={}",
+        tuplet.pair_id, tuplet.actual_notes, tuplet.normal_notes, role
     )
 }
 
@@ -913,6 +929,9 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
     let mut markers = vec![String::new(); events.len()];
     let mut scales = vec![None; events.len()];
     for (_pid, (actual, normal, start, stop)) in groups {
+        if !abc_tuplet_actual_supported(actual) {
+            continue;
+        }
         // `r` counts the notes/rests/chords the group covers; an interior
         // spacer consumes no tuplet slot on re-parse and must not inflate it.
         let span = events[start..=stop]
@@ -1016,6 +1035,23 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
             "[I:{}]",
             musicxml_sequence_backup_instruction(duration)
         ));
+    }
+    let mut musicxml_tuplets: Vec<_> = attachments
+        .tuplets
+        .iter()
+        .copied()
+        .filter(|tuplet| !abc_tuplet_actual_supported(tuplet.actual_notes))
+        .collect();
+    musicxml_tuplets.sort_by_key(|tuplet| {
+        let role_order = match tuplet.role {
+            TupletRole::Start => 0u8,
+            TupletRole::Continue => 1,
+            TupletRole::Stop => 2,
+        };
+        (tuplet.pair_id, role_order)
+    });
+    for tuplet in musicxml_tuplets {
+        out.push_str(&format!("[I:{}]", musicxml_tuplet_instruction(tuplet)));
     }
     let mut primary_lyric_verses = Vec::new();
     for lyric in &attachments.lyrics {
@@ -1509,7 +1545,7 @@ fn overlay_tuplet_layout(
         // segment. Emitting a marker at that Stop would open a bogus tuplet,
         // so such pairs are skipped (the events still carry their already
         // tuplet-scaled durations, which round-trip exactly).
-        if !has_start {
+        if !has_start || !abc_tuplet_actual_supported(actual) {
             continue;
         }
         let span = events[start..=stop]
