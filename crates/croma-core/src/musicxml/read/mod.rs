@@ -2807,6 +2807,29 @@ impl Reader {
             );
             return;
         }
+        if tag == "tremolo" {
+            let tremolo_type = element.attribute("type").unwrap_or("single");
+            let Some(marks) = node_text(element) else {
+                self.warn(
+                    "musicxml.read.unsupported_notation",
+                    "<tremolo> lacks a mark count; skipped",
+                );
+                return;
+            };
+            if matches!(tremolo_type, "single" | "start" | "stop")
+                && matches!(marks, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8")
+            {
+                out.push(named_decoration(&format!(
+                    "musicxml-tremolo-{tremolo_type}-{marks}"
+                )));
+                return;
+            }
+            self.warn(
+                "musicxml.read.unsupported_notation",
+                format!("<tremolo type=\"{tremolo_type}\">{marks}</tremolo> has no ABC decoration inverse; skipped"),
+            );
+            return;
+        }
         match decoration_for_notation_element(tag) {
             Some(name) => out.push(named_decoration(name)),
             None => self.warn(

@@ -90,17 +90,37 @@ impl<'score> MusicXmlWriter<'score> {
             };
             // MusicXML groups these per category, in schema order: ornaments,
             // technical, articulations, fermata, then arpeggiate.
-            let ornaments = kinds(|kind| match kind {
-                NotationKind::Ornament(name) => Some(name),
-                _ => None,
-            });
+            let ornaments = notation_kinds
+                .iter()
+                .copied()
+                .filter(|kind| {
+                    matches!(
+                        kind,
+                        NotationKind::Ornament(_) | NotationKind::Tremolo { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
             if !ornaments.is_empty() {
                 self.xml.start("ornaments", &[]);
-                for name in ornaments {
-                    self.xml.empty(name, &[]);
+                for kind in ornaments {
+                    match kind {
+                        NotationKind::Ornament(name) => self.xml.empty(name, &[]),
+                        NotationKind::Tremolo {
+                            tremolo_type,
+                            marks,
+                        } => {
+                            self.xml
+                                .text_element_attrs("tremolo", &[("type", tremolo_type)], marks)
+                        }
+                        _ => unreachable!("ornaments list only contains ornament notations"),
+                    }
                 }
                 self.xml.end("ornaments");
             }
+            let articulations = kinds(|kind| match kind {
+                NotationKind::Articulation(name) => Some(name),
+                _ => None,
+            });
             let technical = notation_kinds
                 .iter()
                 .copied()
@@ -124,10 +144,6 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 self.xml.end("technical");
             }
-            let articulations = kinds(|kind| match kind {
-                NotationKind::Articulation(name) => Some(name),
-                _ => None,
-            });
             if !articulations.is_empty() {
                 self.xml.start("articulations", &[]);
                 for name in articulations {
@@ -179,6 +195,11 @@ pub(crate) enum NotationKind {
     },
     /// A `<fermata>` element with the given type attribute.
     Fermata(&'static str),
+    /// A value-bearing MusicXML `<ornaments><tremolo type="...">N</tremolo>`.
+    Tremolo {
+        tremolo_type: &'static str,
+        marks: &'static str,
+    },
     /// A note/chord arpeggiation mark.
     Arpeggiate,
 }
@@ -239,7 +260,34 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
         },
         "arpeggio" => NotationKind::Arpeggiate,
         "slide" => NotationKind::Articulation("scoop"),
+        _ => return tremolo_notation(decoration.name.as_str()),
+    })
+}
+
+fn tremolo_notation(name: &str) -> Option<NotationKind> {
+    let rest = name.strip_prefix("musicxml-tremolo-")?;
+    let (tremolo_type, marks) = rest.rsplit_once('-')?;
+    let tremolo_type = match tremolo_type {
+        "single" => "single",
+        "start" => "start",
+        "stop" => "stop",
         _ => return None,
+    };
+    let marks = match marks {
+        "0" => "0",
+        "1" => "1",
+        "2" => "2",
+        "3" => "3",
+        "4" => "4",
+        "5" => "5",
+        "6" => "6",
+        "7" => "7",
+        "8" => "8",
+        _ => return None,
+    };
+    Some(NotationKind::Tremolo {
+        tremolo_type,
+        marks,
     })
 }
 
