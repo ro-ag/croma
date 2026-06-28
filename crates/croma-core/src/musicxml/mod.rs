@@ -175,6 +175,30 @@ impl SequenceEvent<'_> {
         }
     }
 
+    fn emits_musicxml(&self) -> bool {
+        match self {
+            Self::Timed(event) => {
+                matches!(
+                    event.kind,
+                    TimedEventKind::Note(_)
+                        | TimedEventKind::Chord(_)
+                        | TimedEventKind::Rest(_)
+                        | TimedEventKind::KeyChange(_)
+                        | TimedEventKind::MeterChange(_)
+                        | TimedEventKind::ClefChange(_)
+                        | TimedEventKind::TempoChange(_)
+                        | TimedEventKind::SectionLabel(_)
+                ) || !event.attachments.is_empty()
+            }
+            Self::Overlay(event) => {
+                matches!(
+                    event.kind,
+                    TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
+                ) || !event.attachments.is_empty()
+            }
+        }
+    }
+
     fn is_chord_member(&self) -> bool {
         match self {
             Self::Timed(event) => match &event.kind {

@@ -514,7 +514,7 @@ fn measure_sequences<'score>(
             })
             .map(SequenceEvent::Timed)
             .collect::<Vec<_>>();
-        if !events.is_empty() {
+        if events.iter().any(SequenceEvent::emits_musicxml) {
             let measure = voice.measures.iter().find(|measure| measure.id == id);
             sequences.push(MeasureSequence {
                 voice_number,
@@ -546,7 +546,7 @@ fn measure_sequences<'score>(
                     })
                     .map(SequenceEvent::Overlay)
                     .collect::<Vec<_>>();
-                if overlay_events.is_empty() {
+                if !overlay_events.iter().any(SequenceEvent::emits_musicxml) {
                     continue;
                 }
                 sequences.push(MeasureSequence {

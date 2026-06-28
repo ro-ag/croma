@@ -4787,6 +4787,18 @@ mod abc_completion {
         &xml[start..end]
     }
 
+    fn measure_block<'a>(xml: &'a str, number: &str) -> &'a str {
+        let marker = format!("<measure number=\"{number}\"");
+        let start = xml
+            .find(&marker)
+            .unwrap_or_else(|| panic!("measure {number:?} not found in:\n{xml}"));
+        let end = xml[start..]
+            .find("</measure>")
+            .map(|offset| start + offset + "</measure>".len())
+            .expect("measure block should close");
+        &xml[start..end]
+    }
+
     /// Lower an ABC fixture to a Score (panicking on a lower failure).
     fn lower(abc: &str) -> Score {
         let document = parse_document(abc, ParseOptions::default()).value;
@@ -4985,6 +4997,42 @@ mod abc_completion {
                 roundtrip.musicxml
             );
         }
+    }
+
+    #[test]
+    fn foreign_sparse_voice_keeps_measure_offset_in_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "      <backup><duration>4</duration></backup>\n",
+            "      <note><pitch><step>E</step><octave>3</octave></pitch>",
+            "<duration>4</duration><voice>5</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc).expect("sparse voice ABC should export");
+        let first_measure = measure_block(&roundtrip.musicxml, "1");
+        let second_measure = measure_block(&roundtrip.musicxml, "2");
+        assert!(
+            !first_measure.contains("<voice>5</voice>")
+                && second_measure.contains("<voice>5</voice>"),
+            "the sparse voice starts in measure 2 and must not be projected into measure 1; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
     }
 
     #[test]
