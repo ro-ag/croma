@@ -1078,6 +1078,7 @@ impl Reader {
         // one).
         let mut voices: Vec<(String, VoiceMeasureState)> = Vec::new();
         let mut current_voice: String = "1".to_owned();
+        let mut pending_sequence_backup: Option<Fraction> = None;
         let mut cursor = Fraction::zero();
         // The header tempo (`write_initial_directions`) is the FIRST voice-less
         // tempo direction before the first note of part 1's first measure; once
@@ -1160,6 +1161,17 @@ impl Reader {
                         &mut state.open_tuplets,
                         &mut state.events,
                     );
+                    let sequence_starts_without_advancing = !state
+                        .events
+                        .iter()
+                        .any(|event| abc_event_advances_cursor(&event.kind));
+                    if sequence_starts_without_advancing
+                        && attachments.musicxml_sequence_backup.is_none()
+                    {
+                        attachments.musicxml_sequence_backup = pending_sequence_backup.take();
+                    } else {
+                        pending_sequence_backup = None;
+                    }
 
                     if parsed.chord_member {
                         // S6c: a `<chord/>` member folds into the previous main
@@ -1339,6 +1351,7 @@ impl Reader {
                     if let Some(duration) = self.read_duration(child, divisions) {
                         let state = voice_state(&mut voices, &current_voice);
                         state.cursor_restore_base = Some(cursor);
+                        pending_sequence_backup = cursor.less_than(duration).then_some(duration);
                         cursor = subtract_fraction(cursor, duration);
                     }
                 }

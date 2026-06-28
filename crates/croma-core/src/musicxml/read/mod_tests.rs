@@ -6227,6 +6227,47 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_overbackup_between_voice_sequences_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>12</duration><voice>1</voice><type>half</type><dot/></note>\n",
+            "      <backup><duration>16</duration></backup>\n",
+            "      <note><pitch><step>G</step><octave>3</octave></pitch>",
+            "<duration>4</duration><voice>5</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-musicxml-sequence-backup "),
+            "ABC projection needs a private carrier for over-backup before a voice sequence:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("over-backup carrier ABC should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        let voice5 = measure
+            .find("<voice>5</voice>")
+            .unwrap_or_else(|| panic!("roundtrip must keep voice 5:\n{}", roundtrip.musicxml));
+        let backup = measure[..voice5]
+            .rfind("<backup>")
+            .unwrap_or_else(|| panic!("voice 5 must be preceded by a backup:\n{measure}"));
+        assert!(
+            measure[backup..voice5].contains("<duration>32</duration>"),
+            "roundtrip must keep the original four-quarter backup before voice 5:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_trailing_forward_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",

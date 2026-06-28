@@ -152,6 +152,10 @@ pub(crate) struct LoweringState {
     /// the next timed rest event. The rest advances ABC time; MusicXML emits it
     /// back as `<forward>` instead of `<note><rest>`.
     pub(crate) pending_musicxml_forward: bool,
+    /// Croma MusicXML-origin source backup amount before this voice sequence.
+    /// ABC cannot spell a MusicXML `<backup>` that overshoots the prior cursor,
+    /// so the first timed event carries it back to the MusicXML writer.
+    pub(crate) pending_musicxml_sequence_backup: Option<Fraction>,
     /// Croma MusicXML-origin `[I:croma-after-grace]` carrier waiting for the
     /// next flushed grace group. It disambiguates MusicXML after-grace notes
     /// from ABC leading graces that intentionally cross a barline.
@@ -247,6 +251,7 @@ impl LoweringState {
             pending_musicxml_lyric_extends: Vec::new(),
             pending_musicxml_lyric_duplicates: Vec::new(),
             pending_musicxml_forward: false,
+            pending_musicxml_sequence_backup: None,
             pending_musicxml_after_grace: false,
             pending_musicxml_barline_kind: None,
             pending_musicxml_meter_restatement: false,
@@ -303,6 +308,9 @@ impl LoweringState {
         if self.pending_musicxml_forward {
             attachments.musicxml_forward = true;
             self.pending_musicxml_forward = false;
+        }
+        if attachments.musicxml_sequence_backup.is_none() {
+            attachments.musicxml_sequence_backup = self.pending_musicxml_sequence_backup.take();
         }
         attachments
     }
@@ -1365,6 +1373,7 @@ fn attachment_bundle_model(
         lyric_same_note_extends: Vec::new(),
         lyric_same_note_duplicates: Vec::new(),
         musicxml_forward: false,
+        musicxml_sequence_backup: None,
         symbols: Vec::new(),
         ties: Vec::new(),
         slurs: Vec::new(),

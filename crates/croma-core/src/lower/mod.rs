@@ -589,6 +589,12 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_forward = true;
                     return;
                 }
+                if let Some(duration) =
+                    parse_musicxml_sequence_backup_instruction(&inline.value.value)
+                {
+                    self.current_state().pending_musicxml_sequence_backup = Some(duration);
+                    return;
+                }
                 if parse_musicxml_after_grace_instruction(&inline.value.value) {
                     self.current_state().pending_musicxml_after_grace = true;
                     return;
@@ -1933,6 +1939,22 @@ fn parse_musicxml_forward_instruction(value: &str) -> bool {
         return false;
     };
     rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
+fn parse_musicxml_sequence_backup_instruction(value: &str) -> Option<Fraction> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-musicxml-sequence-backup")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let numerator = parse_croma_u32(&fields, "n")
+        .or_else(|| parse_croma_u32(&fields, "numerator"))
+        .filter(|value| *value > 0)?;
+    let denominator = parse_croma_u32(&fields, "d")
+        .or_else(|| parse_croma_u32(&fields, "denominator"))
+        .filter(|value| *value > 0)?;
+    Some(Fraction::new(numerator, denominator))
 }
 
 fn parse_musicxml_after_grace_instruction(value: &str) -> bool {
