@@ -1256,10 +1256,26 @@ impl Reader {
                             direction_voice_number(child).unwrap_or_else(|| current_voice.clone());
                         current_voice = voice.clone();
                         let state = voice_state_at(&mut voices, &voice, cursor);
-                        // S6e: anchor a new pending run at the current event
-                        // index before buffering (see the harmony arm).
-                        state.mark_pending_position();
-                        state.pending.extend(*attachments);
+                        let mut attachments = *attachments;
+                        // Writer-emitted grace decoration directions appear
+                        // after the grace note. Directions before a grace run
+                        // remain pending for the principal note.
+                        if let Some(builder) = state.grace_builder.as_mut()
+                            && attachments_are_decorations_only(&attachments)
+                        {
+                            let decorations = std::mem::take(&mut attachments.decorations);
+                            if let Some(decorations) =
+                                builder.append_decorations_to_last_note(decorations)
+                            {
+                                attachments.decorations = decorations;
+                            }
+                        }
+                        if !attachments.is_empty() {
+                            // S6e: anchor a new pending run at the current event
+                            // index before buffering (see the harmony arm).
+                            state.mark_pending_position();
+                            state.pending.extend(attachments);
+                        }
                     }
                 }
                 "forward" => {
@@ -1870,11 +1886,12 @@ impl Reader {
         });
     }
 
-    /// S6c: reconstruct one grace [`GraceNoteEvent`] (pitch + written accidental +
-    /// the raw display-duration fraction the writer spelled into `<type>`/`<dots>`).
-    /// The `length_multiplier` is deferred to [`GraceGroupBuilder::finish`]; here
-    /// the display duration is stashed in `length_multiplier` verbatim as a
-    /// placeholder and rescaled by the base unit once the group size is known.
+    /// S6c: reconstruct one grace [`GraceNoteEvent`]: pitch, written accidental,
+    /// note decorations, and the raw display-duration fraction the writer spelled
+    /// into `<type>`/`<dots>`. The `length_multiplier` is deferred to
+    /// [`GraceGroupBuilder::finish`]; here the display duration is stashed in
+    /// `length_multiplier` verbatim as a placeholder and rescaled by the base
+    /// unit once the group size is known.
     fn read_grace_note(&mut self, note_node: Node<'_, '_>) -> Option<GraceNoteEvent> {
         let pitch = self.read_pitch(note_node)?;
         let written_accidental = child_text(note_node, "accidental")
@@ -1886,9 +1903,14 @@ impl Reader {
                 source: READER_SPAN,
             });
         let display_duration = self.read_note_type_fraction(note_node);
+        let mut decorations = Vec::new();
+        if let Some(notations) = child_element(note_node, "notations") {
+            self.read_decorations(notations, &mut decorations);
+        }
         Some(GraceNoteEvent {
             pitch,
             written_accidental,
+            decorations,
             // Placeholder: holds the raw display duration until `finish` divides it
             // by the group's base unit to recover the true length multiplier.
             length_multiplier: display_duration,
@@ -1896,8 +1918,8 @@ impl Reader {
     }
 
     /// S6c: reconstruct a grace note's slurs (`<notations><slur>`), inverting the
-    /// `<slur>` half of [`MusicXmlWriter::write_notations`]. Grace notes carry no
-    /// ties/tuplets/decorations in croma's output, so only `<slur>` is read.
+    /// `<slur>` half of [`MusicXmlWriter::write_notations`]. Decorations are read
+    /// separately by [`Reader::read_grace_note`].
     fn read_grace_slurs(&mut self, note_node: Node<'_, '_>) -> Vec<SlurAttachment> {
         let Some(notations) = child_element(note_node, "notations") else {
             return Vec::new();
@@ -3512,6 +3534,15 @@ struct ParsedNote {
     measure_rest: bool,
 }
 
+fn attachments_are_decorations_only(attachments: &EventAttachments) -> bool {
+    if attachments.decorations.is_empty() {
+        return false;
+    }
+    let mut remainder = attachments.clone();
+    remainder.decorations.clear();
+    remainder.is_empty()
+}
+
 /// S6c: accumulates one run of consecutive `<grace>` notes into a
 /// [`GraceGroupAttachment`]. While the run is open, each grace note's
 /// `length_multiplier` field holds its RAW display duration (`<type>`/`<dots>`);
@@ -3525,6 +3556,26 @@ struct GraceGroupBuilder {
 }
 
 impl GraceGroupBuilder {
+    fn append_decorations_to_last_note(
+        &mut self,
+        decorations: Vec<DecorationAttachment>,
+    ) -> Option<Vec<DecorationAttachment>> {
+        match self.events.last_mut().map(|event| &mut event.kind) {
+            Some(GraceEventKind::Note(note)) => {
+                note.decorations.extend(decorations);
+                None
+            }
+            Some(GraceEventKind::Chord(members)) => match members.last_mut() {
+                Some(note) => {
+                    note.decorations.extend(decorations);
+                    None
+                }
+                None => Some(decorations),
+            },
+            Some(GraceEventKind::Rest(_)) | None => Some(decorations),
+        }
+    }
+
     /// Finalise the run into a [`GraceGroupAttachment`], recovering each grace
     /// note's `length_multiplier` from its stashed display duration and the
     /// count-based base unit. `note_count` counts grace *elements* (a chord is
