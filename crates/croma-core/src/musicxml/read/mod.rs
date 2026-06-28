@@ -1032,18 +1032,19 @@ impl Reader {
         is_part_first_measure: bool,
     ) -> MeasureOutcome {
         // S6d: the writer interleaves a part's multiple voices with `<backup>`
-        // and a per-sequence `<voice>` number. Each voice's notes (and the
-        // directions/harmony/notations emitted just before them) form a
-        // contiguous region; the reader partitions the measure by `<voice>` into
-        // independent [`VoiceMeasureState`]s, each replicating the single-voice
-        // reconstruction (its own onset cursor, buffered directions, grace run,
-        // chord head, open tuplets, and measure-rest bookkeeping). `voices`
-        // preserves first-seen order; it is sorted numerically at assembly so
-        // `<voice>1` maps to `part.voices[0]`. `current_voice` selects the active
-        // region's state, switched by each note's `<voice>` (a direction/harmony
-        // uses its own `<voice>` when present, else the active one).
+        // and a per-sequence `<voice>` number. MusicXML cursor motion is global
+        // within the measure; the `<voice>` tag only selects which voice receives
+        // the event at that cursor. Keep per-voice transient state for buffered
+        // directions/harmony, grace runs, chord heads, open tuplets, and measure
+        // bookkeeping, but place every event from the measure-global cursor.
+        // `voices` preserves first-seen order; it is sorted numerically at
+        // assembly so `<voice>1` maps to `part.voices[0]`. `current_voice`
+        // selects the active region's state, switched by each note's `<voice>` (a
+        // direction/harmony uses its own `<voice>` when present, else the active
+        // one).
         let mut voices: Vec<(String, VoiceMeasureState)> = Vec::new();
         let mut current_voice: String = "1".to_owned();
+        let mut cursor = Fraction::zero();
         // The header tempo (`write_initial_directions`) is the FIRST voice-less
         // tempo direction before the first note of part 1's first measure; once
         // captured, later tempo directions are mid-tune `TempoChange` events.
@@ -1083,7 +1084,7 @@ impl Reader {
                     // present for croma output; missing → the active voice.
                     let voice = note_voice_number(child).unwrap_or_else(|| current_voice.clone());
                     current_voice = voice.clone();
-                    let state = voice_state(&mut voices, &voice);
+                    let state = voice_state_at(&mut voices, &voice, cursor);
                     // S6c: a `<grace>` note joins the open grace run (starting one
                     // if needed) and produces NO timed event. It is finalised when
                     // the following main note or the measure end is reached.
@@ -1149,14 +1150,15 @@ impl Reader {
                     state.last_main_event = Some(state.events.len());
                     state.events.push(TimedEvent {
                         measure: measure_id,
-                        onset: state.cursor,
+                        onset: cursor,
                         duration: parsed.duration,
                         source: READER_SPAN,
                         kind: parsed.kind,
                         attachments,
                     });
 
-                    state.cursor = state.cursor.checked_add(parsed.duration);
+                    cursor = cursor.checked_add(parsed.duration);
+                    state.cursor = cursor;
                     state.max_cursor = max_fraction(state.max_cursor, state.cursor);
                 }
                 "harmony" => {
@@ -1167,7 +1169,7 @@ impl Reader {
                     // the next event. A `<harmony>` carries no `<voice>`; it
                     // belongs to the active region's voice.
                     if let Some(symbol) = self.read_harmony(child) {
-                        let state = voice_state(&mut voices, &current_voice);
+                        let state = voice_state_at(&mut voices, &current_voice, cursor);
                         // S6e: anchor a new pending run at the current event index
                         // (document order) before buffering, so a surviving run
                         // becomes a Spacer in the right place vs same-onset changes.
@@ -1189,10 +1191,10 @@ impl Reader {
                                 // this zero-duration event. A tempo is voice-less
                                 // but lowers within a voice's sequence; route it to
                                 // the active region's voice.
-                                let state = voice_state(&mut voices, &current_voice);
+                                let state = voice_state_at(&mut voices, &current_voice, cursor);
                                 state.events.push(TimedEvent {
                                     measure: measure_id,
-                                    onset: state.cursor,
+                                    onset: cursor,
                                     duration: Fraction::zero(),
                                     source: READER_SPAN,
                                     kind: TimedEventKind::TempoChange(tempo),
@@ -1219,10 +1221,10 @@ impl Reader {
                             // round-trip. Setting `seen_note` keeps the tempo a
                             // mid-tune event so re-write preserves their order.
                             seen_note = true;
-                            let state = voice_state(&mut voices, &current_voice);
+                            let state = voice_state_at(&mut voices, &current_voice, cursor);
                             state.events.push(TimedEvent {
                                 measure: measure_id,
-                                onset: state.cursor,
+                                onset: cursor,
                                 duration: Fraction::zero(),
                                 source: READER_SPAN,
                                 kind: TimedEventKind::SectionLabel(label),
@@ -1239,7 +1241,7 @@ impl Reader {
                             let voice = direction_voice_number(child)
                                 .unwrap_or_else(|| current_voice.clone());
                             current_voice = voice.clone();
-                            let state = voice_state(&mut voices, &voice);
+                            let state = voice_state_at(&mut voices, &voice, cursor);
                             // S6e: anchor a new pending run at the current event
                             // index before buffering (see the harmony arm).
                             state.mark_pending_position();
@@ -1250,20 +1252,17 @@ impl Reader {
                 }
                 "forward" => {
                     if let Some(duration) = self.read_duration(child, divisions) {
+                        cursor = cursor.checked_add(duration);
                         let state = voice_state(&mut voices, &current_voice);
-                        state.cursor = state.cursor.checked_add(duration);
-                        state.max_cursor = max_fraction(state.max_cursor, state.cursor);
+                        state.max_cursor = max_fraction(state.max_cursor, cursor);
                     }
                 }
                 "backup" => {
-                    // A `<backup>` rewinds the active region's cursor; the writer
-                    // emits it to return to onset 0 before the next voice. The next
-                    // note's `<voice>` switches state, and that voice's cursor
-                    // already starts at 0, so the rewind only affects the region it
-                    // closes (harmless), keeping each voice's onsets relative to 0.
+                    // A `<backup>` rewinds the measure-global cursor; the next
+                    // note's `<voice>` decides which voice receives the resulting
+                    // onset.
                     if let Some(duration) = self.read_duration(child, divisions) {
-                        let state = voice_state(&mut voices, &current_voice);
-                        state.cursor = subtract_fraction(state.cursor, duration);
+                        cursor = subtract_fraction(cursor, duration);
                     }
                 }
                 "barline" => {
@@ -1296,8 +1295,7 @@ impl Reader {
                     if !header_attributes_consumed {
                         header_attributes_consumed = true;
                     } else {
-                        let cursor = voice_state(&mut voices, &current_voice).cursor;
-                        let state = voice_state(&mut voices, &current_voice);
+                        let state = voice_state_at(&mut voices, &current_voice, cursor);
                         self.read_mid_measure_attributes(
                             child,
                             measure_id,
@@ -4414,6 +4412,16 @@ fn voice_state<'a>(
     &mut voices[index].1
 }
 
+fn voice_state_at<'a>(
+    voices: &'a mut Vec<(String, VoiceMeasureState)>,
+    voice: &str,
+    cursor: Fraction,
+) -> &'a mut VoiceMeasureState {
+    let state = voice_state(voices, voice);
+    state.cursor = cursor;
+    state
+}
+
 /// S6d: read a `<measure-style><multiple-rest>N</multiple-rest>` count from an
 /// `<attributes>` block, the inverse of
 /// [`MusicXmlWriter::write_multiple_rest_measure_style`]. Only `N > 1` is a real
@@ -4489,6 +4497,7 @@ pub fn complete_score_for_abc(score: &mut Score) {
             renumber_voice_tuplet_pair_ids(voice);
             reproject_grace_slurs_for_abc(voice);
             reproject_zero_duration_prefixes_for_abc(voice);
+            preserve_voice_onset_gaps_for_abc(voice);
             synthesize_voice_barline_events(voice);
             // A mid-tune `[K:..]` is reconstructed as a `KeyChange` event whose
             // `display` is empty for the same reason the header key's is (the
@@ -4773,6 +4782,80 @@ fn take_abc_prefix_attachments(attachments: &mut EventAttachments) -> EventAttac
         decorations: std::mem::take(&mut attachments.decorations),
         ..EventAttachments::default()
     }
+}
+
+/// Preserve MusicXML cursor gaps that ABC would otherwise collapse.
+///
+/// The reader stores the MusicXML onset for every timed event, but `write_abc`
+/// serializes each voice as a linear ABC stream. If a later event starts after
+/// the current ABC cursor and no rest spells that silence, the re-parsed voice
+/// starts too early and the XML writer loses the original `<forward>`. Insert a
+/// private marked invisible rest for the gap: ABC can carry the duration as `x`,
+/// and the MusicXML writer maps the marker back to `<forward>` instead of a
+/// `<note><rest>`.
+#[cfg(feature = "musicxml-reader")]
+fn preserve_voice_onset_gaps_for_abc(voice: &mut Voice) {
+    let mut rebuilt = Vec::with_capacity(voice.events.len());
+    let mut current_measure: Option<u32> = None;
+    let mut cursor = Fraction::zero();
+
+    for event in std::mem::take(&mut voice.events) {
+        if current_measure != Some(event.measure.index) {
+            current_measure = Some(event.measure.index);
+            cursor = Fraction::zero();
+        }
+
+        if abc_event_has_position(&event.kind) && cursor.less_than(event.onset) {
+            let duration = subtract_fraction(event.onset, cursor);
+            rebuilt.push(TimedEvent {
+                measure: event.measure,
+                onset: cursor,
+                duration,
+                source: READER_SPAN,
+                kind: TimedEventKind::Rest(RestEvent {
+                    visibility: RestVisibility::Invisible,
+                }),
+                attachments: EventAttachments {
+                    musicxml_forward: true,
+                    ..EventAttachments::default()
+                },
+            });
+            cursor = event.onset;
+        }
+
+        if abc_event_advances_cursor(&event.kind) {
+            cursor = event.onset.checked_add(event.duration);
+        } else if abc_event_has_position(&event.kind) {
+            cursor = event.onset;
+        }
+        rebuilt.push(event);
+    }
+
+    voice.events = rebuilt;
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn abc_event_has_position(kind: &TimedEventKind) -> bool {
+    matches!(
+        kind,
+        TimedEventKind::Note(_)
+            | TimedEventKind::Chord(_)
+            | TimedEventKind::Rest(_)
+            | TimedEventKind::Spacer
+            | TimedEventKind::KeyChange(_)
+            | TimedEventKind::MeterChange(_)
+            | TimedEventKind::ClefChange(_)
+            | TimedEventKind::TempoChange(_)
+            | TimedEventKind::SectionLabel(_)
+    )
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn abc_event_advances_cursor(kind: &TimedEventKind) -> bool {
+    matches!(
+        kind,
+        TimedEventKind::Note(_) | TimedEventKind::Chord(_) | TimedEventKind::Rest(_)
+    )
 }
 
 /// P2: re-project a voice's grace-group slurs into the channels `write_abc`

@@ -556,6 +556,10 @@ impl MultiVoiceLowering {
                         .push(lyric);
                     return;
                 }
+                if parse_musicxml_forward_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_forward = true;
+                    return;
+                }
                 if let Some(tempo) =
                     parse_sound_tempo_instruction(&inline.value.value, inline.value.span)
                 {
@@ -1759,6 +1763,14 @@ fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> 
 fn parse_meter_restatement_instruction(value: &str) -> bool {
     let value = value.trim();
     let Some(rest) = value.strip_prefix("croma-meter-restatement") else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
+fn parse_musicxml_forward_instruction(value: &str) -> bool {
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("croma-musicxml-forward") else {
         return false;
     };
     rest.is_empty() || rest.starts_with(char::is_whitespace)

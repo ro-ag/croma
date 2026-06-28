@@ -141,6 +141,10 @@ pub(crate) struct LoweringState {
     /// for the next timed note/rest/chord event. `w:` carries the primary
     /// syllable; these carry same-note same-verse siblings ABC cannot spell.
     pub(crate) pending_musicxml_lyric_duplicates: Vec<AlignedLyric>,
+    /// Croma MusicXML-origin `[I:croma-musicxml-forward]` carrier waiting for
+    /// the next timed rest event. The rest advances ABC time; MusicXML emits it
+    /// back as `<forward>` instead of `<note><rest>`.
+    pub(crate) pending_musicxml_forward: bool,
     /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
     /// the next `[M:...]` field in this voice.
     pub(crate) pending_musicxml_meter_restatement: bool,
@@ -221,6 +225,7 @@ impl LoweringState {
             pending_musicxml_harmony_text: None,
             pending_musicxml_lyric_extends: Vec::new(),
             pending_musicxml_lyric_duplicates: Vec::new(),
+            pending_musicxml_forward: false,
             pending_musicxml_meter_restatement: false,
         }
     }
@@ -271,6 +276,10 @@ impl LoweringState {
         attachments
             .lyric_same_note_duplicates
             .append(&mut self.pending_musicxml_lyric_duplicates);
+        if self.pending_musicxml_forward {
+            attachments.musicxml_forward = true;
+            self.pending_musicxml_forward = false;
+        }
         attachments
     }
 
@@ -1278,6 +1287,7 @@ fn attachment_bundle_model(
         lyrics: Vec::new(),
         lyric_same_note_extends: Vec::new(),
         lyric_same_note_duplicates: Vec::new(),
+        musicxml_forward: false,
         symbols: Vec::new(),
         ties: Vec::new(),
         slurs: Vec::new(),

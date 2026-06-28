@@ -5166,6 +5166,58 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_backup_forward_voice_offset_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <backup><duration>16</duration></backup>\n",
+            "      <forward><duration>8</duration></forward>\n",
+            "      <note><pitch><step>E</step><octave>3</octave></pitch>",
+            "<duration>8</duration><voice>2</voice><type>half</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-musicxml-forward]"),
+            "ABC projection needs a croma carrier for a MusicXML <forward> cursor gap:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("backup/forward voice-offset ABC should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        let backup = measure
+            .find("<backup>")
+            .unwrap_or_else(|| panic!("roundtrip must keep backup:\n{}", roundtrip.musicxml));
+        let forward = measure
+            .find("<forward>")
+            .unwrap_or_else(|| panic!("roundtrip must keep forward:\n{}", roundtrip.musicxml));
+        let voice2 = measure
+            .find("<voice>2</voice>")
+            .unwrap_or_else(|| panic!("roundtrip must keep voice 2 note:\n{}", roundtrip.musicxml));
+        let forward_block = &measure[forward..voice2];
+        assert!(
+            backup < forward && forward < voice2,
+            "forward must stay between backup and the offset voice-2 note:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            forward_block.contains("<duration>16</duration>"),
+            "forward must keep the half-measure cursor-gap duration in the exported divisions:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_redundant_meter_restatement_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
