@@ -796,6 +796,12 @@ impl LoweringState {
                         return;
                     }
                     if let Some(event_index) = self.last_note_event_index() {
+                        // A voice-level `)` closing on a chord binds to the chord
+                        // as a whole, which maps to its head note (ABC 2.1 §4.11;
+                        // matches the slur start and foreign MusicXML / abc2xml).
+                        // `last_note_event_index` returns the trailing chord
+                        // member, so resolve it back to the head.
+                        let event_index = self.chord_head_event_index(event_index);
                         self.attach_slur(event_index, open.pair_id, SlurRole::Stop, slur);
                     } else {
                         self.diagnostics.push(unmatched_slur_warning(slur.span));
@@ -1077,6 +1083,41 @@ impl LoweringState {
             .enumerate()
             .rev()
             .find_map(|(index, event)| lowered_timed_note(Some(event)).map(|_| index))
+    }
+
+    /// Resolve a note event index to its chord head. If the event at `index` is
+    /// a chord member (`chord: true`), walk back over the earlier members of the
+    /// same time group — they share its `source_order`/`line_index` — to the
+    /// head (the first note, written without `<chord/>`). A single note or the
+    /// head itself returns `index` unchanged. Used so a voice-level slur stop
+    /// closing on a chord lands on the head, not the trailing member.
+    fn chord_head_event_index(&self, index: usize) -> usize {
+        let Some(LoweredEvent::Timed(timed)) = self.lowered.get(index) else {
+            return index;
+        };
+        if !matches!(
+            timed.event.kind,
+            LoweredEventAtomKind::Note { chord: true, .. }
+        ) {
+            return index;
+        }
+        let source_order = timed.source_order;
+        let line_index = timed.line_index;
+        let mut head = index;
+        for earlier in (0..index).rev() {
+            let Some(LoweredEvent::Timed(earlier_timed)) = self.lowered.get(earlier) else {
+                break;
+            };
+            if earlier_timed.source_order == source_order
+                && earlier_timed.line_index == line_index
+                && matches!(earlier_timed.event.kind, LoweredEventAtomKind::Note { .. })
+            {
+                head = earlier;
+            } else {
+                break;
+            }
+        }
+        head
     }
 
     fn previous_timed_note_event_index(&self) -> Option<usize> {
