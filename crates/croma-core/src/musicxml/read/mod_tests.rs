@@ -5115,6 +5115,50 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_chord_member_arpeggiate_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<notations><arpeggiate/></notations></note>\n",
+            "      <note><chord/><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<notations><arpeggiate/></notations></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let direct_xml = write_score_partwise(&read_musicxml(xml).value).value;
+        assert_eq!(
+            direct_xml.matches("<arpeggiate/>").count(),
+            2,
+            "precondition: the reader model preserves head and member arpeggiate"
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[C!arpeggio!E]"),
+            "member arpeggiate must be projected inside the ABC chord:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("chord-member arpeggiate ABC projection should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        assert_eq!(
+            measure.matches("<arpeggiate/>").count(),
+            2,
+            "roundtrip must keep arpeggiate on the chord head and member:\nABC:\n{abc}\nXML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_duplicate_same_verse_lyric_with_inline_delimiter_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
