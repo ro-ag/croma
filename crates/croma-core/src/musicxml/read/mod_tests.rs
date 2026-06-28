@@ -2407,6 +2407,133 @@ fn textless_harmony_stays_textless_through_abc_projection() {
 }
 
 #[test]
+fn textless_harmony_before_zero_duration_directions_survives_abc_projection() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <harmony>
+        <root><root-step>B</root-step><root-alter>-1</root-alter></root>
+        <kind>major</kind>
+      </harmony>
+      <direction placement="above">
+        <direction-type><rehearsal font-weight="bold">A</rehearsal></direction-type>
+      </direction>
+      <direction placement="above">
+        <direction-type><words>Verse</words></direction-type>
+      </direction>
+      <note>
+        <pitch><step>D</step><alter>-1</alter><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let mut score = read_musicxml(xml).value;
+    let direct_xml = write_score_partwise(&score).value;
+    let direct_harmony = direct_xml
+        .find("<harmony>")
+        .expect("direct XML inverse must keep the harmony");
+    let direct_rehearsal = direct_xml
+        .find("<rehearsal")
+        .expect("direct XML inverse must keep the rehearsal");
+    assert!(
+        direct_harmony < direct_rehearsal,
+        "direct MusicXML inverse must keep harmony before the rehearsal:\n{direct_xml}"
+    );
+
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+
+    assert!(
+        abc.contains("[P:A]"),
+        "ABC projection must keep the intervening rehearsal direction:\n{abc}"
+    );
+    assert!(
+        abc.contains("[Q:"),
+        "ABC projection must keep the intervening tempo-like words direction:\n{abc}"
+    );
+    assert!(
+        abc.contains("[I:croma-harmony-text textless=1]\"Bb\""),
+        "ABC projection must not drop harmony buffered before zero-duration directions:\n{abc}"
+    );
+
+    let roundtrip =
+        export_musicxml(&abc).expect("projected harmony with intervening directions should export");
+    assert!(
+        roundtrip.musicxml.contains("<harmony>")
+            && roundtrip.musicxml.contains("<kind>major</kind>"),
+        "round-trip MusicXML must keep the textless harmony:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
+fn textless_harmony_before_mid_tune_tempo_survives_abc_projection() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>8</divisions></attributes>
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+      <harmony>
+        <root><root-step>B</root-step><root-alter>-1</root-alter></root>
+        <kind>major</kind>
+      </harmony>
+      <direction placement="above">
+        <direction-type><words>Verse</words></direction-type>
+      </direction>
+      <note>
+        <pitch><step>D</step><alter>-1</alter><octave>5</octave></pitch>
+        <duration>8</duration>
+        <voice>1</voice>
+        <type>quarter</type>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let mut score = read_musicxml(xml).value;
+    let direct_xml = write_score_partwise(&score).value;
+    let direct_harmony = direct_xml
+        .find("<harmony>")
+        .expect("direct XML inverse must keep the harmony");
+    let direct_words = direct_xml
+        .find("<words>Verse</words>")
+        .expect("direct XML inverse must keep the words tempo");
+    assert!(
+        direct_harmony < direct_words,
+        "direct MusicXML inverse must keep harmony before the tempo words:\n{direct_xml}"
+    );
+
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[Q:\"Verse\"] [I:croma-harmony-text textless=1]\"Bb\""),
+        "ABC projection must not drop harmony buffered before a mid-tune tempo:\n{abc}"
+    );
+
+    let roundtrip =
+        export_musicxml(&abc).expect("projected harmony before mid-tune tempo should export");
+    assert!(
+        roundtrip.musicxml.contains("<harmony>")
+            && roundtrip.musicxml.contains("<kind>major</kind>")
+            && roundtrip.musicxml.contains("<words>Verse</words>"),
+        "round-trip MusicXML must keep both the textless harmony and tempo words:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn textless_harmony_major_seventh_synthesises_maj7() {
     let text = foreign_chord_text(
         "<harmony><root><root-step>C</root-step></root><kind>major-seventh</kind></harmony>",
