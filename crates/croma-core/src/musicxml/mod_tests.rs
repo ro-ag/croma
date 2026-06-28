@@ -1155,6 +1155,103 @@ fn invalid_musicxml_spanner_carrier_does_not_emit_invalid_xml_text() {
 }
 
 #[test]
+fn musicxml_tuplet_display_carrier_emits_tuplet_children() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "(4:2:2!musicxml-tuplet-detail-v1-byes-a2-quarter-0-n2-quarter-0!D4 A,4|\n",
+    );
+    let export = export_musicxml(source).expect("tuplet display carrier should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        export
+            .musicxml
+            .contains("<tuplet type=\"start\" bracket=\"yes\">")
+    );
+    assert!(export.musicxml.contains("<tuplet-actual>"));
+    assert!(export.musicxml.contains("<tuplet-number>2</tuplet-number>"));
+    assert!(
+        export
+            .musicxml
+            .contains("<tuplet-type>quarter</tuplet-type>")
+    );
+    assert!(export.musicxml.contains("<tuplet-normal>"));
+    assert!(
+        !export
+            .musicxml
+            .contains("<words>musicxml-tuplet-detail-v1-byes"),
+        "tuplet display carrier should not be emitted as words"
+    );
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported tuplet display carrier should not warn"
+    );
+}
+
+#[test]
+fn musicxml_tuplet_bracket_carrier_emits_bracket_attr() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "(3:2:3!musicxml-tuplet-detail-v1-byes!C D E F|\n",
+    );
+    let export = export_musicxml(source).expect("tuplet bracket carrier should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<tuplet type=\"start\" bracket=\"yes\"/>"),
+        1
+    );
+    assert!(!export.musicxml.contains("<tuplet-actual>"));
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported tuplet bracket carrier should not warn"
+    );
+}
+
+#[test]
+fn invalid_musicxml_tuplet_display_carrier_is_not_emitted_as_words() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "(4:2:2!musicxml-tuplet-detail-v1-byes-a2-n2-quarter-0!D4 A,4|\n",
+    );
+    let export = export_musicxml(source).expect("invalid carrier should not break export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export.musicxml.contains("<tuplet-actual>"),
+        "invalid carrier should not emit tuplet display children"
+    );
+    assert!(
+        !export
+            .musicxml
+            .contains("<words>musicxml-tuplet-detail-v1-byes"),
+        "invalid private carrier should not be emitted as words"
+    );
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "invalid carrier should fall back to an unsupported-decoration diagnostic"
+    );
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).

@@ -12,14 +12,16 @@ impl<'score> MusicXmlWriter<'score> {
     ) {
         let has_tied = !attachments.ties.is_empty();
         let has_slurs = !attachments.slurs.is_empty();
+        let notation_kinds = attachments
+            .decorations
+            .iter()
+            .filter_map(decoration_notation)
+            .collect::<Vec<_>>();
         let has_tuplets = attachments
             .tuplets
             .iter()
             .any(|tuplet| matches!(tuplet.role, TupletRole::Start | TupletRole::Stop));
-        let has_notation_decorations = attachments
-            .decorations
-            .iter()
-            .any(|decoration| decoration_notation(decoration).is_some());
+        let has_notation_decorations = notation_kinds.iter().any(NotationKind::emits_own_notation);
         if !(has_tied || has_slurs || has_tuplets || has_notation_decorations) {
             return;
         }
@@ -61,6 +63,13 @@ impl<'score> MusicXmlWriter<'score> {
             }
             self.xml.empty("slur", &attrs);
         }
+        let mut tuplet_displays = notation_kinds.iter().filter_map(|kind| {
+            if let NotationKind::TupletDisplay(display) = kind {
+                Some(display)
+            } else {
+                None
+            }
+        });
         for tuplet in &attachments.tuplets {
             let Some(tuplet_type) = (match tuplet.role {
                 TupletRole::Start => Some("start"),
@@ -70,16 +79,16 @@ impl<'score> MusicXmlWriter<'score> {
                 continue;
             };
             let number = tuplet_numbers.number_for(tuplet.pair_id).to_string();
-            self.xml.empty(
-                "tuplet",
-                &[("type", tuplet_type), ("number", number.as_str())],
-            );
+            let display = (tuplet_type == "start")
+                .then(|| tuplet_displays.next())
+                .flatten();
+            self.write_tuplet_notation(tuplet_type, number.as_str(), display);
         }
         if has_notation_decorations {
-            let notation_kinds = attachments
-                .decorations
+            let notation_kinds = notation_kinds
                 .iter()
-                .filter_map(decoration_notation)
+                .filter(|kind| kind.emits_own_notation())
+                .cloned()
                 .collect::<Vec<_>>();
             let kinds = |want: fn(&NotationKind) -> Option<&'static str>| {
                 notation_kinds.iter().filter_map(want).collect::<Vec<_>>()
@@ -189,6 +198,41 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.end("notations");
     }
 
+    fn write_tuplet_notation(
+        &mut self,
+        tuplet_type: &'static str,
+        number: &str,
+        display: Option<&TupletDisplay>,
+    ) {
+        let mut attrs = vec![("type", tuplet_type)];
+        if let Some(display) = display {
+            if let Some(bracket) = display.bracket {
+                attrs.push(("bracket", bracket));
+            }
+            if let (Some(actual), Some(normal)) = (&display.actual, &display.normal) {
+                self.xml.start("tuplet", &attrs);
+                self.write_tuplet_display_detail("tuplet-actual", actual);
+                self.write_tuplet_display_detail("tuplet-normal", normal);
+                self.xml.end("tuplet");
+            } else {
+                self.xml.empty("tuplet", &attrs);
+            }
+        } else {
+            attrs.push(("number", number));
+            self.xml.empty("tuplet", &attrs);
+        }
+    }
+
+    fn write_tuplet_display_detail(&mut self, element: &'static str, detail: &TupletDisplayDetail) {
+        self.xml.start(element, &[]);
+        self.xml.text_element("tuplet-number", &detail.number);
+        self.xml.text_element("tuplet-type", detail.note_type);
+        for _ in 0..detail.dots {
+            self.xml.empty("tuplet-dot", &[]);
+        }
+        self.xml.end(element);
+    }
+
     pub(crate) fn write_time_modification(&mut self, time_modification: TimeModification) {
         self.xml.start("time-modification", &[]);
         self.xml
@@ -217,6 +261,8 @@ pub(crate) enum NotationKind {
         tremolo_type: &'static str,
         marks: &'static str,
     },
+    /// Display metadata to write inside a generated `<tuplet type="start">`.
+    TupletDisplay(TupletDisplay),
     /// A MusicXML `<glissando>` or `<slide>` notation.
     Spanner {
         element: &'static str,
@@ -232,6 +278,26 @@ pub(crate) enum NotationKind {
     },
     /// A note/chord arpeggiation mark.
     Arpeggiate,
+}
+
+impl NotationKind {
+    fn emits_own_notation(&self) -> bool {
+        !matches!(self, NotationKind::TupletDisplay(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TupletDisplay {
+    bracket: Option<&'static str>,
+    actual: Option<TupletDisplayDetail>,
+    normal: Option<TupletDisplayDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TupletDisplayDetail {
+    number: String,
+    note_type: &'static str,
+    dots: u8,
 }
 
 /// Map an ABC decoration to its MusicXML notation, per the ABC 2.1 decoration
@@ -293,9 +359,120 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
         _ => {
             return tremolo_notation(decoration.name.as_str())
                 .or_else(|| technical_value_notation(decoration.name.as_str()))
-                .or_else(|| spanner_notation(decoration.name.as_str()));
+                .or_else(|| spanner_notation(decoration.name.as_str()))
+                .or_else(|| tuplet_display_notation(decoration.name.as_str()));
         }
     })
+}
+
+pub(crate) fn tuplet_display_decoration_name(
+    bracket: Option<&str>,
+    actual: Option<(&str, &str, usize)>,
+    normal: Option<(&str, &str, usize)>,
+) -> Option<String> {
+    let bracket = match bracket {
+        Some(value) => bracket_attr(value)?,
+        None => "none",
+    };
+    let mut name = format!("musicxml-tuplet-detail-v1-b{bracket}");
+    match (actual, normal) {
+        (
+            Some((actual_number, actual_type, actual_dots)),
+            Some((normal_number, normal_type, normal_dots)),
+        ) => {
+            let actual_type = note_type_attr(actual_type)?;
+            let normal_type = note_type_attr(normal_type)?;
+            if positive_decimal_text(actual_number).is_none()
+                || positive_decimal_text(normal_number).is_none()
+            {
+                return None;
+            }
+            name.push_str(&format!(
+                "-a{actual_number}-{actual_type}-{actual_dots}-n{normal_number}-{normal_type}-{normal_dots}"
+            ));
+            Some(name)
+        }
+        (None, None) => (bracket != "none").then_some(name),
+        _ => None,
+    }
+}
+
+fn tuplet_display_notation(name: &str) -> Option<NotationKind> {
+    let rest = name.strip_prefix("musicxml-tuplet-detail-v1-b")?;
+    let (bracket, detail) = match rest.split_once("-a") {
+        Some((bracket, rest)) => {
+            let (actual, normal) = rest.split_once("-n")?;
+            (
+                bracket,
+                Some((
+                    tuplet_display_detail(actual)?,
+                    tuplet_display_detail(normal)?,
+                )),
+            )
+        }
+        None => (rest, None),
+    };
+    if bracket.contains('-') {
+        return None;
+    }
+    let bracket = match bracket {
+        "none" => None,
+        value => Some(bracket_attr(value)?),
+    };
+    let (actual, normal) = detail
+        .map(|(actual, normal)| (Some(actual), Some(normal)))
+        .unwrap_or((None, None));
+    if bracket.is_none() && actual.is_none() {
+        return None;
+    }
+    Some(NotationKind::TupletDisplay(TupletDisplay {
+        bracket,
+        actual,
+        normal,
+    }))
+}
+
+fn tuplet_display_detail(text: &str) -> Option<TupletDisplayDetail> {
+    let mut parts = text.split('-');
+    let number = positive_decimal_text(parts.next()?)?.to_owned();
+    let note_type = note_type_attr(parts.next()?)?;
+    let dots = parts.next()?.parse::<u8>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(TupletDisplayDetail {
+        number,
+        note_type,
+        dots,
+    })
+}
+
+fn bracket_attr(value: &str) -> Option<&'static str> {
+    match value {
+        "yes" => Some("yes"),
+        "no" => Some("no"),
+        _ => None,
+    }
+}
+
+fn note_type_attr(value: &str) -> Option<&'static str> {
+    match value {
+        "1024th" => Some("1024th"),
+        "512th" => Some("512th"),
+        "256th" => Some("256th"),
+        "128th" => Some("128th"),
+        "64th" => Some("64th"),
+        "32nd" => Some("32nd"),
+        "16th" => Some("16th"),
+        "eighth" => Some("eighth"),
+        "quarter" => Some("quarter"),
+        "half" => Some("half"),
+        "whole" => Some("whole"),
+        "breve" => Some("breve"),
+        "long" => Some("long"),
+        "maxima" => Some("maxima"),
+        _ => None,
+    }
 }
 
 fn spanner_notation(name: &str) -> Option<NotationKind> {
@@ -366,6 +543,10 @@ fn line_type_attr(value: &str) -> Option<&'static str> {
 
 fn decimal_text(text: &str) -> Option<&str> {
     (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())).then_some(text)
+}
+
+fn positive_decimal_text(text: &str) -> Option<&str> {
+    decimal_text(text).filter(|text| text.parse::<u32>().is_ok_and(|value| value > 0))
 }
 
 fn technical_value_notation(name: &str) -> Option<NotationKind> {
