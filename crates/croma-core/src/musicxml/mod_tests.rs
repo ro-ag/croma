@@ -373,6 +373,38 @@ fn chord_member_slurs_attach_to_their_chords() {
 }
 
 #[test]
+fn voice_slur_closing_on_chord_attaches_stop_to_chord_head() {
+    // ABC 2.1 §4.11: a voice-level slur may close "out of and between chords".
+    // `(C [EG])` closes the slur on the chord [EG]. The matching slur START
+    // anchors on the chord head (its first note), so the STOP must land on that
+    // same chord head — the note WITHOUT <chord/> — not on the trailing chord
+    // member. This matches the original MusicXML and abc2xml. croma used to
+    // attach the stop to the last chord member (the PDMX reader-roundtrip slur
+    // cluster, ~35 files).
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n(C [EG])|\n";
+    let export = export_musicxml(source).expect("chord-closing slur should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 1);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 1);
+
+    // The stop sits inside the chord head: the nearest <note before the stop
+    // marker must not be a chord member (no <chord/>).
+    let stop_index = export
+        .musicxml
+        .find("<slur type=\"stop\"")
+        .expect("slur stop should be present");
+    let note_start = export.musicxml[..stop_index]
+        .rfind("<note")
+        .expect("slur stop should be inside a note");
+    let stop_note = &export.musicxml[note_start..stop_index];
+    assert!(
+        !stop_note.contains("<chord/>"),
+        "slur stop should land on the chord head, not a chord member: {stop_note}"
+    );
+}
+
+#[test]
 fn lowercase_root_quoted_text_is_words_not_harmony() {
     // ABC 2.1 §4.18: the chord root is A-G (uppercase); only the bass note
     // may be lowercase. "d" is annotation text, not a D chord (40 corpus
