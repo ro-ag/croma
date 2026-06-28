@@ -365,6 +365,7 @@ fn barline_syntax_policy_info(span: Span, kind: BarlineKind) -> Diagnostic {
         "abc.music.barline.policy",
         match kind {
             BarlineKind::Dotted => "Dotted barline was preserved for MusicXML export policy",
+            BarlineKind::Dashed => "Dashed barline was preserved for MusicXML export policy",
             BarlineKind::Invisible => "Invisible barline was preserved for MusicXML export policy",
             _ => "Barline was preserved for MusicXML export policy",
         },

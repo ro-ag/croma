@@ -2,8 +2,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{
-    BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, MidiInstrumentModel, Part, Score,
-    TimedEventKind, TimelineEventKind,
+    BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, MidiInstrumentModel, Part,
+    RepeatEndingCloseLocation, RepeatEndingCloseType, RepeatEndingPartModel, Score, TimedEventKind,
+    TimelineEventKind,
 };
 
 use super::{
@@ -202,6 +203,19 @@ impl<'score> MusicXmlWriter<'score> {
                     );
                 }
             }
+            let explicit_closes = unique_ending_closes(&measure_refs);
+            let explicit_left_closes = explicit_closes
+                .iter()
+                .filter(|close| close.location == RepeatEndingCloseLocation::Left)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !explicit_left_closes.is_empty() {
+                self.write_ending_close_barlines(
+                    BarlineLocation::Left,
+                    &explicit_left_closes,
+                    None,
+                );
+            }
 
             if let Some(count) = unique_multiple_rest(&measure_refs) {
                 self.write_multiple_rest_measure_style(count);
@@ -219,10 +233,27 @@ impl<'score> MusicXmlWriter<'score> {
             // An ending bracket may span several measures (ABC 2.1 §4.9); the
             // schedule says which measure's right barline closes the bracket
             // opened at its `[N`.
-            let mut stop_endings = ending_stops[measure_position].as_deref();
+            let explicit_right_closes = explicit_closes
+                .iter()
+                .filter(|close| close.location == RepeatEndingCloseLocation::Right)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut explicit_closes_pending =
+                (!explicit_right_closes.is_empty()).then_some(&explicit_right_closes);
+            let mut stop_endings = if explicit_closes_pending.is_some() {
+                None
+            } else {
+                ending_stops[measure_position].as_deref()
+            };
             let right_barlines = unique_barlines(&measure_refs, false);
             for barline in &right_barlines {
-                if let Some(stops) = stop_endings.take() {
+                if let Some(closes) = explicit_closes_pending.take() {
+                    self.write_ending_close_barlines(
+                        BarlineLocation::Right,
+                        closes,
+                        Some(barline.kind),
+                    );
+                } else if let Some(stops) = stop_endings.take() {
                     self.write_ending_barline(
                         BarlineLocation::Right,
                         stops,
@@ -239,7 +270,9 @@ impl<'score> MusicXmlWriter<'score> {
             // A bracket forced shut here (next measure opens another ending,
             // or the part ends) with no written right barline still needs its
             // <ending type="stop"> on an implicit regular barline.
-            if let Some(stops) = stop_endings.take() {
+            if let Some(closes) = explicit_closes_pending.take() {
+                self.write_ending_close_barlines(BarlineLocation::Right, closes, None);
+            } else if let Some(stops) = stop_endings.take() {
                 self.write_ending_barline(BarlineLocation::Right, stops, EndingType::Stop, None);
             }
 
@@ -254,6 +287,31 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.end("measure");
         }
         self.xml.end("part");
+    }
+
+    fn write_ending_close_barlines(
+        &mut self,
+        location: BarlineLocation,
+        closes: &[EndingCloseDisplay],
+        repeat_kind: Option<BarlineKind>,
+    ) {
+        let mut grouped: BTreeMap<EndingType, Vec<EndingDisplay>> = BTreeMap::new();
+        for close in closes {
+            grouped
+                .entry(close.kind)
+                .or_default()
+                .push(close.ending.clone());
+        }
+        let mut first = true;
+        for (kind, endings) in grouped {
+            self.write_ending_barline(
+                location,
+                &endings,
+                kind,
+                first.then_some(repeat_kind).flatten(),
+            );
+            first = false;
+        }
     }
 }
 
@@ -679,6 +737,7 @@ fn unique_barlines(measures: &[&Measure], left: bool) -> Vec<MeasureBarline> {
                             | BarlineKind::RepeatEnd
                             | BarlineKind::RepeatBoth
                             | BarlineKind::Dotted
+                            | BarlineKind::Dashed
                             | BarlineKind::Invisible
                     )
             )
@@ -739,6 +798,10 @@ fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Ve
             }
             open = Some(starts);
         }
+        if open.is_some() && !unique_ending_closes(&measure_refs).is_empty() {
+            open.take();
+            continue;
+        }
         if open.is_some()
             && (unique_barlines(&measure_refs, false)
                 .iter()
@@ -752,6 +815,31 @@ fn ending_stop_schedule(part: &Part, measure_ids: &[MeasureId]) -> Vec<Option<Ve
     // a closing bar (`||`/`:|`/`|]`/`[|`), and synthesizing a stop here would
     // fabricate a barline the source does not have.
     stops
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct EndingCloseDisplay {
+    location: RepeatEndingCloseLocation,
+    kind: EndingType,
+    ending: EndingDisplay,
+}
+
+fn unique_ending_closes(measures: &[&Measure]) -> Vec<EndingCloseDisplay> {
+    let mut closes = measures
+        .iter()
+        .flat_map(|measure| &measure.repeat_ending_closes)
+        .map(|close| EndingCloseDisplay {
+            location: close.location,
+            kind: match close.close_type {
+                RepeatEndingCloseType::Stop => EndingType::Stop,
+                RepeatEndingCloseType::Discontinue => EndingType::Discontinue,
+            },
+            ending: ending_display_from_parts(&close.endings),
+        })
+        .collect::<Vec<_>>();
+    closes.sort();
+    closes.dedup();
+    closes
 }
 
 fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
@@ -775,7 +863,11 @@ fn stops_repeat_ending_barline(kind: BarlineKind) -> bool {
 /// `["label"` extension need a numeric XML number for readers such as music21,
 /// with the source label carried as element text.
 fn ending_display(ending: &crate::model::RepeatEndingModel) -> EndingDisplay {
-    let text = ending.endings.iter().find_map(|part| match part {
+    ending_display_from_parts(&ending.endings)
+}
+
+fn ending_display_from_parts(parts: &[RepeatEndingPartModel]) -> EndingDisplay {
+    let text = parts.iter().find_map(|part| match part {
         crate::model::RepeatEndingPartModel::Text(text) => Some(text.clone()),
         _ => None,
     });
@@ -786,8 +878,7 @@ fn ending_display(ending: &crate::model::RepeatEndingModel) -> EndingDisplay {
         };
     }
 
-    let number = ending
-        .endings
+    let number = parts
         .iter()
         .map(|part| match part {
             crate::model::RepeatEndingPartModel::Single(number) => number.to_string(),

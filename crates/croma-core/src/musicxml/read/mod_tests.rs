@@ -6065,6 +6065,258 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_trailing_forward_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <backup><duration>16</duration></backup>\n",
+            "      <note><pitch><step>E</step><octave>3</octave></pitch>",
+            "<duration>4</duration><voice>2</voice><type>quarter</type></note>\n",
+            "      <forward><duration>12</duration></forward>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-musicxml-forward]"),
+            "ABC projection needs a croma carrier for a trailing MusicXML <forward>:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("trailing forward ABC should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        let voice2 = measure
+            .find("<voice>2</voice>")
+            .unwrap_or_else(|| panic!("roundtrip must keep voice 2 note:\n{}", roundtrip.musicxml));
+        let forward = measure.find("<forward>").unwrap_or_else(|| {
+            panic!(
+                "roundtrip must keep trailing forward before the measure boundary:\n{}",
+                roundtrip.musicxml
+            )
+        });
+        let forward_block = &measure[forward..];
+        assert!(
+            voice2 < forward,
+            "trailing forward must remain after the short voice-2 note:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            forward_block.contains("<duration>24</duration>"),
+            "trailing forward must keep the remaining three-quarter cursor gap:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_forward_only_measure_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <forward><duration>16</duration></forward>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-musicxml-forward]"),
+            "ABC projection needs a croma carrier for a forward-only measure:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("forward-only measure ABC should export");
+        let first_measure = measure_block(&roundtrip.musicxml, "1");
+        assert!(
+            first_measure.contains("<forward>")
+                && first_measure.contains("<duration>32</duration>"),
+            "roundtrip must keep the forward-only measure as a MusicXML <forward>:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            measure_block(&roundtrip.musicxml, "2").contains("<voice>1</voice>"),
+            "the following note must stay in measure 2:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_ending_stop_on_regular_barline_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <barline location=\"left\"><ending number=\"2\" type=\"start\"/></barline>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <barline location=\"right\"><ending number=\"2\" type=\"stop\"/></barline>\n",
+            "    </measure>\n",
+            "    <measure number=\"3\">\n",
+            "      <note><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip =
+            export_musicxml(&abc).expect("ending-stop-on-regular-barline ABC should export");
+        let second_measure = measure_block(&roundtrip.musicxml, "2");
+        assert!(
+            second_measure.contains("<ending number=\"2\" type=\"stop\"/>"),
+            "roundtrip must keep the explicit regular-barline ending stop in measure 2; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_ending_stop_on_left_barline_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <barline location=\"left\"><ending number=\"2\" type=\"start\"/></barline>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <barline location=\"left\"><ending number=\"2\" type=\"stop\"/></barline>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc).expect("left ending-stop carrier ABC should export");
+        let second_measure = measure_block(&roundtrip.musicxml, "2");
+        assert!(
+            second_measure.contains("<barline location=\"left\">")
+                && second_measure.contains("<ending number=\"2\" type=\"stop\"/>")
+                && !second_measure.contains("<barline location=\"right\">"),
+            "roundtrip must keep the explicit ending stop on measure 2's left barline; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_ending_discontinue_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <barline location=\"left\"><ending number=\"2\" type=\"start\"/></barline>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <barline location=\"right\"><ending number=\"2\" type=\"discontinue\"/></barline>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc).expect("ending-discontinue ABC should export");
+        let first_measure = measure_block(&roundtrip.musicxml, "1");
+        assert!(
+            first_measure.contains("<ending number=\"2\" type=\"discontinue\"/>"),
+            "roundtrip must keep explicit MusicXML ending discontinue, not normalize to stop; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_dashed_barline_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <barline location=\"right\"><bar-style>dashed</bar-style></barline>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-barline-style style=dashed]"),
+            "ABC projection needs a croma carrier for a MusicXML dashed barline:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("dashed barline ABC should export");
+        let first_measure = measure_block(&roundtrip.musicxml, "1");
+        assert!(
+            first_measure.contains("<bar-style>dashed</bar-style>"),
+            "roundtrip must keep MusicXML dashed barline style; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn dashed_barline_carrier_does_not_replace_repeat_end() {
+        let abc = "X:1\nM:4/4\nL:1/8\nK:C\nC8 [I:croma-barline-style style=dashed]:|\n";
+        let roundtrip = export_musicxml(abc).expect("dashed repeat-end ABC should export");
+        let first_measure = measure_block(&roundtrip.musicxml, "1");
+        assert!(
+            first_measure.contains("<repeat direction=\"backward\"/>"),
+            "barline style carrier must not drop repeat-end semantics:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            !first_measure.contains("<bar-style>dashed</bar-style>"),
+            "dashed style carrier is only preserved for regular bars until mixed style+repeat is modeled:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_redundant_meter_restatement_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",

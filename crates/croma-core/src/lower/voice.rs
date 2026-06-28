@@ -5,8 +5,8 @@ use crate::model::{
     Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind,
     DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
     GraceEventKind, GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind,
-    MusicXmlInstrumentRef, Pitch, RestEvent, SlurAttachment, SlurRole, TextAttachment, VoiceId,
-    VoicePropertiesModel,
+    MusicXmlInstrumentRef, Pitch, RepeatEndingCloseModel, RestEvent, SlurAttachment, SlurRole,
+    TextAttachment, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::field::KeySignature;
 use crate::syntax::{
@@ -23,6 +23,7 @@ pub(crate) enum LoweredEvent {
     Untimed(Event),
     Overlay(OverlaySyntax),
     VariantEnding(VariantEndingSyntax),
+    VariantEndingClose(RepeatEndingCloseModel),
     KeyChange(crate::model::KeySignatureModel),
     MeterChange(crate::model::MeterModel),
     ClefChange(crate::model::ClefChangeModel),
@@ -151,6 +152,14 @@ pub(crate) struct LoweringState {
     /// the next timed rest event. The rest advances ABC time; MusicXML emits it
     /// back as `<forward>` instead of `<note><rest>`.
     pub(crate) pending_musicxml_forward: bool,
+    /// Croma MusicXML-origin `[I:croma-after-grace]` carrier waiting for the
+    /// next flushed grace group. It disambiguates MusicXML after-grace notes
+    /// from ABC leading graces that intentionally cross a barline.
+    pub(crate) pending_musicxml_after_grace: bool,
+    /// Croma MusicXML-origin `[I:croma-barline-style ...]` carrier waiting for
+    /// the next parsed barline. Used for MusicXML bar styles ABC cannot spell
+    /// natively, currently `dashed`.
+    pub(crate) pending_musicxml_barline_kind: Option<BarlineKind>,
     /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
     /// the next `[M:...]` field in this voice.
     pub(crate) pending_musicxml_meter_restatement: bool,
@@ -192,6 +201,7 @@ pub(crate) struct PendingGraceSlurStop {
 pub(crate) struct PendingGraceGroup {
     pub(crate) grace: GraceGroupSyntax,
     pub(crate) detached_from_previous: bool,
+    pub(crate) force_after_previous: bool,
 }
 
 impl LoweringState {
@@ -237,6 +247,8 @@ impl LoweringState {
             pending_musicxml_lyric_extends: Vec::new(),
             pending_musicxml_lyric_duplicates: Vec::new(),
             pending_musicxml_forward: false,
+            pending_musicxml_after_grace: false,
+            pending_musicxml_barline_kind: None,
             pending_musicxml_meter_restatement: false,
             pending_musicxml_time_symbol: None,
         }
@@ -756,10 +768,22 @@ impl LoweringState {
         if self.pending_grace_groups.is_empty() || !self.broken_left_available {
             return false;
         }
-        let Some(event_index) = self.previous_timed_note_event_index() else {
+        let forced_after_grace = self
+            .pending_grace_groups
+            .iter()
+            .all(|group| group.force_after_previous);
+        let event_index = if forced_after_grace {
+            self.previous_timed_note_or_chord_member_event_index()
+        } else {
+            self.previous_timed_note_event_index()
+        };
+        let Some(event_index) = event_index else {
             return false;
         };
-        if !self.timed_event_has_trill(event_index) && self.pending_grace_slur_stops.is_empty() {
+        if !forced_after_grace
+            && !self.timed_event_has_trill(event_index)
+            && self.pending_grace_slur_stops.is_empty()
+        {
             return false;
         }
         let graces = self.take_pending_grace_group_attachments();
@@ -797,10 +821,12 @@ impl LoweringState {
         &mut self,
         grace: GraceGroupSyntax,
         detached_from_previous: bool,
+        force_after_previous: bool,
     ) {
         self.pending_grace_groups.push(PendingGraceGroup {
             grace,
             detached_from_previous,
+            force_after_previous,
         });
     }
 
@@ -998,6 +1024,45 @@ impl LoweringState {
                         LoweredEventAtomKind::Note { chord: false, .. }
                     )
                     .then_some(index);
+                }
+                _ => continue,
+            }
+        }
+        None
+    }
+
+    fn previous_timed_note_or_chord_member_event_index(&self) -> Option<usize> {
+        for (index, event) in self.lowered.iter().enumerate().rev() {
+            match event {
+                LoweredEvent::Timed(timed) => {
+                    return match &timed.event.kind {
+                        LoweredEventAtomKind::Note { chord: false, .. } => Some(index),
+                        LoweredEventAtomKind::Note { chord: true, .. } => {
+                            let source_order = timed.source_order;
+                            let line_index = timed.line_index;
+                            let mut first_index = index;
+                            for earlier in (0..index).rev() {
+                                let Some(LoweredEvent::Timed(earlier_timed)) =
+                                    self.lowered.get(earlier)
+                                else {
+                                    break;
+                                };
+                                if earlier_timed.source_order == source_order
+                                    && earlier_timed.line_index == line_index
+                                    && matches!(
+                                        &earlier_timed.event.kind,
+                                        LoweredEventAtomKind::Note { chord: true, .. }
+                                    )
+                                {
+                                    first_index = earlier;
+                                } else {
+                                    break;
+                                }
+                            }
+                            Some(first_index)
+                        }
+                        _ => None,
+                    };
                 }
                 _ => continue,
             }

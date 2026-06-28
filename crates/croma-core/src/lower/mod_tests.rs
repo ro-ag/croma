@@ -2577,6 +2577,35 @@ fn pre_barline_grace_after_complete_measure_stays_before_barline() {
 }
 
 #[test]
+fn croma_after_grace_carrier_binds_previous_note_across_barline() {
+    let source = "X:1\nM:3/4\nL:1/8\nK:C\nB A/ G/ ^F3/2 D/ E2[I:croma-after-grace]{DE} | D4 :|\n";
+    let (tune, diagnostics) = tune_for(source);
+
+    assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:?}");
+    let notes = semantic_note_events(&tune);
+
+    let final_note_before_bar = notes[5];
+    assert!(matches!(
+        &final_note_before_bar.kind,
+        TimedEventKind::Note(note) if note.pitch.step == 'E'
+    ));
+    assert_eq!(final_note_before_bar.measure.number, 1);
+    assert!(final_note_before_bar.attachments.grace_groups.is_empty());
+    assert_eq!(
+        final_note_before_bar
+            .attachments
+            .after_grace_groups
+            .first()
+            .map(|group| group.note_count),
+        Some(2)
+    );
+
+    let first_note_after_bar = notes[6];
+    assert_eq!(first_note_after_bar.measure.number, 2);
+    assert!(first_note_after_bar.attachments.grace_groups.is_empty());
+}
+
+#[test]
 fn chord_symbol_before_slur_open_binds_to_first_slurred_note() {
     // `"G7"(DE)`: the chord symbol rides across the slur-open and binds to
     // `D`, which also carries the slur start; `E` carries the slur stop.

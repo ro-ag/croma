@@ -294,6 +294,10 @@ pub struct Measure {
     pub complete: bool,
     pub barlines: Vec<MeasureBarline>,
     pub repeat_endings: Vec<RepeatEndingModel>,
+    /// MusicXML-origin explicit volta closes (`<ending type="stop|discontinue">`)
+    /// that cannot be inferred from ABC barline syntax, such as a close on an
+    /// implicit regular right barline. ABC-origin scores keep this empty.
+    pub repeat_ending_closes: Vec<RepeatEndingCloseModel>,
     pub overlays: Vec<OverlaySegment>,
 }
 
@@ -307,6 +311,26 @@ pub struct MeasureBarline {
 pub struct RepeatEndingModel {
     pub span: Span,
     pub endings: Vec<RepeatEndingPartModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepeatEndingCloseModel {
+    pub span: Span,
+    pub close_type: RepeatEndingCloseType,
+    pub location: RepeatEndingCloseLocation,
+    pub endings: Vec<RepeatEndingPartModel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RepeatEndingCloseType {
+    Stop,
+    Discontinue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RepeatEndingCloseLocation {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,6 +358,7 @@ pub enum TimedEventKind {
     Spacer,
     Barline(MeasureBarline),
     RepeatEnding(RepeatEndingModel),
+    RepeatEndingClose(RepeatEndingCloseModel),
     /// A mid-tune key change (`[K:..]` or a body `K:` line). Zero duration;
     /// the new key's alters are already baked into later pitches — the event
     /// records WHERE the change was written so exporters can reproduce it.
@@ -693,6 +718,11 @@ pub enum TimelineEventKind {
     VariantEnding {
         endings: Vec<RepeatEndingPartModel>,
     },
+    VariantEndingClose {
+        close_type: RepeatEndingCloseType,
+        location: RepeatEndingCloseLocation,
+        endings: Vec<RepeatEndingPartModel>,
+    },
     KeyChange(KeySignatureModel),
     MeterChange(MeterModel),
     ClefChange(ClefChangeModel),
@@ -824,6 +854,7 @@ pub enum BarlineKind {
     RepeatEnd,
     RepeatBoth,
     Dotted,
+    Dashed,
     Invisible,
     Liberal,
 }

@@ -181,6 +181,45 @@ fn musicxml_forward_instruction() -> &'static str {
     "croma-musicxml-forward"
 }
 
+fn musicxml_after_grace_instruction() -> &'static str {
+    "croma-after-grace"
+}
+
+fn barline_style_instruction(kind: BarlineKind) -> Option<&'static str> {
+    match kind {
+        BarlineKind::Dashed => Some("croma-barline-style style=dashed"),
+        _ => None,
+    }
+}
+
+fn ending_close_instruction(model: &crate::model::RepeatEndingCloseModel) -> Option<String> {
+    let close_type = match model.close_type {
+        crate::model::RepeatEndingCloseType::Stop => "stop",
+        crate::model::RepeatEndingCloseType::Discontinue => "discontinue",
+    };
+    let location = match model.location {
+        crate::model::RepeatEndingCloseLocation::Left => "left",
+        crate::model::RepeatEndingCloseLocation::Right => "right",
+    };
+    let number = ending_number_value(&model.endings)?;
+    Some(format!(
+        "croma-ending-close type={close_type} location={location} number=\"{number}\""
+    ))
+}
+
+fn ending_number_value(parts: &[crate::model::RepeatEndingPartModel]) -> Option<String> {
+    use crate::model::RepeatEndingPartModel::{Range, Single, Text};
+    let values = parts
+        .iter()
+        .map(|part| match part {
+            Single(value) => Some(value.to_string()),
+            Range { start, end } => Some(format!("{start}-{end}")),
+            Text(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!values.is_empty()).then(|| values.join(","))
+}
+
 fn initial_key_instruction(key: &KeySignatureModel) -> String {
     let mut out = format!("croma-initial-key fifths={}", key.fifths);
     if !key.explicit_accidentals.is_empty() {
@@ -692,6 +731,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 out.push(' ');
             }
             TimedEventKind::Barline(b) => {
+                if let Some(instruction) = barline_style_instruction(b.kind) {
+                    out.push_str(&format!("[I:{instruction}] "));
+                }
                 out.push_str(joined[idx].unwrap_or_else(|| barline_str(b.kind)));
                 out.push(' ');
                 if let Some(carrier) = measure_carrier_after_barline {
@@ -701,6 +743,11 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             TimedEventKind::RepeatEnding(r) => {
                 out.push_str(&ending_str(r));
                 out.push(' ');
+            }
+            TimedEventKind::RepeatEndingClose(close) => {
+                if let Some(instruction) = ending_close_instruction(close) {
+                    out.push_str(&format!("[I:{instruction}] "));
+                }
             }
             TimedEventKind::Spacer => {
                 out.push_str("y ");
@@ -1224,6 +1271,7 @@ fn event_suffix(attachments: &crate::EventAttachments) -> String {
                 out.push('(');
             }
         }
+        out.push_str(&format!("[I:{}]", musicxml_after_grace_instruction()));
         out.push_str(&grace_str(grace));
     }
     out
@@ -1258,6 +1306,7 @@ fn barline_str(kind: BarlineKind) -> &'static str {
         BarlineKind::RepeatEnd => ":|",
         BarlineKind::RepeatBoth => "::",
         BarlineKind::Dotted => ".|",
+        BarlineKind::Dashed => "|",
         BarlineKind::Invisible => "[|]",
         // Initial emits as a plain bar: it never renders a <barline> element
         // and segments measures exactly like Regular, so `|` is structurally
@@ -1371,6 +1420,7 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
                 out.push(' ');
             }
             TimelineEventKind::VariantEnding { .. }
+            | TimelineEventKind::VariantEndingClose { .. }
             | TimelineEventKind::KeyChange(_)
             | TimelineEventKind::MeterChange(_)
             | TimelineEventKind::ClefChange(_)
@@ -2143,11 +2193,30 @@ mod tests {
         let s2 = score_of(&abc);
 
         assert!(
-            abc.contains("A2({Bc})"),
+            abc.contains("A2([I:croma-after-grace]{Bc})"),
             "bare grace before barline missing from ABC: {abc:?}"
         );
         assert_eq!(grace_pitches(&s1), grace_pitches(&s2));
         assert_eq!(grace_slur_roles(&s1), grace_slur_roles(&s2));
+        assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
+    }
+
+    #[test]
+    fn after_grace_carrier_roundtrips_on_chords() {
+        let src = "X:1\nL:1/8\nK:C\n[CEG]8[I:croma-after-grace]{d} | D8 |\n";
+        let s1 = score_of(src);
+        let abc = write_abc(&s1, AbcWriteOptions::default());
+        let s2 = score_of(&abc);
+
+        assert!(
+            abc.contains("[CEG]8[I:croma-after-grace]{d}"),
+            "chord after-grace carrier missing from ABC: {abc:?}"
+        );
+        assert_eq!(
+            grace_pitches(&s1),
+            grace_pitches(&s2),
+            "grace for {src:?} -> {abc:?}"
+        );
         assert_eq!(pitch_seq(&s1), pitch_seq(&s2));
     }
 
@@ -2159,7 +2228,7 @@ mod tests {
         let s2 = score_of(&abc);
 
         assert!(
-            abc.contains("!trill!e6{de}"),
+            abc.contains("!trill!e6[I:croma-after-grace]{de}"),
             "after-grace suffix missing from ABC: {abc:?}"
         );
         assert_eq!(

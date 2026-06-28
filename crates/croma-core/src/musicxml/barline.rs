@@ -24,6 +24,7 @@ impl<'score> MusicXmlWriter<'score> {
             BarlineKind::Final => self.xml.text_element("bar-style", "light-heavy"),
             BarlineKind::Initial => self.xml.text_element("bar-style", "heavy-light"),
             BarlineKind::Dotted => self.xml.text_element("bar-style", "dotted"),
+            BarlineKind::Dashed => self.xml.text_element("bar-style", "dashed"),
             BarlineKind::Invisible => self.xml.text_element("bar-style", "none"),
             BarlineKind::RepeatStart => self.xml.text_element("bar-style", "heavy-light"),
             BarlineKind::RepeatEnd | BarlineKind::RepeatBoth => {
@@ -39,6 +40,7 @@ impl<'score> MusicXmlWriter<'score> {
                     match child.kind {
                         EndingType::Start => "start",
                         EndingType::Stop => "stop",
+                        EndingType::Discontinue => "discontinue",
                     },
                 ),
             ];
@@ -73,7 +75,7 @@ impl<'score> MusicXmlWriter<'score> {
                 number: ending.number.as_str(),
                 text: match ending_type {
                     EndingType::Start => ending.text.as_deref(),
-                    EndingType::Stop => None,
+                    EndingType::Stop | EndingType::Discontinue => None,
                 },
                 kind: ending_type,
             })

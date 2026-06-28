@@ -107,7 +107,8 @@ impl<'score> MusicXmlWriter<'score> {
                 }
                 TimedEventKind::Spacer
                 | TimedEventKind::Barline(_)
-                | TimedEventKind::RepeatEnding(_) => {}
+                | TimedEventKind::RepeatEnding(_)
+                | TimedEventKind::RepeatEndingClose(_) => {}
                 // Emission lands in the mid-tune attributes pass (write_event
                 // is reached once measure_sequences admits these).
                 TimedEventKind::KeyChange(key) => {
@@ -197,7 +198,8 @@ impl<'score> MusicXmlWriter<'score> {
                 | TimelineEventKind::SectionLabel(_) => {}
                 TimelineEventKind::Spacer
                 | TimelineEventKind::Barline { .. }
-                | TimelineEventKind::VariantEnding { .. } => {}
+                | TimelineEventKind::VariantEnding { .. }
+                | TimelineEventKind::VariantEndingClose { .. } => {}
             },
         }
         self.write_after_grace_groups(attachments, sequence, part, tuplet_numbers);
