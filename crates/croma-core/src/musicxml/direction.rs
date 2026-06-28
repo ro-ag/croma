@@ -103,14 +103,14 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
     ) {
         for symbol in &attachments.chord_symbols {
-            self.write_chord_symbol(&symbol.text, sequence);
+            self.write_chord_symbol(symbol, sequence);
         }
         for symbol in attachments
             .symbols
             .iter()
             .filter(|symbol| symbol.kind == AlignedSymbolKind::ChordSymbol)
         {
-            self.write_chord_symbol(&symbol.text, sequence);
+            self.write_plain_chord_symbol(&symbol.text, sequence);
         }
         for annotation in &attachments.annotations {
             let text = annotation_text(annotation);

@@ -529,6 +529,10 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_instrument = Some(instrument);
                     return;
                 }
+                if let Some(harmony_text) = parse_harmony_text_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_harmony_text = Some(harmony_text);
+                    return;
+                }
                 if let Some(tempo) =
                     parse_sound_tempo_instruction(&inline.value.value, inline.value.span)
                 {
@@ -724,9 +728,11 @@ impl MultiVoiceLowering {
                     // boundary. ABC 2.1 §4.18 binds the symbol to the note it
                     // precedes, so buffer it for the next timed event (the
                     // boundary does not void it).
-                    self.current_state()
-                        .pending_chord_symbols
-                        .push(text.clone());
+                    let state = self.current_state();
+                    let harmony_text = state.pending_musicxml_harmony_text.take();
+                    state.pending_chord_symbols.push(
+                        crate::lower::voice::chord_symbol_attachment_model(text, harmony_text),
+                    );
                 }
                 MusicItem::Annotation(text) => {
                     // Same flushed-ahead situation; §4.19 positions an
@@ -1648,6 +1654,19 @@ fn parse_note_instrument_instruction(value: &str, span: Span) -> Option<MusicXml
     })
 }
 
+fn parse_harmony_text_instruction(value: &str) -> Option<String> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-harmony-text")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    if parse_croma_bool(&fields, "textless") {
+        return Some(String::new());
+    }
+    fields.get("text").cloned()
+}
+
 fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> {
     let value = value.trim();
     let rest = value.strip_prefix("croma-sound-tempo")?;
@@ -1679,6 +1698,13 @@ fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> 
 
 fn parse_croma_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
     fields.get(key)?.trim().parse::<u32>().ok()
+}
+
+fn parse_croma_bool(fields: &BTreeMap<String, String>, key: &str) -> bool {
+    matches!(
+        fields.get(key).map(|value| value.trim()),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 fn parse_croma_u8(fields: &BTreeMap<String, String>, key: &str) -> Option<u8> {

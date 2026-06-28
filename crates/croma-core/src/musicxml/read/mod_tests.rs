@@ -2338,6 +2338,75 @@ fn textless_harmony_dominant_synthesises_7() {
 }
 
 #[test]
+fn foreign_harmony_suffix_text_recombines_with_root() {
+    for (harmony_xml, expected) in [
+        (
+            "<harmony><root><root-step>B</root-step></root><kind text=\"dim\">diminished</kind></harmony>",
+            "Bdim",
+        ),
+        (
+            "<harmony><root><root-step>D</root-step><root-alter>-1</root-alter></root><kind text=\"7\">dominant</kind></harmony>",
+            "Db7",
+        ),
+        (
+            "<harmony><root><root-step>F</root-step></root><kind text=\"m\">minor</kind></harmony>",
+            "Fm",
+        ),
+        (
+            "<harmony><root><root-step>C</root-step></root><kind text=\"m7\">minor-seventh</kind><bass><bass-step>E</bass-step><bass-alter>-1</bass-alter></bass></harmony>",
+            "Cm7/Eb",
+        ),
+    ] {
+        let text = foreign_chord_text(harmony_xml);
+        assert_eq!(
+            text, expected,
+            "foreign kind@text can be a quality suffix, not a complete chord symbol"
+        );
+    }
+}
+
+#[test]
+fn foreign_harmony_suffix_text_survives_abc_projection() {
+    let xml = "<harmony><root><root-step>B</root-step></root><kind text=\"dim\">diminished</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[I:croma-harmony-text text=\"dim\"]\"Bdim\""),
+        "ABC projection must carry the source MusicXML kind@text suffix:\n{abc}"
+    );
+
+    let roundtrip = export_musicxml(&abc).expect("projected harmony ABC should export");
+    assert!(
+        roundtrip
+            .musicxml
+            .contains("<kind text=\"dim\">diminished</kind>"),
+        "round-trip MusicXML must keep suffix-only kind@text:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
+fn textless_harmony_stays_textless_through_abc_projection() {
+    let xml = "<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[I:croma-harmony-text textless=1]\"C\""),
+        "ABC projection must carry the absent source kind@text:\n{abc}"
+    );
+
+    let roundtrip = export_musicxml(&abc).expect("projected textless harmony ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<kind>major</kind>")
+            && !roundtrip.musicxml.contains("<kind text=\"C\">major</kind>"),
+        "round-trip MusicXML must not invent kind@text for textless harmony:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn textless_harmony_major_seventh_synthesises_maj7() {
     let text = foreign_chord_text(
         "<harmony><root><root-step>C</root-step></root><kind>major-seventh</kind></harmony>",
@@ -2456,12 +2525,12 @@ fn textless_harmony_synthesised_string_round_trips_stable() {
     ] {
         let score = foreign_harmony_score(harmony_xml);
         let synthesised = attachments_at(&score, 0).chord_symbols[0].text.clone();
-        // Writer re-emits the synthesised string as croma's own `<kind text=...>`
-        // harmony; reading THAT back must reproduce the same chord-symbol text.
+        // Writer preserves the source textless `<kind>` while the ABC-facing
+        // synthesised string still re-reads to the same chord-symbol text.
         let x2 = write_score_partwise(&score).value;
         assert!(
-            x2.contains(&format!("text=\"{synthesised}\"")),
-            "the writer re-emits the synthesised string `{synthesised}` as <kind text=...>"
+            x2.contains("<harmony>") && !x2.contains("<kind text="),
+            "the writer re-emits the synthesised string `{synthesised}` as textless <harmony>"
         );
         let reread = read_musicxml(&x2).value;
         assert_eq!(
@@ -2521,10 +2590,11 @@ fn every_synthesised_kind_suffix_round_trips_stable() {
         );
         let synthesised = symbols[0].text.clone();
         let x2 = write_score_partwise(&score).value;
-        // Re-export stability: the synthesised string must survive as a `<harmony>`
-        // (NOT degrade to a `<direction><words>` because it failed to re-parse).
+        // Re-export stability: the synthesised string must survive as textless
+        // `<harmony>` (NOT degrade to a `<direction><words>` because it failed
+        // to re-parse).
         assert!(
-            x2.contains(&format!("text=\"{synthesised}\"")),
+            x2.contains("<harmony>") && !x2.contains("<kind text="),
             "kind `{kind}` -> `{synthesised}` must re-parse as a chord on re-export, \
              not demote to <words>"
         );

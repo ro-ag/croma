@@ -119,7 +119,7 @@ pub(crate) struct LoweringState {
     /// so the symbol is buffered and merged into the next timed event. A
     /// leftover at the end of the voice surfaces as a
     /// `abc.music.dangling_quoted_text` warning, never a silent drop.
-    pub(crate) pending_chord_symbols: Vec<QuotedTextSyntax>,
+    pub(crate) pending_chord_symbols: Vec<TextAttachment>,
     /// Annotations in the same flushed-ahead situation as
     /// [`Self::pending_chord_symbols`] (ABC 2.1 §4.19: an annotation positions
     /// relative to the following note).
@@ -130,6 +130,9 @@ pub(crate) struct LoweringState {
     /// Croma MusicXML-origin `[I:croma-note-instrument ...]` carrier waiting for
     /// the next timed note/rest/chord event.
     pub(crate) pending_musicxml_instrument: Option<MusicXmlInstrumentRef>,
+    /// Croma MusicXML-origin `[I:croma-harmony-text ...]` carrier waiting for
+    /// the next chord-symbol attachment.
+    pub(crate) pending_musicxml_harmony_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +207,7 @@ impl LoweringState {
             pending_annotations: Vec::new(),
             pending_decorations: Vec::new(),
             pending_musicxml_instrument: None,
+            pending_musicxml_harmony_text: None,
         }
     }
 
@@ -222,11 +226,7 @@ impl LoweringState {
             attachments.grace_groups = pending_graces;
         }
         if !self.pending_chord_symbols.is_empty() {
-            let mut symbols: Vec<_> = self
-                .pending_chord_symbols
-                .drain(..)
-                .map(|text| chord_symbol_attachment_model(&text))
-                .collect();
+            let mut symbols: Vec<_> = self.pending_chord_symbols.drain(..).collect();
             symbols.append(&mut attachments.chord_symbols);
             attachments.chord_symbols = symbols;
         }
@@ -299,9 +299,7 @@ impl LoweringState {
                 // for non-harmony text (`"I"`, `"Final."`), matching how the same
                 // symbol would render on a note. The annotations channel below is
                 // words-only, so a flushed chord must not go there.
-                attachments
-                    .chord_symbols
-                    .push(chord_symbol_attachment_model(&text));
+                attachments.chord_symbols.push(text);
             }
         }
         self.pending_chord_symbols = remaining_symbols;
@@ -435,11 +433,8 @@ impl LoweringState {
         // mirroring chord-level attachments. They were written before the
         // chord, so lower them before any chord member resolves accidentals.
         let mut pending_graces = self.take_pending_grace_group_attachments();
-        let mut pending_symbols: Vec<TextAttachment> = self
-            .pending_chord_symbols
-            .drain(..)
-            .map(|text| chord_symbol_attachment_model(&text))
-            .collect();
+        let mut pending_symbols: Vec<TextAttachment> =
+            self.pending_chord_symbols.drain(..).collect();
         let mut pending_annotations: Vec<TextAttachment> = self
             .pending_annotations
             .drain(..)
@@ -1245,7 +1240,9 @@ fn attachment_bundle_model(
         chord_symbols: bundle
             .chord_symbols
             .iter()
-            .map(chord_symbol_attachment_model)
+            .map(|text| {
+                chord_symbol_attachment_model(text, state.pending_musicxml_harmony_text.take())
+            })
             .collect(),
         annotations: bundle
             .annotations
@@ -1273,11 +1270,15 @@ fn merge_spans(accumulator: Option<Span>, span: Span) -> Span {
     }
 }
 
-pub(crate) fn chord_symbol_attachment_model(text: &QuotedTextSyntax) -> TextAttachment {
+pub(crate) fn chord_symbol_attachment_model(
+    text: &QuotedTextSyntax,
+    musicxml_harmony_text: Option<String>,
+) -> TextAttachment {
     TextAttachment {
         text: text.text.clone(),
         span: text.span,
         placement: None,
+        musicxml_harmony_text,
     }
 }
 
@@ -1303,6 +1304,7 @@ pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttach
             }
             QuotedTextKind::ChordSymbol => None,
         },
+        musicxml_harmony_text: None,
     }
 }
 

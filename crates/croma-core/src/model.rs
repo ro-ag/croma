@@ -452,6 +452,7 @@ pub struct TextAttachment {
     pub text: String,
     pub span: Span,
     pub placement: Option<AnnotationPlacementModel>,
+    pub musicxml_harmony_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
