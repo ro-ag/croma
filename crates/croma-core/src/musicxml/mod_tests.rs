@@ -934,6 +934,55 @@ fn extended_articulation_decorations_emit_notations_not_words() {
 }
 
 #[test]
+fn musicxml_tremolo_carriers_emit_ornament_text_not_words() {
+    // MusicXML tremolo is value-bearing (slash count + single/start/stop type).
+    // Preserve it through explicit ABC carrier decoration names rather than
+    // dropping the value or emitting the carrier as visible text.
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "!musicxml-tremolo-single-2!C !musicxml-tremolo-start-3!D ",
+        "!musicxml-tremolo-stop-3!E !musicxml-tremolo-single-1!F|\n",
+    );
+    let export = export_musicxml(source).expect("tremolo carriers should export");
+
+    assert_balanced_xml(&export.musicxml);
+    for (tremolo_type, marks) in [
+        ("single", "2"),
+        ("start", "3"),
+        ("stop", "3"),
+        ("single", "1"),
+    ] {
+        assert!(
+            export.musicxml.contains(&format!(
+                "<tremolo type=\"{tremolo_type}\">{marks}</tremolo>"
+            )),
+            "{tremolo_type} tremolo with {marks} marks should emit as ornament text"
+        );
+    }
+    for text in [
+        "musicxml-tremolo-single-2",
+        "musicxml-tremolo-start-3",
+        "musicxml-tremolo-stop-3",
+        "musicxml-tremolo-single-1",
+    ] {
+        assert!(
+            !export.musicxml.contains(&format!("<words>{text}</words>")),
+            "{text} carrier should not be emitted as words"
+        );
+    }
+    assert!(
+        !export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+        "supported tremolo carriers should not warn"
+    );
+}
+
+#[test]
 fn chord_qualities_map_to_musicxml_kinds_matching_abc2xml() {
     // Each chord symbol must classify to the same <kind> abc2xml emits, so
     // music21 re-renders identical figures from <kind> (it ignores text=).
