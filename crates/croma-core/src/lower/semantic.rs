@@ -2,8 +2,9 @@
 
 use crate::model::{
     Accidental, AccidentalMark, ChordEvent, ChordMemberEvent, Fraction, Measure, MeasureBarline,
-    MeasureId, NoteEvent, Pitch, RepeatEndingModel, RestEvent, StaffId, TimedEvent, TimedEventKind,
-    TimelineEventKind, Voice, VoiceMeasureTimeline, VoiceTimedEvent, VoiceTimeline,
+    MeasureId, NoteEvent, Pitch, RepeatEndingCloseModel, RepeatEndingModel, RestEvent, StaffId,
+    TimedEvent, TimedEventKind, TimelineEventKind, Voice, VoiceMeasureTimeline, VoiceTimedEvent,
+    VoiceTimeline,
 };
 use crate::parse::field::FieldState;
 
@@ -89,6 +90,23 @@ fn semantic_measure_from_timeline(
             _ => None,
         })
         .collect();
+    let repeat_ending_closes = measure
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            TimelineEventKind::VariantEndingClose {
+                close_type,
+                location,
+                endings,
+            } => Some(RepeatEndingCloseModel {
+                span: event.span,
+                close_type: *close_type,
+                location: *location,
+                endings: endings.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
 
     Measure {
         id,
@@ -101,6 +119,7 @@ fn semantic_measure_from_timeline(
         complete,
         barlines,
         repeat_endings,
+        repeat_ending_closes,
         overlays: measure.overlays.clone(),
     }
 }
@@ -146,6 +165,12 @@ fn same_chord_group(first: &VoiceTimedEvent, next: &VoiceTimedEvent) -> bool {
 
 fn chord_event_from_timeline(events: &[VoiceTimedEvent], measure_id: MeasureId) -> TimedEvent {
     let mut span = events[0].span;
+    let mut attachments = events[0].attachments.clone();
+    for event in events.iter().skip(1) {
+        attachments
+            .after_grace_groups
+            .extend(event.attachments.after_grace_groups.clone());
+    }
     let members = events
         .iter()
         .map(|event| {
@@ -168,7 +193,7 @@ fn chord_event_from_timeline(events: &[VoiceTimedEvent], measure_id: MeasureId) 
             members,
             source_span: span,
         }),
-        attachments: events[0].attachments.clone(),
+        attachments,
     }
 }
 
@@ -203,6 +228,16 @@ fn non_note_event_from_timeline(event: &VoiceTimedEvent, measure_id: MeasureId) 
                 endings: endings.clone(),
             })
         }
+        TimelineEventKind::VariantEndingClose {
+            close_type,
+            location,
+            endings,
+        } => TimedEventKind::RepeatEndingClose(RepeatEndingCloseModel {
+            span: event.span,
+            close_type: *close_type,
+            location: *location,
+            endings: endings.clone(),
+        }),
         TimelineEventKind::KeyChange(key) => TimedEventKind::KeyChange(key.clone()),
         TimelineEventKind::MeterChange(meter) => TimedEventKind::MeterChange(meter.clone()),
         TimelineEventKind::ClefChange(clef) => TimedEventKind::ClefChange(clef.clone()),

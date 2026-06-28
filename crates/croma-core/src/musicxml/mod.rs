@@ -479,10 +479,11 @@ impl BarlineLocation {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum EndingType {
     Start,
     Stop,
+    Discontinue,
 }
 
 trait FractionExt {

@@ -22,6 +22,7 @@ pub(crate) fn barline_export_policy_info(span: Span, kind: BarlineKind) -> Diagn
         "abc.musicxml.barline_policy",
         match kind {
             BarlineKind::Dotted => "Dotted barline is exported as a MusicXML dotted bar-style",
+            BarlineKind::Dashed => "Dashed barline is exported as a MusicXML dashed bar-style",
             BarlineKind::Invisible => "Invisible barline is exported as a MusicXML none bar-style",
             _ => "Barline export policy applied",
         },

@@ -104,11 +104,12 @@ use crate::model::{
     GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
     LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel,
     MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part, PartId, Pitch,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
-    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
-    Voice, VoiceId, VoicePropertiesModel,
+    RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType, RepeatEndingModel,
+    RepeatEndingPartModel, RestEvent, RestVisibility, Score, ScoreDirectiveModel,
+    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurAttachment,
+    SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment, TextLine,
+    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
+    VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -916,6 +917,7 @@ impl Reader {
                     complete: true,
                     barlines: Vec::new(),
                     repeat_endings: Vec::new(),
+                    repeat_ending_closes: Vec::new(),
                     overlays: Vec::new(),
                 });
             }
@@ -1101,6 +1103,7 @@ impl Reader {
         // `span.start == 0` to match the measure's `READER_SPAN` source span.
         let mut barlines: Vec<MeasureBarline> = Vec::new();
         let mut repeat_endings: Vec<RepeatEndingModel> = Vec::new();
+        let mut repeat_ending_closes: Vec<RepeatEndingCloseModel> = Vec::new();
         let mut next_right_span_start: usize = 1;
         // S6d: `<measure-style><multiple-rest>N` (the writer's
         // `write_multiple_rest_measure_style`) is its own `<attributes>` wrapper.
@@ -1334,6 +1337,7 @@ impl Reader {
                         child,
                         &mut barlines,
                         &mut repeat_endings,
+                        &mut repeat_ending_closes,
                         &mut next_right_span_start,
                     );
                     // S6a×S5a: a leading barline (e.g. an opening `|:`) precedes
@@ -1515,6 +1519,7 @@ impl Reader {
                 complete: true,
                 barlines,
                 repeat_endings,
+                repeat_ending_closes,
                 overlays: Vec::new(),
             },
         }
@@ -1654,6 +1659,7 @@ impl Reader {
         barline: Node<'_, '_>,
         barlines: &mut Vec<MeasureBarline>,
         repeat_endings: &mut Vec<RepeatEndingModel>,
+        repeat_ending_closes: &mut Vec<RepeatEndingCloseModel>,
         next_right_span_start: &mut usize,
     ) {
         let is_left = barline.attribute("location") == Some("left");
@@ -1662,14 +1668,36 @@ impl Reader {
             .and_then(|repeat| repeat.attribute("direction"))
             .map(str::to_owned);
 
-        // An `<ending type="start">` opens a volta bracket on this measure. The
-        // stop/discontinue closers are schedule-regenerated, so only starts are
-        // reconstructed.
+        // An `<ending type="start">` opens a volta bracket on this measure.
+        // Foreign MusicXML can also close a bracket on an implicit regular
+        // right barline, which ABC cannot infer from visible bar syntax; carry
+        // those closes through a private ABC carrier.
         for ending in children_named(barline, "ending") {
-            if ending.attribute("type") == Some("start")
-                && let Some(model) = self.read_ending(ending)
-            {
-                repeat_endings.push(model);
+            match ending.attribute("type") {
+                Some("start") => {
+                    if let Some(model) = self.read_ending(ending) {
+                        repeat_endings.push(model);
+                    }
+                }
+                Some("stop") | Some("discontinue") => {
+                    if let Some(model) = self.read_ending(ending) {
+                        let close_type = match ending.attribute("type") {
+                            Some("discontinue") => RepeatEndingCloseType::Discontinue,
+                            _ => RepeatEndingCloseType::Stop,
+                        };
+                        repeat_ending_closes.push(RepeatEndingCloseModel {
+                            span: model.span,
+                            close_type,
+                            location: if is_left {
+                                RepeatEndingCloseLocation::Left
+                            } else {
+                                RepeatEndingCloseLocation::Right
+                            },
+                            endings: model.endings,
+                        });
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -4396,6 +4424,7 @@ fn accidental_from_alter(alter: i8) -> Option<Accidental> {
 /// | right    | light-heavy   | (none)   | `Final`        |
 /// | right    | light-light   | —        | `Double`       |
 /// | right    | dotted        | —        | `Dotted`       |
+/// | right    | dashed        | —        | `Dashed`       |
 /// | right    | none          | —        | `Invisible`    |
 ///
 /// `RepeatBoth` is intentionally never produced: it is decomposed into a
@@ -4419,6 +4448,7 @@ fn barline_kind_from(
         (Some("light-heavy"), None, _) => BarlineKind::Final,
         (Some("heavy-light"), None, _) => BarlineKind::Initial,
         (Some("dotted"), None, _) => BarlineKind::Dotted,
+        (Some("dashed"), None, _) => BarlineKind::Dashed,
         (Some("none"), None, _) => BarlineKind::Invisible,
         _ => return None,
     })
@@ -5076,43 +5106,67 @@ fn take_abc_prefix_attachments(attachments: &mut EventAttachments) -> EventAttac
 /// `<note><rest>`.
 #[cfg(feature = "musicxml-reader")]
 fn preserve_voice_onset_gaps_for_abc(voice: &mut Voice) {
-    let mut rebuilt = Vec::with_capacity(voice.events.len());
-    let mut current_measure: Option<u32> = None;
-    let mut cursor = Fraction::zero();
+    let mut events = std::mem::take(&mut voice.events).into_iter().peekable();
+    let mut rebuilt = Vec::new();
 
-    for event in std::mem::take(&mut voice.events) {
-        if current_measure != Some(event.measure.index) {
-            current_measure = Some(event.measure.index);
-            cursor = Fraction::zero();
+    for measure in &voice.measures {
+        let mut cursor = Fraction::zero();
+        while events
+            .peek()
+            .is_some_and(|event| event.measure.index == measure.id.index)
+        {
+            let event = events.next().expect("peeked event must exist");
+
+            if abc_event_has_position(&event.kind) && cursor.less_than(event.onset) {
+                let duration = subtract_fraction(event.onset, cursor);
+                push_musicxml_forward_carrier(&mut rebuilt, event.measure, cursor, duration);
+                cursor = event.onset;
+            }
+
+            if abc_event_advances_cursor(&event.kind) {
+                cursor = event.onset.checked_add(event.duration);
+            } else if abc_event_has_position(&event.kind) {
+                cursor = event.onset;
+            }
+            rebuilt.push(event);
         }
 
-        if abc_event_has_position(&event.kind) && cursor.less_than(event.onset) {
-            let duration = subtract_fraction(event.onset, cursor);
-            rebuilt.push(TimedEvent {
-                measure: event.measure,
-                onset: cursor,
-                duration,
-                source: READER_SPAN,
-                kind: TimedEventKind::Rest(RestEvent {
-                    visibility: RestVisibility::Invisible,
-                }),
-                attachments: EventAttachments {
-                    musicxml_forward: true,
-                    ..EventAttachments::default()
-                },
-            });
-            cursor = event.onset;
+        if cursor.less_than(measure.actual_duration) {
+            let duration = subtract_fraction(measure.actual_duration, cursor);
+            push_musicxml_forward_carrier(&mut rebuilt, measure.id, cursor, duration);
         }
+    }
 
-        if abc_event_advances_cursor(&event.kind) {
-            cursor = event.onset.checked_add(event.duration);
-        } else if abc_event_has_position(&event.kind) {
-            cursor = event.onset;
-        }
+    for event in events {
         rebuilt.push(event);
     }
 
     voice.events = rebuilt;
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn push_musicxml_forward_carrier(
+    rebuilt: &mut Vec<TimedEvent>,
+    measure: MeasureId,
+    onset: Fraction,
+    duration: Fraction,
+) {
+    if duration == Fraction::zero() {
+        return;
+    }
+    rebuilt.push(TimedEvent {
+        measure,
+        onset,
+        duration,
+        source: READER_SPAN,
+        kind: TimedEventKind::Rest(RestEvent {
+            visibility: RestVisibility::Invisible,
+        }),
+        attachments: EventAttachments {
+            musicxml_forward: true,
+            ..EventAttachments::default()
+        },
+    });
 }
 
 #[cfg(feature = "musicxml-reader")]
@@ -5502,6 +5556,16 @@ fn emit_measure_with_barlines(
             duration: Fraction::zero(),
             source: READER_SPAN,
             kind: TimedEventKind::Spacer,
+            attachments: EventAttachments::default(),
+        });
+    }
+    for close in &measure.repeat_ending_closes {
+        out.push(TimedEvent {
+            measure: measure_id,
+            onset: Fraction::zero(),
+            duration: Fraction::zero(),
+            source: close.span,
+            kind: TimedEventKind::RepeatEndingClose(close.clone()),
             attachments: EventAttachments::default(),
         });
     }

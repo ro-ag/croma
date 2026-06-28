@@ -268,6 +268,28 @@ impl VoiceTimelineBuilder {
                 self.current_measure_mut().span =
                     extend_span(self.current_measure_mut().span, span);
             }
+            LoweredEvent::VariantEndingClose(close) => {
+                let onset = self.onset;
+                let span = close.span;
+                self.current_measure_mut().events.push(VoiceTimedEvent {
+                    onset,
+                    duration: Fraction::zero(),
+                    span,
+                    line_index: 0,
+                    source_order: 0,
+                    alignable: false,
+                    kind: TimelineEventKind::VariantEndingClose {
+                        close_type: close.close_type,
+                        location: close.location,
+                        endings: close.endings,
+                    },
+                    attachments: EventAttachments::default(),
+                    lyrics: Vec::new(),
+                    symbols: Vec::new(),
+                });
+                self.current_measure_mut().span =
+                    extend_span(self.current_measure_mut().span, span);
+            }
         }
     }
 

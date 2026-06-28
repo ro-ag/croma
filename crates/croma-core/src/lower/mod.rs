@@ -89,6 +89,7 @@ pub(crate) fn lower_tune_music(
         LoweredEvent::Untimed(_)
         | LoweredEvent::Overlay(_)
         | LoweredEvent::VariantEnding(_)
+        | LoweredEvent::VariantEndingClose(_)
         | LoweredEvent::KeyChange(_)
         | LoweredEvent::MeterChange(_)
         | LoweredEvent::ClefChange(_)
@@ -103,6 +104,7 @@ pub(crate) fn lower_tune_music(
             LoweredEvent::Untimed(event) => Some(event.clone()),
             LoweredEvent::Overlay(_)
             | LoweredEvent::VariantEnding(_)
+            | LoweredEvent::VariantEndingClose(_)
             | LoweredEvent::KeyChange(_)
             | LoweredEvent::MeterChange(_)
             | LoweredEvent::ClefChange(_)
@@ -587,6 +589,14 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_forward = true;
                     return;
                 }
+                if parse_musicxml_after_grace_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_after_grace = true;
+                    return;
+                }
+                if let Some(kind) = parse_barline_style_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_barline_kind = Some(kind);
+                    return;
+                }
                 if let Some(tempo) = parse_tempo_instruction(&inline.value.value, inline.value.span)
                 {
                     self.current_state()
@@ -615,6 +625,14 @@ impl MultiVoiceLowering {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::MeasureNumber { display_number });
+                    return;
+                }
+                if let Some(close) =
+                    parse_ending_close_instruction(&inline.value.value, inline.value.span)
+                {
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::VariantEndingClose(close));
                     return;
                 }
                 // `[I:...]` instructions are typeset/display directives (e.g.
@@ -750,17 +768,27 @@ impl MultiVoiceLowering {
                         .push(LoweredEvent::VariantEnding(ending.clone()));
                 }
                 MusicItem::Barline(barline) => {
+                    let pending_musicxml_barline_kind =
+                        self.current_state().pending_musicxml_barline_kind.take();
+                    let kind = if barline.kind == BarlineKind::Regular {
+                        pending_musicxml_barline_kind.unwrap_or(barline.kind)
+                    } else {
+                        barline.kind
+                    };
                     let source_order = self.next_source_order();
                     self.current_state().flush_pending_barline_directions(
                         line.line_index,
                         source_order,
                         barline.span,
-                        barline.kind,
+                        kind,
                     );
-                    if matches!(barline.kind, BarlineKind::Dotted | BarlineKind::Invisible) {
+                    if matches!(
+                        kind,
+                        BarlineKind::Dotted | BarlineKind::Dashed | BarlineKind::Invisible
+                    ) {
                         self.current_state()
                             .diagnostics
-                            .push(barline_export_policy_info(barline.span, barline.kind));
+                            .push(barline_export_policy_info(barline.span, kind));
                     }
                     self.current_state()
                         .attach_pending_grace_groups_to_previous_note();
@@ -774,7 +802,7 @@ impl MultiVoiceLowering {
                     // after-grace on a previous timed note. A leftover at the
                     // end of the voice surfaces as a dangling-grace diagnostic
                     // instead of a silent drop.
-                    for kind in barline_lowering_kinds(barline) {
+                    for kind in barline_lowering_kinds_with_kind(barline, kind) {
                         self.current_state()
                             .lowered
                             .push(LoweredEvent::Untimed(Event::Barline {
@@ -796,8 +824,14 @@ impl MultiVoiceLowering {
                     // flush). Buffer it until lowering can see whether it belongs
                     // to the next timed event as a leading grace or to the
                     // previous timed note as an after-grace at a boundary.
-                    self.current_state()
-                        .push_pending_grace_group(grace.clone(), detached_from_previous);
+                    let state = self.current_state();
+                    let force_after_previous = state.pending_musicxml_after_grace;
+                    state.pending_musicxml_after_grace = false;
+                    state.push_pending_grace_group(
+                        grace.clone(),
+                        detached_from_previous,
+                        force_after_previous,
+                    );
                 }
                 MusicItem::ChordSymbol(text) => {
                     // Flushed ahead of its note by a barline / line end / other
@@ -1889,6 +1923,27 @@ fn parse_musicxml_forward_instruction(value: &str) -> bool {
     rest.is_empty() || rest.starts_with(char::is_whitespace)
 }
 
+fn parse_musicxml_after_grace_instruction(value: &str) -> bool {
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("croma-after-grace") else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
+fn parse_barline_style_instruction(value: &str) -> Option<BarlineKind> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-barline-style")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    match fields.get("style").map(String::as_str) {
+        Some("dashed") => Some(BarlineKind::Dashed),
+        _ => None,
+    }
+}
+
 fn parse_measure_number_instruction(value: &str) -> Option<String> {
     let value = value.trim();
     let rest = value.strip_prefix("croma-measure-number")?;
@@ -1910,6 +1965,56 @@ fn parse_measure_number_instruction(value: &str) -> Option<String> {
             .clone()
     };
     (!display_number.trim().is_empty()).then_some(display_number)
+}
+
+fn parse_ending_close_instruction(
+    value: &str,
+    span: Span,
+) -> Option<crate::model::RepeatEndingCloseModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-ending-close")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let close_type = match fields.get("type").map(String::as_str) {
+        Some("stop") => crate::model::RepeatEndingCloseType::Stop,
+        Some("discontinue") => crate::model::RepeatEndingCloseType::Discontinue,
+        _ => return None,
+    };
+    let location = match fields.get("location").map(String::as_str) {
+        Some("left") => crate::model::RepeatEndingCloseLocation::Left,
+        Some("right") | None => crate::model::RepeatEndingCloseLocation::Right,
+        _ => return None,
+    };
+    let number = fields.get("number").or_else(|| fields.get("n"))?;
+    let endings = parse_repeat_ending_parts(number)?;
+    Some(crate::model::RepeatEndingCloseModel {
+        span,
+        close_type,
+        location,
+        endings,
+    })
+}
+
+fn parse_repeat_ending_parts(value: &str) -> Option<Vec<crate::model::RepeatEndingPartModel>> {
+    let mut endings = Vec::new();
+    for token in value.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = token.split_once('-') {
+            let start = start.trim().parse::<u32>().ok()?;
+            let end = end.trim().parse::<u32>().ok()?;
+            endings.push(crate::model::RepeatEndingPartModel::Range { start, end });
+        } else {
+            endings.push(crate::model::RepeatEndingPartModel::Single(
+                token.parse::<u32>().ok()?,
+            ));
+        }
+    }
+    (!endings.is_empty()).then_some(endings)
 }
 
 fn parse_initial_key_instruction(value: &str, span: Span) -> Option<KeySignatureModel> {
@@ -2264,9 +2369,12 @@ fn additive_u32(value: &str) -> Option<u32> {
     saw_part.then_some(total)
 }
 
-fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
+fn barline_lowering_kinds_with_kind(
+    barline: &BarlineSyntax,
+    kind: BarlineKind,
+) -> Vec<BarlineKind> {
     let raw = barline.raw.strip_prefix('.').unwrap_or(&barline.raw);
-    if barline.kind == BarlineKind::RepeatStart {
+    if kind == BarlineKind::RepeatStart {
         // A fused closer+repeat-start run (`|]:`, `]||:`, `||]:`): the thick `]`
         // bar closes the current measure (light-heavy) while the trailing `:`
         // opens the next section's repeat. Split like `||:`/`[|:` so the closer
@@ -2284,7 +2392,7 @@ fn barline_lowering_kinds(barline: &BarlineSyntax) -> Vec<BarlineKind> {
             return vec![BarlineKind::Initial, BarlineKind::RepeatStart];
         }
     }
-    vec![barline.kind]
+    vec![kind]
 }
 
 pub(crate) fn default_tuplet_q(p: u32) -> u32 {
