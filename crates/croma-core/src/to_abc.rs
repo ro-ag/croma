@@ -3,8 +3,8 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::{
-    AlignedLyric, ClefChangeModel, EventAttachments, KeySignatureModel, Measure, MeterModel,
-    TempoBeatRole, TempoModel, TieRole,
+    AlignedLyric, ClefChangeModel, EventAttachments, Fraction, KeySignatureModel, Measure,
+    MeterModel, TempoBeatRole, TempoModel, TieRole,
 };
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
@@ -179,6 +179,13 @@ fn time_symbol_instruction(meter: &MeterModel) -> Option<String> {
 
 fn musicxml_forward_instruction() -> &'static str {
     "croma-musicxml-forward"
+}
+
+fn musicxml_sequence_backup_instruction(duration: Fraction) -> String {
+    format!(
+        "croma-musicxml-sequence-backup n={} d={}",
+        duration.numerator, duration.denominator
+    )
 }
 
 fn musicxml_after_grace_instruction() -> &'static str {
@@ -1003,6 +1010,12 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
     }
     if attachments.musicxml_forward {
         out.push_str(&format!("[I:{}]", musicxml_forward_instruction()));
+    }
+    if let Some(duration) = attachments.musicxml_sequence_backup {
+        out.push_str(&format!(
+            "[I:{}]",
+            musicxml_sequence_backup_instruction(duration)
+        ));
     }
     let mut primary_lyric_verses = Vec::new();
     for lyric in &attachments.lyrics {

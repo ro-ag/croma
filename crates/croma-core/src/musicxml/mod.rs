@@ -131,6 +131,7 @@ pub(crate) struct MeasureSequence<'score> {
     expected_duration: Option<Fraction>,
     actual_duration: Fraction,
     unpitched: bool,
+    musicxml_sequence_backup: Option<Fraction>,
     events: Vec<SequenceEvent<'score>>,
 }
 

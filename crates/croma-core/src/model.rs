@@ -434,6 +434,7 @@ pub struct EventAttachments {
     pub lyric_same_note_extends: Vec<u32>,
     pub lyric_same_note_duplicates: Vec<AlignedLyric>,
     pub musicxml_forward: bool,
+    pub musicxml_sequence_backup: Option<Fraction>,
     pub symbols: Vec<AlignedSymbol>,
     pub ties: Vec<TieAttachment>,
     pub slurs: Vec<SlurAttachment>,
@@ -452,6 +453,7 @@ impl EventAttachments {
             && self.lyric_same_note_extends.is_empty()
             && self.lyric_same_note_duplicates.is_empty()
             && !self.musicxml_forward
+            && self.musicxml_sequence_backup.is_none()
             && self.symbols.is_empty()
             && self.ties.is_empty()
             && self.slurs.is_empty()
@@ -473,6 +475,9 @@ impl EventAttachments {
         self.lyric_same_note_duplicates
             .extend(other.lyric_same_note_duplicates);
         self.musicxml_forward |= other.musicxml_forward;
+        if self.musicxml_sequence_backup.is_none() {
+            self.musicxml_sequence_backup = other.musicxml_sequence_backup;
+        }
         self.symbols.extend(other.symbols);
         self.ties.extend(other.ties);
         self.slurs.extend(other.slurs);

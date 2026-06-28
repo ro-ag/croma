@@ -225,8 +225,11 @@ impl<'score> MusicXmlWriter<'score> {
                 measure_sequences(part, *measure_id, &voice_numbers, &overlay_voice_numbers);
             for (sequence_index, sequence) in sequences.iter().enumerate() {
                 let cursor = self.write_sequence(sequence, part);
-                if sequence_index + 1 < sequences.len() && cursor != Fraction::zero() {
-                    self.write_backup(cursor);
+                if let Some(next_sequence) = sequences.get(sequence_index + 1) {
+                    let backup = next_sequence.musicxml_sequence_backup.unwrap_or(cursor);
+                    if backup != Fraction::zero() {
+                        self.write_backup(backup);
+                    }
                 }
             }
 
@@ -597,6 +600,9 @@ fn measure_sequences<'score>(
                     .midi_instrument
                     .and_then(|midi| midi.midi_unpitched)
                     .is_some(),
+                musicxml_sequence_backup: events
+                    .iter()
+                    .find_map(|event| event.attachments().musicxml_sequence_backup),
                 events,
             });
         }
@@ -631,6 +637,9 @@ fn measure_sequences<'score>(
                         .midi_instrument
                         .and_then(|midi| midi.midi_unpitched)
                         .is_some(),
+                    musicxml_sequence_backup: overlay_events
+                        .iter()
+                        .find_map(|event| event.attachments().musicxml_sequence_backup),
                     events: overlay_events,
                 });
             }
