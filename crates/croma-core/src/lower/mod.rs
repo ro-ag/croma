@@ -283,6 +283,12 @@ impl MultiVoiceLowering {
     }
 
     fn apply_current_voice_meter_change(&mut self, meter: &Spanned<Meter>) {
+        let preserve_restatement = {
+            let voice = self.current_state();
+            let preserve = voice.pending_musicxml_meter_restatement;
+            voice.pending_musicxml_meter_restatement = false;
+            preserve
+        };
         if !self.validate_meter_change(meter) {
             return;
         }
@@ -290,7 +296,8 @@ impl MultiVoiceLowering {
         // (`%%propagate-accidentals` default `pitch`) an explicit accidental
         // applies to same-pitch notes until the end of the bar, so the
         // measure accidental ledger must survive a mid-tune `M:` field.
-        let model = meter_model(meter);
+        let mut model = meter_model(meter);
+        model.preserve_restatement = preserve_restatement;
         let header = self.header_meter_display.clone();
         let duration = meter_duration(&meter.value);
         let voice = self.current_state();
@@ -301,7 +308,9 @@ impl MultiVoiceLowering {
         // (header included) records nothing: interleaved sources restate
         // `[M:..]` once per voice line, and re-applications would otherwise
         // stack duplicate events.
-        if effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str()) {
+        if preserve_restatement
+            || effective_meter_display(voice, header.as_deref()) != Some(model.display.as_str())
+        {
             voice.lowered.push(LoweredEvent::MeterChange(model));
         }
     }
@@ -545,6 +554,10 @@ impl MultiVoiceLowering {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::TempoChange(tempo));
+                    return;
+                }
+                if parse_meter_restatement_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_meter_restatement = true;
                     return;
                 }
                 // `[I:...]` instructions are typeset/display directives (e.g.
@@ -1253,6 +1266,7 @@ fn meter_model(meter: &Spanned<Meter>) -> MeterModel {
         display: meter.value.raw.clone(),
         duration,
         free_meter: duration.is_none(),
+        preserve_restatement: false,
         source_span: meter.span,
     }
 }
@@ -1710,6 +1724,14 @@ fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> 
         beat_role: TempoBeatRole::PlaybackSoundOnly,
         source_span: span,
     })
+}
+
+fn parse_meter_restatement_instruction(value: &str) -> bool {
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("croma-meter-restatement") else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
 }
 
 fn parse_croma_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {

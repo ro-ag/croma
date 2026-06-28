@@ -415,6 +415,7 @@ impl Reader {
             display,
             duration: None,
             free_meter: false,
+            preserve_restatement: true,
             source_span: READER_SPAN,
         })
     }

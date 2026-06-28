@@ -5036,6 +5036,47 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_redundant_meter_restatement_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <attributes><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-meter-restatement] [M:4/4]"),
+            "ABC projection must carry a private marker so the no-op [M:] survives re-lowering:\n{abc}"
+        );
+        assert_eq!(
+            write_abc(&lower(&abc), AbcWriteOptions::default()),
+            abc,
+            "the croma meter restatement carrier should be an ABC fixed point"
+        );
+        let roundtrip = export_musicxml(&abc).expect("redundant meter ABC should export");
+        assert_eq!(
+            roundtrip.musicxml.matches("<time>").count(),
+            2,
+            "MusicXML-origin repeated <time> must survive XML->ABC->XML; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_words_sound_120_without_metronome_keeps_playback_tempo() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",

@@ -57,6 +57,9 @@ pub struct MeterModel {
     pub display: String,
     pub duration: Option<Rational>,
     pub free_meter: bool,
+    /// MusicXML-origin `<time>` restatement that must survive the ABC projection
+    /// even when it repeats the already-effective meter.
+    pub preserve_restatement: bool,
     pub source_span: Span,
 }
 

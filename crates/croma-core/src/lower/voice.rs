@@ -137,6 +137,9 @@ pub(crate) struct LoweringState {
     /// the next timed note/rest/chord event. `w:` lyric alignment applies them
     /// to the matching verse syllable after the music body has lowered.
     pub(crate) pending_musicxml_lyric_extends: Vec<u32>,
+    /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
+    /// the next `[M:...]` field in this voice.
+    pub(crate) pending_musicxml_meter_restatement: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +216,7 @@ impl LoweringState {
             pending_musicxml_instrument: None,
             pending_musicxml_harmony_text: None,
             pending_musicxml_lyric_extends: Vec::new(),
+            pending_musicxml_meter_restatement: false,
         }
     }
 
