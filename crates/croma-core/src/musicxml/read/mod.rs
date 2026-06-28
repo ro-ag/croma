@@ -105,9 +105,9 @@ use crate::model::{
     MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part, PartId, Pitch,
     RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
     ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoModel, TextAttachment, TextLine,
-    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
-    VoiceId, VoicePropertiesModel,
+    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
+    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
+    Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -2228,14 +2228,11 @@ impl Reader {
         if child_element(direction, "voice").is_some() {
             return None;
         }
-        // The tempo words (if any) are the `<words>` of a direction-type that does
-        // NOT contain the metronome. Shared by both shapes.
-        let words = || {
-            children_named(direction, "direction-type")
-                .filter(|dt| child_element(*dt, "metronome").is_none())
-                .find_map(|dt| child_element(dt, "words"))
-                .map(|words| raw_text(words).to_owned())
-        };
+        // The tempo words (if any) are the `<words>` of direction-types that do
+        // NOT contain the metronome. Foreign MusicXML can split one visible
+        // tempo label across multiple `<words>` siblings, including whitespace
+        // placeholders; normalize that to the single ABC Q: text croma can carry.
+        let words = || tempo_words(direction);
 
         let sound_beat =
             child_element(direction, "sound").and_then(|sound| self.read_sound_tempo_beat(sound));
@@ -2245,6 +2242,7 @@ impl Reader {
                 return Some(TempoModel {
                     text: words(),
                     beat: Some(beat),
+                    beat_role: TempoBeatRole::PrintedMetronome,
                     source_span: READER_SPAN,
                 });
             }
@@ -2252,6 +2250,7 @@ impl Reader {
                 return Some(TempoModel {
                     text: words(),
                     beat: Some(beat),
+                    beat_role: TempoBeatRole::PlaybackSoundOnly,
                     source_span: READER_SPAN,
                 });
             }
@@ -2260,31 +2259,16 @@ impl Reader {
 
         // No metronome: foreign MusicXML often carries playback tempo only as
         // `<sound tempo="...">`. Project that to ABC's quarter-note `Q:` form.
-        // A historical croma text-only Q export used words plus default
-        // `<sound tempo="120">`; keep reading that as text-only, not numeric.
         if child_element(direction, "sound").is_some() {
             let text = words();
-            let beat = match (text.as_ref(), sound_beat) {
-                // Preserve the historical croma text-only tempo shape:
-                // Q:"Andante" -> <words>Andante</words><sound tempo="120.00"/>.
-                // There is no metronome, so the default 120 sound is a playback
-                // fallback rather than source-significant numeric tempo.
-                (
-                    Some(_),
-                    Some(TempoBeat {
-                        beat_numerator: 1,
-                        beat_denominator: 4,
-                        bpm: 120,
-                    }),
-                ) => None,
-                _ => sound_beat,
-            };
+            let beat = sound_beat;
             if beat.is_none() && text.is_none() {
                 return None;
             }
             return Some(TempoModel {
                 text,
                 beat,
+                beat_role: TempoBeatRole::PlaybackSoundOnly,
                 source_span: READER_SPAN,
             });
         }
@@ -2292,6 +2276,7 @@ impl Reader {
             return Some(TempoModel {
                 text: Some(text),
                 beat: None,
+                beat_role: TempoBeatRole::PrintedMetronome,
                 source_span: READER_SPAN,
             });
         }
@@ -4366,6 +4351,25 @@ fn direction_voice_number(direction: Node<'_, '_>) -> Option<String> {
     child_text(direction, "voice").map(str::to_owned)
 }
 
+/// S5a: collect the tempo label text from a voice-less direction. MusicXML
+/// producers sometimes split one label across multiple `<words>` siblings and
+/// can include whitespace-only placeholders; ABC has one quoted Q: text slot, so
+/// normalize to the nonempty text that can survive the ABC leg.
+fn tempo_words(direction: Node<'_, '_>) -> Option<String> {
+    let words: Vec<String> = children_named(direction, "direction-type")
+        .filter(|dt| child_element(*dt, "metronome").is_none())
+        .flat_map(|dt| children_named(dt, "words"))
+        .filter_map(|word| {
+            let text = raw_text(word)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!text.is_empty()).then_some(text)
+        })
+        .collect();
+    (!words.is_empty()).then_some(words.join(" "))
+}
+
 /// S6d: the numeric value of a `<voice>` string for ordering. A non-numeric
 /// voice (never croma's output) sorts last so it does not displace `"1"`.
 fn parse_voice_number(voice: &str) -> u32 {
@@ -4450,6 +4454,7 @@ pub fn complete_score_for_abc(score: &mut Score) {
     {
         key.display = key_display_for_abc(key);
     }
+    move_header_playback_tempo_to_first_voice(score);
     for part in &mut score.parts {
         for voice in &mut part.voices {
             renumber_voice_tuplet_pair_ids(voice);
@@ -4471,6 +4476,47 @@ pub fn complete_score_for_abc(score: &mut Score) {
             }
         }
     }
+}
+
+#[cfg(feature = "musicxml-reader")]
+fn move_header_playback_tempo_to_first_voice(score: &mut Score) {
+    let Some(tempo) = score.metadata.tempo_model.as_ref() else {
+        return;
+    };
+    if tempo.beat_role != TempoBeatRole::PlaybackSoundOnly || tempo.beat.is_none() {
+        return;
+    }
+    let Some(voice) = score
+        .parts
+        .first_mut()
+        .and_then(|part| part.voices.first_mut())
+    else {
+        return;
+    };
+    let Some(measure) = voice
+        .measures
+        .first()
+        .map(|measure| measure.id)
+        .or_else(|| voice.events.first().map(|event| event.measure))
+    else {
+        return;
+    };
+    let tempo = score
+        .metadata
+        .tempo_model
+        .take()
+        .expect("tempo_model checked above");
+    voice.events.insert(
+        0,
+        TimedEvent {
+            measure,
+            onset: Fraction::zero(),
+            duration: Fraction::zero(),
+            source: tempo.source_span,
+            kind: TimedEventKind::TempoChange(tempo),
+            attachments: EventAttachments::default(),
+        },
+    );
 }
 
 /// P2: re-project a voice's grace-group slurs into the channels `write_abc`

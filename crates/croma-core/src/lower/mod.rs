@@ -28,8 +28,8 @@ use crate::model::{
     MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part,
     PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
     ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
-    StemDirectionModel, TextLine, TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline,
-    lcm,
+    StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -527,6 +527,14 @@ impl MultiVoiceLowering {
                     parse_note_instrument_instruction(&inline.value.value, inline.value.span)
                 {
                     self.current_state().pending_musicxml_instrument = Some(instrument);
+                    return;
+                }
+                if let Some(tempo) =
+                    parse_sound_tempo_instruction(&inline.value.value, inline.value.span)
+                {
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::TempoChange(tempo));
                     return;
                 }
                 // `[I:...]` instructions are typeset/display directives (e.g.
@@ -1638,6 +1646,39 @@ fn parse_note_instrument_instruction(value: &str, span: Span) -> Option<MusicXml
         id: id.to_owned(),
         span,
     })
+}
+
+fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-sound-tempo")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let bpm = parse_croma_u32(&fields, "bpm").or_else(|| parse_croma_u32(&fields, "tempo"))?;
+    let beat_numerator = parse_croma_u32(&fields, "beat-n")
+        .or_else(|| parse_croma_u32(&fields, "beat-numerator"))
+        .unwrap_or(1);
+    let beat_denominator = parse_croma_u32(&fields, "beat-d")
+        .or_else(|| parse_croma_u32(&fields, "beat-denominator"))
+        .unwrap_or(4);
+    if beat_numerator == 0 || beat_denominator == 0 {
+        return None;
+    }
+    Some(TempoModel {
+        text: fields.get("text").filter(|text| !text.is_empty()).cloned(),
+        beat: Some(TempoBeat {
+            beat_numerator,
+            beat_denominator,
+            bpm,
+        }),
+        beat_role: TempoBeatRole::PlaybackSoundOnly,
+        source_span: span,
+    })
+}
+
+fn parse_croma_u32(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
+    fields.get(key)?.trim().parse::<u32>().ok()
 }
 
 fn parse_croma_u8(fields: &BTreeMap<String, String>, key: &str) -> Option<u8> {

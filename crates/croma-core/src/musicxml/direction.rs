@@ -1,6 +1,6 @@
 use crate::model::{
-    AlignedSymbolKind, AnnotationPlacementModel, EventAttachments, Part, TempoBeat, TempoModel,
-    TextAttachment,
+    AlignedSymbolKind, AnnotationPlacementModel, EventAttachments, Part, TempoBeat, TempoBeatRole,
+    TempoModel, TextAttachment,
 };
 
 use super::notation::{DirectionSymbol, decoration_notation, symbol_direction};
@@ -40,10 +40,15 @@ impl<'score> MusicXmlWriter<'score> {
     /// numeric tempo. Numeric tempos also emit a `<sound tempo=...>` playback
     /// value; text-only `Q:` fields do not synthesize a default playback tempo.
     pub(crate) fn write_tempo_direction(&mut self, tempo: &TempoModel) {
-        let beat_unit = tempo.beat.and_then(beat_unit_model);
+        let beat_unit = (tempo.beat_role == TempoBeatRole::PrintedMetronome)
+            .then(|| tempo.beat.and_then(beat_unit_model))
+            .flatten();
         // A numeric tempo we cannot map to a beat unit falls back to words using
         // the raw field text, preserving prior behavior for exotic forms.
-        if tempo.beat.is_some() && beat_unit.is_none() {
+        if tempo.beat.is_some()
+            && tempo.beat_role == TempoBeatRole::PrintedMetronome
+            && beat_unit.is_none()
+        {
             if let Some(raw) = &self.score.metadata.tempo {
                 self.write_direction_words(&raw.text, None, Some("1"), Some(1));
             }

@@ -1115,6 +1115,28 @@ fn tempo_text_only_stays_words_without_synthetic_sound() {
 }
 
 #[test]
+fn sound_tempo_carrier_emits_playback_without_metronome() {
+    let source = concat!(
+        "X:1\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "[I:croma-sound-tempo bpm=80 beat-n=1 beat-d=4 text=\"80\"]C4|\n",
+    );
+    let export = export_musicxml(source).expect("sound-tempo carrier should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(export.musicxml.contains("<words>80</words>"));
+    assert!(export.musicxml.contains("<sound tempo=\"80.00\""));
+    assert_eq!(
+        count(&export.musicxml, "<metronome>"),
+        0,
+        "private playback-tempo carrier must not print a metronome:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn empty_tempo_field_emits_no_direction() {
     // An empty `Q:` field carries neither a numeric tempo nor a quoted text
     // string (ABC 2.1 §3.1.8), so there is nothing to render. Croma must not

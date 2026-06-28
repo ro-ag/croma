@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::model::{Fraction, Score, TimedEventKind};
+use crate::model::{Fraction, Score, TempoBeatRole, TimedEventKind};
 use crate::musicxml::read::read_musicxml;
 use crate::musicxml::write_score_partwise;
 use crate::{AbcWriteOptions, export_musicxml, write_abc, write_musicxml};
@@ -1730,6 +1730,7 @@ fn header_tempo_numeric_reconstructs_tempo_model() {
         .as_ref()
         .expect("S5a must reconstruct the header <metronome> into metadata.tempo_model");
     assert_eq!(tempo.text, None, "a bare numeric tempo carries no words");
+    assert_eq!(tempo.beat_role, TempoBeatRole::PrintedMetronome);
     assert_eq!(
         tempo.beat,
         Some(TempoBeat {
@@ -1761,6 +1762,10 @@ fn header_tempo_dotted_beat_unit_reconstructs() {
             bpm: 60,
         })
     );
+    assert_eq!(
+        score.metadata.tempo_model.as_ref().map(|t| t.beat_role),
+        Some(TempoBeatRole::PrintedMetronome)
+    );
 }
 
 #[test]
@@ -1778,6 +1783,7 @@ fn header_tempo_with_text_reconstructs_words_and_beat() {
     let tempo = score.metadata.tempo_model.as_ref().expect("tempo_model");
     assert_eq!(tempo.text.as_deref(), Some("Allegro"));
     assert_eq!(tempo.beat.map(|b| b.bpm), Some(120));
+    assert_eq!(tempo.beat_role, TempoBeatRole::PrintedMetronome);
 }
 
 #[test]
@@ -4641,7 +4647,7 @@ mod abc_completion {
     }
 
     #[test]
-    fn foreign_sound_tempo_without_metronome_projects_to_numeric_q() {
+    fn foreign_sound_tempo_without_metronome_projects_to_sound_tempo_carrier() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
             "<score-partwise>\n",
@@ -4660,10 +4666,103 @@ mod abc_completion {
             "</score-partwise>\n",
         );
         let score = completed_from_xml(xml);
+        let tempo = score.parts[0].voices[0]
+            .events
+            .iter()
+            .find_map(|event| match &event.kind {
+                TimedEventKind::TempoChange(tempo) => Some(tempo),
+                _ => None,
+            })
+            .expect("sound tempo carrier should become a timed tempo event");
+        assert_eq!(tempo.beat_role, TempoBeatRole::PlaybackSoundOnly);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("Q:\"Fast\" 1/4=132\n"),
-            "foreign <sound tempo> must survive MusicXML -> ABC as a numeric Q field; got:\n{abc}"
+            abc.contains("[I:croma-sound-tempo bpm=132 beat-n=1 beat-d=4 text=\"Fast\"]"),
+            "foreign playback-only <sound tempo> must use the croma carrier, not numeric Q:; got:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("sound-tempo carrier ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains("<words>Fast</words>")
+                && roundtrip.musicxml.contains("<sound tempo=\"132.00\"")
+                && !roundtrip.musicxml.contains("<metronome>"),
+            "playback-only sound tempo must not gain a printed metronome:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_words_sound_120_without_metronome_keeps_playback_tempo() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><words>rall</words></direction-type>\n",
+            "        <sound tempo=\"120\"/>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let tempo = score.parts[0].voices[0]
+            .events
+            .iter()
+            .find_map(|event| match &event.kind {
+                TimedEventKind::TempoChange(tempo) => Some(tempo),
+                _ => None,
+            })
+            .expect("sound tempo carrier should become a timed tempo event");
+        assert_eq!(tempo.beat_role, TempoBeatRole::PlaybackSoundOnly);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-sound-tempo bpm=120 beat-n=1 beat-d=4 text=\"rall\"]"),
+            "foreign <sound tempo=\"120\"> is source tempo, not croma's old text-only fallback; got:\n{abc}"
+        );
+    }
+
+    #[test]
+    fn foreign_tempo_multiple_words_keeps_nonempty_text_and_beat() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type>\n",
+            "          <metronome><beat-unit>quarter</beat-unit><per-minute>80</per-minute></metronome>\n",
+            "        </direction-type>\n",
+            "        <direction-type><words>\n</words><words>andante</words></direction-type>\n",
+            "        <sound tempo=\"80\"/>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("Q:\"andante\" 1/4=80\n"),
+            "tempo text split across MusicXML words must survive as one nonempty ABC Q text; got:\n{abc}"
+        );
+
+        let roundtrip =
+            export_musicxml(&abc).expect("multi-word tempo ABC projection should export");
+        assert!(
+            roundtrip.musicxml.contains("<words>andante</words>")
+                && roundtrip.musicxml.contains("<per-minute>80</per-minute>"),
+            "ABC projection must re-emit both tempo words and the metronome beat:\n{}",
+            roundtrip.musicxml
         );
     }
 
@@ -4700,7 +4799,7 @@ mod abc_completion {
     }
 
     #[test]
-    fn foreign_bare_sound_tempo_projects_to_numeric_q() {
+    fn foreign_bare_sound_tempo_projects_to_sound_tempo_carrier() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
             "<score-partwise>\n",
@@ -4718,8 +4817,8 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("Q:1/4=96\n"),
-            "a bare foreign <sound tempo> must not be dropped; got:\n{abc}"
+            abc.contains("[I:croma-sound-tempo bpm=96 beat-n=1 beat-d=4]"),
+            "a bare foreign <sound tempo> must not be dropped or printed as Q:; got:\n{abc}"
         );
     }
 
