@@ -23,13 +23,13 @@ use std::collections::BTreeMap;
 
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    AccidentalPolicy, AccidentalScope, BarlineKind, ClefChangeModel, Event, EventAttachments,
-    Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind,
-    MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part,
-    PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId,
-    StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind, VoiceId,
-    VoicePropertiesModel, VoiceTimeline, lcm,
+    AccidentalPolicy, AccidentalScope, AlignedLyric, BarlineKind, ClefChangeModel, Event,
+    EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom,
+    LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef,
+    MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
+    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
+    Staff, StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine,
+    TimelineEventKind, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -546,6 +546,14 @@ impl MultiVoiceLowering {
                     self.current_state()
                         .pending_musicxml_lyric_extends
                         .push(verse);
+                    return;
+                }
+                if let Some(lyric) =
+                    parse_lyric_duplicate_instruction(&inline.value.value, inline.value.span)
+                {
+                    self.current_state()
+                        .pending_musicxml_lyric_duplicates
+                        .push(lyric);
                     return;
                 }
                 if let Some(tempo) =
@@ -1697,6 +1705,28 @@ fn parse_lyric_extend_instruction(value: &str) -> Option<u32> {
     parse_croma_u32(&fields, "verse").filter(|verse| *verse > 0)
 }
 
+fn parse_lyric_duplicate_instruction(value: &str, span: Span) -> Option<AlignedLyric> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-lyric-duplicate")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let verse = parse_croma_u32(&fields, "verse").filter(|verse| *verse > 0)?;
+    let text = if let Some(hex) = fields.get("text-hex") {
+        parse_croma_hex_utf8(hex)?
+    } else {
+        fields.get("text")?.clone()
+    };
+    Some(AlignedLyric {
+        verse,
+        text,
+        span,
+        control: LyricControl::Syllable,
+        same_note_extend: parse_croma_bool(&fields, "extend"),
+    })
+}
+
 fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> {
     let value = value.trim();
     let rest = value.strip_prefix("croma-sound-tempo")?;
@@ -1758,6 +1788,30 @@ fn parse_croma_u8(fields: &BTreeMap<String, String>, key: &str) -> Option<u8> {
                 None
             }
         })
+}
+
+fn parse_croma_hex_utf8(value: &str) -> Option<String> {
+    let value = value.trim();
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    let mut chars = value.bytes();
+    while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
+        let hi = hex_nibble(hi)?;
+        let lo = hex_nibble(lo)?;
+        bytes.push((hi << 4) | lo);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn parse_croma_key_values(value: &str) -> BTreeMap<String, String> {

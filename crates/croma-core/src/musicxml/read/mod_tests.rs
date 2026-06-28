@@ -4799,6 +4799,45 @@ mod abc_completion {
         &xml[start..end]
     }
 
+    fn note_block(xml: &str, index: usize) -> &str {
+        let mut cursor = 0usize;
+        let mut start = None;
+        for _ in 0..=index {
+            let found = xml[cursor..]
+                .find("<note>")
+                .map(|offset| cursor + offset)
+                .unwrap_or_else(|| panic!("note {index} not found in:\n{xml}"));
+            start = Some(found);
+            cursor = found + "<note>".len();
+        }
+        let start = start.expect("loop should set note start");
+        let end = xml[start..]
+            .find("</note>")
+            .map(|offset| start + offset + "</note>".len())
+            .expect("note block should close");
+        &xml[start..end]
+    }
+
+    fn assert_same_note_verse_lyrics(xml: &str, texts: &[&str]) {
+        let first_note = note_block(xml, 0);
+        let second_note = note_block(xml, 1);
+        assert_eq!(
+            first_note.matches("<lyric number=\"1\">").count(),
+            texts.len(),
+            "first note should keep duplicate same-verse lyric siblings:\n{xml}"
+        );
+        for text in texts {
+            assert!(
+                first_note.contains(&format!("<text>{text}</text>")),
+                "first note should contain lyric text {text:?}:\n{xml}"
+            );
+            assert!(
+                !second_note.contains(&format!("<text>{text}</text>")),
+                "duplicate lyric text {text:?} moved to the second note:\n{xml}"
+            );
+        }
+    }
+
     /// Lower an ABC fixture to a Score (panicking on a lower failure).
     fn lower(abc: &str) -> Score {
         let document = parse_document(abc, ParseOptions::default()).value;
@@ -4997,6 +5036,97 @@ mod abc_completion {
                 roundtrip.musicxml
             );
         }
+    }
+
+    #[test]
+    fn foreign_duplicate_same_verse_lyrics_survive_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>By</text></lyric>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>John</text></lyric>",
+            "</note>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let direct_xml = write_score_partwise(&read_musicxml(xml).value).value;
+        assert_same_note_verse_lyrics(&direct_xml, &["By", "John"]);
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("croma-lyric-duplicate verse=1 text=\"John\""),
+            "ABC projection needs a croma carrier because w: cannot spell duplicate same-verse lyrics:\n{abc}"
+        );
+        let roundtrip =
+            export_musicxml(&abc).expect("duplicate same-verse lyric ABC projection should export");
+        assert_same_note_verse_lyrics(&roundtrip.musicxml, &["By", "John"]);
+    }
+
+    #[test]
+    fn foreign_duplicate_same_verse_lyric_with_inline_delimiter_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>By</text></lyric>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>A]B</text></lyric>",
+            "</note>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc)
+            .expect("duplicate same-verse lyric delimiter carrier should export");
+        assert_same_note_verse_lyrics(&roundtrip.musicxml, &["By", "A]B"]);
+    }
+
+    #[test]
+    fn foreign_duplicate_same_verse_lyric_with_comment_marker_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>By</text></lyric>",
+            "<lyric number=\"1\"><syllabic>single</syllabic><text>A%B</text></lyric>",
+            "</note>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc)
+            .expect("duplicate same-verse lyric percent carrier should export");
+        assert_same_note_verse_lyrics(&roundtrip.musicxml, &["By", "A%B"]);
     }
 
     #[test]

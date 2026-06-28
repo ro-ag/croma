@@ -481,6 +481,7 @@ fn advance_bar_marker(
 
 fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, mut lyric: AlignedLyric) {
     if let Some(event) = alignable_event_mut(voice, reference) {
+        let mut duplicates = Vec::new();
         if lyric.control == LyricControl::Syllable
             && let Some(index) = event
                 .attachments
@@ -491,8 +492,22 @@ fn attach_lyric(voice: &mut VoiceTimeline, reference: AlignableRef, mut lyric: A
             event.attachments.lyric_same_note_extends.remove(index);
             lyric.same_note_extend = true;
         }
+        if lyric.control == LyricControl::Syllable {
+            let mut index = 0;
+            while index < event.attachments.lyric_same_note_duplicates.len() {
+                if event.attachments.lyric_same_note_duplicates[index].verse == lyric.verse {
+                    duplicates.push(event.attachments.lyric_same_note_duplicates.remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+        }
         event.attachments.lyrics.push(lyric.clone());
         event.lyrics.push(lyric);
+        for duplicate in duplicates {
+            event.attachments.lyrics.push(duplicate.clone());
+            event.lyrics.push(duplicate);
+        }
     }
 }
 
