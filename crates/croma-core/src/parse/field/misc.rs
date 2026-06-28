@@ -565,6 +565,7 @@ impl<'source> FieldParser<'source> {
                 );
             }
             InterpretationField::Score { .. } => {}
+            InterpretationField::CromaTimeSymbol { .. } => {}
             InterpretationField::Unknown { .. } => {}
         }
     }

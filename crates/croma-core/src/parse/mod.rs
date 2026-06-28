@@ -11,7 +11,7 @@ use crate::error::{CromaError, Result};
 use crate::lower::{ScoreModelInput, build_score_model, lower_tune_music};
 use crate::model::{Score, TextLine, Tune};
 use crate::options::ParseOptions;
-use crate::parse::field::{ParsedAbcFields, ParsedFieldKind, parse_fields};
+use crate::parse::field::{InterpretationField, ParsedAbcFields, ParsedFieldKind, parse_fields};
 use crate::parse::music::parse_music_document;
 use crate::source::SourceText;
 use crate::syntax::ParsedMusicDocument;
@@ -124,6 +124,38 @@ pub fn parse_tune_report_from_document(document: &AbcDocument) -> ParseReport<Op
     )
 }
 
+fn header_time_symbol_from_fields(
+    fields: &ParsedAbcFields,
+    header_field_indices: &[usize],
+) -> Option<String> {
+    let mut pending = None;
+    for field_index in header_field_indices {
+        let Some(field) = fields.field(*field_index) else {
+            continue;
+        };
+        match &field.kind {
+            ParsedFieldKind::Interpretation(InterpretationField::CromaTimeSymbol { value }) => {
+                pending = parse_time_symbol_value(&value.value);
+            }
+            ParsedFieldKind::Meter(_) => return pending,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_time_symbol_value(value: &str) -> Option<String> {
+    for item in value.split_whitespace() {
+        let Some(symbol) = item.strip_prefix("symbol=") else {
+            continue;
+        };
+        if matches!(symbol, "common" | "cut") {
+            return Some(symbol.to_owned());
+        }
+    }
+    None
+}
+
 fn parse_tune_report_with_fields(
     source: &SourceText,
     surface: &SurfaceMap,
@@ -150,6 +182,7 @@ fn parse_tune_report_with_fields(
     let mut events = Vec::new();
     let mut divisions = 8;
     let mut voices = Vec::new();
+    let mut header_time_symbol = None;
     let mut score_directives = Vec::new();
     let mut preserved_directives = Vec::new();
     let mut post_tune_lyrics = Vec::new();
@@ -166,6 +199,8 @@ fn parse_tune_report_with_fields(
         if let Some(parsed_meter) = tune_fields.header.meter.as_ref() {
             meter = parsed_meter.value.raw.clone();
         }
+        header_time_symbol =
+            header_time_symbol_from_fields(fields, &tune_fields.header_field_indices);
         tune_field_state = Some(&tune_fields.header);
 
         for field_index in &tune_fields.header_field_indices {
@@ -233,6 +268,7 @@ fn parse_tune_report_with_fields(
             source_span: tune.span,
             field_state,
             voices: &voices,
+            header_time_symbol,
             score_directives: &score_directives,
             preserved_directives: &preserved_directives,
             post_tune_lyrics: &post_tune_lyrics,

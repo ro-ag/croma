@@ -476,6 +476,16 @@ fn music_field_for_line(
         ParsedFieldKind::Interpretation(InterpretationField::Score { directive }) => {
             directive.value.clone()
         }
+        ParsedFieldKind::Interpretation(InterpretationField::CromaTimeSymbol { value }) => {
+            Spanned::new(
+                if value.value.is_empty() {
+                    "croma-time-symbol".to_owned()
+                } else {
+                    format!("croma-time-symbol {}", value.value)
+                },
+                value.span,
+            )
+        }
         ParsedFieldKind::Interpretation(InterpretationField::Unknown { directive, value }) => {
             Spanned::new(
                 if value.value.is_empty() {
@@ -508,6 +518,14 @@ fn music_field_for_line(
         }
         ParsedFieldKind::Interpretation(InterpretationField::Score { directive }) => {
             MusicFieldLineKind::Score(directive.clone())
+        }
+        ParsedFieldKind::Interpretation(InterpretationField::CromaTimeSymbol { value }) => {
+            let text = if value.value.is_empty() {
+                "croma-time-symbol".to_owned()
+            } else {
+                format!("croma-time-symbol {}", value.value)
+            };
+            MusicFieldLineKind::Unknown(Spanned::new(text, value.span))
         }
         ParsedFieldKind::Interpretation(InterpretationField::Unknown { directive, value }) => {
             let span = Span::new(directive.span.start, value.span.end);

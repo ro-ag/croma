@@ -77,6 +77,8 @@ pub(crate) struct LoweringState {
     pub(crate) initial_properties: VoicePropertiesModel,
     pub(crate) properties: VoicePropertiesModel,
     pub(crate) source_span: Span,
+    pub(crate) initial_key: Option<crate::model::KeySignatureModel>,
+    pub(crate) initial_meter: Option<crate::model::MeterModel>,
     pub(crate) unit: Fraction,
     /// The meter in effect for THIS voice (an inline `[M:..]` scopes to the
     /// current voice, like abc2xml; a standalone `M:` line updates every
@@ -152,6 +154,9 @@ pub(crate) struct LoweringState {
     /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
     /// the next `[M:...]` field in this voice.
     pub(crate) pending_musicxml_meter_restatement: bool,
+    /// Croma MusicXML-origin `[I:croma-time-symbol ...]` carrier waiting for the
+    /// next `M:`/`[M:...]` field in this voice.
+    pub(crate) pending_musicxml_time_symbol: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +208,8 @@ impl LoweringState {
             initial_properties: properties.clone(),
             properties,
             source_span,
+            initial_key: None,
+            initial_meter: None,
             unit,
             meter_duration,
             lowered: Vec::new(),
@@ -231,6 +238,7 @@ impl LoweringState {
             pending_musicxml_lyric_duplicates: Vec::new(),
             pending_musicxml_forward: false,
             pending_musicxml_meter_restatement: false,
+            pending_musicxml_time_symbol: None,
         }
     }
 

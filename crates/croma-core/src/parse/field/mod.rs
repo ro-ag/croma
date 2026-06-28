@@ -114,6 +114,9 @@ pub enum InterpretationField {
     Score {
         directive: ScoreDirective,
     },
+    CromaTimeSymbol {
+        value: Spanned<String>,
+    },
     Unknown {
         directive: Spanned<String>,
         value: Spanned<String>,
@@ -812,6 +815,11 @@ impl<'source> FieldParser<'source> {
             "score" | "staves" => ParsedFieldKind::Interpretation(InterpretationField::Score {
                 directive: parse_score_directive(rest),
             }),
+            "croma-time-symbol" => {
+                ParsedFieldKind::Interpretation(InterpretationField::CromaTimeSymbol {
+                    value: rest,
+                })
+            }
             _ => {
                 self.diagnostics.push(unknown_instruction_warning(
                     &directive.value,

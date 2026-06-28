@@ -55,12 +55,22 @@ pub struct PreservedDirective {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeterModel {
     pub display: String,
+    /// MusicXML `<time symbol="...">` spelling when the source carried one.
+    /// ABC's `M:C`/`M:C|` can imply the common cases; this field preserves
+    /// foreign MusicXML symbols whose beat pair is not the ABC shorthand.
+    pub time_symbol: Option<String>,
     pub duration: Option<Rational>,
     pub free_meter: bool,
     /// MusicXML-origin `<time>` restatement that must survive the ABC projection
     /// even when it repeats the already-effective meter.
     pub preserve_restatement: bool,
     pub source_span: Span,
+}
+
+impl MeterModel {
+    pub(crate) fn structurally_matches(&self, other: &Self) -> bool {
+        self.display == other.display && self.time_symbol == other.time_symbol
+    }
 }
 
 /// A parsed ABC `Q:` tempo field, structured for MusicXML `<metronome>` export.
@@ -105,6 +115,12 @@ pub struct KeySignatureModel {
     pub fifths: i8,
     pub explicit_accidentals: Vec<KeyAccidentalModel>,
     pub source_span: Span,
+}
+
+impl KeySignatureModel {
+    pub(crate) fn structurally_matches(&self, other: &Self) -> bool {
+        self.fifths == other.fifths && self.explicit_accidentals == other.explicit_accidentals
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +187,13 @@ pub struct StaffId {
 pub struct Voice {
     pub id: VoiceId,
     pub staff: StaffId,
+    /// MusicXML-origin part/voice initial key signature when it differs from the
+    /// score-level ABC `K:` header. ABC-origin scores keep this empty.
+    pub initial_key: Option<KeySignatureModel>,
+    /// MusicXML-origin part/voice initial meter spelling when it differs from
+    /// the score-level ABC `M:` header. Used for per-part `symbol` differences
+    /// such as header `M:C|` but a later part's initial numeric `2/2`.
+    pub initial_meter: Option<MeterModel>,
     pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<Measure>,
@@ -584,6 +607,8 @@ impl Event {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceTimeline {
     pub id: VoiceId,
+    pub initial_key: Option<KeySignatureModel>,
+    pub initial_meter: Option<MeterModel>,
     pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<VoiceMeasureTimeline>,

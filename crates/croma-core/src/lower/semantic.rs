@@ -35,6 +35,8 @@ pub(crate) fn semantic_voice_from_timeline(
     Voice {
         id: voice.id.clone(),
         staff: staff_id,
+        initial_key: voice.initial_key.clone(),
+        initial_meter: voice.initial_meter.clone(),
         initial_properties: voice.initial_properties.clone(),
         properties: voice.properties.clone(),
         measures,

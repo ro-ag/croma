@@ -19,13 +19,21 @@ pub(crate) fn build_voice_timeline(
     single_voice: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> VoiceTimeline {
-    let mut builder = VoiceTimelineBuilder::new(voice.id.clone(), meter_duration, single_voice);
+    let initial_meter_duration = voice
+        .initial_meter
+        .as_ref()
+        .and_then(|meter| meter.duration)
+        .or(meter_duration);
+    let mut builder =
+        VoiceTimelineBuilder::new(voice.id.clone(), initial_meter_duration, single_voice);
     for event in voice.lowered {
         builder.push(event, diagnostics);
     }
     let measures = builder.finish(diagnostics);
     VoiceTimeline {
         id: voice.id,
+        initial_key: voice.initial_key,
+        initial_meter: voice.initial_meter,
         initial_properties: voice.initial_properties,
         properties: voice.properties,
         measures,

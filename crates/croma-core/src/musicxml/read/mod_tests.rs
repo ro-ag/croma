@@ -5489,6 +5489,33 @@ mod abc_completion {
         &xml[start..end]
     }
 
+    fn first_time_block(xml: &str) -> &str {
+        let start = xml
+            .find("<time")
+            .unwrap_or_else(|| panic!("time block not found in:\n{xml}"));
+        let end = xml[start..]
+            .find("</time>")
+            .map(|offset| start + offset + "</time>".len())
+            .expect("time block should close");
+        &xml[start..end]
+    }
+
+    fn foreign_time_score(time_xml: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>T</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions>{time_xml}</attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>
+    </measure>
+  </part>
+</score-partwise>
+"#
+        )
+    }
+
     fn note_block(xml: &str, index: usize) -> &str {
         let mut cursor = 0usize;
         let mut start = None;
@@ -6079,6 +6106,126 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_cut_time_symbol_keeps_source_beats_through_abc_projection() {
+        let xml = foreign_time_score(
+            "<time symbol=\"cut\"><beats>4</beats><beat-type>2</beat-type></time>",
+        );
+
+        let score = completed_from_xml(&xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("M:4/2"),
+            "ABC projection must keep the real beats instead of collapsing to M:C|:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("foreign cut-time ABC should export");
+        let time = first_time_block(&roundtrip.musicxml);
+        assert!(
+            time.contains("<time symbol=\"cut\">")
+                && time.contains("<beats>4</beats>")
+                && time.contains("<beat-type>2</beat-type>"),
+            "MusicXML symbol and beats must both survive XML->ABC->XML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_common_time_symbol_keeps_source_beats_through_abc_projection() {
+        let xml = foreign_time_score(
+            "<time symbol=\"common\"><beats>2</beats><beat-type>2</beat-type></time>",
+        );
+
+        let score = completed_from_xml(&xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("M:2/2"),
+            "ABC projection must keep the real beats instead of collapsing to M:C:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("foreign common-time ABC should export");
+        let time = first_time_block(&roundtrip.musicxml);
+        assert!(
+            time.contains("<time symbol=\"common\">")
+                && time.contains("<beats>2</beats>")
+                && time.contains("<beat-type>2</beat-type>"),
+            "MusicXML symbol and beats must both survive XML->ABC->XML:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_numeric_common_meter_does_not_gain_time_symbol() {
+        let xml = foreign_time_score("<time><beats>4</beats><beat-type>4</beat-type></time>");
+
+        let score = completed_from_xml(&xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("M:4/4"),
+            "numeric MusicXML 4/4 must project as numeric ABC, not M:C:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("foreign numeric-time ABC should export");
+        let time = first_time_block(&roundtrip.musicxml);
+        assert!(
+            !time.contains("symbol="),
+            "numeric MusicXML 4/4 must not gain a common-time symbol:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_part_initial_meter_symbol_difference_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list>\n",
+            "    <score-part id=\"P1\"><part-name>One</part-name></score-part>\n",
+            "    <score-part id=\"P2\"><part-name>Two</part-name></score-part>\n",
+            "  </part-list>\n",
+            "  <part id=\"P1\"><measure number=\"1\">\n",
+            "    <attributes><divisions>4</divisions>",
+            "<time symbol=\"cut\"><beats>2</beats><beat-type>2</beat-type></time>",
+            "</attributes>\n",
+            "    <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "  </measure></part>\n",
+            "  <part id=\"P2\"><measure number=\"1\">\n",
+            "    <attributes><divisions>4</divisions>",
+            "<time><beats>2</beats><beat-type>2</beat-type></time>",
+            "</attributes>\n",
+            "    <note><pitch><step>E</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "  </measure></part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("M:C|") && abc.contains("croma-initial-meter display=\"2/2\""),
+            "ABC projection must preserve P2's numeric 2/2 initial meter separately from P1's cut-time header:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("part-initial meter ABC should export");
+        let p1 = measure_block(&roundtrip.musicxml, "1");
+        let p2_start = roundtrip
+            .musicxml
+            .find("<part id=\"P2\">")
+            .expect("P2 should exist");
+        let p2 = measure_block(&roundtrip.musicxml[p2_start..], "1");
+        assert!(
+            first_time_block(p1).contains("<time symbol=\"cut\">"),
+            "P1 must keep cut-time symbol:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            !first_time_block(p2).contains("symbol="),
+            "P2 must keep numeric 2/2 without inheriting cut-time symbol:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_pitch_alter_without_accidental_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
@@ -6610,6 +6757,103 @@ mod abc_completion {
         assert!(
             pickup.contains("<words>Adagio</words>") && pickup.contains("<sound tempo=\"92.00\"/>"),
             "pickup tempo must remain in source measure number 0:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_part_initial_key_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list>",
+            "<score-part id=\"P1\"><part-name>One</part-name></score-part>",
+            "<score-part id=\"P2\"><part-name>Two</part-name></score-part>",
+            "</part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><key><fifths>2</fifths></key></attributes>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "  <part id=\"P2\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><key><fifths>0</fifths></key></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-initial-key fifths=0]"),
+            "part-local initial key needs a private ABC carrier:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("part-local key ABC should export");
+        let p2 = roundtrip
+            .musicxml
+            .split("<part id=\"P2\">")
+            .nth(1)
+            .expect("P2 should be present");
+        assert!(
+            p2.contains("<fifths>0</fifths>"),
+            "P2 must keep its own initial C major key:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_part_initial_key_does_not_suppress_later_key_change() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list>",
+            "<score-part id=\"P1\"><part-name>One</part-name></score-part>",
+            "<score-part id=\"P2\"><part-name>Two</part-name></score-part>",
+            "</part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><key><fifths>2</fifths></key></attributes>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "  <part id=\"P2\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><key><fifths>0</fifths></key></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <attributes><key><fifths>-1</fifths></key></attributes>\n",
+            "      <note><pitch><step>F</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-initial-key fifths=0]") && abc.contains("[K:F]"),
+            "part-local initial key and later key change must both survive in ABC:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("part-local key ABC should export");
+        let p2 = roundtrip
+            .musicxml
+            .split("<part id=\"P2\">")
+            .nth(1)
+            .expect("P2 should be present");
+        assert!(
+            p2.contains("<fifths>0</fifths>") && p2.contains("<fifths>-1</fifths>"),
+            "P2 must keep its own initial key and later key change:\n{}",
             roundtrip.musicxml
         );
     }
