@@ -593,6 +593,14 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_after_grace = true;
                     return;
                 }
+                if let Some(clef) =
+                    parse_clef_cursor_instruction(&inline.value.value, inline.value.span)
+                {
+                    self.current_state()
+                        .lowered
+                        .push(LoweredEvent::ClefChange(clef));
+                    return;
+                }
                 if let Some(kind) = parse_barline_style_instruction(&inline.value.value) {
                     self.current_state().pending_musicxml_barline_kind = Some(kind);
                     return;
@@ -882,6 +890,7 @@ impl MultiVoiceLowering {
                 .push(LoweredEvent::ClefChange(ClefChangeModel {
                     source_span: clef.span,
                     clef,
+                    musicxml_cursor_back: None,
                 }));
         }
     }
@@ -1112,6 +1121,7 @@ fn key_clef_change_model(properties: &VoiceProperties) -> Option<ClefChangeModel
     properties.clef.as_ref().map(|clef| ClefChangeModel {
         clef: text_line_from_spanned(clef),
         source_span: clef.span,
+        musicxml_cursor_back: None,
     })
 }
 
@@ -1929,6 +1939,27 @@ fn parse_musicxml_after_grace_instruction(value: &str) -> bool {
         return false;
     };
     rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
+fn parse_clef_cursor_instruction(value: &str, span: Span) -> Option<ClefChangeModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-clef-cursor")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let clef = if let Some(hex) = fields.get("clef-hex") {
+        parse_croma_hex_utf8(hex)?
+    } else {
+        fields.get("clef")?.clone()
+    };
+    let back_n = parse_croma_u32(&fields, "back-n").filter(|value| *value > 0)?;
+    let back_d = parse_croma_u32(&fields, "back-d").filter(|value| *value > 0)?;
+    (!clef.trim().is_empty()).then(|| ClefChangeModel {
+        clef: TextLine { text: clef, span },
+        source_span: span,
+        musicxml_cursor_back: Some(Fraction::new(back_n, back_d)),
+    })
 }
 
 fn parse_barline_style_instruction(value: &str) -> Option<BarlineKind> {

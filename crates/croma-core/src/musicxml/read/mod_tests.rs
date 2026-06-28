@@ -6102,6 +6102,80 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_post_backup_clef_cursor_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>16</duration><voice>1</voice><type>whole</type></note>\n",
+            "      <backup><duration>16</duration></backup>\n",
+            "      <note><pitch><step>E</step><octave>3</octave></pitch>",
+            "<duration>16</duration><voice>5</voice><type>whole</type></note>\n",
+            "      <backup><duration>4</duration></backup>\n",
+            "      <attributes><clef><sign>F</sign><line>4</line></clef></attributes>\n",
+            "      <forward><duration>4</duration></forward>\n",
+            "      <backup><duration>16</duration></backup>\n",
+            "      <note><pitch><step>G</step><octave>3</octave></pitch>",
+            "<duration>16</duration><voice>6</voice><type>whole</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-clef-cursor "),
+            "ABC projection needs a private carrier for a post-backup MusicXML clef cursor:\n{abc}"
+        );
+
+        let roundtrip = export_musicxml(&abc).expect("post-backup clef cursor ABC should export");
+        let measure = measure_block(&roundtrip.musicxml, "1");
+        let bass_sign = measure.find("<sign>F</sign>").unwrap_or_else(|| {
+            panic!("roundtrip must keep the bass clef:\n{}", roundtrip.musicxml)
+        });
+        let clef = measure[..bass_sign]
+            .rfind("<clef>")
+            .unwrap_or_else(|| panic!("bass clef sign must be inside a clef block:\n{measure}"));
+        let first_backup = measure[..clef]
+            .rfind("<backup>")
+            .unwrap_or_else(|| panic!("clef must be preceded by its short backup:\n{measure}"));
+        let forward = measure[clef..]
+            .find("<forward>")
+            .map(|offset| clef + offset)
+            .unwrap_or_else(|| {
+                panic!("clef must be followed by its cursor-restoring forward:\n{measure}")
+            });
+        let voice6 = measure
+            .find("<voice>6</voice>")
+            .unwrap_or_else(|| panic!("roundtrip must keep voice 6:\n{}", roundtrip.musicxml));
+        let second_backup = measure[forward..voice6]
+            .find("<backup>")
+            .map(|offset| forward + offset)
+            .unwrap_or_else(|| {
+                panic!("voice 6 must still have its own full-measure backup:\n{measure}")
+            });
+        assert!(
+            first_backup < clef
+                && clef < forward
+                && forward < second_backup
+                && second_backup < voice6,
+            "roundtrip must preserve backup -> clef -> forward -> backup -> voice ordering:\n{}",
+            roundtrip.musicxml
+        );
+        assert!(
+            measure[first_backup..clef].contains("<duration>8</duration>")
+                && measure[forward..second_backup].contains("<duration>8</duration>"),
+            "clef cursor backup/forward must keep the same one-quarter duration:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_trailing_forward_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",
