@@ -66,24 +66,46 @@ impl<'score> MusicXmlWriter<'score> {
     /// `cc / 127 * 180 - 90`, matching abc2xml.
     fn write_part_instruments(&mut self, part: &Part, part_id: &str) {
         let fallback_name = part_name(part, self.score);
-        let instruments: Vec<(String, String, MidiInstrumentModel)> = part
-            .voices
-            .iter()
-            .filter_map(|voice| {
-                let midi = voice.midi_instrument?;
-                midi.has_content().then_some((voice, midi))
-            })
-            .enumerate()
-            .map(|(seq, (voice, midi))| {
-                let name = voice_instrument_name(voice).unwrap_or_else(|| {
-                    midi.program.map_or_else(
-                        || fallback_name.clone(),
-                        |program| gm_program_name(program).to_owned(),
-                    )
-                });
-                (format!("{part_id}-I{}", seq + 1), name, midi)
-            })
-            .collect();
+        let instruments: Vec<(String, String, Option<MidiInstrumentModel>)> =
+            if part.instruments.is_empty() {
+                part.voices
+                    .iter()
+                    .filter_map(|voice| {
+                        let midi = voice.midi_instrument?;
+                        midi.has_content().then_some((voice, midi))
+                    })
+                    .enumerate()
+                    .map(|(seq, (voice, midi))| {
+                        let name = voice_instrument_name(voice).unwrap_or_else(|| {
+                            midi.program.map_or_else(
+                                || fallback_name.clone(),
+                                |program| gm_program_name(program).to_owned(),
+                            )
+                        });
+                        (format!("{part_id}-I{}", seq + 1), name, Some(midi))
+                    })
+                    .collect()
+            } else {
+                part.instruments
+                    .iter()
+                    .filter(|instrument| !instrument.id.trim().is_empty())
+                    .map(|instrument| {
+                        let name = instrument
+                            .name
+                            .as_ref()
+                            .map(|name| name.text.trim().to_owned())
+                            .filter(|name| !name.is_empty())
+                            .or_else(|| {
+                                instrument
+                                    .midi
+                                    .and_then(|midi| midi.program)
+                                    .map(|program| gm_program_name(program).to_owned())
+                            })
+                            .unwrap_or_else(|| fallback_name.clone());
+                        (instrument.id.clone(), name, instrument.midi)
+                    })
+                    .collect()
+            };
         if instruments.is_empty() {
             return;
         }
@@ -96,6 +118,9 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml.end("score-instrument");
         }
         for (instrument_id, _, midi) in &instruments {
+            let Some(midi) = midi.as_ref().filter(|midi| midi.has_content()) else {
+                continue;
+            };
             self.xml
                 .start("midi-instrument", &[("id", instrument_id.as_str())]);
             if let Some(channel) = midi.channel {

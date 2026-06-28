@@ -128,6 +128,7 @@ pub enum AccidentalScope {
 pub struct Part {
     pub id: PartId,
     pub name: Option<TextLine>,
+    pub instruments: Vec<MusicXmlPartInstrumentModel>,
     pub staves: Vec<Staff>,
     pub voices: Vec<Voice>,
     pub source_span: Span,
@@ -203,6 +204,20 @@ pub struct MidiInstrumentModel {
     /// (1-128). `None` when the instrument is pitched or unspecified.
     pub midi_unpitched: Option<u8>,
     /// Source span of the directive that last set this instrument.
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MusicXmlPartInstrumentModel {
+    pub id: String,
+    pub name: Option<TextLine>,
+    pub midi: Option<MidiInstrumentModel>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MusicXmlInstrumentRef {
+    pub id: String,
     pub span: Span,
 }
 
@@ -346,6 +361,7 @@ pub struct EventAttachments {
     pub chord_symbols: Vec<TextAttachment>,
     pub annotations: Vec<TextAttachment>,
     pub decorations: Vec<DecorationAttachment>,
+    pub instrument: Option<MusicXmlInstrumentRef>,
     pub lyrics: Vec<AlignedLyric>,
     pub symbols: Vec<AlignedSymbol>,
     pub ties: Vec<TieAttachment>,
@@ -360,6 +376,7 @@ impl EventAttachments {
             && self.chord_symbols.is_empty()
             && self.annotations.is_empty()
             && self.decorations.is_empty()
+            && self.instrument.is_none()
             && self.lyrics.is_empty()
             && self.symbols.is_empty()
             && self.ties.is_empty()
@@ -373,6 +390,9 @@ impl EventAttachments {
         self.chord_symbols.extend(other.chord_symbols);
         self.annotations.extend(other.annotations);
         self.decorations.extend(other.decorations);
+        if self.instrument.is_none() {
+            self.instrument = other.instrument;
+        }
         self.lyrics.extend(other.lyrics);
         self.symbols.extend(other.symbols);
         self.ties.extend(other.ties);
@@ -536,6 +556,9 @@ pub struct VoiceTimeline {
     pub initial_properties: VoicePropertiesModel,
     pub properties: VoicePropertiesModel,
     pub measures: Vec<VoiceMeasureTimeline>,
+    /// MusicXML-origin part-list instruments carried through ABC as croma
+    /// `%%MIDI instrument-def` directives.
+    pub musicxml_instruments: Vec<MusicXmlPartInstrumentModel>,
     /// Score-level MIDI instrument projected from this voice's `%%MIDI` program
     /// / channel directives, carried through to the semantic [`Voice`].
     pub midi_instrument: Option<MidiInstrumentModel>,
