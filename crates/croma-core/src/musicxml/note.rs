@@ -309,10 +309,17 @@ impl<'score> MusicXmlWriter<'score> {
                 }
             };
         let spelling = note_spelling(note.duration, explicit_time_modification);
-        let omit_inexpressible_measure_rest_spelling = note.measure_rest
+        // A rest whose duration has no plain note-type would otherwise make
+        // `note_spelling` FABRICATE a tuplet `<time-modification>` (e.g. a 5/2-quarter
+        // rest gaining a phantom 8:5) — but a foreign rest carries no real tuplet and
+        // MusicXML allows a bare rest with only `<duration>`. So omit the synthesized
+        // `<type>`/`<time-modification>` for ANY such rest (not just full-measure
+        // rests). A rest with a REAL tuplet has `explicit_time_modification = Some`,
+        // so it is spared and keeps its genuine ratio. Notes are untouched.
+        let omit_inexpressible_rest_spelling = note.rest.is_some()
             && explicit_time_modification.is_none()
             && (spelling.unsupported || spelling.time_modification.is_some());
-        if spelling.unsupported && !omit_inexpressible_measure_rest_spelling {
+        if spelling.unsupported && !omit_inexpressible_rest_spelling {
             self.diagnostics
                 .push(unsupported_note_type_warning(note.source, note.duration));
         }
@@ -329,7 +336,7 @@ impl<'score> MusicXmlWriter<'score> {
                 .empty("instrument", &[("id", instrument.id.as_str())]);
         }
         self.xml.text_element("voice", &sequence.voice_number);
-        if !omit_inexpressible_measure_rest_spelling {
+        if !omit_inexpressible_rest_spelling {
             self.xml.text_element("type", spelling.note_type);
             for _ in 0..spelling.dots {
                 self.xml.empty("dot", &[]);
@@ -342,7 +349,7 @@ impl<'score> MusicXmlWriter<'score> {
             self.xml
                 .text_element("accidental", accidental.kind.musicxml_name());
         }
-        let time_modification = if omit_inexpressible_measure_rest_spelling {
+        let time_modification = if omit_inexpressible_rest_spelling {
             None
         } else {
             explicit_time_modification.or(spelling.time_modification)

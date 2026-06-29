@@ -284,6 +284,35 @@ fn full_measure_rest_omits_fabricated_type_for_inexpressible_duration() {
 }
 
 #[test]
+fn partial_nondyadic_rest_omits_fabricated_tuplet() {
+    // pdmx_1398: a NON-full-measure rest whose duration has no plain note-type
+    // (`z5/2` = 5/2 quarters) must not fabricate a tuplet `<time-modification>`.
+    // The omit guard previously covered only full-measure rests, so a partial
+    // inexpressible rest fell through `note_spelling` into the fabrication loop and
+    // gained a phantom breve + 8:5. A bare `<rest>` with only `<duration>` is the
+    // faithful spelling (no real tuplet is present here).
+    let source = "X:1\nM:8/4\nL:1/4\nK:C\nA4 z5/2 z3/2|\n";
+    let export = export_musicxml(source).expect("partial non-dyadic rest should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export.musicxml.contains("<time-modification>"),
+        "a non-dyadic partial rest must not fabricate a tuplet (no real tuplet present):\n{}",
+        export.musicxml
+    );
+    // The inexpressible 5/2 rest is bare (duration only, no synthesized type); the
+    // dyadic neighbours still spell normally.
+    let bare_rest = musicxml_note_blocks(&export.musicxml)
+        .into_iter()
+        .find(|note| note.contains("<rest/>") && !note.contains("<type>"));
+    assert!(
+        bare_rest.is_some(),
+        "the 5/2 rest must export as a bare typeless <rest/>:\n{}",
+        export.musicxml
+    );
+}
+
+#[test]
 fn dangling_quoted_text_at_tune_end_warns_instead_of_silent_drop() {
     // Quoted text with no following timed event cannot bind to anything; it
     // must surface as a diagnostic, never vanish silently.
