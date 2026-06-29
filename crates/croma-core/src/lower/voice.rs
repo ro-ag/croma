@@ -1701,7 +1701,7 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
 /// MUST stay value-for-value identical to the writer's mirrored copy in
 /// `to_abc.rs` (which SUBTRACTS this shift to recover written octaves) or
 /// every `octave=`/`clef±` voice breaks round-trip.
-fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
+pub(crate) fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
     let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
         let clef = clef.text.as_str();

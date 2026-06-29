@@ -4880,6 +4880,13 @@ fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&Key
     let mut current_measure: Option<u32> = None;
     let mut measure_accidentals: std::collections::BTreeMap<(char, i8), i8> =
         std::collections::BTreeMap::new();
+    // The measure-accidental ledger must key on the octave the ABC WRITER emits,
+    // because ABC accidental carry keys on the written letter+octave. The writer
+    // octave-shifts anchor notes (`to_abc::shifted`, subtracting this shift) but
+    // emits grace notes UNshifted, so anchors and grace at the same MODEL octave
+    // print at different written octaves. Subtracting the shift for anchors (and
+    // leaving grace as-is) keeps the simulated ledger in step with the emitted ABC.
+    let shift = crate::lower::voice::voice_octave_shift(&voice.properties);
 
     for event in &mut voice.events {
         if current_measure != Some(event.measure.index) {
@@ -4902,6 +4909,7 @@ fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&Key
         match &mut event.kind {
             TimedEventKind::Note(note) => complete_note_accidental_for_abc(
                 note.pitch,
+                note.pitch.octave.saturating_sub(shift),
                 &mut note.written_accidental,
                 current_key.as_ref(),
                 &mut measure_accidentals,
@@ -4910,6 +4918,7 @@ fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&Key
                 for member in &mut chord.members {
                     complete_note_accidental_for_abc(
                         member.pitch,
+                        member.pitch.octave.saturating_sub(shift),
                         &mut member.written_accidental,
                         current_key.as_ref(),
                         &mut measure_accidentals,
@@ -4941,8 +4950,11 @@ fn complete_grace_group_accidentals_for_abc(
     for group in groups {
         for grace in &mut group.events {
             match &mut grace.kind {
+                // Grace notes print UNshifted, so the writer's emitted octave is
+                // the model octave itself — no shift correction here.
                 GraceEventKind::Note(note) => complete_note_accidental_for_abc(
                     note.pitch,
+                    note.pitch.octave,
                     &mut note.written_accidental,
                     current_key,
                     measure_accidentals,
@@ -4951,6 +4963,7 @@ fn complete_grace_group_accidentals_for_abc(
                     for note in notes {
                         complete_note_accidental_for_abc(
                             note.pitch,
+                            note.pitch.octave,
                             &mut note.written_accidental,
                             current_key,
                             measure_accidentals,
@@ -4966,12 +4979,13 @@ fn complete_grace_group_accidentals_for_abc(
 #[cfg(feature = "musicxml-reader")]
 fn complete_note_accidental_for_abc(
     pitch: Pitch,
+    ledger_octave: i8,
     written_accidental: &mut Option<AccidentalMark>,
     current_key: Option<&KeySignatureModel>,
     measure_accidentals: &mut std::collections::BTreeMap<(char, i8), i8>,
 ) {
     let step = pitch.step.to_ascii_uppercase();
-    let ledger_key = (step, pitch.octave);
+    let ledger_key = (step, ledger_octave);
     if written_accidental.is_none() {
         let implied_alter = measure_accidentals
             .get(&ledger_key)

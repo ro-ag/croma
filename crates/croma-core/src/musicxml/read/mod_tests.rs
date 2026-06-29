@@ -6746,6 +6746,45 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_grace_accidental_survives_clef_octave_shift() {
+        // In a clef=treble-8 voice the writer emits anchor notes octave-shifted
+        // but grace notes UNshifted, so the reader's accidental-carry simulation
+        // must key its measure ledger on the EMITTED (written) octave. Otherwise a
+        // C# anchor (written c') and a same-model-octave C# grace (written c)
+        // collide in the ledger and the grace's sharp is dropped as if carried —
+        // re-parsing the bare grace then loses the alter (PDMX 0344 / 1793).
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>G</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions>\n",
+            "        <clef><sign>G</sign><line>2</line><clef-octave-change>-1</clef-octave-change></clef>\n",
+            "      </attributes>\n",
+            "      <note><pitch><step>C</step><alter>1</alter><octave>5</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type><accidental>sharp</accidental></note>\n",
+            "      <note><grace slash=\"yes\"/><pitch><step>C</step><alter>1</alter><octave>5</octave></pitch>",
+            "<voice>1</voice><type>eighth</type></note>\n",
+            "      <note><pitch><step>D</step><octave>5</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc).expect("clef-octave grace ABC should export");
+        assert_eq!(
+            roundtrip.musicxml.matches("<alter>1</alter>").count(),
+            2,
+            "both the anchor and grace C# must keep their sharp through XML->ABC->XML; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_cut_time_symbol_keeps_source_beats_through_abc_projection() {
         let xml = foreign_time_score(
             "<time symbol=\"cut\"><beats>4</beats><beat-type>2</beat-type></time>",
