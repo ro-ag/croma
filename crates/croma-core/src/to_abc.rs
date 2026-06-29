@@ -436,10 +436,7 @@ fn voice_header_line(voice: &crate::model::Voice) -> String {
         ("snm", &p.snm),
     ] {
         if let Some(text) = value {
-            s.push_str(&format!(
-                " {key}=\"{}\"",
-                text.text.replace('\\', "\\\\").replace('"', "\\\"")
-            ));
+            s.push_str(&format!(" {key}=\"{}\"", abc_carrier_quoted(&text.text)));
         }
     }
     if let Some(clef) = &p.clef {
@@ -543,8 +540,18 @@ fn musicxml_instrument_directive_lines(part: &crate::model::Part) -> String {
     s
 }
 
+/// Quote a string for a `name="..."`-style ABC carrier value: neutralise any
+/// control character (a foreign `<part-name>`/instrument name may carry a display
+/// line-break, e.g. "S\nA", which would split the single-line `V:`/`%%` header and
+/// corrupt every following note) to a space, then escape `\` and `"`. ABC header
+/// names are single-line, so a multi-line name's break is inexpressible and
+/// normalised to a space rather than preserved.
 fn abc_carrier_quoted(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 /// Replicates the parser's written->stored octave shift for a voice's

@@ -518,6 +518,41 @@ fn foreign_part_names_project_to_voice_headers() {
 }
 
 #[test]
+fn foreign_part_name_newline_does_not_break_voice_header() {
+    // A multi-line foreign <part-name> (a display line-break, e.g. "S\nA" or
+    // "Violoncello 1°\nconcertante") is inexpressible in a single-line ABC `V:`
+    // header. An unescaped newline split the header line and corrupted every
+    // following note on re-parse (PDMX pitch cluster: pdmx_1055, pdmx_1414). The
+    // newline must normalise to a space so the header stays one line and the music
+    // round-trips intact.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list>\n",
+        "    <score-part id=\"P1\"><part-name>S\nA</part-name></score-part>\n",
+        "  </part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions></attributes>\n",
+        "    <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("V:P1 name=\"S A\"\n"),
+        "a part-name newline must become a space, keeping the V: header on one line:\n{abc}"
+    );
+    // The ABC must re-export with the note intact (no line-break cascade).
+    let roundtrip = export_musicxml(&abc).expect("name-normalised ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<step>C</step>"),
+        "the following note must survive the part-name normalisation:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn foreign_multi_voice_part_synthesizes_parenthesized_score_group() {
     let xml = concat!(
         "<?xml version=\"1.0\"?>\n",
