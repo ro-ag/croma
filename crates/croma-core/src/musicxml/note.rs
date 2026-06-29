@@ -249,7 +249,10 @@ impl<'score> MusicXmlWriter<'score> {
         let chord_tuplet_time_modification =
             TimeModification::composite(&event_attachments.tuplets)
                 .ok()
-                .flatten();
+                .flatten()
+                // A measured tremolo on a chord carries its `<time-modification>` with no
+                // `<tuplet>`; members inherit it from the chord's tremolo decoration too.
+                .or_else(|| tremolo_time_modification_for(event_attachments));
         for (index, member) in chord.members.iter().enumerate() {
             let attachments = if index == 0 {
                 event_attachments.clone()
@@ -323,6 +326,10 @@ impl<'score> MusicXmlWriter<'score> {
         let explicit_time_modification = match note.chord_tuplet_time_modification {
             Some(time_modification) => Some(time_modification),
             None => match TimeModification::composite(&note.attachments.tuplets) {
+                // A measured-tremolo note carries a `<time-modification>` with no
+                // `<tuplet>`; recover it from the tremolo decoration's carrier so
+                // the written value re-doubles and the element re-emits.
+                Ok(None) => tremolo_time_modification_for(note.attachments),
                 Ok(time_modification) => time_modification,
                 Err(()) => {
                     self.diagnostics
@@ -434,6 +441,15 @@ impl<'score> MusicXmlWriter<'score> {
             );
         }
     }
+}
+
+/// The measured-tremolo `<time-modification>` carried by one of a note's tremolo
+/// decorations (`musicxml-tremolo-{type}-{marks}-tm-{actual}-{normal}`), if any.
+fn tremolo_time_modification_for(attachments: &EventAttachments) -> Option<TimeModification> {
+    attachments
+        .decorations
+        .iter()
+        .find_map(|decoration| super::notation::tremolo_time_modification(&decoration.name))
 }
 
 fn ordered_tuplet_notation_attachments(attachments: &EventAttachments) -> EventAttachments {

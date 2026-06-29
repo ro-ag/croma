@@ -24,12 +24,13 @@ use std::collections::BTreeMap;
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
     Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, BarlineKind, ClefChangeModel,
-    Event, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom,
-    LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef,
-    MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    Staff, StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine,
-    TimelineEventKind, TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
+    Event, EventAttachments, Fraction, HarmonyKindText, KeyAccidentalModel, KeySignatureModel,
+    LoweredEventAtom, LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel,
+    MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective,
+    RestVisibility, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
+    ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId, StemDirectionModel, TempoBeat,
+    TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -413,17 +414,23 @@ impl MultiVoiceLowering {
             self.apply_current_voice_key_properties(&key.value.properties);
             return;
         }
-        let model = key_signature_model(key);
+        let mut model = key_signature_model(key);
         let header = self.header_key_display.clone();
         {
             let voice = self.current_state();
+            let preserve_restatement = voice.pending_musicxml_key_restatement;
+            voice.pending_musicxml_key_restatement = false;
+            model.preserve_restatement = preserve_restatement;
             voice.set_key(Some(&key.value));
             // Record the change at the current voice's position so exporters
             // can reproduce it. A change to the voice's already-effective key
             // records nothing (see the meter-change dedupe above; also
             // collapses no-op restatements identically on both generations,
-            // keeping the round-trip stable).
-            if effective_key_display(voice, header.as_deref()) != Some(model.display.as_str()) {
+            // keeping the round-trip stable). A MusicXML-origin restatement
+            // carrier forces the no-op through so a foreign `<key>` survives.
+            if preserve_restatement
+                || effective_key_display(voice, header.as_deref()) != Some(model.display.as_str())
+            {
                 voice.lowered.push(LoweredEvent::KeyChange(model));
             }
         }
@@ -638,6 +645,10 @@ impl MultiVoiceLowering {
                 }
                 if parse_meter_restatement_instruction(&inline.value.value) {
                     self.current_state().pending_musicxml_meter_restatement = true;
+                    return;
+                }
+                if parse_key_restatement_instruction(&inline.value.value) {
+                    self.current_state().pending_musicxml_key_restatement = true;
                     return;
                 }
                 if let Some(symbol) = parse_time_symbol_instruction(&inline.value.value) {
@@ -1450,6 +1461,9 @@ fn key_signature_model(key: &Spanned<KeySignature>) -> KeySignatureModel {
                 source_span: accidental.span,
             })
             .collect(),
+        // Set by the caller from a pending MusicXML restatement carrier; an ABC
+        // `K:` field is never a forced restatement on its own.
+        preserve_restatement: false,
         source_span: key.span,
     }
 }
@@ -1799,7 +1813,7 @@ fn parse_note_instrument_instruction(value: &str, span: Span) -> Option<MusicXml
     })
 }
 
-fn parse_harmony_text_instruction(value: &str) -> Option<String> {
+fn parse_harmony_text_instruction(value: &str) -> Option<HarmonyKindText> {
     let value = value.trim();
     let rest = value.strip_prefix("croma-harmony-text")?;
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
@@ -1807,9 +1821,9 @@ fn parse_harmony_text_instruction(value: &str) -> Option<String> {
     }
     let fields = parse_croma_key_values(rest);
     if parse_croma_bool(&fields, "textless") {
-        return Some(String::new());
+        return Some(HarmonyKindText::Textless);
     }
-    fields.get("text").cloned()
+    fields.get("text").cloned().map(HarmonyKindText::Text)
 }
 
 fn parse_lyric_extend_instruction(value: &str) -> Option<u32> {
@@ -1927,6 +1941,14 @@ fn parse_sound_tempo_instruction(value: &str, span: Span) -> Option<TempoModel> 
 fn parse_meter_restatement_instruction(value: &str) -> bool {
     let value = value.trim();
     let Some(rest) = value.strip_prefix("croma-meter-restatement") else {
+        return false;
+    };
+    rest.is_empty() || rest.starts_with(char::is_whitespace)
+}
+
+fn parse_key_restatement_instruction(value: &str) -> bool {
+    let value = value.trim();
+    let Some(rest) = value.strip_prefix("croma-key-restatement") else {
         return false;
     };
     rest.is_empty() || rest.starts_with(char::is_whitespace)
@@ -2143,6 +2165,7 @@ fn parse_initial_key_instruction(value: &str, span: Span) -> Option<KeySignature
         display: String::new(),
         fifths,
         explicit_accidentals,
+        preserve_restatement: false,
         source_span: span,
     })
 }

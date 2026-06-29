@@ -3,8 +3,8 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::{
-    AlignedLyric, ClefChangeModel, EventAttachments, Fraction, KeySignatureModel, Measure,
-    MeterModel, TempoBeatRole, TempoModel, TieRole, TupletAttachment, TupletRole,
+    AlignedLyric, ClefChangeModel, EventAttachments, Fraction, HarmonyKindText, KeySignatureModel,
+    Measure, MeterModel, TempoBeatRole, TempoModel, TieRole, TupletAttachment, TupletRole,
 };
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
@@ -121,11 +121,16 @@ fn tempo_needs_instruction(tempo: &TempoModel) -> bool {
     tempo.text.as_deref().is_some_and(needs_hex_inline_carrier)
 }
 
-fn harmony_text_instruction(text: &str) -> String {
-    if text.is_empty() {
-        "croma-harmony-text textless=1".to_owned()
-    } else {
-        format!("croma-harmony-text text=\"{}\"", abc_carrier_quoted(text))
+fn harmony_text_instruction(kind_text: &HarmonyKindText) -> Option<String> {
+    match kind_text {
+        // ABC-native chords carry no provenance; the writer rebuilds `text=` from
+        // the chord string, so no carrier is emitted.
+        HarmonyKindText::AbcNative => None,
+        HarmonyKindText::Textless => Some("croma-harmony-text textless=1".to_owned()),
+        HarmonyKindText::Text(value) => Some(format!(
+            "croma-harmony-text text=\"{}\"",
+            abc_carrier_quoted(value)
+        )),
     }
 }
 
@@ -162,6 +167,10 @@ fn hex_utf8(text: &str) -> String {
 
 fn meter_restatement_instruction() -> &'static str {
     "croma-meter-restatement"
+}
+
+fn key_restatement_instruction() -> &'static str {
+    "croma-key-restatement"
 }
 
 fn time_symbol_instruction(meter: &MeterModel) -> Option<String> {
@@ -811,6 +820,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             // The parser re-applies them at this position, reproducing the
             // baked-in alters / meter state downstream.
             TimedEventKind::KeyChange(key) => {
+                if key.preserve_restatement {
+                    out.push_str(&format!("[I:{}] ", key_restatement_instruction()));
+                }
                 out.push_str(&format!("[K:{}] ", key.display));
             }
             TimedEventKind::MeterChange(meter) => {
@@ -1098,8 +1110,8 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
     // text never starts with one, so the parser re-distinguishes them; both
     // simply re-emit as `"<text>"`.
     for chord_symbol in &attachments.chord_symbols {
-        if let Some(text) = &chord_symbol.musicxml_harmony_text {
-            out.push_str(&format!("[I:{}]", harmony_text_instruction(text)));
+        if let Some(instruction) = harmony_text_instruction(&chord_symbol.musicxml_harmony_text) {
+            out.push_str(&format!("[I:{instruction}]"));
         }
         out.push_str(&quoted_str(&chord_symbol.text));
     }

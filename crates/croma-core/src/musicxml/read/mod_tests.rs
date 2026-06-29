@@ -1680,6 +1680,61 @@ fn foreign_tremolos_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_measured_tremolo_time_modification_survives_abc_projection() {
+    // A two-note (measured) tremolo carries a bare `<time-modification>` on each
+    // note (the written value is double the sounding) with NO `<tuplet>`. The
+    // ratio is not derivable from the tremolo marks alone, so the reader carries
+    // it alongside the tremolo decoration and the writer re-emits it (PDMX 0677 /
+    // 0761 / 1561).
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration><voice>1</voice><type>half</type>
+        <time-modification><actual-notes>2</actual-notes><normal-notes>1</normal-notes></time-modification>
+        <notations><ornaments><tremolo type="start">2</tremolo></ornaments></notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration><voice>1</voice><type>half</type>
+        <time-modification><actual-notes>2</actual-notes><normal-notes>1</normal-notes></time-modification>
+        <notations><ornaments><tremolo type="stop">2</tremolo></ornaments></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    let roundtrip = export_musicxml(&abc)
+        .expect("measured-tremolo ABC should export")
+        .musicxml;
+    assert_eq!(
+        roundtrip
+            .matches("<tremolo type=\"start\">2</tremolo>")
+            .count()
+            + roundtrip
+                .matches("<tremolo type=\"stop\">2</tremolo>")
+                .count(),
+        2,
+        "both tremolo brackets must survive:\n{roundtrip}"
+    );
+    assert_eq!(
+        roundtrip.matches("<actual-notes>2</actual-notes>").count(),
+        2,
+        "both tremolo notes must keep their 2:1 time-modification:\n{roundtrip}"
+    );
+    assert_eq!(
+        roundtrip.matches("<normal-notes>1</normal-notes>").count(),
+        2,
+        "both tremolo notes must keep their 2:1 time-modification:\n{roundtrip}"
+    );
+}
+
+#[test]
 fn foreign_technical_values_survive_abc_projection() {
     let xml = r#"<?xml version="1.0"?>
 <score-partwise version="3.1">
@@ -2026,6 +2081,47 @@ fn foreign_tuplet_display_survives_abc_projection() {
             "{tag} should survive MusicXML -> ABC -> MusicXML:\n{roundtrip}"
         );
     }
+}
+
+#[test]
+fn foreign_display_tuplet_without_time_modification_emits_no_ratio() {
+    // A `<tuplet>` bracket with NO `<time-modification>` is a display-only group:
+    // the notes already fill their nominal duration (no time compression). The
+    // reader must not fabricate a ratio (it formerly assumed 3:2), so the round
+    // trip keeps the bracket but emits no `<time-modification>` (PDMX 0998 / 1479).
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions><time><beats>1</beats><beat-type>4</beat-type></time></attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type>
+        <notations><tuplet type="start" bracket="no"/></notations></note>
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type></note>
+      <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type>
+        <notations><tuplet type="stop"/></notations></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    let roundtrip = export_musicxml(&abc)
+        .expect("display-tuplet ABC should export")
+        .musicxml;
+    assert!(
+        !roundtrip.contains("<time-modification>"),
+        "a display-only tuplet must not fabricate a <time-modification>:\n{roundtrip}"
+    );
+    assert!(
+        roundtrip.contains("<tuplet type=\"start\"") && roundtrip.contains("<tuplet type=\"stop\""),
+        "the display tuplet bracket must survive:\n{roundtrip}"
+    );
+    assert_eq!(
+        roundtrip.matches("<type>16th</type>").count(),
+        4,
+        "all four 16th notes must keep their literal value:\n{roundtrip}"
+    );
 }
 
 #[test]
@@ -3084,6 +3180,29 @@ fn textless_harmony_stays_textless_through_abc_projection() {
         roundtrip.musicxml.contains("<kind>major</kind>")
             && !roundtrip.musicxml.contains("<kind text=\"C\">major</kind>"),
         "round-trip MusicXML must not invent kind@text for textless harmony:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
+fn foreign_harmony_empty_kind_text_survives_abc_projection() {
+    // `<kind text="">none</kind>`: an EXPLICIT empty `text=` attribute is distinct
+    // from a textless `<kind>` (no attr at all). Both synthesise a bare-root chord,
+    // but the empty attribute must round-trip back as `text=""`, NOT collapse to a
+    // textless bare `<kind>` (PDMX 1191).
+    let xml = "<harmony><root><root-step>C</root-step></root><kind text=\"\">none</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    let roundtrip = export_musicxml(&abc).expect("projected harmony ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<kind text=\"\">"),
+        "round-trip MusicXML must restore the explicit empty kind@text:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        !roundtrip.musicxml.contains("<kind>"),
+        "an explicit empty `text=` must not degrade to a textless bare <kind>:\n{}",
         roundtrip.musicxml
     );
 }
@@ -6673,6 +6792,90 @@ mod abc_completion {
             roundtrip.musicxml.matches("<time>").count(),
             2,
             "MusicXML-origin repeated <time> must survive XML->ABC->XML; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_redundant_key_restatement_survives_abc_projection() {
+        // A foreign source may restate the already-effective `<key>` mid-tune
+        // (a system-break courtesy restatement). The ABC dedupe must not collapse
+        // it: like meter, the reader marks it and a carrier forces re-recording
+        // (PDMX 0109 / 0916).
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><key><fifths>-1</fifths></key></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <attributes><key><fifths>-1</fifths></key></attributes>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-key-restatement] [K:"),
+            "ABC projection must carry a private marker so the no-op [K:] survives re-lowering:\n{abc}"
+        );
+        assert_eq!(
+            write_abc(&lower(&abc), AbcWriteOptions::default()),
+            abc,
+            "the croma key restatement carrier should be an ABC fixed point"
+        );
+        let roundtrip = export_musicxml(&abc).expect("redundant key ABC should export");
+        assert_eq!(
+            roundtrip.musicxml.matches("<fifths>-1</fifths>").count(),
+            2,
+            "MusicXML-origin repeated <key> must survive XML->ABC->XML; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn foreign_grace_accidental_survives_clef_octave_shift() {
+        // In a clef=treble-8 voice the writer emits anchor notes octave-shifted
+        // but grace notes UNshifted, so the reader's accidental-carry simulation
+        // must key its measure ledger on the EMITTED (written) octave. Otherwise a
+        // C# anchor (written c') and a same-model-octave C# grace (written c)
+        // collide in the ledger and the grace's sharp is dropped as if carried —
+        // re-parsing the bare grace then loses the alter (PDMX 0344 / 1793).
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>G</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions>\n",
+            "        <clef><sign>G</sign><line>2</line><clef-octave-change>-1</clef-octave-change></clef>\n",
+            "      </attributes>\n",
+            "      <note><pitch><step>C</step><alter>1</alter><octave>5</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type><accidental>sharp</accidental></note>\n",
+            "      <note><grace slash=\"yes\"/><pitch><step>C</step><alter>1</alter><octave>5</octave></pitch>",
+            "<voice>1</voice><type>eighth</type></note>\n",
+            "      <note><pitch><step>D</step><octave>5</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip = export_musicxml(&abc).expect("clef-octave grace ABC should export");
+        assert_eq!(
+            roundtrip.musicxml.matches("<alter>1</alter>").count(),
+            2,
+            "both the anchor and grace C# must keep their sharp through XML->ABC->XML; abc:\n{abc}\nxml:\n{}",
             roundtrip.musicxml
         );
     }

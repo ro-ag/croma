@@ -603,14 +603,18 @@ fn is_xml_char(ch: char) -> bool {
 
 fn tremolo_notation(name: &str) -> Option<NotationKind> {
     let rest = name.strip_prefix("musicxml-tremolo-")?;
-    let (tremolo_type, marks) = rest.rsplit_once('-')?;
-    let tremolo_type = match tremolo_type {
+    // `{type}-{marks}` with an OPTIONAL trailing `-tm-{actual}-{normal}` carrying
+    // the measured tremolo's `<time-modification>`. The suffix is consumed by the
+    // note writer (it scales the written duration), not the `<tremolo>` element,
+    // so it is ignored here.
+    let mut parts = rest.split('-');
+    let tremolo_type = match parts.next()? {
         "single" => "single",
         "start" => "start",
         "stop" => "stop",
         _ => return None,
     };
-    let marks = match marks {
+    let marks = match parts.next()? {
         "0" => "0",
         "1" => "1",
         "2" => "2",
@@ -625,6 +629,29 @@ fn tremolo_notation(name: &str) -> Option<NotationKind> {
     Some(NotationKind::Tremolo {
         tremolo_type,
         marks,
+    })
+}
+
+/// The `<time-modification>` ratio a measured-tremolo decoration carries via its
+/// optional `-tm-{actual}-{normal}` suffix (e.g. `musicxml-tremolo-start-2-tm-2-1`),
+/// or `None` for a plain tremolo decoration. The note writer applies it so the
+/// written value re-doubles and the `<time-modification>` element re-emits.
+pub(crate) fn tremolo_time_modification(name: &str) -> Option<TimeModification> {
+    let rest = name.strip_prefix("musicxml-tremolo-")?;
+    let mut parts = rest.split('-');
+    parts.next()?; // tremolo type
+    parts.next()?; // marks
+    if parts.next()? != "tm" {
+        return None;
+    }
+    let actual_notes = parts.next()?.parse::<u32>().ok()?;
+    let normal_notes = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() || actual_notes == 0 || normal_notes == 0 {
+        return None;
+    }
+    Some(TimeModification {
+        actual_notes,
+        normal_notes,
     })
 }
 

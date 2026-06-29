@@ -114,6 +114,10 @@ pub struct KeySignatureModel {
     pub display: String,
     pub fifths: i8,
     pub explicit_accidentals: Vec<KeyAccidentalModel>,
+    /// MusicXML-origin `<key>` restatement that must survive the ABC projection
+    /// even when it repeats the already-effective key (mirrors
+    /// [`MeterModel::preserve_restatement`]).
+    pub preserve_restatement: bool,
     pub source_span: Span,
 }
 
@@ -526,7 +530,24 @@ pub struct TextAttachment {
     pub text: String,
     pub span: Span,
     pub placement: Option<AnnotationPlacementModel>,
-    pub musicxml_harmony_text: Option<String>,
+    pub musicxml_harmony_text: HarmonyKindText,
+}
+
+/// Provenance of a chord symbol's MusicXML `<kind text="...">` attribute, kept so
+/// a foreign `<harmony>` re-exports byte-identically. The three states are
+/// distinct in MusicXML and must not be conflated: a textless `<kind>` (no `text=`
+/// attribute) is not the same as `<kind text="">` (an explicit empty attribute).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HarmonyKindText {
+    /// An ABC-native chord with no MusicXML provenance. The writer synthesises the
+    /// `text=` value from the chord's own ABC string.
+    #[default]
+    AbcNative,
+    /// A foreign `<kind>` with NO `text=` attribute (functional / "textless"). The
+    /// writer emits a bare `<kind>`.
+    Textless,
+    /// A foreign `<kind text="V">`; `V` may be empty. The writer emits it verbatim.
+    Text(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -101,15 +101,15 @@ use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
     AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent, ClefChangeModel,
     DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
-    LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel,
-    MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part, PartId, Pitch,
-    RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType, RepeatEndingModel,
-    RepeatEndingPartModel, RestEvent, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurAttachment,
-    SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment, TextLine,
-    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
-    VoiceId, VoicePropertiesModel,
+    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, HarmonyKindText, KeyAccidentalModel,
+    KeySignatureModel, LyricControl, Measure, MeasureBarline, MeasureId, MeterModel,
+    MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part,
+    PartId, Pitch, RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType,
+    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
+    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
+    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
+    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
+    Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -379,6 +379,10 @@ impl Reader {
             display: String::new(),
             fifths,
             explicit_accidentals,
+            // A foreign `<key>` is preserved verbatim through the ABC projection;
+            // the reader has already determined the exact key sequence, so the ABC
+            // dedupe must not collapse a restatement of the effective key.
+            preserve_restatement: true,
             source_span: READER_SPAN,
         }
     }
@@ -2537,13 +2541,16 @@ impl Reader {
             Some(text)
                 if starts_with_abc_chord_root(text) || child_element(harmony, "root").is_none() =>
             {
-                (text.to_owned(), None)
+                (text.to_owned(), HarmonyKindText::AbcNative)
             }
             Some(text) => (
                 self.synthesise_chord_symbol(harmony)?,
-                Some(text.to_owned()),
+                HarmonyKindText::Text(text.to_owned()),
             ),
-            None => (self.synthesise_chord_symbol(harmony)?, Some(String::new())),
+            None => (
+                self.synthesise_chord_symbol(harmony)?,
+                HarmonyKindText::Textless,
+            ),
         };
         Some(TextAttachment {
             text,
@@ -3014,9 +3021,19 @@ impl Reader {
             if matches!(tremolo_type, "single" | "start" | "stop")
                 && matches!(marks, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8")
             {
-                out.push(named_decoration(&format!(
-                    "musicxml-tremolo-{tremolo_type}-{marks}"
-                )));
+                let mut name = format!("musicxml-tremolo-{tremolo_type}-{marks}");
+                // A measured (start/stop) tremolo carries a bare `<time-modification>`
+                // on its notes (the written value is double the sounding) with no
+                // `<tuplet>`, so the tuplet reader drops it. Preserve the ratio in the
+                // decoration name; the note writer re-applies it (PDMX 0677/0761/1561).
+                if matches!(tremolo_type, "start" | "stop")
+                    && let Some(note_node) =
+                        element.ancestors().find(|node| node.has_tag_name("note"))
+                    && let Some((actual, normal)) = tremolo_note_time_modification(note_node)
+                {
+                    name.push_str(&format!("-tm-{actual}-{normal}"));
+                }
+                out.push(named_decoration(&name));
                 return;
             }
             self.warn(
@@ -3973,9 +3990,10 @@ impl OpenTuplets {
                     let (actual_notes, normal_notes) = time_modification.unwrap_or_else(|| {
                         reader.warn(
                             "musicxml.read.tuplet_without_time_modification",
-                            "<tuplet type=\"start\"> has no <time-modification>; assuming 3:2",
+                            "<tuplet type=\"start\"> has no <time-modification>; treating as a \
+                             display-only bracket (1:1, no time compression)",
                         );
-                        (3, 2)
+                        (1, 1)
                     });
                     let pair_id = self.next_pair_id;
                     self.next_pair_id = self.next_pair_id.saturating_add(1);
@@ -4296,7 +4314,7 @@ fn annotation_from_words(words: Node<'_, '_>, placement: Option<&str>) -> TextAt
         text: format!("{prefix}{text}"),
         span: READER_SPAN,
         placement: placement_model,
-        musicxml_harmony_text: None,
+        musicxml_harmony_text: HarmonyKindText::AbcNative,
     }
 }
 
@@ -4337,7 +4355,7 @@ fn demoted_chord_symbol_from_words(
         text: text.to_owned(),
         span: READER_SPAN,
         placement: None,
-        musicxml_harmony_text: None,
+        musicxml_harmony_text: HarmonyKindText::AbcNative,
     })
 }
 
@@ -4656,6 +4674,16 @@ fn child_element<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<
         .find(|child| child.is_element() && child.tag_name().name() == name)
 }
 
+/// The `<note>`'s `<time-modification>` as a positive `(actual, normal)` ratio, for
+/// the measured-tremolo decoration carrier. Reads without diagnostics — the
+/// note-level [`Reader::read_time_modification_ratio`] already validates it.
+fn tremolo_note_time_modification(note_node: Node<'_, '_>) -> Option<(u32, u32)> {
+    let node = child_element(note_node, "time-modification")?;
+    let actual = child_text(node, "actual-notes")?.parse::<u32>().ok()?;
+    let normal = child_text(node, "normal-notes")?.parse::<u32>().ok()?;
+    (actual > 0 && normal > 0).then_some((actual, normal))
+}
+
 /// The trimmed text content of `node`, or `None` when it has none.
 fn node_text<'a>(node: Node<'a, '_>) -> Option<&'a str> {
     node.text().map(str::trim).filter(|text| !text.is_empty())
@@ -4873,6 +4901,13 @@ fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&Key
     let mut current_measure: Option<u32> = None;
     let mut measure_accidentals: std::collections::BTreeMap<(char, i8), i8> =
         std::collections::BTreeMap::new();
+    // The measure-accidental ledger must key on the octave the ABC WRITER emits,
+    // because ABC accidental carry keys on the written letter+octave. The writer
+    // octave-shifts anchor notes (`to_abc::shifted`, subtracting this shift) but
+    // emits grace notes UNshifted, so anchors and grace at the same MODEL octave
+    // print at different written octaves. Subtracting the shift for anchors (and
+    // leaving grace as-is) keeps the simulated ledger in step with the emitted ABC.
+    let shift = crate::lower::voice::voice_octave_shift(&voice.properties);
 
     for event in &mut voice.events {
         if current_measure != Some(event.measure.index) {
@@ -4895,6 +4930,7 @@ fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&Key
         match &mut event.kind {
             TimedEventKind::Note(note) => complete_note_accidental_for_abc(
                 note.pitch,
+                note.pitch.octave.saturating_sub(shift),
                 &mut note.written_accidental,
                 current_key.as_ref(),
                 &mut measure_accidentals,
@@ -4903,6 +4939,7 @@ fn complete_pitch_accidentals_for_abc(voice: &mut Voice, header_key: Option<&Key
                 for member in &mut chord.members {
                     complete_note_accidental_for_abc(
                         member.pitch,
+                        member.pitch.octave.saturating_sub(shift),
                         &mut member.written_accidental,
                         current_key.as_ref(),
                         &mut measure_accidentals,
@@ -4934,8 +4971,11 @@ fn complete_grace_group_accidentals_for_abc(
     for group in groups {
         for grace in &mut group.events {
             match &mut grace.kind {
+                // Grace notes print UNshifted, so the writer's emitted octave is
+                // the model octave itself — no shift correction here.
                 GraceEventKind::Note(note) => complete_note_accidental_for_abc(
                     note.pitch,
+                    note.pitch.octave,
                     &mut note.written_accidental,
                     current_key,
                     measure_accidentals,
@@ -4944,6 +4984,7 @@ fn complete_grace_group_accidentals_for_abc(
                     for note in notes {
                         complete_note_accidental_for_abc(
                             note.pitch,
+                            note.pitch.octave,
                             &mut note.written_accidental,
                             current_key,
                             measure_accidentals,
@@ -4959,12 +5000,13 @@ fn complete_grace_group_accidentals_for_abc(
 #[cfg(feature = "musicxml-reader")]
 fn complete_note_accidental_for_abc(
     pitch: Pitch,
+    ledger_octave: i8,
     written_accidental: &mut Option<AccidentalMark>,
     current_key: Option<&KeySignatureModel>,
     measure_accidentals: &mut std::collections::BTreeMap<(char, i8), i8>,
 ) {
     let step = pitch.step.to_ascii_uppercase();
-    let ledger_key = (step, pitch.octave);
+    let ledger_key = (step, ledger_octave);
     if written_accidental.is_none() {
         let implied_alter = measure_accidentals
             .get(&ledger_key)
