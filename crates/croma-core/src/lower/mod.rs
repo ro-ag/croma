@@ -550,6 +550,20 @@ impl MultiVoiceLowering {
                     inline.value.span,
                 ));
             }
+            // Inline `[I:..]` instruction field. This is the dispatch point for
+            // croma's private `[I:croma-*]` CARRIERS — namespaced annotations that
+            // round-trip MusicXML facts ABC 2.1 cannot natively express (per-note
+            // instruments, functional harmony text, `<forward>` gaps, wide tuplets,
+            // …). Each carrier has an emit builder in `to_abc.rs`, a
+            // `parse_<thing>_instruction` below (`strip_prefix("croma-<name>")`), and
+            // a re-emit site in `musicxml/`; the parsed fact is staged in a
+            // `pending_musicxml_*` slot and drained onto the next event in
+            // `lower/voice.rs`. The full namespace, syntax (incl. the `-hex=` rule for
+            // `]`/`%`/control chars), and the per-carrier catalogue live in
+            // `docs/carriers.md`. Each `if let Some(..) = parse_*` arm returns on a
+            // match; an UNRECOGNISED `[I:..]` (incl. an unknown `croma-*`) falls
+            // through to the display-directive tail below and is dropped with a
+            // diagnostic — carriers are NOT preserved verbatim across croma versions.
             'I' => {
                 if let Some(meter) =
                     parse_initial_meter_instruction(&inline.value.value, inline.value.span)
