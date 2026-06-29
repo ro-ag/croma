@@ -2932,6 +2932,54 @@ fn foreign_harmony_suffix_text_recombines_with_root() {
 }
 
 #[test]
+fn foreign_harmony_unknown_kind_emits_bare_root_not_enum() {
+    // `<kind text="1">none</kind>`: the `<kind>` ELEMENT content is a MusicXML enum
+    // value (`none`/`other`/...), never human text — the display label lives in the
+    // `text=` attribute, preserved separately as `musicxml_harmony_text`. Appending
+    // the raw enum (`none` -> "Cnone") yields an unparseable chord that demotes to a
+    // `<direction>` on re-export, LOSING the `<harmony>` (PDMX element_kind cluster).
+    // The reader must emit the bare parseable root instead.
+    for (harmony_xml, expected) in [
+        (
+            "<harmony><root><root-step>C</root-step></root><kind text=\"1\">none</kind></harmony>",
+            "C",
+        ),
+        (
+            "<harmony><root><root-step>G</root-step><root-alter>-1</root-alter></root><kind text=\"°\">other</kind></harmony>",
+            "Gb",
+        ),
+    ] {
+        let text = foreign_chord_text(harmony_xml);
+        assert_eq!(
+            text, expected,
+            "an unmodellable kind enum must not be appended verbatim"
+        );
+    }
+}
+
+#[test]
+fn foreign_harmony_unknown_kind_round_trips_via_carrier() {
+    // End-to-end: the bare-root chord plus the `[I:croma-harmony-text]` carrier
+    // restores the original `<kind text="1">` on re-export — lossless despite ABC
+    // having no native Roman-numeral/functional `<harmony>` form.
+    let xml =
+        "<harmony><root><root-step>C</root-step></root><kind text=\"1\">none</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[I:croma-harmony-text text=\"1\"]\"C\""),
+        "ABC projection must carry text=\"1\" beside a bare-root chord:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc).expect("projected harmony ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<kind text=\"1\">"),
+        "round-trip MusicXML must restore the original kind@text:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn foreign_harmony_suffix_text_survives_abc_projection() {
     let xml = "<harmony><root><root-step>B</root-step></root><kind text=\"dim\">diminished</kind></harmony>";
     let mut score = foreign_harmony_score(xml);
@@ -3155,23 +3203,29 @@ fn textless_harmony_with_bass_synthesises_slash() {
 }
 
 #[test]
-fn textless_harmony_unmodellable_kind_falls_back_to_kind_text_content() {
+fn textless_harmony_unmodellable_kind_emits_bare_root() {
     // A `<kind>` croma's writer never emits AND that is not in the General-MusicXML
-    // fallback map (here a made-up value) falls back to the element's own text
-    // CONTENT when present — never invents nonsense.
+    // fallback map. The `<kind>` ELEMENT content is always a MusicXML enum value
+    // (`other`/`none`/...), never human text — so it is NEVER appended. Appending it
+    // produced an unparseable chord (e.g. "Cother") that `write_harmony` demoted to a
+    // `<direction>`, losing the `<harmony>`. The bare playable root is emitted instead;
+    // a real foreign non-standard chord carries its display label in the `text=`
+    // attribute, which the kind@text carrier preserves separately.
     let text = foreign_chord_text(
-        "<harmony><root><root-step>C</root-step></root><kind>Tristan</kind></harmony>",
+        "<harmony><root><root-step>C</root-step></root><kind>other</kind></harmony>",
     );
     assert_eq!(
-        text, "CTristan",
-        "an unknown kind value falls back to its own text content appended to the root"
+        text, "C",
+        "an unmodellable kind enum is dropped, leaving the bare playable root"
     );
 }
 
 #[test]
-fn textless_harmony_unknown_empty_kind_skips_with_diagnostic() {
-    // An unknown `<kind>` with NO usable suffix and NO text content cannot be
-    // modelled: skip with a diagnostic, never panic, never invent.
+fn textless_harmony_empty_kind_emits_bare_root() {
+    // An empty `<kind/>` with a valid `<root>` is a root with unspecified quality —
+    // a playable bare-root chord, NOT unmodellable. Emit the bare root rather than
+    // dropping it (dropping lost real foreign harmony, e.g. PDMX pdmx_1716's 14
+    // `<kind></kind>` chords). The root is preserved, not fabricated.
     let xml = r#"<?xml version="1.0"?>
 <score-partwise>
   <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
@@ -3189,16 +3243,11 @@ fn textless_harmony_unknown_empty_kind_skips_with_diagnostic() {
   </part>
 </score-partwise>"#;
     let report = read_musicxml(xml);
-    assert!(
-        attachments_at(&report.value, 0).chord_symbols.is_empty(),
-        "an unmodellable textless chord is skipped, not fabricated"
-    );
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "musicxml.read.harmony_unmodellable_kind"),
-        "skipping an unmodellable textless chord emits a diagnostic"
+    let symbols = &attachments_at(&report.value, 0).chord_symbols;
+    assert_eq!(symbols.len(), 1, "the bare-root chord is reconstructed");
+    assert_eq!(
+        symbols[0].text, "C",
+        "empty kind yields the bare playable root"
     );
 }
 

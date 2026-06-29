@@ -2596,24 +2596,26 @@ impl Reader {
         match chord_kind_suffix(kind_value) {
             Some(suffix) => symbol.push_str(suffix),
             None => {
-                // Unknown kind: append the `<kind>`'s own text content (an
-                // already-human-readable quality like "Tristan"), or skip when it is
-                // empty — never invent a spelling from an unknown enum value.
-                if kind_value.is_empty() {
+                // Unknown OR empty kind. The `<kind>` ELEMENT content is always a
+                // MusicXML enum value (`major`/`none`/`other`/...), never human-readable
+                // text — the display label lives in the `text=` attribute, preserved
+                // separately as `musicxml_harmony_text`. Appending the raw enum
+                // (`none` -> "Cnone") yields an UNPARSEABLE chord symbol that
+                // `write_harmony` demotes to a `<direction>` on re-export, losing the
+                // `<harmony>` entirely. With a valid root already in hand, emit the BARE
+                // ROOT instead: it re-parses as a major triad, round-trips, and the
+                // kind@text carrier restores any label. An empty `<kind/>` is treated
+                // the same — a root with unspecified quality is a playable bare-root
+                // chord, not an unmodellable one (it would otherwise be dropped).
+                if !kind_value.is_empty() {
                     self.warn(
-                        "musicxml.read.harmony_unmodellable_kind",
-                        "textless <harmony> <kind> is empty and unmodellable; chord symbol skipped",
+                        "musicxml.read.harmony_unknown_kind",
+                        format!(
+                            "textless <harmony> <kind> `{kind_value}` is not a known quality; \
+                             emitting the bare root (the kind@text carrier preserves the label)"
+                        ),
                     );
-                    return None;
                 }
-                self.warn(
-                    "musicxml.read.harmony_unknown_kind",
-                    format!(
-                        "textless <harmony> <kind> `{kind_value}` is not a known quality; \
-                         using its text content verbatim"
-                    ),
-                );
-                symbol.push_str(kind_value);
             }
         }
 
