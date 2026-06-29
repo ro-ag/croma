@@ -447,10 +447,16 @@ impl TimeModification {
             actual_notes = product.0;
             normal_notes = product.1;
         }
-        Ok((!seen_pairs.is_empty()).then_some(Self {
-            actual_notes,
-            normal_notes,
-        }))
+        // A 1:1 composite is an identity ratio (e.g. a foreign display-only
+        // `<tuplet>` bracket carrying no `<time-modification>`): it neither
+        // compresses the written duration nor warrants a `<time-modification>`
+        // element, so report no modification while the bracket still emits.
+        Ok(
+            (!seen_pairs.is_empty() && (actual_notes, normal_notes) != (1, 1)).then_some(Self {
+                actual_notes,
+                normal_notes,
+            }),
+        )
     }
 }
 

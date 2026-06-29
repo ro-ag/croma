@@ -2084,6 +2084,47 @@ fn foreign_tuplet_display_survives_abc_projection() {
 }
 
 #[test]
+fn foreign_display_tuplet_without_time_modification_emits_no_ratio() {
+    // A `<tuplet>` bracket with NO `<time-modification>` is a display-only group:
+    // the notes already fill their nominal duration (no time compression). The
+    // reader must not fabricate a ratio (it formerly assumed 3:2), so the round
+    // trip keeps the bracket but emits no `<time-modification>` (PDMX 0998 / 1479).
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise>
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions><time><beats>1</beats><beat-type>4</beat-type></time></attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type>
+        <notations><tuplet type="start" bracket="no"/></notations></note>
+      <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type></note>
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type></note>
+      <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>16th</type>
+        <notations><tuplet type="stop"/></notations></note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    let roundtrip = export_musicxml(&abc)
+        .expect("display-tuplet ABC should export")
+        .musicxml;
+    assert!(
+        !roundtrip.contains("<time-modification>"),
+        "a display-only tuplet must not fabricate a <time-modification>:\n{roundtrip}"
+    );
+    assert!(
+        roundtrip.contains("<tuplet type=\"start\"") && roundtrip.contains("<tuplet type=\"stop\""),
+        "the display tuplet bracket must survive:\n{roundtrip}"
+    );
+    assert_eq!(
+        roundtrip.matches("<type>16th</type>").count(),
+        4,
+        "all four 16th notes must keep their literal value:\n{roundtrip}"
+    );
+}
+
+#[test]
 fn trill_ornament_round_trips() {
     let abc = "X:1\nT:Tr\nM:4/4\nL:1/4\nK:C\n!trill!C D E F |\n";
     let x1 = export(abc);

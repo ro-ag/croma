@@ -3990,9 +3990,10 @@ impl OpenTuplets {
                     let (actual_notes, normal_notes) = time_modification.unwrap_or_else(|| {
                         reader.warn(
                             "musicxml.read.tuplet_without_time_modification",
-                            "<tuplet type=\"start\"> has no <time-modification>; assuming 3:2",
+                            "<tuplet type=\"start\"> has no <time-modification>; treating as a \
+                             display-only bracket (1:1, no time compression)",
                         );
-                        (3, 2)
+                        (1, 1)
                     });
                     let pair_id = self.next_pair_id;
                     self.next_pair_id = self.next_pair_id.saturating_add(1);
