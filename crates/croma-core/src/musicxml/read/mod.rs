@@ -402,7 +402,16 @@ impl Reader {
                 "beat-type" => {
                     if let (Some(beats), Some(beat_type)) = (pending_beats.take(), node_text(child))
                     {
-                        parts.push(format!("{beats}/{beat_type}"));
+                        // An additive numerator (e.g. `<beats>11+7</beats>`) must be
+                        // parenthesised in ABC -- `M:(11+7)/16`. The bare `M:11+7/16`
+                        // is not valid ABC: the parser drops the whole meter, losing
+                        // it on round-trip. (A plain numerator needs no parens, and
+                        // multiple beats/beat-type pairs still join with `+`.)
+                        if beats.contains('+') {
+                            parts.push(format!("({beats})/{beat_type}"));
+                        } else {
+                            parts.push(format!("{beats}/{beat_type}"));
+                        }
                     }
                 }
                 _ => {}

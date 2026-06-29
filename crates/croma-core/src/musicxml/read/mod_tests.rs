@@ -315,6 +315,39 @@ fn float_alter_sharp_reconstructs_as_one() {
 }
 
 #[test]
+fn foreign_additive_meter_parenthesises_for_abc() {
+    // A foreign <time> with an additive numerator (<beats>11+7</beats>, also <beats>4+3</beats>)
+    // must project to ABC as the parenthesised `M:(11+7)/16`. The bare `M:11+7/16` is
+    // not valid ABC, so the parser dropped the WHOLE meter, losing it on re-export
+    // (PDMX composite-time: pdmx_0894, pdmx_1389). The parenthesised form round-trips
+    // back to <beats>11+7</beats>.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <part-list><score-part id=\"P1\"><part-name>P</part-name></score-part></part-list>\n",
+        "  <part id=\"P1\"><measure number=\"1\">\n",
+        "    <attributes><divisions>4</divisions>",
+        "<time><beats>11+7</beats><beat-type>16</beat-type></time></attributes>\n",
+        "    <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+        "  </measure></part>\n",
+        "</score-partwise>\n",
+    );
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("M:(11+7)/16"),
+        "an additive foreign meter must project as parenthesised ABC `M:(11+7)/16`; got:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc).expect("additive-meter ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<beats>11+7</beats>")
+            && roundtrip.musicxml.contains("<beat-type>16</beat-type>"),
+        "round-trip MusicXML must restore the additive <beats>11+7</beats>:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn float_alter_flat_reconstructs_as_negative_one() {
     assert_eq!(
         foreign_pitch_alter("<alter>-1.0</alter>"),
