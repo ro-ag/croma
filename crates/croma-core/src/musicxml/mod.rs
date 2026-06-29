@@ -112,6 +112,12 @@ pub(crate) struct NoteWrite<'a> {
     unpitched: bool,
     grace: bool,
     grace_slash: bool,
+    /// Time-modification a chord MEMBER inherits from the chord's tuplet. A member
+    /// carries no `tuplets` of its own (the bracket belongs to the head), so without
+    /// this it would emit no `<time-modification>` and lose the ratio on re-export.
+    /// `None` for the head and every non-member note — they derive it from their own
+    /// `attachments.tuplets`.
+    chord_tuplet_time_modification: Option<TimeModification>,
 }
 
 #[derive(Debug, Clone, Copy)]

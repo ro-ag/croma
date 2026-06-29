@@ -284,6 +284,40 @@ fn full_measure_rest_omits_fabricated_type_for_inexpressible_duration() {
 }
 
 #[test]
+fn chord_member_in_tuplet_keeps_time_modification() {
+    // Every note in a tuplet -- including a chord MEMBER -- needs its own
+    // `<time-modification>`. write_chord gave members only their own (empty)
+    // `tuplets`, so a member emitted no `<time-modification>` and dropped the ratio
+    // on re-export, while the head (which carries the chord's tuplet) kept it (PDMX
+    // pdmx_0844, pdmx_1006). Members must inherit the chord's ratio -- but NOT the
+    // `<tuplet>` notation bracket, which stays on the head only.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\n(3[CEG][DFA][EGB] z2 |\n";
+    let export = export_musicxml(source).expect("triplet of chords should export");
+
+    assert_balanced_xml(&export.musicxml);
+    let member_blocks: Vec<_> = musicxml_note_blocks(&export.musicxml)
+        .into_iter()
+        .filter(|note| note.contains("<chord/>"))
+        .collect();
+    assert!(
+        !member_blocks.is_empty(),
+        "expected chord-member notes:\n{}",
+        export.musicxml
+    );
+    for member in &member_blocks {
+        assert!(
+            member.contains("<time-modification>"),
+            "a chord member in a tuplet must keep its <time-modification>:\n{member}"
+        );
+        // The tuplet BRACKET belongs to the head, not the members.
+        assert!(
+            !member.contains("<tuplet "),
+            "a chord member must NOT carry the <tuplet> notation bracket:\n{member}"
+        );
+    }
+}
+
+#[test]
 fn partial_nondyadic_rest_omits_fabricated_tuplet() {
     // pdmx_1398: a NON-full-measure rest whose duration has no plain note-type
     // (`z5/2` = 5/2 quarters) must not fabricate a tuplet `<time-modification>`.

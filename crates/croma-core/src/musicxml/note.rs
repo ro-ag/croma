@@ -79,6 +79,7 @@ impl<'score> MusicXmlWriter<'score> {
                             unpitched: sequence.unpitched,
                             grace: false,
                             grace_slash: false,
+                            chord_tuplet_time_modification: None,
                         },
                         sequence,
                         part,
@@ -110,6 +111,7 @@ impl<'score> MusicXmlWriter<'score> {
                             unpitched: false,
                             grace: false,
                             grace_slash: false,
+                            chord_tuplet_time_modification: None,
                         },
                         sequence,
                         part,
@@ -175,6 +177,7 @@ impl<'score> MusicXmlWriter<'score> {
                             unpitched: sequence.unpitched,
                             grace: false,
                             grace_slash: false,
+                            chord_tuplet_time_modification: None,
                         },
                         sequence,
                         part,
@@ -202,6 +205,7 @@ impl<'score> MusicXmlWriter<'score> {
                             unpitched: false,
                             grace: false,
                             grace_slash: false,
+                            chord_tuplet_time_modification: None,
                         },
                         sequence,
                         part,
@@ -238,6 +242,14 @@ impl<'score> MusicXmlWriter<'score> {
             self.diagnostics
                 .push(variable_chord_duration_export_warning(chord.source_span));
         }
+        // The whole chord shares one tuplet, recorded on the head's (event)
+        // attachments. Members carry no `tuplets`, so without inheriting this they
+        // would emit no `<time-modification>` and drop the ratio. The head derives
+        // it from `event_attachments` itself; members get it as the override.
+        let chord_tuplet_time_modification =
+            TimeModification::composite(&event_attachments.tuplets)
+                .ok()
+                .flatten();
         for (index, member) in chord.members.iter().enumerate() {
             let attachments = if index == 0 {
                 event_attachments.clone()
@@ -257,6 +269,9 @@ impl<'score> MusicXmlWriter<'score> {
                     unpitched: sequence.unpitched,
                     grace: false,
                     grace_slash: false,
+                    chord_tuplet_time_modification: (index > 0)
+                        .then_some(chord_tuplet_time_modification)
+                        .flatten(),
                 },
                 sequence,
                 part,
@@ -299,15 +314,23 @@ impl<'score> MusicXmlWriter<'score> {
         } else {
             self.xml.empty("rest", &[]);
         }
-        let explicit_time_modification =
-            match TimeModification::composite(&note.attachments.tuplets) {
+        // A chord member inherits the chord's tuplet ratio (it has no `tuplets` of
+        // its own — the bracket lives on the head); every other note derives the
+        // ratio from its own `tuplets`. Either way the ratio drives both the
+        // written-duration spelling and the `<time-modification>` element below,
+        // while the `<tuplet>` notation bracket still comes only from
+        // `attachments.tuplets` (so members emit the ratio but not the bracket).
+        let explicit_time_modification = match note.chord_tuplet_time_modification {
+            Some(time_modification) => Some(time_modification),
+            None => match TimeModification::composite(&note.attachments.tuplets) {
                 Ok(time_modification) => time_modification,
                 Err(()) => {
                     self.diagnostics
                         .push(unsupported_tuplet_time_modification_warning(note.source));
                     None
                 }
-            };
+            },
+        };
         let spelling = note_spelling(note.duration, explicit_time_modification);
         // A rest whose duration has no plain note-type would otherwise make
         // `note_spelling` FABRICATE a tuplet `<time-modification>` (e.g. a 5/2-quarter
