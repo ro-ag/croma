@@ -1680,6 +1680,61 @@ fn foreign_tremolos_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_measured_tremolo_time_modification_survives_abc_projection() {
+    // A two-note (measured) tremolo carries a bare `<time-modification>` on each
+    // note (the written value is double the sounding) with NO `<tuplet>`. The
+    // ratio is not derivable from the tremolo marks alone, so the reader carries
+    // it alongside the tremolo decoration and the writer re-emits it (PDMX 0677 /
+    // 0761 / 1561).
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes><divisions>4</divisions><time><beats>2</beats><beat-type>4</beat-type></time></attributes>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>4</duration><voice>1</voice><type>half</type>
+        <time-modification><actual-notes>2</actual-notes><normal-notes>1</normal-notes></time-modification>
+        <notations><ornaments><tremolo type="start">2</tremolo></ornaments></notations>
+      </note>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>4</duration><voice>1</voice><type>half</type>
+        <time-modification><actual-notes>2</actual-notes><normal-notes>1</normal-notes></time-modification>
+        <notations><ornaments><tremolo type="stop">2</tremolo></ornaments></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>"#;
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    let roundtrip = export_musicxml(&abc)
+        .expect("measured-tremolo ABC should export")
+        .musicxml;
+    assert_eq!(
+        roundtrip
+            .matches("<tremolo type=\"start\">2</tremolo>")
+            .count()
+            + roundtrip
+                .matches("<tremolo type=\"stop\">2</tremolo>")
+                .count(),
+        2,
+        "both tremolo brackets must survive:\n{roundtrip}"
+    );
+    assert_eq!(
+        roundtrip.matches("<actual-notes>2</actual-notes>").count(),
+        2,
+        "both tremolo notes must keep their 2:1 time-modification:\n{roundtrip}"
+    );
+    assert_eq!(
+        roundtrip.matches("<normal-notes>1</normal-notes>").count(),
+        2,
+        "both tremolo notes must keep their 2:1 time-modification:\n{roundtrip}"
+    );
+}
+
+#[test]
 fn foreign_technical_values_survive_abc_projection() {
     let xml = r#"<?xml version="1.0"?>
 <score-partwise version="3.1">

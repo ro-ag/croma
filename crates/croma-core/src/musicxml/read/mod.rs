@@ -3021,9 +3021,19 @@ impl Reader {
             if matches!(tremolo_type, "single" | "start" | "stop")
                 && matches!(marks, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8")
             {
-                out.push(named_decoration(&format!(
-                    "musicxml-tremolo-{tremolo_type}-{marks}"
-                )));
+                let mut name = format!("musicxml-tremolo-{tremolo_type}-{marks}");
+                // A measured (start/stop) tremolo carries a bare `<time-modification>`
+                // on its notes (the written value is double the sounding) with no
+                // `<tuplet>`, so the tuplet reader drops it. Preserve the ratio in the
+                // decoration name; the note writer re-applies it (PDMX 0677/0761/1561).
+                if matches!(tremolo_type, "start" | "stop")
+                    && let Some(note_node) =
+                        element.ancestors().find(|node| node.has_tag_name("note"))
+                    && let Some((actual, normal)) = tremolo_note_time_modification(note_node)
+                {
+                    name.push_str(&format!("-tm-{actual}-{normal}"));
+                }
+                out.push(named_decoration(&name));
                 return;
             }
             self.warn(
@@ -4661,6 +4671,16 @@ fn descendants_named<'a, 'input>(
 fn child_element<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
     node.children()
         .find(|child| child.is_element() && child.tag_name().name() == name)
+}
+
+/// The `<note>`'s `<time-modification>` as a positive `(actual, normal)` ratio, for
+/// the measured-tremolo decoration carrier. Reads without diagnostics — the
+/// note-level [`Reader::read_time_modification_ratio`] already validates it.
+fn tremolo_note_time_modification(note_node: Node<'_, '_>) -> Option<(u32, u32)> {
+    let node = child_element(note_node, "time-modification")?;
+    let actual = child_text(node, "actual-notes")?.parse::<u32>().ok()?;
+    let normal = child_text(node, "normal-notes")?.parse::<u32>().ok()?;
+    (actual > 0 && normal > 0).then_some((actual, normal))
 }
 
 /// The trimmed text content of `node`, or `None` when it has none.
