@@ -4105,6 +4105,61 @@ fn lyric_underscore_exports_melisma_extender_without_sung_text() {
 }
 
 #[test]
+fn lyric_extend_carrier_before_chord_attaches_to_chord_head() {
+    // The reader preserves a MusicXML same-note <text>+<extend/> melisma as the
+    // inline `[I:croma-lyric-extend ...]` carrier. Flushed before a CHORD it must
+    // attach to the chord head, like the single-note path — `push_chord_group`
+    // used to drop it, so the held syllable lost its <extend/> on re-export and
+    // the hold shifted onto a later note (PDMX lyric cluster).
+    let source = "X:1\nL:1/8\nK:C\nC2 [I:croma-lyric-extend verse=1][FA]2 G2|\nw: a sing c\n";
+    let export = export_musicxml(source).expect("lyric-extend before chord should export");
+
+    assert_balanced_xml(&export.musicxml);
+    // The held syllable 'sing' is on the chord head; its <extend/> must sit in the
+    // same <note> (before the next <note>).
+    let sing = export
+        .musicxml
+        .find("<text>sing</text>")
+        .expect("sing syllable should be present");
+    let rest = &export.musicxml[sing..];
+    let next_note = rest.find("<note").unwrap_or(rest.len());
+    assert!(
+        rest[..next_note].contains("<extend/>"),
+        "chord head 'sing' must keep its <extend/>: {}",
+        &rest[..next_note.min(160)]
+    );
+}
+
+#[test]
+fn lyric_duplicate_carrier_before_chord_attaches_to_chord_head() {
+    // The reader preserves a second same-verse <lyric> on one note (foreign
+    // MusicXML stamps credit lines repeatedly) as the inline
+    // `[I:croma-lyric-duplicate ...]` carrier. Flushed before a CHORD it must
+    // attach to the chord head; `push_chord_group` used to drop it onto a later
+    // note (PDMX duplicate-credit cluster, ~35 files).
+    let source = "X:1\nL:1/8\nK:C\n[I:croma-lyric-duplicate verse=1 text=By][DF]2 G2|\nw: By c\n";
+    let export = export_musicxml(source).expect("lyric-duplicate before chord should export");
+
+    assert_balanced_xml(&export.musicxml);
+    // The chord head (the first <note>) must carry BOTH number=1 'By' lyrics.
+    let first_note = export
+        .musicxml
+        .find("<note")
+        .expect("a note should be present");
+    let after_first = first_note + "<note".len();
+    let second_note = export.musicxml[after_first..]
+        .find("<note")
+        .map(|offset| after_first + offset)
+        .expect("a second note should be present");
+    let head = &export.musicxml[first_note..second_note];
+    assert_eq!(
+        count(head, "<text>By</text>"),
+        2,
+        "chord head must carry both duplicate 'By' lyrics: {head}"
+    );
+}
+
+#[test]
 fn clef_octave_suffix_shifts_notes_and_marks_the_clef() {
     // `clef=treble-8` writes the notes one octave lower and adds a matching
     // clef-octave-change, like abc2xml. `C` (octave 4) becomes octave 3.
