@@ -9107,6 +9107,40 @@ fn foreign_rehearsal_imports_as_part_label() {
 }
 
 #[test]
+fn foreign_rehearsal_newline_does_not_break_inline_label() {
+    // A foreign <rehearsal> may carry a trailing/interior newline (e.g.
+    // "pre chorus\n", "G#7\n"). An inline `[P:...]` field is single-line, so a raw
+    // newline split the line and corrupted the following music (PDMX section-label
+    // cluster: pdmx_1142, pdmx_1389, pdmx_1807). The label's control characters must
+    // normalise to a space (then trim) so the field stays on one line.
+    let xml = "<?xml version=\"1.0\"?>\n\
+<score-partwise>\n\
+  <part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>\n\
+  <part id=\"P1\"><measure number=\"1\">\n\
+    <attributes><divisions>1</divisions></attributes>\n\
+    <direction placement=\"above\"><direction-type>\n\
+      <rehearsal>pre chorus\n</rehearsal>\n\
+    </direction-type></direction>\n\
+    <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>\n\
+  </measure></part>\n\
+</score-partwise>\n";
+    let report = read_musicxml(xml);
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[P:pre chorus]"),
+        "the rehearsal newline must normalise so `[P:...]` stays on one line; got:\n{abc}"
+    );
+    // The note must survive re-export (no line-break cascade).
+    let roundtrip = export_musicxml(&abc).expect("sanitised section-label ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<step>C</step>"),
+        "the following note must survive section-label normalisation:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn header_play_order_is_not_a_rehearsal() {
     // CRITICAL boundary: a HEADER `P:ABAB` is the play-order macro, NOT a section
     // label. It must stay dropped (no <rehearsal>, no SectionLabel event), exactly

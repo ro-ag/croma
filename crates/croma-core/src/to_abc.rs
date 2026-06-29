@@ -841,6 +841,17 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 }
             }
             TimedEventKind::SectionLabel(label) => {
+                // A foreign <rehearsal> may carry control characters (e.g. a
+                // trailing newline "pre chorus\n"). Both `[P:...]` and whole-line
+                // `P:...` fields are single-line, so a raw newline would split the
+                // line and corrupt the following music. Section labels are
+                // single-line in ABC, so normalise any control char to a space and
+                // trim — the break is inexpressible, not preserved.
+                let label = label
+                    .chars()
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect::<String>();
+                let label = label.trim();
                 // If the label contains `[` or `]` it cannot be safely emitted
                 // as an inline field `[P:{label}]` — the parser reads up to the
                 // first `]`, truncating the label.  Emit as a whole-line body
