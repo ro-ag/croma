@@ -3089,6 +3089,29 @@ fn textless_harmony_stays_textless_through_abc_projection() {
 }
 
 #[test]
+fn foreign_harmony_empty_kind_text_survives_abc_projection() {
+    // `<kind text="">none</kind>`: an EXPLICIT empty `text=` attribute is distinct
+    // from a textless `<kind>` (no attr at all). Both synthesise a bare-root chord,
+    // but the empty attribute must round-trip back as `text=""`, NOT collapse to a
+    // textless bare `<kind>` (PDMX 1191).
+    let xml = "<harmony><root><root-step>C</root-step></root><kind text=\"\">none</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    let roundtrip = export_musicxml(&abc).expect("projected harmony ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<kind text=\"\">"),
+        "round-trip MusicXML must restore the explicit empty kind@text:\n{}",
+        roundtrip.musicxml
+    );
+    assert!(
+        !roundtrip.musicxml.contains("<kind>"),
+        "an explicit empty `text=` must not degrade to a textless bare <kind>:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn textless_harmony_before_zero_duration_directions_survives_abc_projection() {
     let xml = r#"<?xml version="1.0"?>
 <score-partwise>

@@ -24,12 +24,13 @@ use std::collections::BTreeMap;
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
     Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, BarlineKind, ClefChangeModel,
-    Event, EventAttachments, Fraction, KeyAccidentalModel, KeySignatureModel, LoweredEventAtom,
-    LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef,
-    MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    Staff, StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine,
-    TimelineEventKind, TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, lcm,
+    Event, EventAttachments, Fraction, HarmonyKindText, KeyAccidentalModel, KeySignatureModel,
+    LoweredEventAtom, LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel,
+    MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective,
+    RestVisibility, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
+    ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId, StemDirectionModel, TempoBeat,
+    TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -1799,7 +1800,7 @@ fn parse_note_instrument_instruction(value: &str, span: Span) -> Option<MusicXml
     })
 }
 
-fn parse_harmony_text_instruction(value: &str) -> Option<String> {
+fn parse_harmony_text_instruction(value: &str) -> Option<HarmonyKindText> {
     let value = value.trim();
     let rest = value.strip_prefix("croma-harmony-text")?;
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
@@ -1807,9 +1808,9 @@ fn parse_harmony_text_instruction(value: &str) -> Option<String> {
     }
     let fields = parse_croma_key_values(rest);
     if parse_croma_bool(&fields, "textless") {
-        return Some(String::new());
+        return Some(HarmonyKindText::Textless);
     }
-    fields.get("text").cloned()
+    fields.get("text").cloned().map(HarmonyKindText::Text)
 }
 
 fn parse_lyric_extend_instruction(value: &str) -> Option<u32> {

@@ -101,15 +101,15 @@ use crate::model::{
     Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
     AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent, ClefChangeModel,
     DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, KeyAccidentalModel, KeySignatureModel,
-    LyricControl, Measure, MeasureBarline, MeasureId, MeterModel, MidiInstrumentModel,
-    MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part, PartId, Pitch,
-    RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType, RepeatEndingModel,
-    RepeatEndingPartModel, RestEvent, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurAttachment,
-    SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment, TextLine,
-    TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole, Voice,
-    VoiceId, VoicePropertiesModel,
+    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, HarmonyKindText, KeyAccidentalModel,
+    KeySignatureModel, LyricControl, Measure, MeasureBarline, MeasureId, MeterModel,
+    MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part,
+    PartId, Pitch, RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType,
+    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
+    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
+    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
+    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
+    Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -2537,13 +2537,16 @@ impl Reader {
             Some(text)
                 if starts_with_abc_chord_root(text) || child_element(harmony, "root").is_none() =>
             {
-                (text.to_owned(), None)
+                (text.to_owned(), HarmonyKindText::AbcNative)
             }
             Some(text) => (
                 self.synthesise_chord_symbol(harmony)?,
-                Some(text.to_owned()),
+                HarmonyKindText::Text(text.to_owned()),
             ),
-            None => (self.synthesise_chord_symbol(harmony)?, Some(String::new())),
+            None => (
+                self.synthesise_chord_symbol(harmony)?,
+                HarmonyKindText::Textless,
+            ),
         };
         Some(TextAttachment {
             text,
@@ -4296,7 +4299,7 @@ fn annotation_from_words(words: Node<'_, '_>, placement: Option<&str>) -> TextAt
         text: format!("{prefix}{text}"),
         span: READER_SPAN,
         placement: placement_model,
-        musicxml_harmony_text: None,
+        musicxml_harmony_text: HarmonyKindText::AbcNative,
     }
 }
 
@@ -4337,7 +4340,7 @@ fn demoted_chord_symbol_from_words(
         text: text.to_owned(),
         span: READER_SPAN,
         placement: None,
-        musicxml_harmony_text: None,
+        musicxml_harmony_text: HarmonyKindText::AbcNative,
     })
 }
 

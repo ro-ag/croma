@@ -526,7 +526,24 @@ pub struct TextAttachment {
     pub text: String,
     pub span: Span,
     pub placement: Option<AnnotationPlacementModel>,
-    pub musicxml_harmony_text: Option<String>,
+    pub musicxml_harmony_text: HarmonyKindText,
+}
+
+/// Provenance of a chord symbol's MusicXML `<kind text="...">` attribute, kept so
+/// a foreign `<harmony>` re-exports byte-identically. The three states are
+/// distinct in MusicXML and must not be conflated: a textless `<kind>` (no `text=`
+/// attribute) is not the same as `<kind text="">` (an explicit empty attribute).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HarmonyKindText {
+    /// An ABC-native chord with no MusicXML provenance. The writer synthesises the
+    /// `text=` value from the chord's own ABC string.
+    #[default]
+    AbcNative,
+    /// A foreign `<kind>` with NO `text=` attribute (functional / "textless"). The
+    /// writer emits a bare `<kind>`.
+    Textless,
+    /// A foreign `<kind text="V">`; `V` may be empty. The writer emits it verbatim.
+    Text(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

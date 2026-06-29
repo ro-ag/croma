@@ -1,5 +1,5 @@
 use super::{MeasureSequence, MusicXmlWriter};
-use crate::model::TextAttachment;
+use crate::model::{HarmonyKindText, TextAttachment};
 
 impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_chord_symbol(
@@ -7,11 +7,7 @@ impl<'score> MusicXmlWriter<'score> {
         symbol: &TextAttachment,
         sequence: &MeasureSequence<'score>,
     ) {
-        self.write_chord_symbol_text(
-            &symbol.text,
-            symbol.musicxml_harmony_text.as_deref(),
-            sequence,
-        );
+        self.write_chord_symbol_text(&symbol.text, &symbol.musicxml_harmony_text, sequence);
     }
 
     pub(crate) fn write_plain_chord_symbol(
@@ -19,13 +15,13 @@ impl<'score> MusicXmlWriter<'score> {
         text: &str,
         sequence: &MeasureSequence<'score>,
     ) {
-        self.write_chord_symbol_text(text, None, sequence);
+        self.write_chord_symbol_text(text, &HarmonyKindText::AbcNative, sequence);
     }
 
     fn write_chord_symbol_text(
         &mut self,
         text: &str,
-        musicxml_harmony_text: Option<&str>,
+        musicxml_harmony_text: &HarmonyKindText,
         sequence: &MeasureSequence<'score>,
     ) {
         if self.write_harmony(text, musicxml_harmony_text) {
@@ -45,7 +41,7 @@ impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_harmony(
         &mut self,
         text: &str,
-        musicxml_harmony_text: Option<&str>,
+        musicxml_harmony_text: &HarmonyKindText,
     ) -> bool {
         let Some(chord) = parse_chord_symbol(text) else {
             return false;
@@ -59,14 +55,19 @@ impl<'score> MusicXmlWriter<'score> {
                 .text_element("root-alter", &chord.root_alter.to_string());
         }
         self.xml.end("root");
-        if let Some("") = musicxml_harmony_text {
-            self.xml.text_element("kind", chord.kind);
-        } else {
-            self.xml.text_element_attrs(
-                "kind",
-                &[("text", musicxml_harmony_text.unwrap_or(text))],
-                chord.kind,
-            );
+        // A textless `<kind>` carries no `text=`; an explicit `Text("")` is a
+        // distinct empty attribute. An ABC-native chord synthesises the attribute
+        // from its own chord string.
+        match musicxml_harmony_text {
+            HarmonyKindText::Textless => self.xml.text_element("kind", chord.kind),
+            HarmonyKindText::Text(value) => {
+                self.xml
+                    .text_element_attrs("kind", &[("text", value.as_str())], chord.kind)
+            }
+            HarmonyKindText::AbcNative => {
+                self.xml
+                    .text_element_attrs("kind", &[("text", text)], chord.kind)
+            }
         }
         if let Some(bass_step) = chord.bass_step {
             self.xml.start("bass", &[]);

@@ -4,9 +4,10 @@ use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_re
 use crate::model::{
     Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind,
     DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, LoweredEventAtom, LoweredEventAtomKind,
-    MusicXmlInstrumentRef, Pitch, RepeatEndingCloseModel, RestEvent, SlurAttachment, SlurRole,
-    TextAttachment, TupletAttachment, TupletRole, VoiceId, VoicePropertiesModel,
+    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, HarmonyKindText, LoweredEventAtom,
+    LoweredEventAtomKind, MusicXmlInstrumentRef, Pitch, RepeatEndingCloseModel, RestEvent,
+    SlurAttachment, SlurRole, TextAttachment, TupletAttachment, TupletRole, VoiceId,
+    VoicePropertiesModel,
 };
 use crate::parse::field::KeySignature;
 use crate::syntax::{
@@ -138,8 +139,9 @@ pub(crate) struct LoweringState {
     /// the next timed note/rest/chord event.
     pub(crate) pending_musicxml_instrument: Option<MusicXmlInstrumentRef>,
     /// Croma MusicXML-origin `[I:croma-harmony-text ...]` carrier waiting for
-    /// the next chord-symbol attachment.
-    pub(crate) pending_musicxml_harmony_text: Option<String>,
+    /// the next chord-symbol attachment. `None` means no carrier is pending; a
+    /// pending carrier decodes to a textless or explicit-text `<kind>` provenance.
+    pub(crate) pending_musicxml_harmony_text: Option<HarmonyKindText>,
     /// Croma MusicXML-origin `[I:croma-lyric-extend ...]` carriers waiting for
     /// the next timed note/rest/chord event. `w:` lyric alignment applies them
     /// to the matching verse syllable after the music body has lowered.
@@ -1500,13 +1502,14 @@ fn merge_spans(accumulator: Option<Span>, span: Span) -> Span {
 
 pub(crate) fn chord_symbol_attachment_model(
     text: &QuotedTextSyntax,
-    musicxml_harmony_text: Option<String>,
+    musicxml_harmony_text: Option<HarmonyKindText>,
 ) -> TextAttachment {
     TextAttachment {
         text: text.text.clone(),
         span: text.span,
         placement: None,
-        musicxml_harmony_text,
+        // No pending carrier means an ABC-native chord (no MusicXML provenance).
+        musicxml_harmony_text: musicxml_harmony_text.unwrap_or(HarmonyKindText::AbcNative),
     }
 }
 
@@ -1532,7 +1535,7 @@ pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttach
             }
             QuotedTextKind::ChordSymbol => None,
         },
-        musicxml_harmony_text: None,
+        musicxml_harmony_text: HarmonyKindText::AbcNative,
     }
 }
 
