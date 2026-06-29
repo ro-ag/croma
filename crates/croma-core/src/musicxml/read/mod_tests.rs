@@ -6701,6 +6701,51 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_redundant_key_restatement_survives_abc_projection() {
+        // A foreign source may restate the already-effective `<key>` mid-tune
+        // (a system-break courtesy restatement). The ABC dedupe must not collapse
+        // it: like meter, the reader marks it and a carrier forces re-recording
+        // (PDMX 0109 / 0916).
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions><key><fifths>-1</fifths></key></attributes>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "    <measure number=\"2\">\n",
+            "      <attributes><key><fifths>-1</fifths></key></attributes>\n",
+            "      <note><pitch><step>D</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        assert!(
+            abc.contains("[I:croma-key-restatement] [K:"),
+            "ABC projection must carry a private marker so the no-op [K:] survives re-lowering:\n{abc}"
+        );
+        assert_eq!(
+            write_abc(&lower(&abc), AbcWriteOptions::default()),
+            abc,
+            "the croma key restatement carrier should be an ABC fixed point"
+        );
+        let roundtrip = export_musicxml(&abc).expect("redundant key ABC should export");
+        assert_eq!(
+            roundtrip.musicxml.matches("<fifths>-1</fifths>").count(),
+            2,
+            "MusicXML-origin repeated <key> must survive XML->ABC->XML; abc:\n{abc}\nxml:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_cut_time_symbol_keeps_source_beats_through_abc_projection() {
         let xml = foreign_time_score(
             "<time symbol=\"cut\"><beats>4</beats><beat-type>2</beat-type></time>",

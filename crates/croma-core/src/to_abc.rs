@@ -169,6 +169,10 @@ fn meter_restatement_instruction() -> &'static str {
     "croma-meter-restatement"
 }
 
+fn key_restatement_instruction() -> &'static str {
+    "croma-key-restatement"
+}
+
 fn time_symbol_instruction(meter: &MeterModel) -> Option<String> {
     let symbol = meter.time_symbol.as_deref()?;
     if !matches!(symbol, "common" | "cut") {
@@ -816,6 +820,9 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
             // The parser re-applies them at this position, reproducing the
             // baked-in alters / meter state downstream.
             TimedEventKind::KeyChange(key) => {
+                if key.preserve_restatement {
+                    out.push_str(&format!("[I:{}] ", key_restatement_instruction()));
+                }
                 out.push_str(&format!("[K:{}] ", key.display));
             }
             TimedEventKind::MeterChange(meter) => {

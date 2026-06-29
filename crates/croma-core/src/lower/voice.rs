@@ -174,6 +174,9 @@ pub(crate) struct LoweringState {
     /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
     /// the next `[M:...]` field in this voice.
     pub(crate) pending_musicxml_meter_restatement: bool,
+    /// Croma MusicXML-origin `[I:croma-key-restatement]` carrier waiting for the
+    /// next `[K:...]` field in this voice.
+    pub(crate) pending_musicxml_key_restatement: bool,
     /// Croma MusicXML-origin `[I:croma-time-symbol ...]` carrier waiting for the
     /// next `M:`/`[M:...]` field in this voice.
     pub(crate) pending_musicxml_time_symbol: Option<String>,
@@ -264,6 +267,7 @@ impl LoweringState {
             pending_musicxml_after_grace: false,
             pending_musicxml_barline_kind: None,
             pending_musicxml_meter_restatement: false,
+            pending_musicxml_key_restatement: false,
             pending_musicxml_time_symbol: None,
         }
     }

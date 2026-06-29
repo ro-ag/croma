@@ -114,6 +114,10 @@ pub struct KeySignatureModel {
     pub display: String,
     pub fifths: i8,
     pub explicit_accidentals: Vec<KeyAccidentalModel>,
+    /// MusicXML-origin `<key>` restatement that must survive the ABC projection
+    /// even when it repeats the already-effective key (mirrors
+    /// [`MeterModel::preserve_restatement`]).
+    pub preserve_restatement: bool,
     pub source_span: Span,
 }
 

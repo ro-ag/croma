@@ -379,6 +379,10 @@ impl Reader {
             display: String::new(),
             fifths,
             explicit_accidentals,
+            // A foreign `<key>` is preserved verbatim through the ABC projection;
+            // the reader has already determined the exact key sequence, so the ABC
+            // dedupe must not collapse a restatement of the effective key.
+            preserve_restatement: true,
             source_span: READER_SPAN,
         }
     }
