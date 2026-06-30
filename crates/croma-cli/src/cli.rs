@@ -34,6 +34,13 @@ pub enum Command {
     Dump(DumpArgs),
     /// Format an ABC file (canonical formatting, in the style of rustfmt/gofmt).
     Fmt(FmtArgs),
+    /// Explain croma's non-standard ABC notations to an AI agent/LLM.
+    ///
+    /// Prints help topics for the `[I:croma-*]` / `%%croma-*` carriers — the
+    /// annotations that make MusicXML facts survive the round trip through ABC.
+    /// `croma agent` lists the topics; `croma agent <topic>` shows one with a
+    /// copy-paste example.
+    Agent(AgentArgs),
     /// Read a MusicXML file back into a Score and project it (experimental).
     ///
     /// Inverts croma's own MusicXML writer. Gated behind the `musicxml-reader`
@@ -123,6 +130,12 @@ pub struct CheckArgs {
     pub file: PathBuf,
     #[command(flatten)]
     pub common: CommonArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentArgs {
+    /// A topic or carrier name to explain. Omit to list every topic.
+    pub topic: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -14,6 +14,8 @@ separate, private [croma-test](https://github.com/ro-ag/croma-test) repository.
   core/formatter.
 - [editors.md](editors.md) — the reusable `tree-sitter-abc` grammar + Zed
   extension (also web/WASM, Markdown ` ```abc ` injection, Neovim/Helix).
+- [agent.md](agent.md) — `croma agent`: built-in help topics that explain
+  croma's non-standard `[I:croma-*]` / `%%croma-*` notations to an AI agent/LLM.
 
 The forward ABC → MusicXML writer is the foundation under all of the above; its
 behavior is documented across the capability docs.
@@ -23,7 +25,8 @@ behavior is documented across the capability docs.
 - [carriers.md](carriers.md) — the `[I:croma-*]` / `%%croma-*` private carrier
   namespace: how croma round-trips MusicXML facts ABC can't express while staying
   ignorable by other tools. Definition, syntax, the round-trip contract, and the
-  full 20-carrier catalogue.
+  full 21-carrier catalogue. For an agent-facing distillation, see
+  [agent.md](agent.md) / `croma agent`.
 - [midi-directives.md](midi-directives.md) — `%%MIDI` directive policy and its
   MusicXML translation.
 - [parser-backlog.md](parser-backlog.md) — open parser/model/export items.

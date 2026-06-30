@@ -3,6 +3,7 @@
 //! The first stable product surface is ABC -> MusicXML. CLI, formatter, and
 //! language-server crates should call this library rather than reparsing ABC.
 
+pub mod agent;
 pub mod diagnostic;
 pub mod error;
 mod lower;
@@ -14,6 +15,7 @@ pub mod source;
 pub mod syntax;
 pub mod to_abc;
 
+pub use agent::{AgentTopic, agent_topics, find_agent_topic};
 pub use diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
 pub use error::{CromaError, Result};
 pub use model::{
