@@ -365,6 +365,10 @@ pub(crate) fn decoration_notation(decoration: &DecorationAttachment) -> Option<N
     })
 }
 
+// Only the MusicXML reader inverts this decoration name back into a `<tuplet>`;
+// the forward writer never calls it. Gate it on the same feature so the default
+// (reader-less) build does not flag it as dead code.
+#[cfg(feature = "musicxml-reader")]
 pub(crate) fn tuplet_display_decoration_name(
     bracket: Option<&str>,
     actual: Option<(&str, &str, usize)>,
