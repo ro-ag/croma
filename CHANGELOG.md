@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-30
+
+A MusicXML-reader fidelity patch: multi-part scores with heterogeneous
+`<divisions>`, `<movement-title>`-only metadata, named composers, and piano grand
+staves now survive the `MusicXML → ABC → MusicXML` round-trip. ([#241])
+
+### Added
+
+- **Multi-staff grand-staff round-trip.** A piano grand staff — one `<part>` with
+  `<staves>2` and a `<clef>` per staff — now reconstructs its staves, routes each
+  voice to its staff, and projects a `%%score {…}` brace, so the lower staff's
+  bass clef survives the round trip instead of reading in treble. A brace over
+  distinct part ids (a `<part-group symbol="brace">`) still stays separate parts.
+  ([#241])
+
+### Fixed
+
+- **Per-part `<divisions>`** ([#239]). The reader took the first `<divisions>` in
+  document order and applied it to every part, so a part declaring a different
+  divisions value — e.g. a piano staff at `8` against a vocal staff at `48` — had
+  every duration scaled by the ratio, shrinking each bar to a fraction of its
+  length. Each part, and each measure, now decodes `<duration>` against its own
+  `<divisions>`.
+- **`<movement-title>` fallback** ([#240]). A score titled only via top-level
+  `<movement-title>` (common in Finale/MuseScore exports) read back with no title
+  and lost its `T:` line. The reader now falls back to `<movement-title>` when
+  `<work><work-title>` is absent; `<work-title>` still wins when both are present.
+- **Composer projection.** `<creator type="composer">` now projects to the ABC
+  `C:` field, so a composer survives `MusicXML → ABC → MusicXML` instead of
+  surviving only as `<credit>` words. ([#241])
+
+[1.1.1]: https://github.com/ro-ag/croma/releases/tag/v1.1.1
+[#239]: https://github.com/ro-ag/croma/issues/239
+[#240]: https://github.com/ro-ag/croma/issues/240
+[#241]: https://github.com/ro-ag/croma/pull/241
+
 ## [1.1.0] - 2026-06-29
 
 This release makes croma's `MusicXML → ABC → MusicXML` round-trip lossless across
@@ -138,5 +174,5 @@ crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
   writer, reader, formatter, corpus throughput, and LSP latency, with a committed
   reference report in [`docs/benchmarks.md`](docs/benchmarks.md).
 
-[Unreleased]: https://github.com/ro-ag/croma/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ro-ag/croma/compare/v1.1.1...HEAD
 [0.9.0]: https://github.com/ro-ag/croma/releases/tag/v0.9.0

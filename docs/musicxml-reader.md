@@ -251,7 +251,11 @@ parity-measured foreign dialect; other engravers are totality-proven.
 - `<duration>` (an integer count of divisions) inverts to a reduced
   `Fraction::new(duration, 4 * divisions)`; `<type>`/`<dot>` are re-derived by
   the writer from that fraction, so reconstructing the rational value is exact
-  and sufficient. `<divisions>` is read first because it scales every duration.
+  and sufficient. `<divisions>` is **per part**: each part decodes its
+  `<duration>` against the value declared in its own `<attributes>` (refreshed if
+  a later measure redefines it), not a single score-global first value — a
+  multi-part score may carry a different divisions per part (e.g. a piano staff at
+  `8` against a vocal staff at `48`).
 - Onsets are rebuilt with the same cursor the writer uses: `<forward>` advances
   it, `<backup>` rewinds it, and each non-chord note sits at the current cursor
   then advances it by its duration.
@@ -262,7 +266,13 @@ parity-measured foreign dialect; other engravers are totality-proven.
 - Composer metadata reconstructs **every** `<creator type="composer">`,
   including a present-but-empty one (`<creator type="composer"></creator>`), and
   uses raw (untrimmed) text so the `<identification>` block round-trips byte for
-  byte.
+  byte. The ABC projection emits each composer as a `C:` field, so a composer also
+  survives the lossier `MusicXML → ABC → MusicXML` path (not just the byte-exact
+  self-loop).
+- Title reads from `<work><work-title>`, falling back to top-level
+  `<movement-title>` when no work-title is present (common in Finale/MuseScore
+  exports) — `<work-title>` wins when both exist, keeping writer-produced files
+  byte-stable.
 - An explicit `<accidental>` reconstructs the note's written accidental
   (`explicit = true`); absent `<accidental>` means none. `<alter>` always sets
   the sounding pitch.
@@ -294,6 +304,13 @@ parity-measured foreign dialect; other engravers are totality-proven.
   Plain treble (G/2, no octave change) reconstructs as `None`, matching a freshly
   lowered score (the writer emits the default `<clef>` either way). The original
   ABC clef string is unrecoverable but irrelevant to the gate.
+- A **grand staff** (a part with `<staves> > 1`) reconstructs one `Staff` per
+  staff number, routes each voice to its `<staff>`, and gives each voice its
+  staff's `<clef number=N>` — so a piano's lower staff keeps its bass clef instead
+  of the first-clef-wins treble. The ABC projection braces the staves
+  (`%%score {P2 P2#2}`); the lowering treats a brace as a grand staff only when
+  its members share a base voice id, so a `<part-group symbol="brace">` over
+  distinct parts stays separate parts. Single-staff parts are unchanged.
 - `<transpose><chromatic>n` → `voice.midi_transpose = Some(n)`. The ABC
   `transpose=` voice property is not in the XML; on re-write the writer falls
   through to `midi_transpose`, reproducing the element. Scoped per part (the
