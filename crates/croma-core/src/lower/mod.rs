@@ -1249,18 +1249,44 @@ pub(crate) struct ScoreModelInput<'a> {
     pub divisions: u32,
 }
 
-/// Group voice indices into parts according to a `%%staves` / `%%score`
-/// directive. A parenthesis `( )` group merges its voices into one part
-/// (overlay voices on a shared staff); `[ ]` brackets and `{ }` braces are
-/// visual bracketing only and keep one part per voice in directive order. With
-/// no grouping directive, each voice is its own part in voice-definition order.
-fn part_voice_groups(
+/// A brace `{ }` group is a grand staff (one multi-staff part) only when all its
+/// member voices belong to a SINGLE part — i.e. they share the same base voice id
+/// before croma's `#` continuation suffix (`P2`, `P2#2`). A brace over distinct
+/// part ids (`{P1 P2}`, a `<part-group symbol="brace">`) is NOT a grand staff;
+/// those parts stay separate. Requires ≥2 staves (a lone `{P2}` is not a grand
+/// staff). This is what keeps a braced group of instruments from being collapsed
+/// into one part while still merging a real piano grand staff.
+fn brace_is_one_part(staves: &[Vec<usize>], voices: &[VoiceTimeline]) -> bool {
+    if staves.len() < 2 {
+        return false;
+    }
+    let base = |index: usize| voices[index].id.value.split('#').next().unwrap_or("");
+    let mut members = staves.iter().flatten().copied();
+    let Some(first) = members.next() else {
+        return false;
+    };
+    let first_base = base(first);
+    members.all(|index| base(index) == first_base)
+}
+
+/// Lay out voices into parts and staves from a `%%staves` / `%%score` directive.
+/// Returns, per part, its staves — each a list of voice indices (in order):
+/// - a parenthesis `( )` group merges its voices onto ONE staff of one part
+///   (overlay voices on a shared staff);
+/// - a brace `{ }` group is one part with SEPARATE staves — each direct member (a
+///   bare voice, or a nested `( )` group) becomes its own staff (a piano grand
+///   staff). This is what round-trips a multi-staff part's per-staff clefs;
+/// - `[ ]` brackets and bare voices keep one single-staff part per voice in
+///   directive order.
+///
+/// With no grouping directive, each voice is its own single-staff part.
+fn part_layouts(
     directives: &[ScoreDirectiveModel],
     voices: &[VoiceTimeline],
-) -> Vec<Vec<usize>> {
+) -> Vec<Vec<Vec<usize>>> {
     let one_per_voice = || {
         (0..voices.len())
-            .map(|index| vec![index])
+            .map(|index| vec![vec![index]])
             .collect::<Vec<_>>()
     };
     let Some(directive) = directives.iter().rev().find(|directive| {
@@ -1273,44 +1299,100 @@ fn part_voice_groups(
     };
 
     let index_of = |id: &str| voices.iter().position(|voice| voice.id.value == id);
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    let mut paren_depth = 0u32;
-    let mut current: Vec<usize> = Vec::new();
+    let mut parts: Vec<Vec<Vec<usize>>> = Vec::new();
+    let mut brace_staves: Vec<Vec<usize>> = Vec::new();
+    let mut paren_voices: Vec<usize> = Vec::new();
+    let mut in_brace = false;
+    let mut in_paren = false;
     for token in &directive.tokens {
         match &token.kind {
-            ScoreDirectiveTokenKindModel::GroupStart('(') => paren_depth += 1,
-            ScoreDirectiveTokenKindModel::GroupEnd(')') => {
-                paren_depth = paren_depth.saturating_sub(1);
-                if paren_depth == 0 && !current.is_empty() {
-                    groups.push(std::mem::take(&mut current));
+            ScoreDirectiveTokenKindModel::GroupStart('{') => {
+                in_brace = true;
+                brace_staves = Vec::new();
+            }
+            ScoreDirectiveTokenKindModel::GroupEnd('}') => {
+                if in_paren && !paren_voices.is_empty() {
+                    brace_staves.push(std::mem::take(&mut paren_voices));
                 }
+                in_paren = false;
+                if !brace_staves.is_empty() {
+                    if brace_is_one_part(&brace_staves, voices) {
+                        // Grand staff: every member is a voice of ONE part (shared
+                        // base id, croma's `P2`/`P2#2` continuation naming) — one
+                        // multi-staff part with a staff per member.
+                        parts.push(std::mem::take(&mut brace_staves));
+                    } else {
+                        // A `<part-group>` brace (`{P1 P2}`): distinct part ids
+                        // stay SEPARATE parts, exactly as before grand-staff
+                        // support, so a braced group of instruments round-trips.
+                        for staff in std::mem::take(&mut brace_staves) {
+                            parts.push(vec![staff]);
+                        }
+                    }
+                }
+                in_brace = false;
+            }
+            ScoreDirectiveTokenKindModel::GroupStart('(') => {
+                in_paren = true;
+                paren_voices = Vec::new();
+            }
+            ScoreDirectiveTokenKindModel::GroupEnd(')') => {
+                if in_paren && !paren_voices.is_empty() {
+                    let staff = std::mem::take(&mut paren_voices);
+                    if in_brace {
+                        // A `( )` inside a `{ }` is one shared staff of the part.
+                        brace_staves.push(staff);
+                    } else {
+                        // A bare `( )` is one single-staff part.
+                        parts.push(vec![staff]);
+                    }
+                }
+                in_paren = false;
             }
             ScoreDirectiveTokenKindModel::Voice(id) => {
                 if let Some(index) = index_of(id) {
-                    if paren_depth > 0 {
-                        current.push(index);
+                    if in_paren {
+                        paren_voices.push(index);
+                    } else if in_brace {
+                        // A bare voice inside a `{ }` is its own staff.
+                        brace_staves.push(vec![index]);
                     } else {
-                        groups.push(vec![index]);
+                        parts.push(vec![vec![index]]);
                     }
                 }
             }
             _ => {}
         }
     }
-    if !current.is_empty() {
-        groups.push(current);
-    }
-    // Any voice the directive did not list still needs a part.
-    let mentioned: std::collections::HashSet<usize> = groups.iter().flatten().copied().collect();
-    for index in 0..voices.len() {
-        if !mentioned.contains(&index) {
-            groups.push(vec![index]);
+    // Flush an unterminated paren / brace defensively.
+    if in_paren && !paren_voices.is_empty() {
+        if in_brace {
+            brace_staves.push(std::mem::take(&mut paren_voices));
+        } else {
+            parts.push(vec![std::mem::take(&mut paren_voices)]);
         }
     }
-    if groups.is_empty() {
+    if !brace_staves.is_empty() {
+        if brace_is_one_part(&brace_staves, voices) {
+            parts.push(std::mem::take(&mut brace_staves));
+        } else {
+            for staff in std::mem::take(&mut brace_staves) {
+                parts.push(vec![staff]);
+            }
+        }
+    }
+    // Any voice the directive did not list still needs a part.
+    let mentioned: std::collections::HashSet<usize> =
+        parts.iter().flatten().flatten().copied().collect();
+    for index in 0..voices.len() {
+        if !mentioned.contains(&index) {
+            parts.push(vec![vec![index]]);
+        }
+    }
+    if parts.is_empty() {
         return one_per_voice();
     }
-    groups
+    parts
 }
 
 pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
@@ -1318,33 +1400,46 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
     // `%%score` parenthesis group merges its voices into one multi-voice part.
     // A single-voice tune still yields exactly one part.
     let single_voice = input.voices.len() == 1;
-    let groups = part_voice_groups(input.score_directives, input.voices);
-    let mut parts = groups
+    let layouts = part_layouts(input.score_directives, input.voices);
+    let mut parts = layouts
         .iter()
         .enumerate()
-        .map(|(part_index, voice_indices)| {
-            let staff_id = StaffId {
-                value: 1,
-                span: input.source_span,
-            };
-            let semantic_voices = voice_indices
+        .map(|(part_index, staff_layout)| {
+            // Build each staff's voices, assigning the voice its staff id. A
+            // single-staff part has one staff (value 1) with every voice — the
+            // shape every ABC tune lowered before grand-staff support; a `{ }`
+            // brace part has one staff per layout entry (a piano grand staff).
+            let mut semantic_voices: Vec<crate::model::Voice> = Vec::new();
+            let staves = staff_layout
                 .iter()
-                .map(|&voice_index| {
-                    semantic_voice_from_timeline(
-                        &input.voices[voice_index],
-                        staff_id,
-                        input.field_state,
-                    )
+                .enumerate()
+                .map(|(staff_index, staff_voice_indices)| {
+                    let staff_id = StaffId {
+                        value: u32::try_from(staff_index + 1).unwrap_or(1),
+                        span: input.source_span,
+                    };
+                    let voice_ids = staff_voice_indices
+                        .iter()
+                        .map(|&voice_index| {
+                            let voice = semantic_voice_from_timeline(
+                                &input.voices[voice_index],
+                                staff_id,
+                                input.field_state,
+                            );
+                            let id = voice.id.clone();
+                            semantic_voices.push(voice);
+                            id
+                        })
+                        .collect::<Vec<_>>();
+                    Staff {
+                        id: staff_id,
+                        voices: voice_ids,
+                        source_span: input.source_span,
+                    }
                 })
                 .collect::<Vec<_>>();
-            let staves = vec![Staff {
-                id: staff_id,
-                voices: semantic_voices
-                    .iter()
-                    .map(|voice| voice.id.clone())
-                    .collect(),
-                source_span: input.source_span,
-            }];
+            let voice_indices: Vec<usize> =
+                staff_layout.iter().flatten().copied().collect::<Vec<_>>();
             // Prefer the (first) voice's own name; fall back to the tune title
             // only for a single-voice tune (a part name does not affect the
             // structural comparison).
@@ -1358,7 +1453,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
                         .or_else(|| voice.properties.nm.clone())
                 })
                 .or_else(|| single_voice.then(|| input.title.clone()).flatten());
-            let instruments = part_musicxml_instruments(input.voices, voice_indices);
+            let instruments = part_musicxml_instruments(input.voices, &voice_indices);
             Part {
                 id: PartId {
                     value: format!("P{}", part_index + 1),

@@ -9519,3 +9519,339 @@ fn first_diverging_line(expected: &str, actual: &str) -> String {
         format!("<line-count differs: expected {expected_lines}, actual {actual_lines}>")
     }
 }
+
+// --- Per-part divisions (issue #239) ----------------------------------------
+//
+// MusicXML scopes `<divisions>` to each part's `<attributes>` (and a later
+// measure may redefine it). A multi-part score can therefore carry a different
+// divisions per part — common in Finale/MuseScore exports. The reader must
+// decode each part's `<duration>` against THAT part's divisions, not a single
+// global value taken from the first `<divisions>` in document order.
+
+#[test]
+fn per_part_divisions_are_decoded_independently() {
+    // P1 declares divisions=4, P2 declares divisions=2. Both notes are quarter
+    // notes (duration = one beat in their own part). Both must reconstruct as
+    // 1/4. Reading P2's `<duration>2</duration>` against P1's divisions=4 would
+    // misread it as an eighth (1/8) — the Fauré piano bug in miniature.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list>",
+        "<score-part id=\"P1\"><part-name>A</part-name></score-part>",
+        "<score-part id=\"P2\"><part-name>B</part-name></score-part>",
+        "</part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>4</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>1</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>quarter</type></note>",
+        "</measure></part>",
+        "<part id=\"P2\"><measure number=\"1\">",
+        "<attributes><divisions>2</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>1</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch>",
+        "<duration>2</duration><type>quarter</type></note>",
+        "</measure></part>",
+        "</score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    assert_eq!(score.parts.len(), 2, "two parts");
+    assert_eq!(
+        score.parts[0].voices[0].events[0].duration,
+        Fraction::new(1, 4),
+        "P1 quarter at its own divisions=4"
+    );
+    assert_eq!(
+        score.parts[1].voices[0].events[0].duration,
+        Fraction::new(1, 4),
+        "P2 quarter at its own divisions=2 must be 1/4, not misread against P1's divisions=4"
+    );
+}
+
+#[test]
+fn mid_part_divisions_change_is_applied() {
+    // A later measure redefines `<divisions>`. Notes after the change must be
+    // decoded against the new value. Measure 1: div=2, quarter (dur=2) -> 1/4.
+    // Measure 2: div=8, quarter (dur=8) -> 1/4. A reader that froze divisions at
+    // the part's first value would misread measure 2's quarter as a whole note.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list>",
+        "<part id=\"P1\">",
+        "<measure number=\"1\">",
+        "<attributes><divisions>2</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>1</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>2</duration><type>quarter</type></note>",
+        "</measure>",
+        "<measure number=\"2\">",
+        "<attributes><divisions>8</divisions></attributes>",
+        "<note><pitch><step>D</step><octave>4</octave></pitch>",
+        "<duration>8</duration><type>quarter</type></note>",
+        "</measure>",
+        "</part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let events = &score.parts[0].voices[0].events;
+    assert_eq!(
+        events[0].duration,
+        Fraction::new(1, 4),
+        "measure 1 quarter at divisions=2"
+    );
+    assert_eq!(
+        events[1].duration,
+        Fraction::new(1, 4),
+        "measure 2 quarter at the redefined divisions=8 must still be 1/4"
+    );
+}
+
+// --- Movement-title fallback (issue #240) -----------------------------------
+
+#[test]
+fn movement_title_populates_metadata_title_when_work_title_absent() {
+    // A score titled via top-level <movement-title> with no <work><work-title>
+    // (common in Finale/MuseScore exports) must populate metadata.title so the
+    // ABC projection emits a T: line.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<movement-title>Apres un reve</movement-title>",
+        "<part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>whole</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    assert_eq!(
+        score.metadata.title.as_ref().map(|t| t.text.as_str()),
+        Some("Apres un reve"),
+        "<movement-title> must populate metadata.title when <work-title> is absent"
+    );
+}
+
+#[test]
+fn work_title_wins_over_movement_title() {
+    // When both are present, <work-title> takes precedence (it is what croma's
+    // own writer emits, so the self-loop stays byte-stable).
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<work><work-title>Work Title</work-title></work>",
+        "<movement-title>Movement Title</movement-title>",
+        "<part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>whole</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    assert_eq!(
+        score.metadata.title.as_ref().map(|t| t.text.as_str()),
+        Some("Work Title"),
+        "<work-title> must win when both are present"
+    );
+}
+
+// --- Composer projection (collateral of #239/#240 audit) --------------------
+//
+// The reader captures `<creator type="composer">` into `metadata.composers`, and
+// `write_musicxml` re-emits it, so composer survives the MusicXML self-loop. But
+// the ABC PROJECTION (`write_abc`) dropped it — no `C:` field — so a
+// MusicXML -> ABC -> MusicXML round trip lost the structured composer entirely.
+// The ABC parser already reads `C:` into composers, so emitting it closes the
+// loop.
+
+#[test]
+fn composer_projects_to_abc_c_field_and_round_trips() {
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<work><work-title>Song</work-title></work>",
+        "<identification><creator type=\"composer\">Gabriel Faure</creator></identification>",
+        "<part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>whole</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("\nC:Gabriel Faure\n"),
+        "ABC projection must emit a C: composer field, got:\n{abc}"
+    );
+    // Closing the loop: the projected ABC must export back to a <creator>.
+    let xml2 = export(&abc);
+    assert!(
+        xml2.contains("<creator type=\"composer\">Gabriel Faure</creator>"),
+        "C: must export back to <creator type=\"composer\">, got:\n{xml2}"
+    );
+}
+
+// --- Multi-staff grand staff (bass clef) ------------------------------------
+//
+// A piano grand staff is ONE MusicXML part with `<staves>2`, a `<clef number=N>`
+// per staff, and each note tagged with its `<staff>`. The reader must build
+// `Part.staves` with one entry per staff, route each voice to its staff, and give
+// each voice its staff's clef — so the bass-clef (staff 2) voice reads in bass,
+// not treble. Single-staff parts (no `<staves>`) are unaffected.
+
+#[test]
+fn two_staff_part_reconstructs_staves_and_per_staff_clefs() {
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list><score-part id=\"P1\"><part-name>Piano</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<staves>2</staves>",
+        "<clef number=\"1\"><sign>G</sign><line>2</line></clef>",
+        "<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>",
+        "<voice>1</voice><type>whole</type><staff>1</staff></note>",
+        "<backup><duration>4</duration></backup>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>",
+        "<voice>2</voice><type>whole</type><staff>2</staff></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let part = &score.parts[0];
+    assert_eq!(part.staves.len(), 2, "two staves reconstructed");
+    assert_eq!(part.voices.len(), 2, "two voices");
+    assert_eq!(part.voices[0].staff.value, 1, "voice 1 routed to staff 1");
+    assert_eq!(part.voices[1].staff.value, 2, "voice 2 routed to staff 2");
+    assert_eq!(
+        part.voices[0]
+            .initial_properties
+            .clef
+            .as_ref()
+            .map(|c| c.text.as_str()),
+        None,
+        "staff 1 is treble (default, no clef property)"
+    );
+    assert_eq!(
+        part.voices[1]
+            .initial_properties
+            .clef
+            .as_ref()
+            .map(|c| c.text.as_str()),
+        Some("bass"),
+        "staff 2 voice must carry the bass clef"
+    );
+    // Pure MusicXML round-trip (write_musicxml inverse) must re-emit the grand staff.
+    let xml2 = write_score_partwise(&score).value;
+    assert!(
+        xml2.contains("<staves>2</staves>"),
+        "re-emit <staves>2, got:\n{xml2}"
+    );
+    assert!(
+        xml2.contains("<clef number=\"2\">") && xml2.contains("<sign>F</sign>"),
+        "re-emit the bass <clef number=2>, got:\n{xml2}"
+    );
+}
+
+#[test]
+fn two_staff_part_synthesizes_brace_score_directive() {
+    // A grand-staff part's voices must be grouped with a BRACE `{…}` in %%score
+    // (separate staves), not a PAREN `(…)` (shared staff). That brace is what
+    // tells the lowering to rebuild two staves on the ABC round trip.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list><score-part id=\"P1\"><part-name>Piano</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<staves>2</staves>",
+        "<clef number=\"1\"><sign>G</sign><line>2</line></clef>",
+        "<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>",
+        "<voice>1</voice><type>whole</type><staff>1</staff></note>",
+        "<backup><duration>4</duration></backup>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>",
+        "<voice>2</voice><type>whole</type><staff>2</staff></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let directive = score
+        .metadata
+        .directives
+        .iter()
+        .find(|d| d.value.text.contains("P1"))
+        .expect("a %%score directive for the grand staff");
+    assert_eq!(
+        directive.value.text.trim(),
+        "{P1 P1#2}",
+        "grand staff must use a brace group, got {:?}",
+        directive.value.text
+    );
+}
+
+#[test]
+fn brace_score_group_lowers_to_one_part_with_two_staves() {
+    // `%%score {V1 V2}` is a grand staff: ONE part with two staves, each voice on
+    // its own staff with its own clef. A paren group `(V1 V2)` shares one staff;
+    // the brace must instead produce <staves>2 and a per-staff <clef>, so the bass
+    // voice's clef=bass survives the ABC -> MusicXML export.
+    // The grand staff's two voices share a base id (P1, P1#2) — croma's
+    // continuation naming — which is how a brace is told apart from a
+    // `<part-group>` brace over distinct parts (`{P1 P2}`, which stays separate).
+    let abc = concat!(
+        "X:1\n",
+        "%%score {P1 P1#2}\n",
+        "M:4/4\nL:1/4\nK:C\n",
+        "V:P1 clef=treble\n",
+        "C D E F |\n",
+        "V:P1#2 clef=bass\n",
+        "C,, D,, E,, F,, |\n",
+    );
+    let xml = export(abc);
+    assert_eq!(
+        xml.matches("<part id=").count(),
+        1,
+        "a same-part brace group is ONE part (grand staff), got:\n{xml}"
+    );
+    assert!(
+        xml.contains("<staves>2</staves>"),
+        "the grand staff must export <staves>2, got:\n{xml}"
+    );
+    assert!(
+        xml.contains("<clef number=\"2\">") && xml.contains("<sign>F</sign>"),
+        "the bass voice must export a <clef number=\"2\"> F clef, got:\n{xml}"
+    );
+}
+
+#[test]
+fn brace_over_distinct_parts_stays_two_parts() {
+    // `{P1 P2}` braces two DISTINCT parts (a `<part-group symbol="brace">`, e.g. a
+    // piano-and-voice system), NOT a grand staff. It must stay TWO parts — the
+    // grand-staff merge only applies when the members share a base voice id.
+    let abc = concat!(
+        "X:1\n",
+        "%%score {P1 P2}\n",
+        "M:4/4\nL:1/4\nK:C\n",
+        "V:P1\n",
+        "C D E F |\n",
+        "V:P2\n",
+        "C,, D,, E,, F,, |\n",
+    );
+    let xml = export(abc);
+    assert_eq!(
+        xml.matches("<part id=").count(),
+        2,
+        "a brace over distinct part ids must stay two parts, got:\n{xml}"
+    );
+    assert!(
+        !xml.contains("<staves>"),
+        "two distinct parts must not collapse into a multi-staff part, got:\n{xml}"
+    );
+}

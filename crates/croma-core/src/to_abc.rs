@@ -25,6 +25,13 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     if let Some(title) = &meta.title {
         out.push_str(&format!("T:{}\n", title.text.trim()));
     }
+    // `C:` composer field, after `T:` in canonical ABC order. The reader captures
+    // `<creator type="composer">` into `composers`, and the ABC parser reads `C:`
+    // back into `composers`, so emitting it makes structured composer metadata
+    // survive a MusicXML -> ABC -> MusicXML round trip.
+    for composer in &meta.composers {
+        out.push_str(&format!("C:{}\n", composer.text.trim()));
+    }
     // `M:` is optional in ABC; a tune without one must not gain a synthetic
     // meter.
     if let Some(meter) = &meta.meter {
