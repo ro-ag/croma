@@ -225,7 +225,6 @@ dependencies = [
  "croma-core",
  "croma-fmt",
  "owo-colors",
- "serde",
  "serde_json",
 ]
 
