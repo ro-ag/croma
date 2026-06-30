@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-29
+
+This release makes croma's `MusicXML → ABC → MusicXML` round-trip lossless across
+the foreign-import surface, via a private **carrier** system, and adds a
+`croma agent` help surface so AI agents can author those annotations.
+
+### Added
+
+- **Private carrier system (`[I:croma-*]` / `%%croma-*`).** Namespaced
+  annotations that round-trip MusicXML facts ABC 2.1 cannot natively express,
+  while staying ignorable by other ABC tools (abc2midi / abcm2ps / abcjs). The
+  convention, syntax, the `-hex=` rule, and the full catalogue are documented in
+  [`docs/carriers.md`](docs/carriers.md). ([#234])
+- **`croma agent` — help topics for AI agents / LLMs**, plus a `croma-core`
+  library API (`agent_topics()`, `find_agent_topic()`, `AgentTopic`). Each
+  carrier is framed as a task with its syntax, a copy-paste ABC example, and a
+  `verify` command, so an agent can author ABC annotations that persist to
+  MusicXML. `croma-core` stays zero-dependency. ([#236])
+- **Cross-voice slur carrier (`[I:croma-xvoice-slur]`).** A slur whose start and
+  stop are in different voices — which ABC `(`/`)` cannot span — now round-trips
+  losslessly. ([#234])
+- **Lossless MusicXML round-trip across the foreign-import surface**
+  ([#193]–[#233]): carry-through for part/voice origin metadata and ids, per-note
+  and unpitched MIDI instrument maps, functional `<harmony>` text, printed and
+  playback-only tempo text, duplicate and extended lyrics, articulations,
+  tremolos, technical notations, spanners, grace decorations, extended dynamics,
+  tuplet display and wide tuplets, measure labels, sparse-voice gaps, meter
+  restatements, `<backup>`/`<forward>` cursor moves, and asymmetric clef-change
+  cursors.
+
+### Fixed
+
+- Chord-closing slur stops attach to the chord head ([#229]); chord-led lyric
+  extend/duplicate carriers ride to the chord head ([#230]); control characters
+  are normalised in carrier names and section-label projection; a bare root is
+  emitted for unmodellable harmony kinds; and the final niche PDMX
+  reader-roundtrip residual is cleared ([#233]).
+
+[#193]: https://github.com/ro-ag/croma/issues/193
+[#229]: https://github.com/ro-ag/croma/issues/229
+[#230]: https://github.com/ro-ag/croma/issues/230
+[#233]: https://github.com/ro-ag/croma/issues/233
+[#234]: https://github.com/ro-ag/croma/issues/234
+[#236]: https://github.com/ro-ag/croma/issues/236
+
 ## [1.0.2] - 2026-06-27
 
 ### Fixed
