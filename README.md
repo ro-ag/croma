@@ -29,6 +29,12 @@ loose source is repaired explicitly by `croma fmt --auto-fix`.
 - **MusicXML → ABC** (`croma read`, `croma musicxml2abc`): the reverse reader —
   inverts croma's own writer and reads foreign MusicXML dialects (abc2xml,
   MuseScore, Finale, Sibelius).
+- **Lossless round-trip + agent help** (`croma agent`): the
+  `MusicXML → ABC → MusicXML` round-trip preserves facts ABC 2.1 cannot natively
+  express through private `[I:croma-*]` / `%%croma-*` carriers (ignorable by
+  other ABC tools); `croma agent` explains those notations to an AI agent / LLM,
+  with the same topics available as a `croma-core` API. See
+  [`docs/carriers.md`](docs/carriers.md) and [`docs/agent.md`](docs/agent.md).
 - **Language server** (`croma-lsp`): a stdio LSP — diagnostics, formatting,
   semantic tokens, document symbols, folding, hover, completion, and code
   actions — that is a thin adapter over the core (its output is byte-identical to
@@ -82,6 +88,10 @@ croma fmt --auto-fix tune.abc
 # MusicXML -> ABC
 croma read score.musicxml --format abc
 croma musicxml2abc score.musicxml
+
+# Explain croma's non-standard carrier notations to an AI agent / LLM
+croma agent
+croma agent xvoice-slur
 ```
 
 As a library:
