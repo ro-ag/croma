@@ -26,7 +26,7 @@ croma-core = { path = "../croma-core", version = "1.1.0" }
 # introduces no third-party crate; it backs `textDocument/formatting` (R2) and
 # the future `source.fixAll` code action (R3). Nothing flows into croma-core.
 croma-fmt = { path = "../croma-fmt", version = "1.1.0" }
-lsp-server = "0.7"
+lsp-server = "0.8"
 lsp-types = "0.97"
 # `serde`/`serde_json` are shared deps of lsp-server + lsp-types; the transport
 # glue (capability negotiation, message (de)serialisation) uses them directly.
