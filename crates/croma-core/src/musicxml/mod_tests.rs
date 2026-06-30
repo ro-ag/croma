@@ -468,6 +468,76 @@ fn voice_slur_closing_on_chord_attaches_stop_to_chord_head() {
 }
 
 #[test]
+fn cross_voice_slur_carrier_exports_slur_start_and_stop_in_different_voices() {
+    // A MusicXML slur whose start and stop live in DIFFERENT voices cannot be
+    // spelled with ABC `(`/`)` (those pair within one `V:` stream). croma
+    // carries it as `[I:croma-xvoice-slur pair=N role=start|stop]` on each end.
+    // On export the start carrier in voice 1 and the stop carrier in voice 2
+    // must each re-emit a `<slur>` on their note — and a normal same-voice
+    // `(DE)` slur must still export unchanged.
+    // `%%score (1 2)` groups both voices into ONE part, mirroring pdmx_0998's
+    // single part with a slur from voice 1 into voice 2.
+    let source = concat!(
+        "X:1\n%%score (1 2)\nM:4/4\nL:1/4\nK:C\n",
+        "V:1\n[I:croma-xvoice-slur pair=1 role=start]C (DE) F |\n",
+        "V:2\n[I:croma-xvoice-slur pair=1 role=stop]G A B z |\n",
+    );
+    let export = export_musicxml(source).expect("cross-voice slur carrier should export");
+
+    assert_balanced_xml(&export.musicxml);
+    // Two slur starts (cross-voice on C, same-voice on D) and two stops
+    // (same-voice on E, cross-voice on G).
+    assert_eq!(count(&export.musicxml, "<slur type=\"start\""), 2);
+    assert_eq!(count(&export.musicxml, "<slur type=\"stop\""), 2);
+
+    // The cross-voice start lands on C in voice 1.
+    let c_note = note_block(&export.musicxml, "C");
+    assert!(
+        c_note.contains("<slur type=\"start\"") && c_note.contains("<voice>1</voice>"),
+        "cross-voice slur start must be on the C note in voice 1: {c_note}"
+    );
+    // The cross-voice stop lands on G in voice 2 — a different voice.
+    let g_note = note_block(&export.musicxml, "G");
+    assert!(
+        g_note.contains("<slur type=\"stop\"") && g_note.contains("<voice>2</voice>"),
+        "cross-voice slur stop must be on the G note in voice 2: {g_note}"
+    );
+    // The same-voice `(DE)` slur is untouched: D opens, E closes.
+    assert!(note_block(&export.musicxml, "D").contains("<slur type=\"start\""));
+    assert!(note_block(&export.musicxml, "E").contains("<slur type=\"stop\""));
+    // The carrier is consumed, not echoed as a leftover display directive.
+    assert!(!export.musicxml.contains("croma-xvoice-slur"));
+    // The cross-voice start and stop must share the same `number=` so the slur
+    // is a valid pair across voices (the source's matching number).
+    assert_eq!(
+        slur_number(c_note, "start"),
+        slur_number(g_note, "stop"),
+        "cross-voice slur ends must carry matching slur numbers"
+    );
+}
+
+/// The `number="N"` attribute of the `<slur type="{role}"...>` in `note`.
+fn slur_number(note: &str, role: &str) -> String {
+    let marker = format!("<slur type=\"{role}\"");
+    let at = note.find(&marker).expect("slur marker present");
+    let tag = &note[at..note[at..].find("/>").expect("slur self-closes") + at];
+    let key = "number=\"";
+    let n = tag.find(key).expect("slur has a number") + key.len();
+    tag[n..tag[n..].find('"').expect("number closes") + n].to_owned()
+}
+
+/// The `<note>...</note>` block whose `<pitch>` carries `<step>{step}</step>`.
+fn note_block<'a>(xml: &'a str, step: &str) -> &'a str {
+    let needle = format!("<step>{step}</step>");
+    let at = xml
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no note with step {step}"));
+    let start = xml[..at].rfind("<note").expect("step inside a note");
+    let end = xml[at..].find("</note>").expect("note must close") + at + "</note>".len();
+    &xml[start..end]
+}
+
+#[test]
 fn lowercase_root_quoted_text_is_words_not_harmony() {
     // ABC 2.1 §4.18: the chord root is A-G (uppercase); only the bass note
     // may be lowercase. "d" is annotation text, not a D chord (40 corpus

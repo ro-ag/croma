@@ -602,6 +602,15 @@ pub enum SlurRole {
     Stop,
 }
 
+/// Reserved low bound for the `pair_id` of a slur reconstructed from a
+/// cross-voice `[I:croma-xvoice-slur]` carrier (a slur whose start and stop live
+/// in different voices, which ABC `(`/`)` cannot span). Lowering allocates such
+/// `pair_id`s from this range so they never coincide with the small per-voice
+/// slur ids; the MusicXML writer relies on that disjointness to give a
+/// cross-voice slur's two ends a matching `<slur number>` even though they sit
+/// under different voice keys. See `lower` and `docs/carriers.md`.
+pub(crate) const XVOICE_SLUR_PAIR_ID_BASE: u32 = 1_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TupletAttachment {
     pub pair_id: u32,

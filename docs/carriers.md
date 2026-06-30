@@ -88,7 +88,7 @@ A carrier is only lossless if all three stages agree:
 Adding or changing a carrier touches all three, plus the model field it rides on, plus a
 TDD test, plus the gates in [§7](#7-adding-a-carrier-checklist).
 
-## 5. Catalogue (20 carriers)
+## 5. Catalogue (21 carriers)
 
 `grep <name> crates/croma-core/src` finds the emit / parse / re-emit sites for any row.
 
@@ -131,6 +131,7 @@ TDD test, plus the gates in [§7](#7-adding-a-carrier-checklist).
 | `croma-barline-style` | `[I:]` · measure | a dashed barline (`<bar-style>dashed</bar-style>`) — ABC has no glyph | `[I:croma-barline-style style=dashed]` |
 | `croma-measure-number` | `[I:]` · measure · **hex** | a `<measure number=…>` that differs from croma's canonical 1-based index (pickup `0`, labels) | `[I:croma-measure-number n=0]` |
 | `croma-ending-close` | `[I:]` · measure | an explicit volta-bracket close (`<ending type="stop\|discontinue">` + side + numbers) | `[I:croma-ending-close type=discontinue location=right number="1,2"]` |
+| `croma-xvoice-slur` | `[I:]` · note | one end of a slur that does not pair within its own `V:` stream — a `<slur>` reaching into/out of another voice, which `(`/`)` cannot span: a shared `pair=` re-pairs the two ends across voices, `role=start\|stop` is which end | `[I:croma-xvoice-slur pair=7 role=start]` |
 
 > Not a carrier: `croma-fmt` is the name of the formatter crate (`crates/croma-fmt`),
 > not an ABC token. A few facts also ride encoded in a **decoration name** rather than an
