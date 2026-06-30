@@ -9697,3 +9697,161 @@ fn composer_projects_to_abc_c_field_and_round_trips() {
         "C: must export back to <creator type=\"composer\">, got:\n{xml2}"
     );
 }
+
+// --- Multi-staff grand staff (bass clef) ------------------------------------
+//
+// A piano grand staff is ONE MusicXML part with `<staves>2`, a `<clef number=N>`
+// per staff, and each note tagged with its `<staff>`. The reader must build
+// `Part.staves` with one entry per staff, route each voice to its staff, and give
+// each voice its staff's clef — so the bass-clef (staff 2) voice reads in bass,
+// not treble. Single-staff parts (no `<staves>`) are unaffected.
+
+#[test]
+fn two_staff_part_reconstructs_staves_and_per_staff_clefs() {
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list><score-part id=\"P1\"><part-name>Piano</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<staves>2</staves>",
+        "<clef number=\"1\"><sign>G</sign><line>2</line></clef>",
+        "<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>",
+        "<voice>1</voice><type>whole</type><staff>1</staff></note>",
+        "<backup><duration>4</duration></backup>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>",
+        "<voice>2</voice><type>whole</type><staff>2</staff></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let part = &score.parts[0];
+    assert_eq!(part.staves.len(), 2, "two staves reconstructed");
+    assert_eq!(part.voices.len(), 2, "two voices");
+    assert_eq!(part.voices[0].staff.value, 1, "voice 1 routed to staff 1");
+    assert_eq!(part.voices[1].staff.value, 2, "voice 2 routed to staff 2");
+    assert_eq!(
+        part.voices[0]
+            .initial_properties
+            .clef
+            .as_ref()
+            .map(|c| c.text.as_str()),
+        None,
+        "staff 1 is treble (default, no clef property)"
+    );
+    assert_eq!(
+        part.voices[1]
+            .initial_properties
+            .clef
+            .as_ref()
+            .map(|c| c.text.as_str()),
+        Some("bass"),
+        "staff 2 voice must carry the bass clef"
+    );
+    // Pure MusicXML round-trip (write_musicxml inverse) must re-emit the grand staff.
+    let xml2 = write_score_partwise(&score).value;
+    assert!(
+        xml2.contains("<staves>2</staves>"),
+        "re-emit <staves>2, got:\n{xml2}"
+    );
+    assert!(
+        xml2.contains("<clef number=\"2\">") && xml2.contains("<sign>F</sign>"),
+        "re-emit the bass <clef number=2>, got:\n{xml2}"
+    );
+}
+
+#[test]
+fn two_staff_part_synthesizes_brace_score_directive() {
+    // A grand-staff part's voices must be grouped with a BRACE `{…}` in %%score
+    // (separate staves), not a PAREN `(…)` (shared staff). That brace is what
+    // tells the lowering to rebuild two staves on the ABC round trip.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list><score-part id=\"P1\"><part-name>Piano</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<staves>2</staves>",
+        "<clef number=\"1\"><sign>G</sign><line>2</line></clef>",
+        "<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration>",
+        "<voice>1</voice><type>whole</type><staff>1</staff></note>",
+        "<backup><duration>4</duration></backup>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration>",
+        "<voice>2</voice><type>whole</type><staff>2</staff></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let directive = score
+        .metadata
+        .directives
+        .iter()
+        .find(|d| d.value.text.contains("P1"))
+        .expect("a %%score directive for the grand staff");
+    assert_eq!(
+        directive.value.text.trim(),
+        "{P1 P1#2}",
+        "grand staff must use a brace group, got {:?}",
+        directive.value.text
+    );
+}
+
+#[test]
+fn brace_score_group_lowers_to_one_part_with_two_staves() {
+    // `%%score {V1 V2}` is a grand staff: ONE part with two staves, each voice on
+    // its own staff with its own clef. A paren group `(V1 V2)` shares one staff;
+    // the brace must instead produce <staves>2 and a per-staff <clef>, so the bass
+    // voice's clef=bass survives the ABC -> MusicXML export.
+    // The grand staff's two voices share a base id (P1, P1#2) — croma's
+    // continuation naming — which is how a brace is told apart from a
+    // `<part-group>` brace over distinct parts (`{P1 P2}`, which stays separate).
+    let abc = concat!(
+        "X:1\n",
+        "%%score {P1 P1#2}\n",
+        "M:4/4\nL:1/4\nK:C\n",
+        "V:P1 clef=treble\n",
+        "C D E F |\n",
+        "V:P1#2 clef=bass\n",
+        "C,, D,, E,, F,, |\n",
+    );
+    let xml = export(abc);
+    assert_eq!(
+        xml.matches("<part id=").count(),
+        1,
+        "a same-part brace group is ONE part (grand staff), got:\n{xml}"
+    );
+    assert!(
+        xml.contains("<staves>2</staves>"),
+        "the grand staff must export <staves>2, got:\n{xml}"
+    );
+    assert!(
+        xml.contains("<clef number=\"2\">") && xml.contains("<sign>F</sign>"),
+        "the bass voice must export a <clef number=\"2\"> F clef, got:\n{xml}"
+    );
+}
+
+#[test]
+fn brace_over_distinct_parts_stays_two_parts() {
+    // `{P1 P2}` braces two DISTINCT parts (a `<part-group symbol="brace">`, e.g. a
+    // piano-and-voice system), NOT a grand staff. It must stay TWO parts — the
+    // grand-staff merge only applies when the members share a base voice id.
+    let abc = concat!(
+        "X:1\n",
+        "%%score {P1 P2}\n",
+        "M:4/4\nL:1/4\nK:C\n",
+        "V:P1\n",
+        "C D E F |\n",
+        "V:P2\n",
+        "C,, D,, E,, F,, |\n",
+    );
+    let xml = export(abc);
+    assert_eq!(
+        xml.matches("<part id=").count(),
+        2,
+        "a brace over distinct part ids must stay two parts, got:\n{xml}"
+    );
+    assert!(
+        !xml.contains("<staves>"),
+        "two distinct parts must not collapse into a multi-staff part, got:\n{xml}"
+    );
+}

@@ -471,6 +471,34 @@ impl Reader {
         clef_text_from(sign, line, octave_change).map(text_line)
     }
 
+    /// Every `<clef number=N>` in a part's header `<attributes>`, keyed by staff
+    /// number, for a grand-staff (`<staves> > 1`) part. A `<clef>` with no
+    /// `number` defaults to staff 1; a `None` value is the default treble clef
+    /// (matching [`read_clef`]). This is what gives a piano's lower staff its bass
+    /// clef instead of the first-clef-wins treble.
+    fn read_staff_clefs(
+        &mut self,
+        attributes: Node<'_, '_>,
+    ) -> std::collections::BTreeMap<u32, Option<TextLine>> {
+        let mut clefs = std::collections::BTreeMap::new();
+        for clef_node in children_named(attributes, "clef") {
+            let number = clef_node
+                .attribute("number")
+                .and_then(|raw| raw.trim().parse::<u32>().ok())
+                .unwrap_or(1);
+            let sign = child_text(clef_node, "sign").unwrap_or("G");
+            let line = child_text(clef_node, "line").unwrap_or("2");
+            let octave_change = child_text(clef_node, "clef-octave-change")
+                .and_then(|text| self.parse_i8(text, "clef-octave-change"))
+                .unwrap_or(0);
+            clefs.insert(
+                number,
+                clef_text_from(sign, line, octave_change).map(text_line),
+            );
+        }
+        clefs
+    }
+
     /// Invert `<transpose><chromatic>n` -> `midi_transpose = Some(n)`. The writer
     /// emits one `<transpose>` per part from the first voice that has either a
     /// `transpose=` property (ABC text, not in the XML) or `midi_transpose`;
@@ -876,11 +904,8 @@ impl Reader {
             .map(text_line);
         // S3/S6d: the writer emits one `<midi-instrument>` per voice that carried
         // `%%MIDI` sound metadata, in voice order; each is attached to the voice
-        // at the same index during voice assembly below.
-        let staff_id = StaffId {
-            value: 1,
-            span: READER_SPAN,
-        };
+        // at the same index during voice assembly below. (Each voice's staff is
+        // assigned per `<staff>` below; grand-staff parts span >1 staff.)
 
         // S6d: the writer interleaves a part's voices with `<backup>` and a
         // per-sequence `<voice>` number. The reader reconstructs each `<voice>`
@@ -999,6 +1024,21 @@ impl Reader {
             midi_transpose = self.read_transpose(attributes);
         }
 
+        // Grand-staff (`<staves> > 1`) reconstruction: route each voice to its
+        // `<staff>` and give it that staff's `<clef number=N>`, so a piano's lower
+        // staff reads in bass instead of the first-clef-wins treble. Single-staff
+        // parts (the only shape croma's own writer emits) keep `staves_count == 1`
+        // and the original single-staff path below, so the self-loop is unaffected.
+        let staves_count = header_attributes.map(read_staves_count).unwrap_or(1);
+        let staff_clefs = header_attributes
+            .map(|attributes| self.read_staff_clefs(attributes))
+            .unwrap_or_default();
+        let voice_staffs = if staves_count > 1 {
+            voice_staff_map(part_node)
+        } else {
+            std::collections::BTreeMap::new()
+        };
+
         // Order voices by their numeric `<voice>` value so `<voice>1` ->
         // `part.voices[0]` (numbered `0 + 1` on re-write). A part with no notes at
         // all still reconstructs a single empty voice so the writer emits a part.
@@ -1023,12 +1063,29 @@ impl Reader {
                 let midi_instrument = part_list_instrument.and_then(|instrument| instrument.midi);
                 let instrument_name =
                     part_list_instrument.and_then(|instrument| instrument.name.clone());
-                // Only the first (staff) voice carries the header clef/transpose
-                // and its ABC `transpose=` property; extra voices share the staff
-                // but the writer reads clef/transpose from the FIRST qualifying
-                // voice per part, so leaving extras default reproduces the single
-                // `<clef>`/`<transpose>` emission.
-                let (mut init_props, transpose) = if index == 0 {
+                // Which staff this voice lives on (grand staff only; single-staff
+                // parts route every voice to staff 1).
+                let voice_staff = if staves_count > 1 {
+                    voice_staffs
+                        .get(&accumulator.voice)
+                        .copied()
+                        .unwrap_or(1)
+                        .clamp(1, staves_count)
+                } else {
+                    1
+                };
+                // Clef/transpose. Single-staff: only the first voice carries the
+                // header clef (the writer reads clef from the FIRST voice per
+                // staff), so extras stay default — reproducing the single `<clef>`.
+                // Grand staff: each voice carries ITS staff's clef so the writer
+                // emits one `<clef number=N>` per staff (the bass clef survives).
+                let (mut init_props, transpose) = if staves_count > 1 {
+                    let props = VoicePropertiesModel {
+                        clef: staff_clefs.get(&voice_staff).cloned().flatten(),
+                        ..VoicePropertiesModel::default()
+                    };
+                    (props, if index == 0 { midi_transpose } else { None })
+                } else if index == 0 {
                     (initial_properties.clone(), midi_transpose)
                 } else {
                     (VoicePropertiesModel::default(), None)
@@ -1042,7 +1099,10 @@ impl Reader {
                 };
                 Voice {
                     id: voice_id,
-                    staff: staff_id,
+                    staff: StaffId {
+                        value: voice_staff,
+                        span: READER_SPAN,
+                    },
                     initial_key: (index == 0).then(|| initial_key.clone()).flatten(),
                     initial_meter: (index == 0).then(|| initial_meter.clone()).flatten(),
                     initial_properties: init_props.clone(),
@@ -1056,7 +1116,11 @@ impl Reader {
             })
             .collect();
 
-        let staff_voice_ids: Vec<VoiceId> = voices.iter().map(|voice| voice.id.clone()).collect();
+        // One `Staff` per staff number, each listing the voices routed to it (in
+        // voice order). A single-staff part yields exactly one staff holding every
+        // voice — identical to the previous hardcoded shape, so the writer's
+        // single-`<clef>` self-loop output is unchanged.
+        let staves = build_staves(staves_count, &voices);
 
         PartOutcome {
             part: Part {
@@ -1068,11 +1132,7 @@ impl Reader {
                 instruments: entry
                     .map(|entry| entry.instruments.clone())
                     .unwrap_or_default(),
-                staves: vec![Staff {
-                    id: staff_id,
-                    voices: staff_voice_ids,
-                    source_span: READER_SPAN,
-                }],
+                staves,
                 voices,
                 source_span: READER_SPAN,
             },
@@ -3339,10 +3399,33 @@ fn part_score_blocks(score: &Score) -> Vec<PartScoreBlock> {
                 .iter()
                 .map(|voice| voice.id.value.as_str())
                 .collect::<Vec<_>>();
-            let text = match voice_ids.as_slice() {
-                [] => part.id.value.clone(),
-                [id] => (*id).to_owned(),
-                ids => format!("({})", ids.join(" ")),
+            let text = if part.staves.len() > 1 {
+                // Grand staff: brace the staves so the lowering rebuilds one part
+                // with separate staves. Each staff contributes its voice id (or a
+                // parenthesised group when a single staff carries several voices),
+                // in staff order: `{P2 P2#2}`, or `{(A B) C}`.
+                let staff_groups = part
+                    .staves
+                    .iter()
+                    .filter_map(|staff| match staff.voices.as_slice() {
+                        [] => None,
+                        [id] => Some(id.value.clone()),
+                        ids => Some(format!(
+                            "({})",
+                            ids.iter()
+                                .map(|id| id.value.as_str())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        )),
+                    })
+                    .collect::<Vec<_>>();
+                format!("{{{}}}", staff_groups.join(" "))
+            } else {
+                match voice_ids.as_slice() {
+                    [] => part.id.value.clone(),
+                    [id] => (*id).to_owned(),
+                    ids => format!("({})", ids.join(" ")),
+                }
             };
             PartScoreBlock {
                 part_id: part.id.value.clone(),
@@ -4740,6 +4823,54 @@ fn hex_utf8(text: &str) -> String {
 /// The trimmed text of the first `name` child element of `node`.
 fn child_text<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
     child_element(node, name).and_then(node_text)
+}
+
+/// One [`Staff`] per staff number `1..=count`, each listing the voice ids routed
+/// to it (in voice order). A `count` of 1 yields a single staff holding every
+/// voice — byte-identical to the previous hardcoded single-staff shape, so the
+/// writer's self-loop output is unchanged for the single-staff parts croma emits.
+fn build_staves(count: u32, voices: &[Voice]) -> Vec<Staff> {
+    (1..=count.max(1))
+        .map(|staff_number| Staff {
+            id: StaffId {
+                value: staff_number,
+                span: READER_SPAN,
+            },
+            voices: voices
+                .iter()
+                .filter(|voice| voice.staff.value == staff_number)
+                .map(|voice| voice.id.clone())
+                .collect(),
+            source_span: READER_SPAN,
+        })
+        .collect()
+}
+
+/// `<staves>N` in a part's header `<attributes>` (default 1). A value > 1 marks a
+/// grand staff (e.g. piano) whose voices route to different staves with their own
+/// clefs.
+fn read_staves_count(attributes: Node<'_, '_>) -> u32 {
+    child_text(attributes, "staves")
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .filter(|count| *count >= 1)
+        .unwrap_or(1)
+}
+
+/// The staff each `<voice>` lives on, from the first `<staff>` seen for that voice
+/// across the part's notes (default staff 1, default voice "1"). Routes each
+/// reconstructed [`Voice`] to its staff in a grand-staff part.
+fn voice_staff_map(part_node: Node<'_, '_>) -> std::collections::BTreeMap<String, u32> {
+    let mut map = std::collections::BTreeMap::new();
+    for measure in children_named(part_node, "measure") {
+        for note in children_named(measure, "note") {
+            let voice = child_text(note, "voice").unwrap_or("1").to_owned();
+            let staff = child_text(note, "staff")
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .unwrap_or(1);
+            map.entry(voice).or_insert(staff);
+        }
+    }
+    map
 }
 
 /// The `<divisions>` declared directly inside an `<attributes>` block, if valid
