@@ -1576,6 +1576,96 @@ fn foreign_extended_articulations_survive_abc_projection() {
 }
 
 #[test]
+fn foreign_cross_voice_slur_round_trips_through_xvoice_carrier() {
+    // A slur whose start is in voice 1 and stop is in voice 2 (across a
+    // `<backup>`) cannot be spelled with ABC `(`/`)`, which pair within one
+    // `V:` stream. croma carries each end on `[I:croma-xvoice-slur]` so the
+    // cross-voice `<slur>` survives MusicXML -> ABC -> MusicXML. (pdmx_0998.)
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1"><part-name>Part</part-name></score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>1</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>2</beats><beat-type>4</beat-type></time>
+      </attributes>
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>1</duration><voice>1</voice><type>quarter</type>
+        <notations><slur type="start" number="1"/></notations>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>5</octave></pitch>
+        <duration>1</duration><voice>1</voice><type>quarter</type>
+      </note>
+      <backup><duration>2</duration></backup>
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration><voice>2</voice><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>F</step><octave>4</octave></pitch>
+        <duration>1</duration><voice>2</voice><type>quarter</type>
+        <notations><slur type="stop" number="1"/></notations>
+      </note>
+    </measure>
+  </part>
+</score-partwise>
+"#;
+
+    // Reader reads the cross-voice slur into the model (both ends).
+    let score = read_musicxml(xml).value;
+
+    // ABC projection carries each end as `[I:croma-xvoice-slur]` instead of a
+    // `(`/`)` that would mis-pair within a single voice.
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert_eq!(
+        abc.matches("[I:croma-xvoice-slur").count(),
+        2,
+        "both cross-voice slur ends must ride a carrier:\n{abc}"
+    );
+    assert!(abc.contains("role=start"), "start carrier missing:\n{abc}");
+    assert!(abc.contains("role=stop"), "stop carrier missing:\n{abc}");
+
+    // ABC -> MusicXML re-export reconstructs the cross-voice `<slur>`.
+    let roundtrip = export_musicxml(&abc)
+        .expect("cross-voice slur ABC should export")
+        .musicxml;
+    assert_eq!(count(&roundtrip, "<slur type=\"start\""), 1);
+    assert_eq!(count(&roundtrip, "<slur type=\"stop\""), 1);
+    let c = note_with_step(&roundtrip, "C");
+    let f = note_with_step(&roundtrip, "F");
+    assert!(
+        c.contains("<slur type=\"start\"") && c.contains("<voice>1</voice>"),
+        "slur start must re-emit on C in voice 1:\n{c}"
+    );
+    assert!(
+        f.contains("<slur type=\"stop\"") && f.contains("<voice>2</voice>"),
+        "slur stop must re-emit on F in voice 2:\n{f}"
+    );
+}
+
+/// Count of `needle` in `haystack`.
+fn count(haystack: &str, needle: &str) -> usize {
+    haystack.matches(needle).count()
+}
+
+/// The `<note>...</note>` block whose pitch carries `<step>{step}</step>`.
+fn note_with_step<'a>(xml: &'a str, step: &str) -> &'a str {
+    let needle = format!("<step>{step}</step>");
+    let at = xml
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no note with step {step}"));
+    let start = xml[..at].rfind("<note").expect("step inside a note");
+    let end = xml[at..].find("</note>").expect("note closes") + at + "</note>".len();
+    &xml[start..end]
+}
+
+#[test]
 fn foreign_tremolos_survive_abc_projection() {
     let xml = r#"<?xml version="1.0"?>
 <score-partwise version="3.1">

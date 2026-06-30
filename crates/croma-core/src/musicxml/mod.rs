@@ -2,7 +2,7 @@ use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference}
 use crate::model::{
     AccidentalMark, ClefChangeModel, DecorationAttachment, EventAttachments, Fraction,
     GraceNoteEvent, Pitch, RestEvent, RestVisibility, Score, SlurRole, StaffId, TimedEvent,
-    TimedEventKind, TimelineEventKind, TupletAttachment, VoiceTimedEvent,
+    TimedEventKind, TimelineEventKind, TupletAttachment, VoiceTimedEvent, XVOICE_SLUR_PAIR_ID_BASE,
 };
 use crate::parse::ParseReport;
 
@@ -272,10 +272,38 @@ pub(crate) struct SlurNumbers {
 
 impl SlurNumbers {
     pub(crate) fn number_for(&mut self, slur_voice_key: &str, pair_id: u32, role: SlurRole) -> u32 {
+        // A cross-voice slur (reconstructed from `[I:croma-xvoice-slur]`) has its
+        // two ends under different voice keys, so the per-voice start/stop
+        // bookkeeping cannot pair them. Number them by `pair_id` alone — which is
+        // unique in the reserved range — so both ends share one `<slur number>`.
+        if pair_id >= XVOICE_SLUR_PAIR_ID_BASE {
+            return self.cross_voice_number(pair_id);
+        }
         match role {
             SlurRole::Start => self.start(slur_voice_key, pair_id),
             SlurRole::Stop => self.stop(slur_voice_key, pair_id),
         }
+    }
+
+    /// Number both ends of a cross-voice slur identically, independent of which
+    /// end the writer emits first (voice order can place the stop before the
+    /// start). The first end seen reserves the lowest free number; the second
+    /// end reuses and releases it.
+    fn cross_voice_number(&mut self, pair_id: u32) -> u32 {
+        if let Some(index) = self
+            .active
+            .iter()
+            .position(|active| active.pair_id == pair_id)
+        {
+            return self.active.remove(index).number;
+        }
+        let number = self.lowest_available_number();
+        self.active.push(ActiveSlurNumber {
+            slur_voice_key: String::new(),
+            pair_id,
+            number,
+        });
+        number
     }
 
     fn start(&mut self, slur_voice_key: &str, pair_id: u32) -> u32 {

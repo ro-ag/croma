@@ -28,9 +28,9 @@ use crate::model::{
     LoweredEventAtom, LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel,
     MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective,
     RestVisibility, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
-    ScoreDirectiveTokenModel, ScoreMetadata, Staff, StaffId, StemDirectionModel, TempoBeat,
-    TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
-    VoicePropertiesModel, VoiceTimeline, lcm,
+    ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff, StaffId, StemDirectionModel,
+    TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -173,6 +173,15 @@ struct MultiVoiceLowering {
     lyric_lines: Vec<VoicedLyricLine>,
     symbol_lines: Vec<VoicedSymbolLine>,
     diagnostics: Vec<Diagnostic>,
+    /// Cross-voice slur carriers (`[I:croma-xvoice-slur pair=N role=..]`)
+    /// re-pair across voices by their `pair=` id. This maps each carrier `pair`
+    /// to the shared model `pair_id` allocated for that cross-voice slur, so the
+    /// start (in one voice) and the stop (in another) land the SAME
+    /// `SlurAttachment.pair_id` — the model shape a same-voice slur produces.
+    /// Ids come from [`XVOICE_SLUR_PAIR_ID_BASE`] so they never collide with the
+    /// small per-voice slur ids.
+    xvoice_slur_pair_ids: Vec<(u32, u32)>,
+    next_xvoice_slur_pair_id: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +216,8 @@ impl MultiVoiceLowering {
             lyric_lines: Vec::new(),
             symbol_lines: Vec::new(),
             diagnostics: Vec::new(),
+            xvoice_slur_pair_ids: Vec::new(),
+            next_xvoice_slur_pair_id: XVOICE_SLUR_PAIR_ID_BASE,
         };
 
         for voice in &field_state.voices {
@@ -550,6 +561,20 @@ impl MultiVoiceLowering {
                     inline.value.span,
                 ));
             }
+            // Inline `[I:..]` instruction field. This is the dispatch point for
+            // croma's private `[I:croma-*]` CARRIERS — namespaced annotations that
+            // round-trip MusicXML facts ABC 2.1 cannot natively express (per-note
+            // instruments, functional harmony text, `<forward>` gaps, wide tuplets,
+            // …). Each carrier has an emit builder in `to_abc.rs`, a
+            // `parse_<thing>_instruction` below (`strip_prefix("croma-<name>")`), and
+            // a re-emit site in `musicxml/`; the parsed fact is staged in a
+            // `pending_musicxml_*` slot and drained onto the next event in
+            // `lower/voice.rs`. The full namespace, syntax (incl. the `-hex=` rule for
+            // `]`/`%`/control chars), and the per-carrier catalogue live in
+            // `docs/carriers.md`. Each `if let Some(..) = parse_*` arm returns on a
+            // match; an UNRECOGNISED `[I:..]` (incl. an unknown `croma-*`) falls
+            // through to the display-directive tail below and is dropped with a
+            // diagnostic — carriers are NOT preserved verbatim across croma versions.
             'I' => {
                 if let Some(meter) =
                     parse_initial_meter_instruction(&inline.value.value, inline.value.span)
@@ -610,6 +635,20 @@ impl MultiVoiceLowering {
                         tuplet.role,
                         inline.value.span,
                     );
+                    return;
+                }
+                if let Some(xvoice) = parse_xvoice_slur_instruction(&inline.value.value) {
+                    // A slur whose ends are in different voices: `(`/`)` cannot
+                    // span two `V:` streams, so each end rides a carrier. The
+                    // shared `pair=` re-pairs the ends across voices onto ONE
+                    // model `pair_id` (drained onto the next event as a
+                    // `SlurAttachment`, the same shape a same-voice slur makes).
+                    let pair_id = self.xvoice_slur_pair_id(xvoice.pair);
+                    self.current_state().pending_xvoice_slurs.push((
+                        pair_id,
+                        xvoice.role,
+                        inline.value.span,
+                    ));
                     return;
                 }
                 if parse_musicxml_after_grace_instruction(&inline.value.value) {
@@ -957,6 +996,24 @@ impl MultiVoiceLowering {
         );
         self.voices.push(state);
         self.voices.len() - 1
+    }
+
+    /// The shared model `pair_id` for a cross-voice slur carrier `pair=`,
+    /// allocating one on first sight so the matching end (in another voice,
+    /// lowered separately) re-pairs onto the same id. Ids start at
+    /// [`XVOICE_SLUR_PAIR_ID_BASE`] so they stay disjoint from per-voice slur ids.
+    fn xvoice_slur_pair_id(&mut self, carrier_pair: u32) -> u32 {
+        if let Some((_, pair_id)) = self
+            .xvoice_slur_pair_ids
+            .iter()
+            .find(|(carrier, _)| *carrier == carrier_pair)
+        {
+            return *pair_id;
+        }
+        let pair_id = self.next_xvoice_slur_pair_id;
+        self.next_xvoice_slur_pair_id = self.next_xvoice_slur_pair_id.saturating_add(1);
+        self.xvoice_slur_pair_ids.push((carrier_pair, pair_id));
+        pair_id
     }
 
     fn current_state(&mut self) -> &mut LoweringState {
@@ -2026,6 +2083,32 @@ fn parse_musicxml_tuplet_instruction(value: &str) -> Option<MusicXmlTupletInstru
         normal_notes,
         role,
     })
+}
+
+struct XvoiceSlurInstruction {
+    pair: u32,
+    role: SlurRole,
+}
+
+/// Parse `[I:croma-xvoice-slur pair=N role=start|stop]` — one end of a slur
+/// whose start and stop sit in different voices (`(`/`)` cannot span `V:`
+/// lines). `pair` re-pairs the two ends across voices; `role` is which end.
+fn parse_xvoice_slur_instruction(value: &str) -> Option<XvoiceSlurInstruction> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-xvoice-slur")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    let pair = parse_croma_u32(&fields, "pair")
+        .or_else(|| parse_croma_u32(&fields, "pair-id"))
+        .or_else(|| parse_croma_u32(&fields, "id"))?;
+    let role = match fields.get("role").map(|value| value.trim()) {
+        Some("start") => SlurRole::Start,
+        Some("stop") => SlurRole::Stop,
+        _ => return None,
+    };
+    Some(XvoiceSlurInstruction { pair, role })
 }
 
 fn parse_musicxml_after_grace_instruction(value: &str) -> bool {

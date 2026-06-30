@@ -20,6 +20,10 @@ behavior is documented across the capability docs.
 
 ## Reference & policy
 
+- [carriers.md](carriers.md) — the `[I:croma-*]` / `%%croma-*` private carrier
+  namespace: how croma round-trips MusicXML facts ABC can't express while staying
+  ignorable by other tools. Definition, syntax, the round-trip contract, and the
+  full 20-carrier catalogue.
 - [midi-directives.md](midi-directives.md) — `%%MIDI` directive policy and its
   MusicXML translation.
 - [parser-backlog.md](parser-backlog.md) — open parser/model/export items.

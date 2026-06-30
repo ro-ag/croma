@@ -180,6 +180,12 @@ pub(crate) struct LoweringState {
     /// Croma MusicXML-origin `[I:croma-time-symbol ...]` carrier waiting for the
     /// next `M:`/`[M:...]` field in this voice.
     pub(crate) pending_musicxml_time_symbol: Option<String>,
+    /// Cross-voice slur ends (`[I:croma-xvoice-slur ...]`) waiting for the next
+    /// timed note/rest/chord event: `(shared pair_id, role, carrier span)`. The
+    /// `pair_id` is already resolved to the shared cross-voice id, so the drain
+    /// just materialises a [`SlurAttachment`] — the matching end in the other
+    /// voice carries the same `pair_id`.
+    pub(crate) pending_xvoice_slurs: Vec<(u32, SlurRole, Span)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,6 +275,7 @@ impl LoweringState {
             pending_musicxml_meter_restatement: false,
             pending_musicxml_key_restatement: false,
             pending_musicxml_time_symbol: None,
+            pending_xvoice_slurs: Vec::new(),
         }
     }
 
@@ -328,7 +335,22 @@ impl LoweringState {
         attachments
             .tuplets
             .append(&mut self.pending_musicxml_tuplets);
+        self.drain_pending_xvoice_slurs(&mut attachments);
         attachments
+    }
+
+    /// Materialise any pending cross-voice slur ends onto an event's
+    /// attachments. Shared with the chord head so a carrier flushed before a
+    /// chord lands on its head note, mirroring the note/rest drain.
+    fn drain_pending_xvoice_slurs(&mut self, attachments: &mut EventAttachments) {
+        for (pair_id, role, span) in self.pending_xvoice_slurs.drain(..) {
+            attachments.slurs.push(SlurAttachment {
+                pair_id,
+                role,
+                span,
+                dotted: false,
+            });
+        }
     }
 
     pub(crate) fn push_musicxml_tuplet(
@@ -608,6 +630,10 @@ impl LoweringState {
                 attachments
                     .lyric_same_note_duplicates
                     .append(&mut self.pending_musicxml_lyric_duplicates);
+                // A cross-voice slur end (`[I:croma-xvoice-slur ...]`) flushed
+                // before a chord binds to the chord head, like the note/rest
+                // path (`take_timed_attachments`).
+                self.drain_pending_xvoice_slurs(&mut attachments);
             }
             let octave =
                 lowered_octave(&member.note).saturating_add(voice_octave_shift(&self.properties));

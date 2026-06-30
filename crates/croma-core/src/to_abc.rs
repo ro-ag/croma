@@ -4,7 +4,8 @@
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::{
     AlignedLyric, ClefChangeModel, EventAttachments, Fraction, HarmonyKindText, KeySignatureModel,
-    Measure, MeterModel, TempoBeatRole, TempoModel, TieRole, TupletAttachment, TupletRole,
+    Measure, MeterModel, SlurRole, TempoBeatRole, TempoModel, TieRole, TupletAttachment,
+    TupletRole,
 };
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
@@ -248,6 +249,157 @@ fn barline_style_instruction(kind: BarlineKind) -> Option<&'static str> {
     }
 }
 
+fn xvoice_slur_instruction(pair: u32, role: SlurRole) -> String {
+    let role = match role {
+        SlurRole::Start => "start",
+        SlurRole::Stop => "stop",
+    };
+    format!("croma-xvoice-slur pair={pair} role={role}")
+}
+
+/// One end of a cross-voice slur to project onto a specific event: which
+/// `attachments.slurs` entry to suppress (its `(`/`)` cannot span two `V:`
+/// streams) and the shared `pair=`/`role` carrier to emit in its place.
+#[derive(Clone, Copy)]
+struct XvoiceSlurEmit {
+    slur_index: usize,
+    pair: u32,
+    role: SlurRole,
+}
+
+type XvoiceSlurMap = std::collections::HashMap<(usize, usize), Vec<XvoiceSlurEmit>>;
+
+/// Locate slur ends that ABC `(`/`)` cannot express because they do not pair
+/// within their own `V:` stream — a slur reaching into or out of another voice.
+///
+/// Each voice's own slurs pair by the same LIFO stack the lowering uses, so a
+/// voice whose slurs balance (the overwhelming majority, and every pure-ABC
+/// score) yields nothing and the normal `(`/`)` projection is left untouched.
+/// What stays unmatched is a *dangling* end: a stop popped on an empty stack or
+/// a start never closed. Those are the ends ABC drops today — projecting only
+/// per-note slur types, the round-trip just needs each dangling end to keep its
+/// type, so each is re-paired (a dangling stop with a dangling start sharing the
+/// source `<slur number>`/`pair_id`) and carried. Whichever start pairs with
+/// whichever stop is immaterial to the per-note projection; pairing by document
+/// order simply gives the carried ends matching `<slur number>`s.
+///
+/// The result is keyed by `(global voice index, event index)`.
+fn detect_cross_voice_slurs(score: &Score) -> XvoiceSlurMap {
+    struct Dangler {
+        voice: usize,
+        event: usize,
+        slur_index: usize,
+        pair_id: u32,
+        measure: u32,
+    }
+    let mut dangling_starts: Vec<Dangler> = Vec::new();
+    let mut dangling_stops: Vec<Dangler> = Vec::new();
+    for (voice, voice_model) in score
+        .parts
+        .iter()
+        .flat_map(|part| part.voices.iter())
+        .enumerate()
+    {
+        let mut open: Vec<Dangler> = Vec::new();
+        for (event, timed) in voice_model.events.iter().enumerate() {
+            for (slur_index, slur) in timed.attachments.slurs.iter().enumerate() {
+                let dangler = Dangler {
+                    voice,
+                    event,
+                    slur_index,
+                    pair_id: slur.pair_id,
+                    measure: timed.measure.index,
+                };
+                match slur.role {
+                    SlurRole::Start => open.push(dangler),
+                    SlurRole::Stop => {
+                        if open.pop().is_none() {
+                            dangling_stops.push(dangler);
+                        }
+                    }
+                }
+            }
+        }
+        dangling_starts.append(&mut open);
+    }
+    let mut map = XvoiceSlurMap::new();
+    if dangling_starts.is_empty() || dangling_stops.is_empty() {
+        return map;
+    }
+    // Pair the dangling ends. Both ends of one source slur carry the same
+    // `<slur number>` (`pair_id`), so group by it and pair a dangling stop with a
+    // dangling start in document order — `(measure, voice, event)`, the order
+    // MusicXML lays a measure out (voice by voice, each behind a `<backup>`).
+    let mut starts: std::collections::BTreeMap<u32, Vec<Dangler>> =
+        std::collections::BTreeMap::new();
+    for dangler in dangling_starts {
+        starts.entry(dangler.pair_id).or_default().push(dangler);
+    }
+    let mut stops: std::collections::BTreeMap<u32, Vec<Dangler>> =
+        std::collections::BTreeMap::new();
+    for dangler in dangling_stops {
+        stops.entry(dangler.pair_id).or_default().push(dangler);
+    }
+    let order = |d: &Dangler| (d.measure, d.voice, d.event);
+    let mut next_pair = 1u32;
+    for (pair_id, mut group_starts) in starts {
+        let Some(mut group_stops) = stops.remove(&pair_id) else {
+            continue;
+        };
+        group_starts.sort_by_key(&order);
+        group_stops.sort_by_key(&order);
+        for (start, stop) in group_starts.into_iter().zip(group_stops) {
+            let pair = next_pair;
+            next_pair += 1;
+            map.entry((start.voice, start.event))
+                .or_default()
+                .push(XvoiceSlurEmit {
+                    slur_index: start.slur_index,
+                    pair,
+                    role: SlurRole::Start,
+                });
+            map.entry((stop.voice, stop.event))
+                .or_default()
+                .push(XvoiceSlurEmit {
+                    slur_index: stop.slur_index,
+                    pair,
+                    role: SlurRole::Stop,
+                });
+        }
+    }
+    map
+}
+
+/// The inline carrier(s) for an event's cross-voice slur ends, emitted in place
+/// of the suppressed `(`/`)`.
+fn xvoice_slur_prefix(emits: &[XvoiceSlurEmit]) -> String {
+    let mut out = String::new();
+    for emit in emits {
+        out.push_str(&format!(
+            "[I:{}]",
+            xvoice_slur_instruction(emit.pair, emit.role)
+        ));
+    }
+    out
+}
+
+/// A copy of `attachments` with the cross-voice slur ends removed, so the normal
+/// slur projection no longer emits a `(`/`)` for them.
+fn strip_xvoice_slurs(
+    attachments: &EventAttachments,
+    emits: &[XvoiceSlurEmit],
+) -> EventAttachments {
+    let mut stripped = attachments.clone();
+    let mut indexes: Vec<usize> = emits.iter().map(|emit| emit.slur_index).collect();
+    indexes.sort_unstable_by(|a, b| b.cmp(a));
+    for index in indexes {
+        if index < stripped.slurs.len() {
+            stripped.slurs.remove(index);
+        }
+    }
+    stripped
+}
+
 fn ending_close_instruction(model: &crate::model::RepeatEndingCloseModel) -> Option<String> {
     let close_type = match model.close_type {
         crate::model::RepeatEndingCloseType::Stop => "stop",
@@ -400,7 +552,9 @@ fn write_body(score: &Score, unit: Rational) -> String {
         && score.parts[0].voices.len() == 1
         && score.parts[0].voices[0].id.value == "1"
         && score.parts[0].voices[0].properties == crate::model::VoicePropertiesModel::default();
+    let xvoice = detect_cross_voice_slurs(score);
     let mut body = String::new();
+    let mut voice_global_index = 0usize;
     for (part_index, part) in score.parts.iter().enumerate() {
         for (voice_index, voice) in part.voices.iter().enumerate() {
             if !single {
@@ -426,7 +580,8 @@ fn write_body(score: &Score, unit: Rational) -> String {
             {
                 body.push_str(&format!("[I:{instruction}] "));
             }
-            body.push_str(&write_voice(voice, unit));
+            body.push_str(&write_voice(voice, unit, voice_global_index, &xvoice));
+            voice_global_index += 1;
         }
     }
     body
@@ -608,7 +763,12 @@ fn shifted(pitch: &Pitch, shift: i8) -> Pitch {
     }
 }
 
-fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
+fn write_voice(
+    voice: &crate::model::Voice,
+    unit: Rational,
+    voice_global_index: usize,
+    xvoice: &XvoiceSlurMap,
+) -> String {
     let mut out = String::new();
     let shift = voice_octave_shift(&voice.properties);
     // Overlay segments (`&`) grouped by the measure they belong to; spliced
@@ -709,26 +869,40 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
         // group. Nested groups can contribute more than one marker here.
         out.push_str(&markers[idx]);
         let tuplet = scales[idx];
+        // Cross-voice slur ends (rare): emit each as an inline `[I:croma-xvoice-
+        // slur ...]` carrier and render the event WITHOUT the `(`/`)` that cannot
+        // span two `V:` streams. For every other event this is a no-op borrow.
+        let xvoice_emits: &[XvoiceSlurEmit] = xvoice
+            .get(&(voice_global_index, idx))
+            .map_or(&[], Vec::as_slice);
+        out.push_str(&xvoice_slur_prefix(xvoice_emits));
+        let stripped_attachments;
+        let attachments: &EventAttachments = if xvoice_emits.is_empty() {
+            &event.attachments
+        } else {
+            stripped_attachments = strip_xvoice_slurs(&event.attachments, xvoice_emits);
+            &stripped_attachments
+        };
         match &event.kind {
             TimedEventKind::Note(note) => {
                 let written = shifted(&note.pitch, shift);
-                out.push_str(&event_prefix(&event.attachments));
+                out.push_str(&event_prefix(attachments));
                 out.push_str(note_accidental(
                     note.written_accidental.as_ref().map(|m| m.kind),
                 ));
                 out.push_str(&pitch_str(&written));
                 out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
-                out.push_str(&event_suffix(&event.attachments));
+                out.push_str(&event_suffix(attachments));
                 out.push(' ');
             }
             TimedEventKind::Rest(rest) => {
-                out.push_str(&event_prefix(&event.attachments));
+                out.push_str(&event_prefix(attachments));
                 out.push(match rest.visibility {
                     RestVisibility::Visible => 'z',
                     RestVisibility::Invisible => 'x',
                 });
                 out.push_str(&length_str(notated_duration(event.duration, tuplet), unit));
-                out.push_str(&event_suffix(&event.attachments));
+                out.push_str(&event_suffix(attachments));
                 out.push(' ');
             }
             TimedEventKind::Chord(chord) => {
@@ -739,7 +913,7 @@ fn write_voice(voice: &crate::model::Voice, unit: Rational) -> String {
                 // member (`[dg-]` ties only g), so each is emitted inline after
                 // its member. A whole-chord tie (`[CE]2-`) also records ties on
                 // every member, so inline emission reproduces its sound exactly.
-                let mut merged = event.attachments.clone();
+                let mut merged = attachments.clone();
                 merged.ties.clear();
                 for member in &chord.members {
                     for slur in &member.attachments.slurs {
