@@ -647,15 +647,15 @@ struct Snippet {
 }
 
 fn run_agent(args: AgentArgs) -> Result<ExitCode, CliError> {
-    let topics = agent::load_topics();
+    let topics = croma_core::agent_topics();
     match args.topic {
-        None => print!("{}", agent::render_index(&topics)),
-        Some(query) => match agent::find(&topics, &query) {
+        None => print!("{}", agent::render_index(topics)),
+        Some(query) => match croma_core::find_agent_topic(&query) {
             Some(topic) => print!("{}", agent::render_topic(topic)),
             None => {
                 return Err(CliError::message(format!(
                     "unknown agent topic `{query}`. Run `croma agent` to list topics ({}).",
-                    agent::topic_ids(&topics)
+                    agent::topic_ids(topics)
                 )));
             }
         },

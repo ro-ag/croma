@@ -25,9 +25,25 @@ vehicles, `key=value` fields, the `-hex=` rule for hostile characters).
 
 [`carriers.md`](carriers.md) is the canonical, implementation-facing spec.
 `croma agent` is its **agent-facing distillation**: the same carriers, framed as
-tasks with runnable examples and no internal pointers. The topic database is a
-JSON file embedded in the binary at build time; a unit test asserts every
+tasks with runnable examples and no internal pointers. A unit test asserts every
 carrier in `carriers.md` has a topic, so the two cannot drift.
+
+## Library access
+
+The topic database is typed data in `croma-core` (so it stays zero-dependency),
+available to library users as well as the CLI:
+
+```rust
+use croma_core::{agent_topics, find_agent_topic};
+
+for topic in agent_topics() {
+    println!("{} — {}", topic.id, topic.summary);
+}
+let slur = find_agent_topic("xvoice-slur").unwrap(); // id, full carrier name, or alias
+println!("{}", slur.body);
+```
+
+`croma agent` is just the terminal presentation over this same data.
 
 ## Typical agent loop
 
