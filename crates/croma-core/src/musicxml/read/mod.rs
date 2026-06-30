@@ -299,8 +299,10 @@ impl Reader {
         score
     }
 
-    /// `<divisions>` lives in the first measure's `<attributes>`; it is what
-    /// maps `<duration>` integers back to rational [`Fraction`]s.
+    /// The score-default `<divisions>` (first in document order). Used only as
+    /// the fallback granularity for [`Score::divisions`]; per-part decoding reads
+    /// each part's own `<divisions>` (issue #239 — a multi-part score may carry a
+    /// different value per part, e.g. Fauré's voice=48 vs piano=8).
     fn read_divisions(&mut self, root: Node<'_, '_>) -> Option<u32> {
         descendants_named(root, "divisions")
             .next()
@@ -577,6 +579,17 @@ impl Reader {
         if let Some(title) = children_named(root, "work")
             .next()
             .and_then(|work| child_element(work, "work-title"))
+        {
+            metadata.title = Some(text_line(raw_text(title)));
+        }
+
+        // Issue #240: many Finale/MuseScore exports title the score via top-level
+        // `<movement-title>` and carry no `<work><work-title>`. Fall back to it so
+        // the ABC projection still emits a `T:` line. `<work-title>` wins when both
+        // are present, keeping writer-produced files (which emit `<work-title>`)
+        // byte-stable.
+        if metadata.title.is_none()
+            && let Some(title) = children_named(root, "movement-title").next()
         {
             metadata.title = Some(text_line(raw_text(title)));
         }
@@ -883,6 +896,17 @@ impl Reader {
         // overwritten, and later tempo directions become `TempoChange` events.
         let mut header_tempo: Option<TempoModel> = None;
 
+        // Issue #239: decode THIS part's durations against ITS OWN `<divisions>`,
+        // not the score-global first value. The piano staff of a Finale/MuseScore
+        // export commonly declares a different divisions than the voice staff; the
+        // global value shrank every piano duration by the divisions ratio.
+        // `read_measure` further tracks any later mid-part redefinition.
+        let part_divisions = children_named(part_node, "measure")
+            .next()
+            .and_then(|measure| child_element(measure, "attributes"))
+            .and_then(|attributes| read_attributes_divisions(self, attributes))
+            .unwrap_or(divisions);
+
         for (position, measure_node) in children_named(part_node, "measure").enumerate() {
             let measure_id = self.read_measure_id(measure_node, position);
             // Only part 1's first measure may yield the score header tempo; in
@@ -893,7 +917,7 @@ impl Reader {
             let capture_header = capture_header_tempo && is_part_first_measure;
             let outcome = self.read_measure(
                 measure_node,
-                divisions,
+                part_divisions,
                 measure_id,
                 capture_header,
                 is_part_first_measure,
@@ -1089,6 +1113,11 @@ impl Reader {
         // selects the active region's state, switched by each note's `<voice>` (a
         // direction/harmony uses its own `<voice>` when present, else the active
         // one).
+        // Issue #239: `<divisions>` is scoped to each part's `<attributes>` and a
+        // later block may redefine it, so the value in effect is tracked locally
+        // and refreshed from every `<attributes>` block below. It is NOT a single
+        // score-global value; the caller passes this part's starting divisions.
+        let mut divisions = divisions;
         let mut voices: Vec<(String, VoiceMeasureState)> = Vec::new();
         let mut current_voice: String = "1".to_owned();
         let mut pending_sequence_backup: Option<Fraction> = None;
@@ -1387,6 +1416,15 @@ impl Reader {
                     seen_note = true;
                 }
                 "attributes" => {
+                    // Issue #239: refresh the divisions in effect from this block,
+                    // whether it is the part's header `<attributes>`, a non-first
+                    // measure's leading block, or a mid-measure redefinition. Every
+                    // subsequent `<duration>` (note/forward/backup) decodes against
+                    // it. This is what makes per-part divisions (the Fauré piano)
+                    // and mid-part divisions changes round-trip correctly.
+                    if let Some(value) = read_attributes_divisions(self, child) {
+                        divisions = value;
+                    }
                     // S6d: a `<measure-style><multiple-rest>N>` is a measure-level
                     // glyph hint regardless of header status; capture it first.
                     if let Some(count) = read_multiple_rest(child) {
@@ -1598,17 +1636,10 @@ impl Reader {
                 "key" => Some(TimedEventKind::KeyChange(self.read_key(child))),
                 "time" => self.read_meter(child).map(TimedEventKind::MeterChange),
                 "clef" => Some(TimedEventKind::ClefChange(self.read_clef_change(child))),
-                // `<divisions>` never appears in a croma mid-tune block (the writer
-                // only emits it in the header `write_attributes`); other children
-                // are not croma's output. Ignore with a diagnostic so a hand-edited
-                // file does not silently lose data.
-                "divisions" => {
-                    self.warn(
-                        "musicxml.read.mid_measure_divisions",
-                        "<divisions> inside a mid-measure <attributes> is not reconstructed",
-                    );
-                    None
-                }
+                // `<divisions>` is reconstructed in the caller's `"attributes"`
+                // arm (issue #239: it refreshes the divisions in effect for the
+                // rest of the measure), so it produces no timed event here.
+                "divisions" => None,
                 // S6d: `<measure-style><multiple-rest>` is read in the caller's
                 // `<attributes>` arm into `Measure.multiple_rest`; it is not a
                 // key/meter/clef change, so ignore it silently here.
@@ -4709,6 +4740,15 @@ fn hex_utf8(text: &str) -> String {
 /// The trimmed text of the first `name` child element of `node`.
 fn child_text<'a>(node: Node<'a, '_>, name: &str) -> Option<&'a str> {
     child_element(node, name).and_then(node_text)
+}
+
+/// The `<divisions>` declared directly inside an `<attributes>` block, if valid
+/// (> 0). Issue #239: divisions is per-part / per-measure, so each `<attributes>`
+/// refreshes the value that subsequent `<duration>` integers decode against.
+fn read_attributes_divisions(reader: &mut Reader, attributes: Node<'_, '_>) -> Option<u32> {
+    child_element(attributes, "divisions")
+        .and_then(|node| parse_u32(reader, node, "divisions"))
+        .filter(|value| *value > 0)
 }
 
 fn parse_u32(reader: &mut Reader, node: Node<'_, '_>, label: &str) -> Option<u32> {

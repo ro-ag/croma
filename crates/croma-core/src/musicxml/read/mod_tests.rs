@@ -9519,3 +9519,143 @@ fn first_diverging_line(expected: &str, actual: &str) -> String {
         format!("<line-count differs: expected {expected_lines}, actual {actual_lines}>")
     }
 }
+
+// --- Per-part divisions (issue #239) ----------------------------------------
+//
+// MusicXML scopes `<divisions>` to each part's `<attributes>` (and a later
+// measure may redefine it). A multi-part score can therefore carry a different
+// divisions per part — common in Finale/MuseScore exports. The reader must
+// decode each part's `<duration>` against THAT part's divisions, not a single
+// global value taken from the first `<divisions>` in document order.
+
+#[test]
+fn per_part_divisions_are_decoded_independently() {
+    // P1 declares divisions=4, P2 declares divisions=2. Both notes are quarter
+    // notes (duration = one beat in their own part). Both must reconstruct as
+    // 1/4. Reading P2's `<duration>2</duration>` against P1's divisions=4 would
+    // misread it as an eighth (1/8) — the Fauré piano bug in miniature.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list>",
+        "<score-part id=\"P1\"><part-name>A</part-name></score-part>",
+        "<score-part id=\"P2\"><part-name>B</part-name></score-part>",
+        "</part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>4</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>1</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>quarter</type></note>",
+        "</measure></part>",
+        "<part id=\"P2\"><measure number=\"1\">",
+        "<attributes><divisions>2</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>1</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch>",
+        "<duration>2</duration><type>quarter</type></note>",
+        "</measure></part>",
+        "</score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    assert_eq!(score.parts.len(), 2, "two parts");
+    assert_eq!(
+        score.parts[0].voices[0].events[0].duration,
+        Fraction::new(1, 4),
+        "P1 quarter at its own divisions=4"
+    );
+    assert_eq!(
+        score.parts[1].voices[0].events[0].duration,
+        Fraction::new(1, 4),
+        "P2 quarter at its own divisions=2 must be 1/4, not misread against P1's divisions=4"
+    );
+}
+
+#[test]
+fn mid_part_divisions_change_is_applied() {
+    // A later measure redefines `<divisions>`. Notes after the change must be
+    // decoded against the new value. Measure 1: div=2, quarter (dur=2) -> 1/4.
+    // Measure 2: div=8, quarter (dur=8) -> 1/4. A reader that froze divisions at
+    // the part's first value would misread measure 2's quarter as a whole note.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<part-list><score-part id=\"P1\"><part-name>A</part-name></score-part></part-list>",
+        "<part id=\"P1\">",
+        "<measure number=\"1\">",
+        "<attributes><divisions>2</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>1</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>2</duration><type>quarter</type></note>",
+        "</measure>",
+        "<measure number=\"2\">",
+        "<attributes><divisions>8</divisions></attributes>",
+        "<note><pitch><step>D</step><octave>4</octave></pitch>",
+        "<duration>8</duration><type>quarter</type></note>",
+        "</measure>",
+        "</part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let events = &score.parts[0].voices[0].events;
+    assert_eq!(
+        events[0].duration,
+        Fraction::new(1, 4),
+        "measure 1 quarter at divisions=2"
+    );
+    assert_eq!(
+        events[1].duration,
+        Fraction::new(1, 4),
+        "measure 2 quarter at the redefined divisions=8 must still be 1/4"
+    );
+}
+
+// --- Movement-title fallback (issue #240) -----------------------------------
+
+#[test]
+fn movement_title_populates_metadata_title_when_work_title_absent() {
+    // A score titled via top-level <movement-title> with no <work><work-title>
+    // (common in Finale/MuseScore exports) must populate metadata.title so the
+    // ABC projection emits a T: line.
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<movement-title>Apres un reve</movement-title>",
+        "<part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>whole</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    assert_eq!(
+        score.metadata.title.as_ref().map(|t| t.text.as_str()),
+        Some("Apres un reve"),
+        "<movement-title> must populate metadata.title when <work-title> is absent"
+    );
+}
+
+#[test]
+fn work_title_wins_over_movement_title() {
+    // When both are present, <work-title> takes precedence (it is what croma's
+    // own writer emits, so the self-loop stays byte-stable).
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<work><work-title>Work Title</work-title></work>",
+        "<movement-title>Movement Title</movement-title>",
+        "<part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>whole</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    assert_eq!(
+        score.metadata.title.as_ref().map(|t| t.text.as_str()),
+        Some("Work Title"),
+        "<work-title> must win when both are present"
+    );
+}
