@@ -9659,3 +9659,41 @@ fn work_title_wins_over_movement_title() {
         "<work-title> must win when both are present"
     );
 }
+
+// --- Composer projection (collateral of #239/#240 audit) --------------------
+//
+// The reader captures `<creator type="composer">` into `metadata.composers`, and
+// `write_musicxml` re-emits it, so composer survives the MusicXML self-loop. But
+// the ABC PROJECTION (`write_abc`) dropped it — no `C:` field — so a
+// MusicXML -> ABC -> MusicXML round trip lost the structured composer entirely.
+// The ABC parser already reads `C:` into composers, so emitting it closes the
+// loop.
+
+#[test]
+fn composer_projects_to_abc_c_field_and_round_trips() {
+    let xml = concat!(
+        "<score-partwise version=\"4.0\">",
+        "<work><work-title>Song</work-title></work>",
+        "<identification><creator type=\"composer\">Gabriel Faure</creator></identification>",
+        "<part-list><score-part id=\"P1\"><part-name>V</part-name></score-part></part-list>",
+        "<part id=\"P1\"><measure number=\"1\">",
+        "<attributes><divisions>1</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><type>whole</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let score = read_musicxml(xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("\nC:Gabriel Faure\n"),
+        "ABC projection must emit a C: composer field, got:\n{abc}"
+    );
+    // Closing the loop: the projected ABC must export back to a <creator>.
+    let xml2 = export(&abc);
+    assert!(
+        xml2.contains("<creator type=\"composer\">Gabriel Faure</creator>"),
+        "C: must export back to <creator type=\"composer\">, got:\n{xml2}"
+    );
+}
