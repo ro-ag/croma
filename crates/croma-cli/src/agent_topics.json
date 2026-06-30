@@ -1,0 +1,156 @@
+[
+  {
+    "id": "syntax",
+    "aliases": ["carriers", "carrier", "annotations", "notation"],
+    "category": "Basics",
+    "summary": "the carrier convention: the two vehicles, key=value, the -hex= rule",
+    "body": "croma round-trips MusicXML through ABC. ABC 2.1 cannot natively express every MusicXML fact, so croma stores those facts in namespaced **carriers** that ride inside the ABC text and are re-applied on the way back to MusicXML. Every other ABC tool ignores them, so the file stays playable in abc2midi / abcm2ps / abcjs while croma keeps full fidelity.\n\nTwo vehicles:\n- inline `[I:croma-<name> k=v ...]` — anchored to the following note / chord / barline / `[M:]` / `[K:]`. The default; use it for per-note and per-measure facts.\n- header `%%croma-<name> ...` — anchored to a voice or the score. Use only for score/voice-level facts.\n\nFields are `key=value`, space-separated; double-quote a value with spaces (`name=\"Snare Drum\"`). A boolean carrier carries no fields — the bare name is the flag (e.g. `[I:croma-musicxml-forward]`).\n\nThe `-hex=` rule: inside an inline `[I:...]`, the characters `]`, `%`, and raw control characters break the ABC tokenizer. When a free-text value contains one, croma emits a hex variant of the field instead — `text=\"John\"` becomes `text-hex=4a6f686e` (the UTF-8 bytes as lowercase hex). Header `%%` lines are line-level and do not need it.\n\nRun `croma agent <topic>` for any specific notation, then `croma xml file.abc` to confirm it persisted."
+  },
+  {
+    "id": "part-instrument",
+    "aliases": ["croma-musicxml-instrument", "instrument-def", "midi-instrument", "drum-kit"],
+    "category": "Instruments & chord symbols",
+    "summary": "a part's declared instrument (name, MIDI channel/program/volume/pan), incl. drum kits",
+    "body": "Persists a part's `<score-instrument>` + `<midi-instrument>` — id, name, and MIDI channel/program/volume/pan/midi-unpitched, including percussion kits ABC cannot name.\n\nVehicle: header `%%croma-musicxml-instrument` (one per declared instrument), placed under the voice's `V:` line.\n\nExample:\n```\nV:P1\n%%croma-musicxml-instrument id=\"P1-I1\" name=\"Snare Drum\" channel=10 midi-unpitched=39\n```\nVerify: `croma xml f.abc | grep -E '<score-instrument|<midi-instrument'`"
+  },
+  {
+    "id": "note-instrument",
+    "aliases": ["croma-note-instrument", "per-note-instrument"],
+    "category": "Instruments & chord symbols",
+    "summary": "which declared instrument sounds a single note",
+    "body": "Persists a per-note `<instrument id=.../>` reference — which of the part's declared instruments sounds this note (a multi-instrument part, e.g. a drum staff).\n\nVehicle: inline `[I:croma-note-instrument id=\"...\"]` before the note.\n\nExample: `[I:croma-note-instrument id=\"P1-I1\"]C`\n\nPair it with `croma agent part-instrument`, which declares the ids.\nVerify: `croma xml f.abc | grep '<instrument '`"
+  },
+  {
+    "id": "harmony-text",
+    "aliases": ["croma-harmony-text", "chord-symbol-text"],
+    "category": "Instruments & chord symbols",
+    "summary": "the printed text/provenance of a chord symbol (<harmony><kind text=...>)",
+    "body": "Persists a chord symbol's `<harmony><kind text=...>` provenance: `Textless` (a kind with no printed text) vs `Text(value)` (an explicit printed quality) vs (carrier absent) an ABC-native chord whose text croma rebuilds from the chord string.\n\nVehicle: inline `[I:croma-harmony-text ...]` immediately before the quoted chord symbol. Free text uses the `-hex=` rule.\n\nExamples:\n```\n[I:croma-harmony-text text=\"dim\"]\"Bdim\"B\n[I:croma-harmony-text textless=1]\"C\"C\n```\nVerify: `croma xml f.abc | grep -A2 '<harmony'`"
+  },
+  {
+    "id": "lyric-extend",
+    "aliases": ["croma-lyric-extend", "melisma", "extend"],
+    "category": "Lyrics",
+    "summary": "a same-note melisma <extend/> on the primary syllable of a verse",
+    "body": "Persists the primary syllable's same-note `<extend/>` melisma flag for a verse — a syllable held with an extender that `w:` alone cannot mark on that note.\n\nVehicle: inline `[I:croma-lyric-extend verse=N]` before the note; `w:` still carries the syllable text.\n\nExample: `[I:croma-lyric-extend verse=1]A2`\nVerify: `croma xml f.abc | grep '<extend'`"
+  },
+  {
+    "id": "lyric-duplicate",
+    "aliases": ["croma-lyric-duplicate", "same-note-syllable"],
+    "category": "Lyrics",
+    "summary": "an extra same-note, same-verse syllable that w: cannot spell (hex text)",
+    "body": "Persists an additional `<lyric>` syllable on the SAME note and SAME verse — two syllables on one note, which `w:` cannot express. Free text uses the `-hex=` rule.\n\nVehicle: inline `[I:croma-lyric-duplicate verse=N text=\"...\"]` (optional `extend=1`) before the note.\n\nExample: `[I:croma-lyric-duplicate verse=1 text=\"John\"]C`\nVerify: `croma xml f.abc | grep -c '<lyric'`"
+  },
+  {
+    "id": "tempo",
+    "aliases": ["croma-tempo", "tempo-text"],
+    "category": "Tempo",
+    "summary": "a printed tempo whose <words> text Q: cannot hold (hex text)",
+    "body": "Persists a printed/sound tempo whose `<words>` text the ABC `Q:` field cannot hold — role, words, bpm and reference beat. Free text uses the `-hex=` rule.\n\nVehicle: inline `[I:croma-tempo role=printed ...]` (voice-scoped).\n\nExample: `[I:croma-tempo role=printed text-hex=416c6c6567726f bpm=100 beat-n=1 beat-d=4]`\nVerify: `croma xml f.abc | grep -E '<metronome|<words'`"
+  },
+  {
+    "id": "sound-tempo",
+    "aliases": ["croma-sound-tempo", "playback-tempo"],
+    "category": "Tempo",
+    "summary": "a playback-only tempo (<sound tempo>) with no printed metronome",
+    "body": "Persists a playback-only tempo — a MusicXML `<sound tempo=...>` with NO printed metronome — as bpm + reference beat, so the round trip does not print a metronome the source never showed.\n\nVehicle: inline `[I:croma-sound-tempo bpm=N beat-n=.. beat-d=.. text=\"..\"]` (voice-scoped).\n\nExample: `[I:croma-sound-tempo bpm=80 beat-n=1 beat-d=4 text=\"80\"]`\nVerify: `croma xml f.abc | grep '<sound tempo'`"
+  },
+  {
+    "id": "initial-key",
+    "aliases": ["croma-initial-key", "per-voice-key"],
+    "category": "Key & meter",
+    "summary": "a per-voice initial <key> the header K: cannot encode",
+    "body": "Persists a per-voice initial `<key>` that differs from the score `K:` header — fifths plus explicit accidentals the header cannot encode for one voice.\n\nVehicle: inline `[I:croma-initial-key fifths=N accidentals=STEP:ALTER,...]` at the start of the voice.\n\nExample: `[I:croma-initial-key fifths=0 accidentals=F:1,C:1]`\nVerify: `croma xml f.abc | grep -A3 '<key'`"
+  },
+  {
+    "id": "initial-meter",
+    "aliases": ["croma-initial-meter", "per-voice-meter"],
+    "category": "Key & meter",
+    "summary": "a per-voice initial <time> (display + common/cut symbol) the header M: cannot encode",
+    "body": "Persists a per-voice initial `<time>` — its display string and common/cut symbol — that differs from the score `M:` header (e.g. header `M:C|` but this part starts numeric `2/2`).\n\nVehicle: inline `[I:croma-initial-meter display=\"..\" symbol=common|cut]` at the start of the voice.\n\nExample: `[I:croma-initial-meter display=\"2/2\" symbol=cut]`\nVerify: `croma xml f.abc | grep -A3 '<time'`"
+  },
+  {
+    "id": "key-restatement",
+    "aliases": ["croma-key-restatement", "redundant-key"],
+    "category": "Key & meter",
+    "summary": "flag: the following [K:] is a redundant restatement that must survive ABC dedupe",
+    "body": "A flag marking the following inline `[K:]` as a redundant restatement of the already-effective key that must survive ABC's dedupe (the source restated `<key>` even though it was unchanged).\n\nVehicle: boolean inline `[I:croma-key-restatement]` immediately before the `[K:]`.\n\nExample: `[I:croma-key-restatement] [K:F]`\nVerify: `croma xml f.abc | grep -c '<key'`"
+  },
+  {
+    "id": "meter-restatement",
+    "aliases": ["croma-meter-restatement", "redundant-meter"],
+    "category": "Key & meter",
+    "summary": "flag: the following [M:] is a redundant restatement that must survive ABC dedupe",
+    "body": "A flag marking the following inline `[M:]` as a redundant restatement of the already-effective meter that must survive ABC's dedupe.\n\nVehicle: boolean inline `[I:croma-meter-restatement]` immediately before the `[M:]`.\n\nExample: `[I:croma-meter-restatement] [M:4/4]`\nVerify: `croma xml f.abc | grep -c '<time'`"
+  },
+  {
+    "id": "time-symbol",
+    "aliases": ["croma-time-symbol", "common-cut"],
+    "category": "Key & meter",
+    "summary": "a <time symbol=\"common|cut\"> when the M: display is numeric, not C / C|",
+    "body": "Persists `<time symbol=\"common|cut\">` when the meter DISPLAY is numeric (not the ABC `C` / `C|` shorthand) — e.g. a 4/4 printed with the common-time glyph.\n\nVehicle: a whole-line `%%croma-time-symbol ...` before the header `M:`, or inline `[I:croma-time-symbol symbol=cut]` before a mid-tune `[M:]`.\n\nExample: `[I:croma-time-symbol symbol=cut]`\nVerify: `croma xml f.abc | grep '<time symbol'`"
+  },
+  {
+    "id": "forward",
+    "aliases": ["croma-musicxml-forward", "invisible-rest-gap"],
+    "category": "Cursor & structure",
+    "summary": "flag: re-emit <forward> (a silent cursor advance) for an invisible-rest gap, not a <rest>",
+    "body": "A flag telling croma to re-emit the following invisible-rest gap as a MusicXML `<forward>` (a silent cursor advance) rather than a `<note><rest>`.\n\nVehicle: boolean inline `[I:croma-musicxml-forward]` before the invisible rest (`x`).\n\nExample: `[I:croma-musicxml-forward]x4`\nVerify: `croma xml f.abc | grep '<forward'`"
+  },
+  {
+    "id": "sequence-backup",
+    "aliases": ["croma-musicxml-sequence-backup", "backup"],
+    "category": "Cursor & structure",
+    "summary": "the explicit <backup> duration between two voice sequences in a measure",
+    "body": "Persists the explicit `<backup>` duration between two voice sequences in a measure when it overshoots the prior cursor — a backup ABC's voice model cannot otherwise spell.\n\nVehicle: inline `[I:croma-musicxml-sequence-backup n=NUM d=DEN]` on the first event of the later sequence (voice-scoped).\n\nExample: `[I:croma-musicxml-sequence-backup n=3 d=8]`\nVerify: `croma xml f.abc | grep '<backup'`"
+  },
+  {
+    "id": "wide-tuplet",
+    "aliases": ["croma-musicxml-tuplet", "tuplet"],
+    "category": "Cursor & structure",
+    "summary": "a tuplet whose actual_notes is outside ABC's (p:q:r range (2..=9)",
+    "body": "Persists a tuplet whose `actual_notes` is outside ABC's `(p:q:r` range (2..=9) — e.g. an 11:8 — as id, actual, normal and role, so the `<time-modification>` / `<tuplet>` survive.\n\nVehicle: inline `[I:croma-musicxml-tuplet id=N actual=A normal=B role=start|continue|stop]` on each member.\n\nExample: `[I:croma-musicxml-tuplet id=1 actual=11 normal=8 role=start]C`\nVerify: `croma xml f.abc | grep -A2 '<time-modification'`"
+  },
+  {
+    "id": "after-grace",
+    "aliases": ["croma-after-grace", "trailing-grace"],
+    "category": "Cursor & structure",
+    "summary": "flag: the following {...} grace group is an after-grace bound to the PRECEDING note",
+    "body": "A flag marking the following `{...}` grace group as an AFTER-grace bound to the preceding note (a trailing ornament), distinct from an ordinary leading grace.\n\nVehicle: boolean inline `[I:croma-after-grace]` between the note and its trailing `{...}`.\n\nExample: `C[I:croma-after-grace]{de}`\nVerify: `croma xml f.abc | grep '<grace'`"
+  },
+  {
+    "id": "clef-change",
+    "aliases": ["croma-clef-cursor", "mid-tune-clef"],
+    "category": "Cursor & structure",
+    "summary": "a mid-tune <clef> wrapped in <backup>/<forward> (clef text + cursor durations; hex)",
+    "body": "Persists a mid-tune `<clef>` that the source wrapped in `<backup>`/`<forward>` cursor moves — the clef text plus the back / pre-back durations. Clef text uses the `-hex=` rule when hostile.\n\nVehicle: inline `[I:croma-clef-cursor clef=\"..\" back-n=.. back-d=.. [pre-back-n=.. pre-back-d=..]]`.\n\nExample: `[I:croma-clef-cursor clef=\"bass\" back-n=1 back-d=4]`\nVerify: `croma xml f.abc | grep '<clef'`"
+  },
+  {
+    "id": "barline-style",
+    "aliases": ["croma-barline-style", "dashed-barline"],
+    "category": "Cursor & structure",
+    "summary": "a dashed barline (<bar-style>dashed</bar-style>) — ABC has no glyph",
+    "body": "Persists a barline style ABC has no glyph for — currently `dashed` (`<bar-style>dashed</bar-style>`).\n\nVehicle: inline `[I:croma-barline-style style=dashed]` before the barline.\n\nExample: `[I:croma-barline-style style=dashed] |`\nVerify: `croma xml f.abc | grep '<bar-style'`"
+  },
+  {
+    "id": "measure-number",
+    "aliases": ["croma-measure-number", "pickup-number"],
+    "category": "Cursor & structure",
+    "summary": "a <measure number=...> that differs from croma's canonical 1-based index (hex)",
+    "body": "Persists a `<measure number=...>` that differs from croma's canonical 1-based index — a pickup `0`, a repeated movement-local number, or a label like `X1`. Odd values use the `-hex=` rule.\n\nVehicle: inline `[I:croma-measure-number n=...]` at the start of the measure.\n\nExample: `[I:croma-measure-number n=0]`\nVerify: `croma xml f.abc | grep '<measure number'`"
+  },
+  {
+    "id": "ending-close",
+    "aliases": ["croma-ending-close", "volta-close"],
+    "category": "Cursor & structure",
+    "summary": "an explicit volta-bracket close (<ending type=\"stop|discontinue\">)",
+    "body": "Persists an explicit volta-bracket close — `<ending type=\"stop|discontinue\">` plus its side (location) and numbers — that ABC's repeat syntax does not spell on its own.\n\nVehicle: inline `[I:croma-ending-close type=stop|discontinue location=right number=\"..\"]`.\n\nExample: `[I:croma-ending-close type=discontinue location=right number=\"1,2\"]`\nVerify: `croma xml f.abc | grep '<ending'`"
+  },
+  {
+    "id": "xvoice-slur",
+    "aliases": ["croma-xvoice-slur", "slur-across-voices", "cross-voice-slur"],
+    "category": "Cursor & structure",
+    "summary": "a slur whose start and stop are in different voices",
+    "body": "A `<slur>` whose start and stop are in different voices cannot be spelled with ABC `(`/`)`, which pair within one `V:` stream. Carry each end instead.\n\nSyntax: `[I:croma-xvoice-slur pair=N role=start|stop]` on the note at each end. `pair` is a shared id that re-pairs the two ends across voices; `role` says which end.\n\nExample (slur from voice 1 into voice 2):\n```\n%%score (1 2)\nV:1\n[I:croma-xvoice-slur pair=1 role=start]C D E F |\nV:2\n[I:croma-xvoice-slur pair=1 role=stop]G A B z |\n```\nBecomes `<slur type=\"start\"/>` on C (voice 1) and `<slur type=\"stop\"/>` on G (voice 2).\nVerify: `croma xml f.abc | grep '<slur'`"
+  }
+]

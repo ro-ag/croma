@@ -15,10 +15,12 @@ use croma_fmt::{
 use owo_colors::OwoColorize;
 use serde_json::json;
 
+mod agent;
 mod cli;
 
 use cli::{
-    CheckArgs, Cli, Command, CommonArgs, DiagnosticsFormat, DumpArgs, DumpKind, FmtArgs, XmlArgs,
+    AgentArgs, CheckArgs, Cli, Command, CommonArgs, DiagnosticsFormat, DumpArgs, DumpKind, FmtArgs,
+    XmlArgs,
 };
 #[cfg(feature = "musicxml-reader")]
 use cli::{Musicxml2abcArgs, ReadArgs, ReadFormat};
@@ -55,6 +57,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         Command::Check(args) => run_check(args),
         Command::Dump(args) => run_dump(args),
         Command::Fmt(args) => run_fmt(args),
+        Command::Agent(args) => run_agent(args),
         #[cfg(feature = "musicxml-reader")]
         Command::Read(args) => run_read(args),
         #[cfg(feature = "musicxml-reader")]
@@ -641,6 +644,24 @@ struct CheckResult {
 struct Snippet {
     line: String,
     marker: String,
+}
+
+fn run_agent(args: AgentArgs) -> Result<ExitCode, CliError> {
+    let topics = agent::load_topics();
+    match args.topic {
+        None => print!("{}", agent::render_index(&topics)),
+        Some(query) => match agent::find(&topics, &query) {
+            Some(topic) => print!("{}", agent::render_topic(topic)),
+            None => {
+                return Err(CliError::message(format!(
+                    "unknown agent topic `{query}`. Run `croma agent` to list topics ({}).",
+                    agent::topic_ids(&topics)
+                )));
+            }
+        },
+    }
+    flush_stdout()?;
+    Ok(ExitCode::SUCCESS)
 }
 
 #[derive(Debug)]
