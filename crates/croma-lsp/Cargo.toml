@@ -21,11 +21,11 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-croma-core = { path = "../croma-core", version = "1.1.0" }
+croma-core = { path = "../croma-core", version = "1.1.1" }
 # `croma-fmt` is itself zero-external-dep (path dep on croma-core only), so it
 # introduces no third-party crate; it backs `textDocument/formatting` (R2) and
 # the future `source.fixAll` code action (R3). Nothing flows into croma-core.
-croma-fmt = { path = "../croma-fmt", version = "1.1.0" }
+croma-fmt = { path = "../croma-fmt", version = "1.1.1" }
 lsp-server = "0.8"
 lsp-types = "0.97"
 # `serde`/`serde_json` are shared deps of lsp-server + lsp-types; the transport

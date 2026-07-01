@@ -17,7 +17,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
-croma-core = { path = "../croma-core", version = "1.1.0" }
+croma-core = { path = "../croma-core", version = "1.1.1" }
 
 [dev-dependencies]
 # Dev-only statistical benchmark harness (see croma-core's note). Plotters chain
