@@ -76,6 +76,9 @@ pub struct CommonArgs {
     /// Treat warnings as errors (non-zero exit when any warning is present).
     #[arg(long, global = true)]
     pub warnings_as_errors: bool,
+    /// Suppress warnings for unrecognized croma private carriers.
+    #[arg(long, global = true)]
+    pub silence_croma_carrier_warnings: bool,
 }
 
 impl CommonArgs {
@@ -99,7 +102,12 @@ impl CommonArgs {
 
     /// Lower the common flags into core `ParseOptions`.
     pub fn parse_options(&self) -> ParseOptions {
-        ParseOptions::new(self.spec(), self.parse_mode())
+        let options = ParseOptions::new(self.spec(), self.parse_mode());
+        if self.silence_croma_carrier_warnings {
+            options.suppress_croma_carrier_warnings()
+        } else {
+            options
+        }
     }
 
     /// The chosen diagnostics format.

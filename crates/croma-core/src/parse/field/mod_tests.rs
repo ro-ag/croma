@@ -362,6 +362,41 @@ fn parses_i_score_as_structured_directive() {
 }
 
 #[test]
+fn croma_instruction_warnings_can_be_suppressed() {
+    let source = "X:1\nI:croma-future-carrier value\nI:unknown value\nK:C\nC\n";
+
+    let default = parse_document(source, ParseOptions::default());
+    assert!(
+        default
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.field.unknown_instruction"),
+        "default parsing should warn for unknown I: instructions"
+    );
+
+    let suppressed = parse_document(
+        source,
+        ParseOptions::default().suppress_croma_carrier_warnings(),
+    );
+    let messages = suppressed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("croma-future-carrier")),
+        "croma-private I: warnings should be suppressed: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|message| message.contains("`unknown`")),
+        "ordinary unknown I: warnings must stay visible: {messages:?}"
+    );
+}
+
+#[test]
 fn invalid_voice_stem_is_preserved_as_other_property_with_span() {
     let report = parse_document(
         "X:1\nV:bad stem=sideways clef=bass\nK:C\nC\n",

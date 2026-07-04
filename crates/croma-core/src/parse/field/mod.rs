@@ -6,7 +6,7 @@ pub(crate) mod voice;
 
 use crate::diagnostic::{Diagnostic, Span};
 use crate::model::Fraction;
-use crate::options::{AbcSpecVersion, ParseMode, ParseOptions};
+use crate::options::{AbcSpecVersion, DiagnosticOptions, ParseMode, ParseOptions};
 use crate::source::SourceText;
 use crate::syntax::tune::{ContinuationKind, LineContext, LineKind, SurfaceMap};
 
@@ -250,6 +250,7 @@ impl FieldState {
 pub struct DialectState {
     pub spec: AbcSpecVersion,
     pub mode: ParseMode,
+    pub diagnostics: DiagnosticOptions,
     pub declared_version: Option<Spanned<AbcVersion>>,
     pub charset: Option<Spanned<String>>,
     pub line_break: LineBreakMode,
@@ -262,6 +263,7 @@ impl DialectState {
         Self {
             spec: options.spec,
             mode: options.mode,
+            diagnostics: options.diagnostics,
             declared_version: None,
             charset: None,
             line_break: LineBreakMode::default(),
@@ -821,10 +823,16 @@ impl<'source> FieldParser<'source> {
                 })
             }
             _ => {
-                self.diagnostics.push(unknown_instruction_warning(
-                    &directive.value,
-                    directive.span,
-                ));
+                if self
+                    .options
+                    .diagnostics
+                    .should_emit_croma_carrier_warning(&directive.value)
+                {
+                    self.diagnostics.push(unknown_instruction_warning(
+                        &directive.value,
+                        directive.span,
+                    ));
+                }
                 ParsedFieldKind::Interpretation(InterpretationField::Unknown {
                     directive,
                     value: rest,

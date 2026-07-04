@@ -3642,6 +3642,58 @@ fn inline_instruction_field_warns_and_changes_nothing() {
 }
 
 #[test]
+fn croma_private_carrier_warnings_can_be_suppressed_during_music_analysis() {
+    let source =
+        "X:1\nL:1/8\nK:C\n%%croma-future value\n[I:croma-future value]C [I:tuplets 1 0 0]D|\n";
+
+    let default_document = parse_document(source, ParseOptions::default());
+    assert!(
+        default_document
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.directive.unsupported"),
+        "default parsing should warn for unknown %%croma-* directives"
+    );
+    let default_report = parse_tune_report_from_document(&default_document.value);
+    assert!(
+        default_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "abc.field.inline_ignored"
+                && diagnostic.message.contains("croma-future")
+        }),
+        "default lowering should warn for unknown [I:croma-*] carriers"
+    );
+
+    let suppressed_document = parse_document(
+        source,
+        ParseOptions::default().suppress_croma_carrier_warnings(),
+    );
+    assert!(
+        suppressed_document
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("croma-future")),
+        "%%croma-* warnings should be suppressed: {:?}",
+        suppressed_document.diagnostics
+    );
+    let suppressed_report = parse_tune_report_from_document(&suppressed_document.value);
+    assert!(
+        suppressed_report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("croma-future")),
+        "[I:croma-*] warnings should be suppressed: {:?}",
+        suppressed_report.diagnostics
+    );
+    assert!(
+        suppressed_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "abc.field.inline_ignored" && diagnostic.message.contains("tuplets")
+        }),
+        "ordinary inline I: warnings must stay visible: {:?}",
+        suppressed_report.diagnostics
+    );
+}
+
+#[test]
 fn unsupported_directive_is_metadata_not_music() {
     let source = "X:1\nK:C\n%%foo bar\nC D|\n";
     let (tune, diagnostics) = tune_for(source);

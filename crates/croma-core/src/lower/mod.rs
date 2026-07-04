@@ -19,6 +19,7 @@ use crate::lower::accidental::{accidental_from_field_sign, key_accidental_policy
 use crate::lower::align::{align_lyrics, align_symbols};
 use crate::lower::semantic::semantic_voice_from_timeline;
 use crate::lower::tempo::parse_tempo_model;
+use crate::options::DiagnosticOptions;
 use std::collections::BTreeMap;
 
 use crate::lower::timeline::build_voice_timeline;
@@ -173,6 +174,7 @@ struct MultiVoiceLowering {
     lyric_lines: Vec<VoicedLyricLine>,
     symbol_lines: Vec<VoicedSymbolLine>,
     diagnostics: Vec<Diagnostic>,
+    diagnostic_options: DiagnosticOptions,
     /// Cross-voice slur carriers (`[I:croma-xvoice-slur pair=N role=..]`)
     /// re-pair across voices by their `pair=` id. This maps each carrier `pair`
     /// to the shared model `pair_id` allocated for that cross-voice slur, so the
@@ -216,6 +218,7 @@ impl MultiVoiceLowering {
             lyric_lines: Vec::new(),
             symbol_lines: Vec::new(),
             diagnostics: Vec::new(),
+            diagnostic_options: field_state.dialect.diagnostics,
             xvoice_slur_pair_ids: Vec::new(),
             next_xvoice_slur_pair_id: XVOICE_SLUR_PAIR_ID_BASE,
         };
@@ -719,8 +722,13 @@ impl MultiVoiceLowering {
                     .split_whitespace()
                     .next()
                     .unwrap_or_default();
-                self.diagnostics
-                    .push(inline_instruction_ignored_warning(directive, inline.span));
+                if self
+                    .diagnostic_options
+                    .should_emit_croma_carrier_warning(directive)
+                {
+                    self.diagnostics
+                        .push(inline_instruction_ignored_warning(directive, inline.span));
+                }
             }
             // Any other inline field (`[w:]`, `[r:]`, `[N:]`, `[s:]`, `[U:]`,
             // ...) is a VALID field croma's lowering does not yet apply — an
