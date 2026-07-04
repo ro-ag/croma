@@ -30,6 +30,7 @@ pub(crate) fn parse_music_document(
     fields: &ParsedAbcFields,
 ) -> ParseReport<ParsedMusicDocument> {
     let mut diagnostics = Vec::new();
+    let diagnostic_options = fields.file_header.dialect.diagnostics;
     let mut tunes = surface
         .line_map
         .tunes
@@ -89,7 +90,12 @@ pub(crate) fn parse_music_document(
                     parse_preserved_stylesheet_directive(source, line)
                     && let Some(tune) = tunes.iter_mut().find(|tune| tune.tune_index == tune_index)
                 {
-                    diagnostics.push(unsupported_directive_warning(directive.name.span));
+                    push_unsupported_directive_warning(
+                        &mut diagnostics,
+                        diagnostic_options,
+                        &directive.name.value,
+                        directive.name.span,
+                    );
                     tune.preserved_directives.push(directive);
                 }
             }
@@ -150,7 +156,12 @@ pub(crate) fn parse_music_document(
                 tune.score_directives.push(directive);
             } else if let Some((_, directive)) = parse_preserved_stylesheet_directive(source, line)
             {
-                diagnostics.push(unsupported_directive_warning(directive.name.span));
+                push_unsupported_directive_warning(
+                    &mut diagnostics,
+                    diagnostic_options,
+                    &directive.name.value,
+                    directive.name.span,
+                );
                 tune.preserved_directives.push(directive);
             }
             continue;
@@ -1188,6 +1199,17 @@ fn unsupported_directive_warning(span: Span) -> Diagnostic {
     .with_recovery_note(RecoveryNote::new(
         "The directive did not produce music events.",
     ))
+}
+
+fn push_unsupported_directive_warning(
+    diagnostics: &mut Vec<Diagnostic>,
+    options: crate::DiagnosticOptions,
+    name: &str,
+    span: Span,
+) {
+    if options.should_emit_croma_carrier_warning(name) {
+        diagnostics.push(unsupported_directive_warning(span));
+    }
 }
 
 fn abc_music_reference() -> SpecReference {

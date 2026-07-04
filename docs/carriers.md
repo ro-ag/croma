@@ -160,6 +160,12 @@ loses any newer carrier. If a future need requires cross-version preservation, t
 be a deliberate change (keep unknown `croma-*` instructions as an opaque preserved
 directive), not the current behaviour.
 
+If those forward-compatibility warnings are expected noise in a workflow, library
+callers can use `ParseOptions::suppress_croma_carrier_warnings()` (or
+`ExportOptions::suppress_croma_carrier_warnings()`), and the CLI exposes the same
+filter as `--silence-croma-carrier-warnings`. The filter applies only to private
+`croma-` carrier names; ordinary unsupported directives still warn.
+
 ## 7. Adding a carrier (checklist)
 
 Only add a carrier for a **meaningful** construct ABC genuinely cannot express. Do *not*

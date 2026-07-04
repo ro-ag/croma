@@ -168,6 +168,25 @@ fn warnings_as_errors_turns_warning_only_input_into_failure() {
 }
 
 #[test]
+fn croma_carrier_warnings_can_be_silenced_from_cli() {
+    let dir = TestDir::new("silence-croma-carrier-warnings");
+    let file = dir.write("carrier.abc", "X:1\nK:C\n[I:croma-future value]C\n");
+
+    let warnings_as_errors = run_croma([os("check"), os("--warnings-as-errors"), file.as_os_str()]);
+    assert_failure(&warnings_as_errors);
+    assert!(stderr(&warnings_as_errors).contains("warning[abc.field.inline_ignored]"));
+
+    let silenced = run_croma([
+        os("check"),
+        os("--warnings-as-errors"),
+        os("--silence-croma-carrier-warnings"),
+        file.as_os_str(),
+    ]);
+    assert_success(&silenced);
+    assert!(stderr(&silenced).is_empty());
+}
+
+#[test]
 fn fmt_writes_canonical_formatting_to_stdout() {
     let dir = TestDir::new("fmt-stdout");
     let file = dir.write("unformatted.abc", "X:1\nK:C\nC   D  |\n");

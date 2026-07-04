@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-04
+
+### Added
+
+- **Croma private carrier warning suppression.** Library callers can now silence
+  expected forward-compatibility warnings for unknown `[I:croma-*]`, `I:croma-*`,
+  and `%%croma-*` carriers via `ParseOptions::suppress_croma_carrier_warnings()`
+  or `ExportOptions::suppress_croma_carrier_warnings()`. The CLI exposes the same
+  filter as `--silence-croma-carrier-warnings`; ordinary unsupported directives
+  still warn.
+
+[1.1.2]: https://github.com/ro-ag/croma/releases/tag/v1.1.2
+
 ## [1.1.1] - 2026-06-30
 
 A MusicXML-reader fidelity patch: multi-part scores with heterogeneous
@@ -174,5 +187,5 @@ crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
   writer, reader, formatter, corpus throughput, and LSP latency, with a committed
   reference report in [`docs/benchmarks.md`](docs/benchmarks.md).
 
-[Unreleased]: https://github.com/ro-ag/croma/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/ro-ag/croma/compare/v1.1.2...HEAD
 [0.9.0]: https://github.com/ro-ag/croma/releases/tag/v0.9.0

@@ -24,7 +24,9 @@ pub use model::{
     MeterModel, NoteEvent, Part, Pitch, Rational, RestEvent, RestVisibility, Score, ScoreMetadata,
     Staff, StaffId, TimedEvent, TimedEventKind, Tune, TupletAttachment, TupletRole, Voice,
 };
-pub use options::{AbcSpecVersion, ExportOptions, LowerOptions, ParseMode, ParseOptions};
+pub use options::{
+    AbcSpecVersion, DiagnosticOptions, ExportOptions, LowerOptions, ParseMode, ParseOptions,
+};
 pub use parse::field::{
     DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField,
 };
