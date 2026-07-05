@@ -3,9 +3,9 @@
 //! Emits ABC that is a `croma fmt` fixed point and round-trips through
 //! `parse_document` + `lower_score` with an identical structural projection.
 use crate::model::{
-    AlignedLyric, ClefChangeModel, EventAttachments, Fraction, HarmonyKindText, KeySignatureModel,
-    Measure, MeterModel, SlurRole, TempoBeatRole, TempoModel, TieRole, TupletAttachment,
-    TupletRole,
+    AlignedLyric, AnnotationPlacementModel, ClefChangeModel, EventAttachments, Fraction,
+    HarmonyKindText, KeySignatureModel, Measure, MeterModel, SlurRole, TempoBeatRole, TempoModel,
+    TieRole, TupletAttachment, TupletRole,
 };
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
@@ -140,6 +140,17 @@ fn harmony_text_instruction(kind_text: &HarmonyKindText) -> Option<String> {
             abc_carrier_quoted(value)
         )),
     }
+}
+
+fn direction_placement_instruction(placement: AnnotationPlacementModel) -> String {
+    let placement = match placement {
+        AnnotationPlacementModel::Below => "below",
+        AnnotationPlacementModel::Above
+        | AnnotationPlacementModel::Left
+        | AnnotationPlacementModel::Right
+        | AnnotationPlacementModel::Free => "above",
+    };
+    format!("croma-direction-placement placement={placement}")
 }
 
 fn lyric_extend_instruction(verse: u32) -> String {
@@ -994,7 +1005,10 @@ fn write_voice(
                 }
             }
             TimedEventKind::Spacer => {
-                out.push_str("y ");
+                out.push_str(&event_prefix(attachments));
+                out.push('y');
+                out.push_str(&event_suffix(attachments));
+                out.push(' ');
             }
             // Mid-tune changes re-emit inline; `display` is the verbatim
             // source text (modes, C/C|, exp-accidental lists, clef tokens).
@@ -1311,6 +1325,12 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
         out.push_str(&quoted_str(&annotation.text));
     }
     for deco in &attachments.decorations {
+        if let Some(placement) = deco.placement {
+            out.push_str(&format!(
+                "[I:{}]",
+                direction_placement_instruction(placement)
+            ));
+        }
         out.push_str(&decoration_str(&deco.name));
     }
     out
@@ -1535,6 +1555,12 @@ fn chord_member_prefix(
         }) {
             continue;
         }
+        if let Some(placement) = decoration.placement {
+            out.push_str(&format!(
+                "[I:{}]",
+                direction_placement_instruction(placement)
+            ));
+        }
         out.push_str(&decoration_str(&decoration.name));
     }
     out
@@ -1702,7 +1728,12 @@ fn overlay_str(segment: &crate::model::OverlaySegment, unit: Rational, shift: i8
                 out.push_str(&event_suffix(&event.attachments));
                 out.push(' ');
             }
-            TimelineEventKind::Spacer => out.push_str("y "),
+            TimelineEventKind::Spacer => {
+                out.push_str(&event_prefix(&event.attachments));
+                out.push('y');
+                out.push_str(&event_suffix(&event.attachments));
+                out.push(' ');
+            }
             TimelineEventKind::Barline { kind } => {
                 out.push_str(barline_str(*kind));
                 out.push(' ');

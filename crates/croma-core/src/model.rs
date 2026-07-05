@@ -564,6 +564,7 @@ pub struct DecorationAttachment {
     pub name: String,
     pub span: Span,
     pub source_kind: DecorationSourceKind,
+    pub placement: Option<AnnotationPlacementModel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

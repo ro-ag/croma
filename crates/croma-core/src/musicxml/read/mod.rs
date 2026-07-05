@@ -2377,7 +2377,9 @@ impl Reader {
                         for dynamic in element_children(element) {
                             match dynamic_decoration_name(dynamic.tag_name().name()) {
                                 Some(name) => {
-                                    attachments.decorations.push(named_decoration(name));
+                                    attachments
+                                        .decorations
+                                        .push(named_decoration_with_placement(name, placement));
                                 }
                                 None => self.warn(
                                     "musicxml.read.unsupported_dynamic",
@@ -2391,7 +2393,9 @@ impl Reader {
                     }
                     "wedge" => {
                         if let Some(name) = wedge_decoration_name(element.attribute("type")) {
-                            attachments.decorations.push(named_decoration(name));
+                            attachments
+                                .decorations
+                                .push(named_decoration_with_placement(name, placement));
                         } else {
                             self.warn(
                                 "musicxml.read.unsupported_wedge",
@@ -2402,8 +2406,12 @@ impl Reader {
                             );
                         }
                     }
-                    "coda" => attachments.decorations.push(named_decoration("coda")),
-                    "segno" => attachments.decorations.push(named_decoration("segno")),
+                    "coda" => attachments
+                        .decorations
+                        .push(named_decoration_with_placement("coda", placement)),
+                    "segno" => attachments
+                        .decorations
+                        .push(named_decoration_with_placement("segno", placement)),
                     // A `<rehearsal>` is the writer's (and abc2xml's) encoding of a
                     // body/inline `P:` section label. Reconstruct it as a distinct
                     // SectionLabel; `raw_text` XML-unescapes the label, inverting
@@ -4358,6 +4366,21 @@ fn named_decoration(name: &str) -> DecorationAttachment {
         name: name.to_owned(),
         span: READER_SPAN,
         source_kind: DecorationSourceKind::Named,
+        placement: None,
+    }
+}
+
+fn named_decoration_with_placement(name: &str, placement: Option<&str>) -> DecorationAttachment {
+    let mut decoration = named_decoration(name);
+    decoration.placement = direction_placement_model(placement);
+    decoration
+}
+
+fn direction_placement_model(placement: Option<&str>) -> Option<AnnotationPlacementModel> {
+    match placement {
+        Some("above") => Some(AnnotationPlacementModel::Above),
+        Some("below") => Some(AnnotationPlacementModel::Below),
+        _ => None,
     }
 }
 

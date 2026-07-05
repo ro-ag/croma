@@ -25,7 +25,8 @@ impl DiagnosticOptions {
     }
 
     pub(crate) fn should_emit_croma_carrier_warning(self, name: &str) -> bool {
-        !self.suppress_croma_carrier_warnings || !is_croma_carrier_name(name)
+        !self.suppress_croma_carrier_warnings
+            || !(is_croma_carrier_name(name) || is_croma_managed_midi_name(name))
     }
 }
 
@@ -33,6 +34,10 @@ pub fn is_croma_carrier_name(name: &str) -> bool {
     name.trim_start()
         .get(.."croma-".len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("croma-"))
+}
+
+fn is_croma_managed_midi_name(name: &str) -> bool {
+    name.trim_start().eq_ignore_ascii_case("MIDI")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,11 +112,13 @@ mod tests {
     }
 
     #[test]
-    fn croma_carrier_warning_suppression_matches_private_namespace_only() {
+    fn croma_carrier_warning_suppression_matches_private_namespace_and_midi() {
         let diagnostics = DiagnosticOptions::default().suppress_croma_carrier_warnings();
 
         assert!(!diagnostics.should_emit_croma_carrier_warning("croma-future"));
         assert!(!diagnostics.should_emit_croma_carrier_warning("CROMA-future"));
+        assert!(!diagnostics.should_emit_croma_carrier_warning("MIDI"));
+        assert!(!diagnostics.should_emit_croma_carrier_warning("midi"));
         assert!(diagnostics.should_emit_croma_carrier_warning("tuplets"));
         assert!(diagnostics.should_emit_croma_carrier_warning("not-croma-future"));
     }
