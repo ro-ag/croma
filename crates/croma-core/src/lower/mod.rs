@@ -24,14 +24,14 @@ use std::collections::BTreeMap;
 
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, BarlineKind, ClefChangeModel,
-    Event, EventAttachments, Fraction, HarmonyKindText, KeyAccidentalModel, KeySignatureModel,
-    LoweredEventAtom, LoweredEventAtomKind, LyricControl, MeterModel, MidiInstrumentModel,
-    MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part, PartId, PreservedDirective,
-    RestVisibility, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
-    ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff, StaffId, StemDirectionModel,
-    TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
-    VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, lcm,
+    Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, AnnotationPlacementModel,
+    BarlineKind, ClefChangeModel, Event, EventAttachments, Fraction, HarmonyKindText,
+    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, LyricControl,
+    MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part,
+    PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
+    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff,
+    StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind,
+    TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -606,6 +606,11 @@ impl MultiVoiceLowering {
                     self.current_state().pending_musicxml_harmony_text = Some(harmony_text);
                     return;
                 }
+                if let Some(placement) = parse_direction_placement_instruction(&inline.value.value)
+                {
+                    self.current_state().pending_musicxml_direction_placement = Some(placement);
+                    return;
+                }
                 if let Some(verse) = parse_lyric_extend_instruction(&inline.value.value) {
                     self.current_state()
                         .pending_musicxml_lyric_extends
@@ -721,6 +726,7 @@ impl MultiVoiceLowering {
                     .value
                     .split_whitespace()
                     .next()
+                    .and_then(|name| name.split('=').next())
                     .unwrap_or_default();
                 if self
                     .diagnostic_options
@@ -822,10 +828,30 @@ impl MultiVoiceLowering {
                         );
                     }
                 }
-                MusicItem::Spacer(spacer) => self
-                    .current_state()
-                    .lowered
-                    .push(LoweredEvent::Untimed(Event::Spacer { span: spacer.span })),
+                MusicItem::Spacer(spacer) => {
+                    if self.current_state().has_pending_spacer_prefix_attachments() {
+                        let source_order = self.next_source_order();
+                        let attachments = self
+                            .current_state()
+                            .take_timed_attachments(&AttachmentBundle::default());
+                        self.current_state().push_time_group(
+                            vec![(
+                                LoweredEventAtom {
+                                    kind: LoweredEventAtomKind::Spacer { span: spacer.span },
+                                    duration: Fraction::zero(),
+                                },
+                                false,
+                                attachments,
+                            )],
+                            line.line_index,
+                            source_order,
+                        );
+                    } else {
+                        self.current_state()
+                            .lowered
+                            .push(LoweredEvent::Untimed(Event::Spacer { span: spacer.span }));
+                    }
+                }
                 MusicItem::Chord(chord) => {
                     let source_order = self.next_source_order();
                     self.current_state()
@@ -934,9 +960,9 @@ impl MultiVoiceLowering {
                 MusicItem::Decoration(decoration) => {
                     // Flushed ahead of its symbol (§4.14); binds to the next
                     // timed event like the quoted-text cases above.
-                    self.current_state()
-                        .pending_decorations
-                        .push(decoration.clone());
+                    let state = self.current_state();
+                    let decoration = state.decoration_attachment_model(decoration);
+                    state.pending_decorations.push(decoration);
                 }
                 MusicItem::Unsupported(_) | MusicItem::Malformed(_) => {}
             }
@@ -1984,6 +2010,20 @@ fn parse_harmony_text_instruction(value: &str) -> Option<HarmonyKindText> {
         return Some(HarmonyKindText::Textless);
     }
     fields.get("text").cloned().map(HarmonyKindText::Text)
+}
+
+fn parse_direction_placement_instruction(value: &str) -> Option<AnnotationPlacementModel> {
+    let value = value.trim();
+    let rest = value.strip_prefix("croma-direction-placement")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let fields = parse_croma_key_values(rest);
+    match fields.get("placement").map(String::as_str) {
+        Some("above") => Some(AnnotationPlacementModel::Above),
+        Some("below") => Some(AnnotationPlacementModel::Below),
+        _ => None,
+    }
 }
 
 fn parse_lyric_extend_instruction(value: &str) -> Option<u32> {

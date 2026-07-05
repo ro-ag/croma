@@ -134,7 +134,7 @@ pub(crate) struct LoweringState {
     pub(crate) pending_annotations: Vec<QuotedTextSyntax>,
     /// Decorations (`!f!`, `!trill!`, ...) in the same flushed-ahead situation
     /// (ABC 2.1 §4.14: a decoration precedes the symbol it decorates).
-    pub(crate) pending_decorations: Vec<DecorationSyntax>,
+    pub(crate) pending_decorations: Vec<DecorationAttachment>,
     /// Croma MusicXML-origin `[I:croma-note-instrument ...]` carrier waiting for
     /// the next timed note/rest/chord event.
     pub(crate) pending_musicxml_instrument: Option<MusicXmlInstrumentRef>,
@@ -142,6 +142,9 @@ pub(crate) struct LoweringState {
     /// the next chord-symbol attachment. `None` means no carrier is pending; a
     /// pending carrier decodes to a textless or explicit-text `<kind>` provenance.
     pub(crate) pending_musicxml_harmony_text: Option<HarmonyKindText>,
+    /// Croma MusicXML-origin `[I:croma-direction-placement ...]` carrier waiting
+    /// for the next decoration attachment.
+    pub(crate) pending_musicxml_direction_placement: Option<AnnotationPlacementModel>,
     /// Croma MusicXML-origin `[I:croma-lyric-extend ...]` carriers waiting for
     /// the next timed note/rest/chord event. `w:` lyric alignment applies them
     /// to the matching verse syllable after the music body has lowered.
@@ -264,6 +267,7 @@ impl LoweringState {
             pending_decorations: Vec::new(),
             pending_musicxml_instrument: None,
             pending_musicxml_harmony_text: None,
+            pending_musicxml_direction_placement: None,
             pending_musicxml_lyric_extends: Vec::new(),
             pending_musicxml_lyric_duplicates: Vec::new(),
             pending_musicxml_forward: false,
@@ -308,11 +312,7 @@ impl LoweringState {
             attachments.annotations = annotations;
         }
         if !self.pending_decorations.is_empty() {
-            let mut decorations: Vec<_> = self
-                .pending_decorations
-                .drain(..)
-                .map(|decoration| decoration_attachment_model(&decoration))
-                .collect();
+            let mut decorations: Vec<_> = self.pending_decorations.drain(..).collect();
             decorations.append(&mut attachments.decorations);
             attachments.decorations = decorations;
         }
@@ -337,6 +337,12 @@ impl LoweringState {
             .append(&mut self.pending_musicxml_tuplets);
         self.drain_pending_xvoice_slurs(&mut attachments);
         attachments
+    }
+
+    pub(crate) fn has_pending_spacer_prefix_attachments(&self) -> bool {
+        !self.pending_chord_symbols.is_empty()
+            || !self.pending_annotations.is_empty()
+            || !self.pending_decorations.is_empty()
     }
 
     /// Materialise any pending cross-voice slur ends onto an event's
@@ -444,9 +450,7 @@ impl LoweringState {
         for decoration in self.pending_decorations.drain(..) {
             if decoration_binds_to_barline(decoration.name.as_str()) {
                 direction_span = Some(merge_spans(direction_span, decoration.span));
-                attachments
-                    .decorations
-                    .push(decoration_attachment_model(&decoration));
+                attachments.decorations.push(decoration);
             } else {
                 remaining_decorations.push(decoration);
             }
@@ -576,11 +580,8 @@ impl LoweringState {
             .drain(..)
             .map(|text| annotation_attachment_model(&text))
             .collect();
-        let mut pending_decorations: Vec<DecorationAttachment> = self
-            .pending_decorations
-            .drain(..)
-            .map(|decoration| decoration_attachment_model(&decoration))
-            .collect();
+        let mut pending_decorations: Vec<DecorationAttachment> =
+            self.pending_decorations.drain(..).collect();
         let chord_attachments = attachment_bundle_model(&chord.attachments, self);
 
         let mut events = Vec::with_capacity(chord.members.len());
@@ -700,6 +701,15 @@ impl LoweringState {
                 }
             }
         }
+    }
+
+    pub(crate) fn decoration_attachment_model(
+        &mut self,
+        decoration: &DecorationSyntax,
+    ) -> DecorationAttachment {
+        let mut attachment = decoration_attachment_model(decoration);
+        attachment.placement = self.pending_musicxml_direction_placement.take();
+        attachment
     }
 
     pub(crate) fn push_time_group(
@@ -1508,7 +1518,7 @@ fn attachment_bundle_model(
         decorations: bundle
             .decorations
             .iter()
-            .map(decoration_attachment_model)
+            .map(|decoration| state.decoration_attachment_model(decoration))
             .collect(),
         instrument: None,
         lyrics: Vec::new(),
@@ -1622,6 +1632,7 @@ pub(crate) fn decoration_attachment_model(decoration: &DecorationSyntax) -> Deco
             DecorationKind::Shorthand => DecorationSourceKind::Shorthand,
             DecorationKind::UserDefined => DecorationSourceKind::UserDefined,
         },
+        placement: None,
     }
 }
 

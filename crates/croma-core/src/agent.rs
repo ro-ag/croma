@@ -159,6 +159,22 @@ Example: `[I:croma-sound-tempo bpm=80 beat-n=1 beat-d=4 text="80"]`
 Verify: `croma xml f.abc | grep '<sound tempo'`"#,
     },
     AgentTopic {
+        id: r#"direction-placement"#,
+        aliases: &[
+            r#"croma-direction-placement"#,
+            r#"dynamic-placement"#,
+            r#"wedge-placement"#,
+        ],
+        category: r#"Directions"#,
+        summary: r#"above/below placement for MusicXML direction decorations"#,
+        body: r#"Persists a MusicXML `<direction placement=...>` on decorations that ABC spells as `!decor!`, including dynamics and hairpin wedges.
+
+Vehicle: inline `[I:croma-direction-placement placement=above|below]` immediately before the decoration.
+
+Example: `[I:croma-direction-placement placement=above]!p!C`
+Verify: `croma xml f.abc | grep '<direction placement'`"#,
+    },
+    AgentTopic {
         id: r#"initial-key"#,
         aliases: &[r#"croma-initial-key"#, r#"per-voice-key"#],
         category: r#"Key & meter"#,

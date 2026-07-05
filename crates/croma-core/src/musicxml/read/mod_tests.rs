@@ -6040,6 +6040,102 @@ mod abc_completion {
     }
 
     #[test]
+    fn foreign_dynamic_and_wedge_placement_survive_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>Voice</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><dynamics><p/></dynamics></direction-type>\n",
+            "      </direction>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><wedge type=\"crescendo\"/></direction-type>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip =
+            export_musicxml(&abc).expect("placed dynamic/wedge ABC projection should export");
+
+        assert!(
+            roundtrip.musicxml.contains("<dynamics>")
+                && roundtrip.musicxml.contains("<p/>")
+                && roundtrip.musicxml.contains("<wedge type=\"crescendo\"/>"),
+            "dynamic and wedge must survive:\n{}",
+            roundtrip.musicxml
+        );
+        assert_eq!(
+            roundtrip
+                .musicxml
+                .matches("<direction placement=\"above\">")
+                .count(),
+            2,
+            "both dynamic and wedge directions must stay above:\n{}",
+            roundtrip.musicxml
+        );
+        assert_eq!(
+            roundtrip
+                .musicxml
+                .matches("<direction placement=\"below\">")
+                .count(),
+            0,
+            "placed imported directions must not fall back below:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
+    fn trailing_wedge_stop_on_spacer_survives_abc_projection() {
+        let xml = concat!(
+            "<?xml version=\"1.0\"?>\n",
+            "<score-partwise>\n",
+            "  <part-list><score-part id=\"P1\"><part-name>Voice</part-name></score-part></part-list>\n",
+            "  <part id=\"P1\">\n",
+            "    <measure number=\"1\">\n",
+            "      <attributes><divisions>4</divisions></attributes>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><wedge type=\"crescendo\"/></direction-type>\n",
+            "      </direction>\n",
+            "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+            "<duration>4</duration><voice>1</voice><type>quarter</type></note>\n",
+            "      <direction placement=\"above\">\n",
+            "        <direction-type><wedge type=\"stop\"/></direction-type>\n",
+            "      </direction>\n",
+            "    </measure>\n",
+            "  </part>\n",
+            "</score-partwise>\n",
+        );
+        let score = completed_from_xml(xml);
+        let abc = write_abc(&score, AbcWriteOptions::default());
+        let roundtrip =
+            export_musicxml(&abc).expect("trailing wedge-stop ABC projection should export");
+
+        assert_eq!(
+            roundtrip
+                .musicxml
+                .matches("<wedge type=\"crescendo\"")
+                .count(),
+            1,
+            "the wedge start must survive once:\n{}",
+            roundtrip.musicxml
+        );
+        assert_eq!(
+            roundtrip.musicxml.matches("<wedge type=\"stop\"").count(),
+            1,
+            "the trailing wedge stop must survive once:\n{}",
+            roundtrip.musicxml
+        );
+    }
+
+    #[test]
     fn foreign_lyric_text_with_same_note_extend_survives_abc_projection() {
         let xml = concat!(
             "<?xml version=\"1.0\"?>\n",

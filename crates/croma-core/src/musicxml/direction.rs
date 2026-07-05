@@ -1,6 +1,6 @@
 use crate::model::{
-    AlignedSymbolKind, AnnotationPlacementModel, EventAttachments, Part, TempoBeat, TempoBeatRole,
-    TempoModel, TextAttachment,
+    AlignedSymbolKind, AnnotationPlacementModel, DecorationAttachment, EventAttachments, Part,
+    TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
 };
 
 use super::notation::{DirectionSymbol, decoration_notation, symbol_direction};
@@ -138,11 +138,11 @@ impl<'score> MusicXmlWriter<'score> {
         }
         for decoration in &attachments.decorations {
             if let Some(dynamic) = dynamic_decoration(decoration.name.as_str()) {
-                self.write_dynamic(dynamic, sequence, part);
+                self.write_dynamic(decoration, dynamic, sequence, part);
             } else if let Some(direction) = symbol_direction(decoration.name.as_str()) {
-                self.write_direction_type(direction, sequence, part);
+                self.write_direction_type(decoration, direction, sequence, part);
             } else if let Some(wedge) = wedge_decoration(decoration.name.as_str()) {
-                self.write_wedge(wedge, sequence, part);
+                self.write_wedge(decoration, wedge, sequence, part);
             } else if is_suppressed_decoration(decoration.name.as_str()) {
                 // No clean MusicXML equivalent (e.g. the Irish roll `~`).
                 // abc2xml emits nothing; suppress without a words direction or
@@ -156,11 +156,15 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn write_dynamic(
         &mut self,
+        decoration: &DecorationAttachment,
         dynamic: &'static str,
         sequence: &MeasureSequence<'score>,
         part: &Part,
     ) {
-        self.xml.start("direction", &[("placement", "below")]);
+        self.xml.start(
+            "direction",
+            &[("placement", decoration_placement(decoration, "below"))],
+        );
         self.xml.start("direction-type", &[]);
         self.xml.start("dynamics", &[]);
         self.xml.empty(dynamic, &[]);
@@ -176,11 +180,15 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn write_direction_type(
         &mut self,
+        decoration: &DecorationAttachment,
         direction: DirectionSymbol,
         sequence: &MeasureSequence<'score>,
         part: &Part,
     ) {
-        self.xml.start("direction", &[("placement", "above")]);
+        self.xml.start(
+            "direction",
+            &[("placement", decoration_placement(decoration, "above"))],
+        );
         self.xml.start("direction-type", &[]);
         match direction {
             DirectionSymbol::Coda => self.xml.empty("coda", &[]),
@@ -197,11 +205,15 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn write_wedge(
         &mut self,
+        decoration: &DecorationAttachment,
         wedge: &'static str,
         sequence: &MeasureSequence<'score>,
         part: &Part,
     ) {
-        self.xml.start("direction", &[("placement", "below")]);
+        self.xml.start(
+            "direction",
+            &[("placement", decoration_placement(decoration, "below"))],
+        );
         self.xml.start("direction-type", &[]);
         self.xml.empty("wedge", &[("type", wedge)]);
         self.xml.end("direction-type");
@@ -299,6 +311,10 @@ fn placement_name(placement: AnnotationPlacementModel) -> &'static str {
         | AnnotationPlacementModel::Right
         | AnnotationPlacementModel::Free => "above",
     }
+}
+
+fn decoration_placement(decoration: &DecorationAttachment, default: &'static str) -> &'static str {
+    decoration.placement.map_or(default, placement_name)
 }
 
 /// Hairpin decorations (ABC 2.1 lines 1114-1121): `!crescendo(!`/`!<(!` open a

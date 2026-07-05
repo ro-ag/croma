@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-05
+
+### Added
+
+- **Direction placement carrier.** MusicXML-imported dynamics, wedges, coda, and
+  segno marks now preserve their `placement` attribute through ABC via
+  `[I:croma-direction-placement]`, so above/below annotations survive the
+  `MusicXML -> ABC -> MusicXML` projection. ([#244])
+
+### Fixed
+
+- **Trailing wedge stops on spacers.** Hairpin stop directions that land after the
+  last note now survive ABC projection on a zero-duration spacer, avoiding open
+  hairpins and over-long Voice-lane wedges. ([#245])
+- **Croma-emitted `%%MIDI` warning noise.** Carrier-warning suppression now also
+  covers croma's own `%%MIDI` program/control/channel/transpose directives, plus
+  inline `[I:MIDI=...]` spelling, so MusicXML-imported scores do not re-warn on
+  round-trip parse when callers opt into carrier suppression. ([#246])
+
+[1.1.3]: https://github.com/ro-ag/croma/releases/tag/v1.1.3
+[#244]: https://github.com/ro-ag/croma/issues/244
+[#245]: https://github.com/ro-ag/croma/issues/245
+[#246]: https://github.com/ro-ag/croma/issues/246
+
 ## [1.1.2] - 2026-07-04
 
 ### Added

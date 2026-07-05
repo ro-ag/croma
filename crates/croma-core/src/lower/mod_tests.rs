@@ -3643,8 +3643,7 @@ fn inline_instruction_field_warns_and_changes_nothing() {
 
 #[test]
 fn croma_private_carrier_warnings_can_be_suppressed_during_music_analysis() {
-    let source =
-        "X:1\nL:1/8\nK:C\n%%croma-future value\n[I:croma-future value]C [I:tuplets 1 0 0]D|\n";
+    let source = "X:1\nL:1/8\nK:C\n%%croma-future value\n%%MIDI program 41\n[I:croma-future value]C [I:MIDI=program 42]D [I:tuplets 1 0 0]E|\n";
 
     let default_document = parse_document(source, ParseOptions::default());
     assert!(
@@ -3654,6 +3653,13 @@ fn croma_private_carrier_warnings_can_be_suppressed_during_music_analysis() {
             .any(|diagnostic| diagnostic.code == "abc.directive.unsupported"),
         "default parsing should warn for unknown %%croma-* directives"
     );
+    assert!(
+        default_document.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "abc.directive.unsupported"
+                && &source[diagnostic.span.start..diagnostic.span.end] == "MIDI"
+        }),
+        "default parsing should warn for unsupported %%MIDI directives"
+    );
     let default_report = parse_tune_report_from_document(&default_document.value);
     assert!(
         default_report.diagnostics.iter().any(|diagnostic| {
@@ -3661,6 +3667,12 @@ fn croma_private_carrier_warnings_can_be_suppressed_during_music_analysis() {
                 && diagnostic.message.contains("croma-future")
         }),
         "default lowering should warn for unknown [I:croma-*] carriers"
+    );
+    assert!(
+        default_report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "abc.field.inline_ignored" && diagnostic.message.contains("MIDI")
+        }),
+        "default lowering should warn for unsupported [I:MIDI] carriers"
     );
 
     let suppressed_document = parse_document(
@@ -3675,6 +3687,14 @@ fn croma_private_carrier_warnings_can_be_suppressed_during_music_analysis() {
         "%%croma-* warnings should be suppressed: {:?}",
         suppressed_document.diagnostics
     );
+    assert!(
+        suppressed_document
+            .diagnostics
+            .iter()
+            .all(|diagnostic| &source[diagnostic.span.start..diagnostic.span.end] != "MIDI"),
+        "%%MIDI warnings should be suppressed: {:?}",
+        suppressed_document.diagnostics
+    );
     let suppressed_report = parse_tune_report_from_document(&suppressed_document.value);
     assert!(
         suppressed_report
@@ -3682,6 +3702,14 @@ fn croma_private_carrier_warnings_can_be_suppressed_during_music_analysis() {
             .iter()
             .all(|diagnostic| !diagnostic.message.contains("croma-future")),
         "[I:croma-*] warnings should be suppressed: {:?}",
+        suppressed_report.diagnostics
+    );
+    assert!(
+        suppressed_report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("MIDI")),
+        "[I:MIDI] warnings should be suppressed: {:?}",
         suppressed_report.diagnostics
     );
     assert!(

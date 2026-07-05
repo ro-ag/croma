@@ -88,7 +88,7 @@ A carrier is only lossless if all three stages agree:
 Adding or changing a carrier touches all three, plus the model field it rides on, plus a
 TDD test, plus the gates in [§7](#7-adding-a-carrier-checklist).
 
-## 5. Catalogue (21 carriers)
+## 5. Catalogue (22 carriers)
 
 `grep <name> crates/croma-core/src` finds the emit / parse / re-emit sites for any row.
 
@@ -110,6 +110,11 @@ TDD test, plus the gates in [§7](#7-adding-a-carrier-checklist).
 |---|---|---|---|
 | `croma-tempo` | `[I:]` · voice · **hex** | a printed/sound tempo whose `<words>` text `Q:` can't hold (role, words, bpm + beat) | `[I:croma-tempo role=printed text-hex=… bpm=100 beat-n=1 beat-d=4]` |
 | `croma-sound-tempo` | `[I:]` · voice · **hex** | a playback-only tempo (no printed metronome): bpm + reference beat | `[I:croma-sound-tempo bpm=80 beat-n=1 beat-d=4 text="80"]` |
+
+### Directions
+| Carrier | Vehicle · scope | Carries | Example |
+|---|---|---|---|
+| `croma-direction-placement` | `[I:]` · decoration | `<direction placement=…>` for ABC decorations that emit MusicXML directions (dynamics, wedges, coda, segno) | `[I:croma-direction-placement placement=above]!p!` |
 
 ### Key & meter
 | Carrier | Vehicle · scope | Carries | Example |
@@ -163,8 +168,9 @@ directive), not the current behaviour.
 If those forward-compatibility warnings are expected noise in a workflow, library
 callers can use `ParseOptions::suppress_croma_carrier_warnings()` (or
 `ExportOptions::suppress_croma_carrier_warnings()`), and the CLI exposes the same
-filter as `--silence-croma-carrier-warnings`. The filter applies only to private
-`croma-` carrier names; ordinary unsupported directives still warn.
+filter as `--silence-croma-carrier-warnings`. The filter applies to private
+`croma-` carrier names and to croma-managed `%%MIDI` / `[I:MIDI]` playback
+carriers; ordinary unsupported directives still warn.
 
 ## 7. Adding a carrier (checklist)
 

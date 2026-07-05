@@ -9,9 +9,9 @@ recognise). croma treats `%%MIDI` in two parallel, independent paths:
    `PreservedDirective { name: "MIDI", value: "<args>" }` in
    `Score.metadata.preserved_directives`. The ABC writer (`to_abc.rs`) re-emits
    it unchanged, so `croma fmt` round-trips `%%MIDI` lines in place. Parsing also
-   emits `warning[abc.directive.unsupported]`. **This path is never removed** —
-   it is what keeps croma lossless over the corpus and is the formatter fixed
-   point.
+   emits `warning[abc.directive.unsupported]` unless croma carrier warnings are
+   suppressed. **This path is never removed** — it is what keeps croma lossless
+   over the corpus and is the formatter fixed point.
 
 2. **Forward-translate the score-meaningful parts — into MusicXML only.** The
    MusicXML exporter additionally projects the sub-directives that carry genuine
