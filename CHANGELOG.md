@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-07-06
+
+### Fixed
+
+- **Vocal dynamics and hairpins default above lyrics.** Placement-less ABC
+  dynamics and crescendo/diminuendo wedges now export above lyric-bearing parts,
+  avoiding collisions with `<lyric>` text, while instrumental parts keep the
+  existing below-staff default and explicit direction-placement carriers still
+  win. ([#248])
+
 ## [1.1.3] - 2026-07-05
 
 ### Added
@@ -26,10 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inline `[I:MIDI=...]` spelling, so MusicXML-imported scores do not re-warn on
   round-trip parse when callers opt into carrier suppression. ([#246])
 
+[1.1.4]: https://github.com/ro-ag/croma/releases/tag/v1.1.4
 [1.1.3]: https://github.com/ro-ag/croma/releases/tag/v1.1.3
 [#244]: https://github.com/ro-ag/croma/issues/244
 [#245]: https://github.com/ro-ag/croma/issues/245
 [#246]: https://github.com/ro-ag/croma/issues/246
+[#248]: https://github.com/ro-ag/croma/issues/248
 
 ## [1.1.2] - 2026-07-04
 
@@ -211,5 +223,5 @@ crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
   writer, reader, formatter, corpus throughput, and LSP latency, with a committed
   reference report in [`docs/benchmarks.md`](docs/benchmarks.md).
 
-[Unreleased]: https://github.com/ro-ag/croma/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/ro-ag/croma/compare/v1.1.4...HEAD
 [0.9.0]: https://github.com/ro-ag/croma/releases/tag/v0.9.0

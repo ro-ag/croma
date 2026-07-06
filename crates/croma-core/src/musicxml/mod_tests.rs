@@ -2180,6 +2180,108 @@ fn placement_prefixed_annotations_remain_words() {
 }
 
 #[test]
+fn lyric_part_defaults_unplaced_dynamics_and_wedges_above() {
+    let lyric_part = concat!(
+        "X:1\n",
+        "T:Lyric part\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "V:P1 name=\"Voice\"\n",
+        "!p! C D !crescendo(! E F !crescendo)! |\n",
+        "w: la la la la\n",
+    );
+    let export = export_musicxml(lyric_part).expect("lyric score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"below\">"),
+        0
+    );
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"above\">"),
+        3
+    );
+    assert!(export.musicxml.contains("<dynamics>"));
+    assert!(export.musicxml.contains("<wedge type=\"crescendo\"/>"));
+    assert!(export.musicxml.contains("<wedge type=\"stop\"/>"));
+}
+
+#[test]
+fn instrumental_part_defaults_unplaced_dynamics_and_wedges_below() {
+    let instrumental = concat!(
+        "X:1\n",
+        "T:Instrumental part\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "V:P1 name=\"Cello\"\n",
+        "!p! C D !crescendo(! E F !crescendo)! |\n",
+    );
+    let export = export_musicxml(instrumental).expect("instrumental score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"below\">"),
+        3
+    );
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"above\">"),
+        0
+    );
+}
+
+#[test]
+fn explicit_dynamic_and_wedge_placements_override_defaults() {
+    let lyric_below = concat!(
+        "X:1\n",
+        "T:Lyric explicit below\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "V:P1 name=\"Voice\"\n",
+        "[I:croma-direction-placement placement=below]!p! C ",
+        "D [I:croma-direction-placement placement=below]!crescendo(! E ",
+        "F [I:croma-direction-placement placement=below]!crescendo)! |\n",
+        "w: la la la la\n",
+    );
+    let export = export_musicxml(lyric_below).expect("placed lyric score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"below\">"),
+        3
+    );
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"above\">"),
+        0
+    );
+
+    let instrumental_above = concat!(
+        "X:1\n",
+        "T:Instrumental explicit above\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "K:C\n",
+        "[I:croma-direction-placement placement=above]!p! C ",
+        "D [I:croma-direction-placement placement=above]!crescendo(! E ",
+        "F [I:croma-direction-placement placement=above]!crescendo)! |\n",
+    );
+    let export =
+        export_musicxml(instrumental_above).expect("placed instrumental score should export");
+
+    assert_balanced_xml(&export.musicxml);
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"below\">"),
+        0
+    );
+    assert_eq!(
+        count(&export.musicxml, "<direction placement=\"above\">"),
+        3
+    );
+}
+
+#[test]
 fn initial_barlines_do_not_emit_musicxml_heavy_light() {
     let source = "X:1\nT:Initial Barline\nM:4/4\nL:1/4\nK:C\nC |[| D |]\n";
     let export = export_musicxml(source).expect("initial barline should export");

@@ -1,6 +1,7 @@
 use crate::model::{
     AlignedSymbolKind, AnnotationPlacementModel, DecorationAttachment, EventAttachments, Part,
-    TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
+    TempoBeat, TempoBeatRole, TempoModel, TextAttachment, TimedEvent, TimedEventKind,
+    VoiceTimedEvent,
 };
 
 use super::notation::{DirectionSymbol, decoration_notation, symbol_direction};
@@ -163,7 +164,10 @@ impl<'score> MusicXmlWriter<'score> {
     ) {
         self.xml.start(
             "direction",
-            &[("placement", decoration_placement(decoration, "below"))],
+            &[(
+                "placement",
+                decoration_placement(decoration, dynamic_wedge_default_placement(part)),
+            )],
         );
         self.xml.start("direction-type", &[]);
         self.xml.start("dynamics", &[]);
@@ -212,7 +216,10 @@ impl<'score> MusicXmlWriter<'score> {
     ) {
         self.xml.start(
             "direction",
-            &[("placement", decoration_placement(decoration, "below"))],
+            &[(
+                "placement",
+                decoration_placement(decoration, dynamic_wedge_default_placement(part)),
+            )],
         );
         self.xml.start("direction-type", &[]);
         self.xml.empty("wedge", &[("type", wedge)]);
@@ -315,6 +322,45 @@ fn placement_name(placement: AnnotationPlacementModel) -> &'static str {
 
 fn decoration_placement(decoration: &DecorationAttachment, default: &'static str) -> &'static str {
     decoration.placement.map_or(default, placement_name)
+}
+
+fn dynamic_wedge_default_placement(part: &Part) -> &'static str {
+    if part_has_lyrics(part) {
+        "above"
+    } else {
+        "below"
+    }
+}
+
+fn part_has_lyrics(part: &Part) -> bool {
+    part.voices.iter().any(|voice| {
+        voice.events.iter().any(timed_event_has_lyrics)
+            || voice.measures.iter().any(|measure| {
+                measure
+                    .overlays
+                    .iter()
+                    .any(|overlay| overlay.events.iter().any(voice_timed_event_has_lyrics))
+            })
+    })
+}
+
+fn timed_event_has_lyrics(event: &TimedEvent) -> bool {
+    attachments_have_lyrics(&event.attachments)
+        || match &event.kind {
+            TimedEventKind::Chord(chord) => chord
+                .members
+                .iter()
+                .any(|member| attachments_have_lyrics(&member.attachments)),
+            _ => false,
+        }
+}
+
+fn voice_timed_event_has_lyrics(event: &VoiceTimedEvent) -> bool {
+    attachments_have_lyrics(&event.attachments)
+}
+
+fn attachments_have_lyrics(attachments: &EventAttachments) -> bool {
+    !attachments.lyrics.is_empty()
 }
 
 /// Hairpin decorations (ABC 2.1 lines 1114-1121): `!crescendo(!`/`!<(!` open a
