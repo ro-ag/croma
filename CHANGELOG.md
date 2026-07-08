@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-08
+
+### Added
+
+- **Opt-in engraving export (`croma xml --engrave`).** A render-oriented MusicXML
+  mode that emits computed engraving hints so downstream renderers no longer have to
+  auto-beam or guess layout: beam grouping (`<beam>` with secondary sub-beams and
+  partial-beam hooks), convention-default `<tuplet>` bracket (number-only for a
+  fully-beamed tuplet), stem direction (`<stem>`), multi-voice rest placement
+  (`<display-step>`/`<display-octave>`), and slur/tie placement. The rules are ported
+  from MuseScore's engraving core. The default export stays byte-for-byte the
+  round-trip form, and each hint is individually toggleable via
+  `MusicXmlWriteOptions`. `croma-core` stays zero-dependency. ([#250], [#251])
+
 ## [1.1.4] - 2026-07-06
 
 ### Fixed
@@ -36,8 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inline `[I:MIDI=...]` spelling, so MusicXML-imported scores do not re-warn on
   round-trip parse when callers opt into carrier suppression. ([#246])
 
+[1.2.0]: https://github.com/ro-ag/croma/releases/tag/v1.2.0
 [1.1.4]: https://github.com/ro-ag/croma/releases/tag/v1.1.4
 [1.1.3]: https://github.com/ro-ag/croma/releases/tag/v1.1.3
+[#250]: https://github.com/ro-ag/croma/issues/250
+[#251]: https://github.com/ro-ag/croma/pull/251
 [#244]: https://github.com/ro-ag/croma/issues/244
 [#245]: https://github.com/ro-ag/croma/issues/245
 [#246]: https://github.com/ro-ag/croma/issues/246
@@ -223,5 +240,5 @@ crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
   writer, reader, formatter, corpus throughput, and LSP latency, with a committed
   reference report in [`docs/benchmarks.md`](docs/benchmarks.md).
 
-[Unreleased]: https://github.com/ro-ag/croma/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/ro-ag/croma/compare/v1.2.0...HEAD
 [0.9.0]: https://github.com/ro-ag/croma/releases/tag/v0.9.0
