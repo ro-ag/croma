@@ -67,6 +67,9 @@ pub struct ExportOptions {
     pub spec: AbcSpecVersion,
     pub parse_mode: ParseMode,
     pub diagnostics: DiagnosticOptions,
+    /// Render-oriented MusicXML hints (beams, stems, tuplet display, ...). Default
+    /// leaves the writer's byte-for-byte round-trip output untouched.
+    pub write: MusicXmlWriteOptions,
 }
 
 impl ExportOptions {
@@ -82,6 +85,71 @@ impl ExportOptions {
         self.diagnostics = self.diagnostics.suppress_croma_carrier_warnings();
         self
     }
+
+    /// Turn on the full engraving profile (all render hints).
+    pub fn engrave(mut self) -> Self {
+        self.write = MusicXmlWriteOptions::engrave();
+        self
+    }
+}
+
+/// Opt-in engraving hints the MusicXML writer computes at write time from data the
+/// score already holds (meter, durations, clef, voice). Every field defaults off, so
+/// [`MusicXmlWriteOptions::default`] reproduces the writer's byte-for-byte round-trip
+/// output; the reader self-loop and the abc2xml whitelist depend on that default.
+///
+/// Ported from MuseScore's engraving rules. See `docs/engraving-export.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MusicXmlWriteOptions {
+    /// Emit `<beam>` grouping computed from meter + note durations.
+    pub beams: bool,
+    /// How to spell `<tuplet>` display detail when the source carried no directive.
+    pub tuplet_display: TupletDisplay,
+    /// Emit `<stem>up|down` computed from clef, pitch, voice, and beam membership.
+    pub stems: bool,
+    /// Emit multi-voice rest `<display-step>`/`<display-octave>` so voices do not collide.
+    pub rest_placement: bool,
+    /// Emit `<slur placement="above|below">` computed from stem direction / voice.
+    pub slur_placement: bool,
+    /// Emit `<tied orientation="over|under">` computed from stem direction / voice.
+    pub tie_orientation: bool,
+}
+
+impl MusicXmlWriteOptions {
+    /// The `--engrave` umbrella: every hint on, tuplet display = engraving default.
+    pub fn engrave() -> Self {
+        Self {
+            beams: true,
+            tuplet_display: TupletDisplay::EngravingDefault,
+            stems: true,
+            rest_placement: true,
+            slur_placement: true,
+            tie_orientation: true,
+        }
+    }
+
+    /// Whether any hint is enabled (lets the writer skip plan construction entirely
+    /// on the default path).
+    pub fn any_enabled(self) -> bool {
+        self.beams
+            || self.stems
+            || self.rest_placement
+            || self.slur_placement
+            || self.tie_orientation
+            || self.tuplet_display != TupletDisplay::AsEncoded
+    }
+}
+
+/// How the writer spells a `<tuplet>` whose ABC source carried no explicit
+/// tuplet-display directive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TupletDisplay {
+    /// Emit only what the source encoded (current behaviour — a bare `<tuplet>`).
+    #[default]
+    AsEncoded,
+    /// Emit the convention default (MuseScore `calcHasBracket`): number-only, no
+    /// bracket, for a fully-beamed tuplet; bracketed otherwise.
+    EngravingDefault,
 }
 
 impl From<ExportOptions> for ParseOptions {
@@ -103,6 +171,7 @@ mod tests {
             spec: AbcSpecVersion::V22Draft,
             parse_mode: ParseMode::Loose,
             diagnostics: DiagnosticOptions::default(),
+            write: MusicXmlWriteOptions::default(),
         };
 
         assert_eq!(

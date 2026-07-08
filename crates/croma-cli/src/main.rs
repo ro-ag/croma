@@ -6,8 +6,9 @@ use std::process::ExitCode;
 use anstream::stderr as color_stderr;
 use clap::Parser;
 use croma_core::{
-    AbcDocument, AbcWriteOptions, Diagnostic, LowerOptions, ParseOptions, ParseReport, Score,
-    Severity, SourceText, lower_score, parse_document, write_abc, write_musicxml,
+    AbcDocument, AbcWriteOptions, Diagnostic, LowerOptions, MusicXmlWriteOptions, ParseOptions,
+    ParseReport, Score, Severity, SourceText, lower_score, parse_document, write_abc,
+    write_musicxml, write_musicxml_with_options,
 };
 use croma_fmt::{
     Change, FixKind, FixResult, FormatOptions, auto_fix, format as fmt_format, is_formatted,
@@ -69,8 +70,14 @@ fn run_xml(args: XmlArgs) -> Result<ExitCode, CliError> {
     let XmlArgs {
         file,
         output,
+        engrave,
         common,
     } = args;
+    let write_options = if engrave {
+        MusicXmlWriteOptions::engrave()
+    } else {
+        MusicXmlWriteOptions::default()
+    };
     let source = read_source(&file)?;
     let source_text = SourceText::with_file_name(source.clone(), file.display().to_string());
     let PipelineResult {
@@ -78,7 +85,7 @@ fn run_xml(args: XmlArgs) -> Result<ExitCode, CliError> {
         score: _score,
         diagnostics,
         musicxml,
-    } = run_export_pipeline(&source, common.parse_options());
+    } = run_export_pipeline(&source, common.parse_options(), write_options);
 
     emit_diagnostics(&common, &source_text, &file, &diagnostics)?;
 
@@ -397,12 +404,19 @@ fn run_check_pipeline_with_options(parse_report: ParseReport<AbcDocument>) -> Ch
     }
 }
 
-fn run_export_pipeline(source: &str, options: ParseOptions) -> PipelineResult {
+fn run_export_pipeline(
+    source: &str,
+    options: ParseOptions,
+    write_options: MusicXmlWriteOptions,
+) -> PipelineResult {
     let parse_report = parse_document(source, options);
-    run_export_pipeline_with_options(parse_report)
+    run_export_pipeline_with_options(parse_report, write_options)
 }
 
-fn run_export_pipeline_with_options(parse_report: ParseReport<AbcDocument>) -> PipelineResult {
+fn run_export_pipeline_with_options(
+    parse_report: ParseReport<AbcDocument>,
+    write_options: MusicXmlWriteOptions,
+) -> PipelineResult {
     let CheckResult {
         document,
         score,
@@ -413,7 +427,7 @@ fn run_export_pipeline_with_options(parse_report: ParseReport<AbcDocument>) -> P
     if !has_errors(&diagnostics)
         && let Some(score) = score.as_ref()
     {
-        let write_report = write_musicxml(score);
+        let write_report = write_musicxml_with_options(score, write_options);
         diagnostics.extend(write_report.diagnostics);
         musicxml = Some(write_report.musicxml);
     }

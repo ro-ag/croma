@@ -25,7 +25,8 @@ pub use model::{
     Staff, StaffId, TimedEvent, TimedEventKind, Tune, TupletAttachment, TupletRole, Voice,
 };
 pub use options::{
-    AbcSpecVersion, DiagnosticOptions, ExportOptions, LowerOptions, ParseMode, ParseOptions,
+    AbcSpecVersion, DiagnosticOptions, ExportOptions, LowerOptions, MusicXmlWriteOptions,
+    ParseMode, ParseOptions, TupletDisplay,
 };
 pub use parse::field::{
     DecorationDelimiter, FieldState, LineBreakMode, ParsedAbcFields, ParsedField,
@@ -84,7 +85,13 @@ pub fn lower_score(document: &AbcDocument, _options: LowerOptions) -> ParseRepor
 }
 
 pub fn write_musicxml(score: &Score) -> MusicXmlExport {
-    let report = musicxml::write_score_partwise(score);
+    write_musicxml_with_options(score, MusicXmlWriteOptions::default())
+}
+
+/// Write MusicXML with render-oriented engraving hints (beams, stems, tuplet display,
+/// ...). [`MusicXmlWriteOptions::default`] reproduces [`write_musicxml`] byte-for-byte.
+pub fn write_musicxml_with_options(score: &Score, options: MusicXmlWriteOptions) -> MusicXmlExport {
+    let report = musicxml::write_score_partwise_with_options(score, options);
     MusicXmlExport {
         musicxml: report.value,
         diagnostics: report.diagnostics,
@@ -111,7 +118,7 @@ pub fn export_musicxml_with_options(
         return Err(CromaError::from_diagnostics(diagnostics));
     };
 
-    let write_report = musicxml::write_score_partwise(&tune.score);
+    let write_report = musicxml::write_score_partwise_with_options(&tune.score, options.write);
     diagnostics.extend(write_report.diagnostics);
 
     Ok(MusicXmlExport {
@@ -123,6 +130,114 @@ pub fn export_musicxml_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn engrave(source: &str) -> String {
+        let options = ExportOptions::default().engrave();
+        export_musicxml_with_options(source, options)
+            .expect("engraving export should succeed")
+            .musicxml
+    }
+
+    #[test]
+    fn engrave_emits_beam_grouping() {
+        // Eight eighth notes in 4/4 → two beamed groups of four.
+        let xml = engrave("X:1\nL:1/8\nM:4/4\nK:C\nCDEF GABc|\n");
+        let begins = xml.matches("<beam number=\"1\">begin</beam>").count();
+        let ends = xml.matches("<beam number=\"1\">end</beam>").count();
+        let continues = xml.matches("<beam number=\"1\">continue</beam>").count();
+        assert_eq!(begins, 2, "two beam groups\n{xml}");
+        assert_eq!(ends, 2);
+        assert_eq!(continues, 4);
+    }
+
+    #[test]
+    fn engrave_hides_bracket_on_beamed_triplet() {
+        // A fully-beamed eighth-note triplet → number only, no bracket.
+        let xml = engrave("X:1\nL:1/8\nM:4/4\nK:C\n(3CDE (3FGA|\n");
+        assert!(
+            xml.contains("<tuplet type=\"start\" number=\"1\" bracket=\"no\"/>"),
+            "beamed triplet should be number-only\n{xml}"
+        );
+        assert!(xml.contains("<beam number=\"1\">begin</beam>"));
+    }
+
+    #[test]
+    fn default_export_keeps_bare_tuplet() {
+        let xml =
+            abc_to_musicxml("X:1\nL:1/8\nM:4/4\nK:C\n(3CDE (3FGA|\n").expect("default export");
+        assert!(xml.contains("<tuplet type=\"start\" number=\"1\"/>"));
+        assert!(!xml.contains("bracket="));
+    }
+
+    #[test]
+    fn engrave_emits_stem_direction() {
+        // Quarter notes: C4 sits below the treble middle line → stem up; the higher
+        // notes → stem down.
+        let xml = engrave("X:1\nL:1/4\nM:4/4\nK:C\nC e c g|\n");
+        assert!(xml.contains("<stem>up</stem>"), "{xml}");
+        assert!(xml.contains("<stem>down</stem>"));
+    }
+
+    #[test]
+    fn engrave_multivoice_rest_placement_and_parity() {
+        // Overlay = two voices on one staff: upper voice stems up with its rest raised,
+        // lower voice stems down with its rest lowered.
+        let xml = engrave("X:1\nM:4/4\nL:1/4\nK:C\nc2 z2 & E2 z2|\n");
+        assert!(xml.contains("<display-step>D</display-step>"), "{xml}");
+        assert!(xml.contains("<display-octave>5</display-octave>"));
+        assert!(xml.contains("<display-step>G</display-step>"));
+        assert!(xml.contains("<stem>up</stem>"));
+        assert!(xml.contains("<stem>down</stem>"));
+    }
+
+    #[test]
+    fn engrave_slur_and_tie_placement() {
+        let slur = engrave("X:1\nL:1/8\nM:4/4\nK:C\n(CD) z4|\n");
+        assert!(
+            slur.contains("<slur type=\"start\" number=\"1\" placement=\"below\"/>"),
+            "{slur}"
+        );
+        let tie = engrave("X:1\nL:1/4\nM:4/4\nK:C\nC4-|C4|\n");
+        assert!(tie.contains("orientation=\"over\""), "{tie}");
+    }
+
+    #[test]
+    fn default_export_emits_no_stems_or_placement() {
+        let xml = abc_to_musicxml("X:1\nL:1/4\nM:4/4\nK:C\nC e c g|\n").expect("default export");
+        assert!(!xml.contains("<stem>"));
+        assert!(!xml.contains("placement="));
+        assert!(!xml.contains("orientation="));
+        assert!(!xml.contains("display-step"));
+    }
+
+    #[test]
+    fn default_export_emits_no_beams() {
+        let xml = abc_to_musicxml("X:1\nL:1/8\nM:4/4\nK:C\nCDEF GABc|\n")
+            .expect("default export should succeed");
+        assert!(!xml.contains("<beam"), "default output must carry no beams");
+    }
+
+    #[test]
+    fn engrave_default_matches_plain_export_byte_for_byte() {
+        // The engraving profile must be strictly additive: with every hint off it is
+        // byte-identical to the plain writer, protecting the round-trip gates.
+        let sources = [
+            "X:1\nT:Guard\nL:1/8\nM:4/4\nK:C\nCDEF GABc|G4 z4|\n",
+            "X:1\nL:1/8\nM:6/8\nK:G\n(3ABc def|[CEG]2 z|\n", // tuplet + chord + rest
+            "X:1\nM:4/4\nL:1/4\nK:C\nc2 z2 & E2 z2|\n",      // multi-voice overlay
+            "X:1\nL:1/4\nM:4/4\nK:C\n(C4-|C4)|\n",           // tie + slur
+        ];
+        for source in sources {
+            let plain = abc_to_musicxml(source).expect("plain export");
+            let same = export_musicxml_with_options(source, ExportOptions::default())
+                .expect("options export")
+                .musicxml;
+            assert_eq!(
+                plain, same,
+                "default options must match plain for\n{source}"
+            );
+        }
+    }
 
     #[test]
     fn exports_basic_abc_to_musicxml() {

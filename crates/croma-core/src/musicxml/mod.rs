@@ -4,11 +4,13 @@ use crate::model::{
     GraceNoteEvent, Pitch, RestEvent, RestVisibility, Score, SlurRole, StaffId, TimedEvent,
     TimedEventKind, TimelineEventKind, TupletAttachment, VoiceTimedEvent, XVOICE_SLUR_PAIR_ID_BASE,
 };
+use crate::options::MusicXmlWriteOptions;
 use crate::parse::ParseReport;
 
 mod attributes;
 mod barline;
 mod direction;
+mod engrave;
 mod grace;
 mod harmony;
 mod lyric;
@@ -19,13 +21,21 @@ pub mod read;
 mod score;
 
 pub fn write_score_partwise(score: &Score) -> ParseReport<String> {
-    let mut writer = MusicXmlWriter::new(score);
+    write_score_partwise_with_options(score, MusicXmlWriteOptions::default())
+}
+
+pub fn write_score_partwise_with_options(
+    score: &Score,
+    options: MusicXmlWriteOptions,
+) -> ParseReport<String> {
+    let mut writer = MusicXmlWriter::new(score, options);
     writer.write();
     ParseReport::new(writer.xml.finish(), writer.diagnostics)
 }
 
 struct MusicXmlWriter<'score> {
     score: &'score Score,
+    options: MusicXmlWriteOptions,
     xml: XmlWriter,
     diagnostics: Vec<Diagnostic>,
     /// The key in effect at the current write position — the header key until
@@ -34,8 +44,17 @@ struct MusicXmlWriter<'score> {
     /// (Voices within a part share this; per-voice inline divergence is rare
     /// and only affects implicit grace spelling.)
     active_key: Option<crate::model::KeySignatureModel>,
+    /// The meter in effect at the current write position, initialised to the
+    /// header meter at each part start and updated by mid-tune `MeterChange`
+    /// events. Drives the engraving beam-grouping table (`None` = free meter).
+    active_meter: Option<crate::model::MeterModel>,
     slur_numbers: SlurNumbers,
     lyric_hyphen_open: Vec<OpenLyricHyphen>,
+    /// Per-tuplet-pair bracket decision (`true` = show bracket) for the sequence
+    /// currently being written, under `TupletDisplay::EngravingDefault`. Empty
+    /// otherwise. Consulted by `write_notations` when the source carried no explicit
+    /// tuplet-display directive.
+    tuplet_brackets: std::collections::HashMap<u32, bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,13 +64,16 @@ struct OpenLyricHyphen {
 }
 
 impl<'score> MusicXmlWriter<'score> {
-    fn new(score: &'score Score) -> Self {
+    fn new(score: &'score Score, options: MusicXmlWriteOptions) -> Self {
         Self {
             score,
+            options,
             xml: XmlWriter::new(),
             active_key: score.metadata.key.clone(),
+            active_meter: score.metadata.meter.clone(),
             slur_numbers: SlurNumbers::default(),
             lyric_hyphen_open: Vec::new(),
+            tuplet_brackets: std::collections::HashMap::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -138,6 +160,15 @@ pub(crate) struct MeasureSequence<'score> {
     actual_duration: Fraction,
     unpitched: bool,
     musicxml_sequence_backup: Option<Fraction>,
+    /// 0-based slot of this voice among the voices sharing its staff (plus overlay
+    /// index) — drives engraving voice-parity rules (stem/rest/slur direction).
+    staff_voice_slot: usize,
+    /// Whether this voice's staff carries more than one voice (or this voice has an
+    /// overlay) in the measure — the engraving multi-voice trigger.
+    staff_multivoice: bool,
+    /// The voice's prevailing clef text (e.g. `"treble"`), for the engraving
+    /// middle-line reference. `None` → treble default.
+    clef_text: Option<String>,
     events: Vec<SequenceEvent<'score>>,
 }
 
@@ -230,6 +261,13 @@ impl SequenceEvent<'_> {
                 TimelineEventKind::Note { chord, .. } => chord,
                 _ => false,
             },
+        }
+    }
+
+    fn is_rest(&self) -> bool {
+        match self {
+            Self::Timed(event) => matches!(event.kind, TimedEventKind::Rest(_)),
+            Self::Overlay(event) => matches!(event.kind, TimelineEventKind::Rest { .. }),
         }
     }
 
