@@ -3,6 +3,7 @@ use crate::model::{
     Part,
 };
 
+use super::note::EventEngrave;
 use super::{
     GraceNoteWrite, MeasureSequence, MusicXmlWriter, NoteWrite, TupletNumbers,
     unsupported_grace_warning,
@@ -105,6 +106,8 @@ impl<'score> MusicXmlWriter<'score> {
                         sequence,
                         part,
                         tuplet_numbers,
+                        // Grace notes carry no computed engraving hints in this profile.
+                        EventEngrave::EMPTY,
                     );
                     first_note = false;
                     first_chord_member = false;
@@ -168,6 +171,7 @@ impl<'score> MusicXmlWriter<'score> {
             sequence,
             part,
             tuplet_numbers,
+            EventEngrave::EMPTY,
         );
         // Direction-class grace decorations follow the grace note; directions
         // before a grace run are principal-note prefixes.

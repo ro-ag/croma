@@ -1,13 +1,118 @@
+use std::collections::HashMap;
+
 use crate::model::{
-    AccidentalMark, ChordEvent, EventAttachments, Fraction, Part, Pitch, RestEvent, RestVisibility,
-    TieRole, TimedEventKind, TimelineEventKind, TupletRole,
+    AccidentalMark, ChordEvent, EventAttachments, Fraction, MeterModel, Part, Pitch, RestEvent,
+    RestVisibility, TieRole, TimedEventKind, TimelineEventKind, TupletRole,
 };
 
+use super::engrave::beam::{self, BeamInput, BeamSegment, Meter};
+use super::engrave::stem;
 use super::{
     FractionExt, MeasureSequence, MusicXmlWriter, NoteWrite, SequenceEvent, TimeModification,
     TupletNumbers, unsupported_note_type_warning, unsupported_tuplet_time_modification_warning,
     variable_chord_duration_export_warning,
 };
+
+/// The engraving hints computed for one sequence, consumed by the note writer.
+#[derive(Default)]
+pub(crate) struct SequencePlan {
+    /// `<beam>` segments per beamable event, keyed by index in `sequence.events`.
+    beams: HashMap<usize, Vec<BeamSegment>>,
+    /// Tuplet-bracket decision per tuplet pair (`true` = show bracket).
+    brackets: HashMap<u32, bool>,
+    /// Stem direction (`true` = up) per stemmed event index.
+    stems: HashMap<usize, bool>,
+    /// Multi-voice rest `<display-step>`/`<display-octave>` per rest event index.
+    rest_display: HashMap<usize, (char, i8)>,
+}
+
+/// The per-event engraving hints threaded into the note writer.
+#[derive(Clone, Copy)]
+pub(crate) struct EventEngrave<'a> {
+    beams: &'a [BeamSegment],
+    stem: Option<bool>,
+    rest_display: Option<(char, i8)>,
+}
+
+impl EventEngrave<'_> {
+    pub(crate) const EMPTY: EventEngrave<'static> = EventEngrave {
+        beams: &[],
+        stem: None,
+        rest_display: None,
+    };
+}
+
+/// MusicXML ticks (MuseScore convention: quarter = 480, whole = 1920) for a
+/// whole-note-unit fraction. Used by the beam engine's grouping table.
+fn frac_ticks(f: Fraction) -> i64 {
+    i64::from(f.numerator) * 1920 / i64::from(f.denominator.max(1))
+}
+
+/// Written beam/flag count for a MusicXML note type (eighth = 1, 16th = 2, ...);
+/// `0` for quarter-or-longer, which never beams.
+fn beam_flag_count(note_type: &str) -> u8 {
+    match note_type {
+        "eighth" => 1,
+        "16th" => 2,
+        "32nd" => 3,
+        "64th" => 4,
+        "128th" => 5,
+        "256th" => 6,
+        "512th" => 7,
+        "1024th" => 8,
+        _ => 0,
+    }
+}
+
+/// The staff-middle-line distances (one per pitch, `>0` = below the line) of a
+/// time-advancing event under a clef, for stem direction. Rests yield an empty list.
+fn event_distances(event: &SequenceEvent<'_>, clef: Option<&str>) -> Vec<i32> {
+    match event {
+        SequenceEvent::Timed(timed) => match &timed.kind {
+            TimedEventKind::Note(note) => {
+                vec![stem::middle_distance(
+                    clef,
+                    note.pitch.step,
+                    note.pitch.octave,
+                )]
+            }
+            TimedEventKind::Chord(chord) => chord
+                .members
+                .iter()
+                .map(|member| stem::middle_distance(clef, member.pitch.step, member.pitch.octave))
+                .collect(),
+            _ => Vec::new(),
+        },
+        SequenceEvent::Overlay(overlay) => match overlay.kind {
+            TimelineEventKind::Note { step, octave, .. } => {
+                vec![stem::middle_distance(clef, step, octave)]
+            }
+            _ => Vec::new(),
+        },
+    }
+}
+
+/// The beam-grouping meter grid for the currently active meter, or `None` for a free
+/// or unparseable meter (beams are then not computed).
+fn meter_grid(meter: Option<&MeterModel>) -> Option<Meter> {
+    let meter = meter?;
+    if meter.free_meter {
+        return None;
+    }
+    let display = meter.display.trim();
+    let (numerator, denominator) = match display {
+        "C" => (4, 4),
+        "C|" => (2, 2),
+        _ => {
+            let (num, den) = display.split_once('/')?;
+            (num.trim().parse().ok()?, den.trim().parse().ok()?)
+        }
+    };
+    Some(Meter {
+        numerator,
+        denominator,
+    })
+}
 
 impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_sequence(
@@ -18,11 +123,20 @@ impl<'score> MusicXmlWriter<'score> {
         let mut cursor = Fraction::zero();
         let mut last_onset = Fraction::zero();
         let tuplet_numbers = sequence_tuplet_numbers(sequence);
-        for event in &sequence.events {
+        let plan = self.build_engrave_plan(sequence);
+        self.tuplet_brackets = plan.brackets;
+        for (index, event) in sequence.events.iter().enumerate() {
             let onset = event.onset();
             let is_chord_member = event.is_chord_member();
             if is_chord_member && onset == last_onset {
-                self.write_event(event, sequence, part, &tuplet_numbers, true);
+                self.write_event(
+                    event,
+                    sequence,
+                    part,
+                    &tuplet_numbers,
+                    true,
+                    EventEngrave::EMPTY,
+                );
                 continue;
             }
             if let Some((clef, pre_backup, cursor_forward)) = event.clef_cursor_script() {
@@ -43,13 +157,131 @@ impl<'score> MusicXmlWriter<'score> {
                 self.write_backup(cursor.subtract(onset));
                 cursor = onset;
             }
-            self.write_event(event, sequence, part, &tuplet_numbers, false);
+            let engrave = EventEngrave {
+                beams: plan.beams.get(&index).map_or(&[][..], Vec::as_slice),
+                stem: plan.stems.get(&index).copied(),
+                rest_display: plan.rest_display.get(&index).copied(),
+            };
+            self.write_event(event, sequence, part, &tuplet_numbers, false, engrave);
             if event.advances_time() {
                 cursor = cursor.checked_add(event.duration());
                 last_onset = onset;
             }
         }
         cursor
+    }
+
+    /// Compute the engraving plan (beams, tuplet brackets, stems, multi-voice rest
+    /// placement) for one sequence. Each hint is populated only when its option (or a
+    /// dependent option) is enabled; a beam grouping is always computed when needed
+    /// because tuplet brackets and beamed stem direction depend on it.
+    fn build_engrave_plan(&self, sequence: &MeasureSequence<'score>) -> SequencePlan {
+        let mut plan = SequencePlan::default();
+        let options = self.options;
+        let want_tuplet_default =
+            options.tuplet_display == crate::options::TupletDisplay::EngravingDefault;
+        // Slur/tie placement and stem emission all need the resolved stem direction.
+        let want_stems = options.stems || options.slur_placement || options.tie_orientation;
+        if !options.beams && !want_tuplet_default && !want_stems && !options.rest_placement {
+            return plan;
+        }
+
+        let clef = sequence.clef_text.as_deref();
+        let mut unit_indices = Vec::new();
+        let mut inputs = Vec::new();
+        let mut distances = Vec::new();
+        let mut has_stem = Vec::new();
+        for (index, event) in sequence.events.iter().enumerate() {
+            if !event.advances_time() || event.is_chord_member() {
+                continue;
+            }
+            let attachments = event.attachments();
+            let time_modification = TimeModification::composite(&attachments.tuplets)
+                .ok()
+                .flatten();
+            let spelling = note_spelling(event.duration(), time_modification);
+            let is_rest = event.is_rest();
+            inputs.push(BeamInput {
+                rtick: frac_ticks(event.onset()),
+                dur: frac_ticks(event.duration()),
+                beams: beam_flag_count(spelling.note_type),
+                is_rest,
+                tuplet_id: attachments
+                    .tuplets
+                    .iter()
+                    .map(|tuplet| tuplet.pair_id)
+                    .max(),
+            });
+            distances.push(event_distances(event, clef));
+            has_stem.push(!is_rest && stem::note_type_has_stem(spelling.note_type));
+            unit_indices.push(index);
+        }
+
+        // The beam grouping (empty groups under a free/unknown meter → per-note stems).
+        let beam_plan =
+            meter_grid(self.active_meter.as_ref()).map(|meter| beam::plan(&inputs, meter));
+        let groups: &[Vec<usize>] = beam_plan.as_ref().map_or(&[], |plan| &plan.groups);
+
+        if options.beams
+            && let Some(beam_plan) = &beam_plan
+        {
+            for (unit, segments) in beam_plan.segments.iter().enumerate() {
+                if !segments.is_empty() {
+                    plan.beams.insert(unit_indices[unit], segments.clone());
+                }
+            }
+        }
+
+        if want_tuplet_default {
+            let mut pairs: Vec<u32> = inputs.iter().filter_map(|input| input.tuplet_id).collect();
+            pairs.sort_unstable();
+            pairs.dedup();
+            for pair in pairs {
+                plan.brackets
+                    .insert(pair, beam::tuplet_shows_bracket(&inputs, groups, pair));
+            }
+        }
+
+        if want_stems {
+            // Map each unit to the beam group it belongs to (positions into `inputs`).
+            let mut group_of: Vec<Option<&Vec<usize>>> = vec![None; inputs.len()];
+            for group in groups {
+                for &pos in group {
+                    group_of[pos] = Some(group);
+                }
+            }
+            for pos in 0..inputs.len() {
+                if !has_stem[pos] || distances[pos].is_empty() {
+                    continue;
+                }
+                let beam_distances = group_of[pos].map(|group| {
+                    group
+                        .iter()
+                        .flat_map(|&member| distances[member].iter().copied())
+                        .collect::<Vec<_>>()
+                });
+                let up = stem::stem_up(
+                    &distances[pos],
+                    beam_distances.as_deref(),
+                    sequence.staff_multivoice,
+                    sequence.staff_voice_slot,
+                );
+                plan.stems.insert(unit_indices[pos], up);
+            }
+        }
+
+        if options.rest_placement && sequence.staff_multivoice {
+            for pos in 0..inputs.len() {
+                if inputs[pos].is_rest {
+                    plan.rest_display.insert(
+                        unit_indices[pos],
+                        stem::rest_display(clef, sequence.staff_voice_slot),
+                    );
+                }
+            }
+        }
+
+        plan
     }
 
     fn write_event(
@@ -59,6 +291,7 @@ impl<'score> MusicXmlWriter<'score> {
         part: &Part,
         tuplet_numbers: &TupletNumbers,
         chord_member: bool,
+        engrave: EventEngrave<'_>,
     ) {
         let attachments = event.attachments();
         self.write_harmony_and_directions(attachments, sequence, part);
@@ -84,10 +317,11 @@ impl<'score> MusicXmlWriter<'score> {
                         sequence,
                         part,
                         tuplet_numbers,
+                        engrave,
                     );
                 }
                 TimedEventKind::Chord(chord) => {
-                    self.write_chord(chord, attachments, sequence, part, tuplet_numbers);
+                    self.write_chord(chord, attachments, sequence, part, tuplet_numbers, engrave);
                 }
                 TimedEventKind::Rest(rest) => {
                     if timed.attachments.musicxml_forward {
@@ -116,6 +350,7 @@ impl<'score> MusicXmlWriter<'score> {
                         sequence,
                         part,
                         tuplet_numbers,
+                        engrave,
                     );
                 }
                 TimedEventKind::Spacer
@@ -128,7 +363,10 @@ impl<'score> MusicXmlWriter<'score> {
                     self.active_key = Some(key.clone());
                     self.write_mid_tune_key(key);
                 }
-                TimedEventKind::MeterChange(meter) => self.write_mid_tune_meter(meter),
+                TimedEventKind::MeterChange(meter) => {
+                    self.active_meter = Some(meter.clone());
+                    self.write_mid_tune_meter(meter);
+                }
                 TimedEventKind::ClefChange(clef) => {
                     if let Some(cursor_back) = clef.musicxml_cursor_back {
                         self.write_backup(cursor_back);
@@ -182,6 +420,7 @@ impl<'score> MusicXmlWriter<'score> {
                         sequence,
                         part,
                         tuplet_numbers,
+                        engrave,
                     );
                 }
                 TimelineEventKind::Rest { visibility, .. } => {
@@ -210,6 +449,7 @@ impl<'score> MusicXmlWriter<'score> {
                         sequence,
                         part,
                         tuplet_numbers,
+                        engrave,
                     );
                 }
                 TimelineEventKind::KeyChange(_)
@@ -233,6 +473,7 @@ impl<'score> MusicXmlWriter<'score> {
         sequence: &MeasureSequence<'score>,
         part: &Part,
         tuplet_numbers: &TupletNumbers,
+        engrave: EventEngrave<'_>,
     ) {
         let variable_durations = chord
             .members
@@ -279,6 +520,18 @@ impl<'score> MusicXmlWriter<'score> {
                 sequence,
                 part,
                 tuplet_numbers,
+                // The `<beam>` belongs to the chord as a unit and is written on the
+                // head note only; members carry `<chord/>` and no beam. Every chord
+                // note shares the chord's stem direction.
+                if index == 0 {
+                    engrave
+                } else {
+                    EventEngrave {
+                        beams: &[],
+                        rest_display: None,
+                        ..engrave
+                    }
+                },
             );
         }
     }
@@ -289,6 +542,7 @@ impl<'score> MusicXmlWriter<'score> {
         sequence: &MeasureSequence<'score>,
         part: &Part,
         tuplet_numbers: &TupletNumbers,
+        engrave: EventEngrave<'_>,
     ) {
         let print_no = note
             .rest
@@ -312,10 +566,8 @@ impl<'score> MusicXmlWriter<'score> {
             } else {
                 self.write_pitch(pitch);
             }
-        } else if note.measure_rest {
-            self.xml.empty("rest", &[("measure", "yes")]);
         } else {
-            self.xml.empty("rest", &[]);
+            self.write_rest_element(note.measure_rest, engrave.rest_display);
         }
         // A chord member inherits the chord's tuplet ratio (it has no `tuplets` of
         // its own — the bracket lives on the head); every other note derives the
@@ -387,9 +639,22 @@ impl<'score> MusicXmlWriter<'score> {
         if let Some(time_modification) = time_modification {
             self.write_time_modification(time_modification);
         }
+        if self.options.stems
+            && let Some(up) = engrave.stem
+        {
+            self.xml
+                .text_element("stem", if up { "up" } else { "down" });
+        }
         if part.staves.len() > 1 {
             self.xml
                 .text_element("staff", &sequence.staff.value.to_string());
+        }
+        for segment in engrave.beams {
+            self.xml.text_element_attrs(
+                "beam",
+                &[("number", &segment.level.to_string())],
+                segment.text.as_str(),
+            );
         }
         let ordered_attachments;
         let notation_attachments = if note.attachments.tuplets.len() > 1 {
@@ -402,10 +667,30 @@ impl<'score> MusicXmlWriter<'score> {
             notation_attachments,
             time_modification,
             tuplet_numbers,
-            &sequence.slur_voice_key,
+            sequence,
+            engrave.stem,
         );
         self.write_lyrics(&note.attachments.lyrics, &sequence.slur_voice_key);
         self.xml.end("note");
+    }
+
+    /// Emit a `<rest>` element, optionally with the multi-voice `<display-step>` /
+    /// `<display-octave>` position (present only under the rest-placement option).
+    fn write_rest_element(&mut self, measure_rest: bool, display: Option<(char, i8)>) {
+        let measure_attr: &[(&str, &str)] = if measure_rest {
+            &[("measure", "yes")]
+        } else {
+            &[]
+        };
+        match display {
+            Some((step, octave)) => {
+                self.xml.start("rest", measure_attr);
+                self.xml.text_element("display-step", &step.to_string());
+                self.xml.text_element("display-octave", &octave.to_string());
+                self.xml.end("rest");
+            }
+            None => self.xml.empty("rest", measure_attr),
+        }
     }
 
     fn write_pitch(&mut self, pitch: &Pitch) {

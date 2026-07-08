@@ -128,6 +128,11 @@ pub struct XmlArgs {
     /// Write MusicXML to this path instead of stdout.
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
+    /// Emit computed engraving hints (beams and convention-default tuplet display)
+    /// so renderers do not have to auto-beam. The default export stays byte-for-byte
+    /// the round-trip form.
+    #[arg(long = "engrave")]
+    pub engrave: bool,
     #[command(flatten)]
     pub common: CommonArgs,
 }

@@ -150,6 +150,7 @@ impl<'score> MusicXmlWriter<'score> {
         self.active_key = initial_key_for_part(part)
             .cloned()
             .or_else(|| self.score.metadata.key.clone());
+        self.active_meter = self.score.metadata.meter.clone();
         self.slur_numbers = Default::default();
         self.lyric_hyphen_open.clear();
         self.xml.start("part", &[("id", id.as_str())]);
@@ -566,6 +567,31 @@ fn measure_sequences<'score>(
             .cloned()
             .unwrap_or_else(|| (voice_index + 1).to_string());
         let slur_voice_key = voice.id.value.clone();
+        // Engraving context (stem/rest/slur voice-parity + clef middle line).
+        let staff = part
+            .staves
+            .iter()
+            .find(|staff| staff.id.value == voice.staff.value);
+        let staff_voice_count = staff.map_or(1, |staff| staff.voices.len());
+        let voice_slot = staff
+            .and_then(|staff| {
+                staff
+                    .voices
+                    .iter()
+                    .position(|id| id.value == voice.id.value)
+            })
+            .unwrap_or(0);
+        let clef_text = voice
+            .initial_properties
+            .clef
+            .as_ref()
+            .map(|clef| clef.text.clone());
+        let has_overlays = voice
+            .measures
+            .iter()
+            .find(|measure| measure.id == id)
+            .is_some_and(|measure| !measure.overlays.is_empty());
+        let staff_multivoice = staff_voice_count > 1 || has_overlays;
         let events = voice
             .events
             .iter()
@@ -603,6 +629,9 @@ fn measure_sequences<'score>(
                 musicxml_sequence_backup: events
                     .iter()
                     .find_map(|event| event.attachments().musicxml_sequence_backup),
+                staff_voice_slot: voice_slot,
+                staff_multivoice,
+                clef_text: clef_text.clone(),
                 events,
             });
         }
@@ -640,6 +669,10 @@ fn measure_sequences<'score>(
                     musicxml_sequence_backup: overlay_events
                         .iter()
                         .find_map(|event| event.attachments().musicxml_sequence_backup),
+                    // Overlays sit below the staff's main voices → later parity slot.
+                    staff_voice_slot: staff_voice_count + overlay_index,
+                    staff_multivoice: true,
+                    clef_text: clef_text.clone(),
                     events: overlay_events,
                 });
             }

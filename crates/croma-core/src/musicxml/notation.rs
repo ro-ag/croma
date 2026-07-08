@@ -1,6 +1,10 @@
 use crate::model::{DecorationAttachment, EventAttachments, SlurRole, TieRole, TupletRole};
 
-use super::{MusicXmlWriter, TimeModification, TupletNumbers, unsupported_duration_diagnostics};
+use super::engrave::stem;
+use super::{
+    MeasureSequence, MusicXmlWriter, TimeModification, TupletNumbers,
+    unsupported_duration_diagnostics,
+};
 
 impl<'score> MusicXmlWriter<'score> {
     pub(crate) fn write_notations(
@@ -8,7 +12,8 @@ impl<'score> MusicXmlWriter<'score> {
         attachments: &EventAttachments,
         time_modification: Option<TimeModification>,
         tuplet_numbers: &TupletNumbers,
-        slur_voice_key: &str,
+        sequence: &MeasureSequence<'score>,
+        stem_up: Option<bool>,
     ) {
         let has_tied = !attachments.ties.is_empty();
         let has_slurs = !attachments.slurs.is_empty();
@@ -25,6 +30,8 @@ impl<'score> MusicXmlWriter<'score> {
         if !(has_tied || has_slurs || has_tuplets || has_notation_decorations) {
             return;
         }
+        let multivoice = sequence.staff_multivoice;
+        let voice_slot = sequence.staff_voice_slot;
         self.xml.start("notations", &[]);
         for tie in &attachments.ties {
             let number = tie.pair_id.to_string();
@@ -41,12 +48,15 @@ impl<'score> MusicXmlWriter<'score> {
             if tie.dotted {
                 attrs.push(("line-type", "dotted"));
             }
+            if self.options.tie_orientation {
+                attrs.push(("orientation", stem::tie_orientation(stem_up, multivoice)));
+            }
             self.xml.empty("tied", &attrs);
         }
         for slur in &attachments.slurs {
             let number = self
                 .slur_numbers
-                .number_for(slur_voice_key, slur.pair_id, slur.role)
+                .number_for(&sequence.slur_voice_key, slur.pair_id, slur.role)
                 .to_string();
             let mut attrs = vec![
                 (
@@ -60,6 +70,12 @@ impl<'score> MusicXmlWriter<'score> {
             ];
             if slur.dotted {
                 attrs.push(("line-type", "dotted"));
+            }
+            if self.options.slur_placement {
+                attrs.push((
+                    "placement",
+                    stem::slur_placement(stem_up, multivoice, voice_slot),
+                ));
             }
             self.xml.empty("slur", &attrs);
         }
@@ -82,7 +98,12 @@ impl<'score> MusicXmlWriter<'score> {
             let display = (tuplet_type == "start")
                 .then(|| tuplet_displays.next())
                 .flatten();
-            self.write_tuplet_notation(tuplet_type, number.as_str(), display);
+            // With no explicit source directive, the engraving profile spells the
+            // convention-default bracket (number-only for a fully-beamed tuplet).
+            let default_bracket = (tuplet_type == "start" && display.is_none())
+                .then(|| self.engraving_tuplet_bracket(tuplet.pair_id))
+                .flatten();
+            self.write_tuplet_notation(tuplet_type, number.as_str(), display, default_bracket);
         }
         if has_notation_decorations {
             let notation_kinds = notation_kinds
@@ -198,11 +219,28 @@ impl<'score> MusicXmlWriter<'score> {
         self.xml.end("notations");
     }
 
+    /// The convention-default `bracket` attribute (`"yes"`/`"no"`) for a tuplet whose
+    /// source carried no display directive, or `None` when the engraving tuplet-display
+    /// default is off. `true` (show bracket) is the safe fallback for an unplanned pair.
+    fn engraving_tuplet_bracket(&self, pair_id: u32) -> Option<&'static str> {
+        if self.options.tuplet_display != crate::options::TupletDisplay::EngravingDefault {
+            return None;
+        }
+        Some(
+            if self.tuplet_brackets.get(&pair_id).copied().unwrap_or(true) {
+                "yes"
+            } else {
+                "no"
+            },
+        )
+    }
+
     fn write_tuplet_notation(
         &mut self,
         tuplet_type: &'static str,
         number: &str,
         display: Option<&TupletDisplay>,
+        default_bracket: Option<&'static str>,
     ) {
         let mut attrs = vec![("type", tuplet_type)];
         if let Some(display) = display {
@@ -219,6 +257,9 @@ impl<'score> MusicXmlWriter<'score> {
             }
         } else {
             attrs.push(("number", number));
+            if let Some(bracket) = default_bracket {
+                attrs.push(("bracket", bracket));
+            }
             self.xml.empty("tuplet", &attrs);
         }
     }
