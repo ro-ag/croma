@@ -1,5 +1,6 @@
 //! Agent help topics for croma's non-standard ABC notations (the
-//! `[I:croma-*]` / `%%croma-*` carriers). Exposed as data so a library user gets
+//! `[I:croma-*]` / `%%croma-*` carriers), plus the standard directives agents
+//! routinely misuse (`%%score`). Exposed as data so a library user gets
 //! the same knowledge the `croma agent` CLI prints, without taking on a JSON or
 //! serde dependency — `croma-core` stays zero-dependency.
 //!
@@ -58,6 +59,34 @@ Fields are `key=value`, space-separated; double-quote a value with spaces (`name
 The `-hex=` rule: inside an inline `[I:...]`, the characters `]`, `%`, and raw control characters break the ABC tokenizer. When a free-text value contains one, croma emits a hex variant of the field instead — `text="John"` becomes `text-hex=4a6f686e` (the UTF-8 bytes as lowercase hex). Header `%%` lines are line-level and do not need it.
 
 Run `croma agent <topic>` for any specific notation, then `croma xml file.abc` to confirm it persisted."#,
+    },
+    AgentTopic {
+        id: r#"score"#,
+        aliases: &[
+            r#"%%score"#,
+            r#"grouping"#,
+            r#"staves"#,
+            r#"%%staves"#,
+            r#"staff-grouping"#,
+        ],
+        category: r#"Basics"#,
+        summary: r#"%%score staff grouping: ( ) overlay one staff, { } grand staff, [ ]/bare one part each"#,
+        body: r#"`%%score` (synonym: `%%staves`) is standard ABC, not a croma carrier — documented here because agents routinely misuse it. It lays voices out into MusicXML parts and staves:
+
+- bare voices and `[ ]` brackets: ONE single-staff part per voice, in directive order (`[ ]` only draws a visual bracket over the group);
+- `( )` merges its voices onto ONE staff of one part — overlay streams sharing a staff (divisi, e.g. soprano + alto on one staff). NOT for separate instruments: two instruments in `( )` end up crammed onto a single crowded staff;
+- `{ }` is a piano-style grand staff — ONE part with a separate staff per member — ONLY when every member is a staff of the same voice (`Piano`, `Piano#2`: croma's `#N` staff-continuation naming). Braced voices with distinct ids (`{RH LH}`) do NOT merge — each stays its own single-staff part and the brace is visual grouping only. Never brace unrelated instruments just to group them;
+- a voice the directive does not mention is appended as its own single-staff part; with no directive at all, every voice is its own single-staff part. If several `%%score` lines name voices, the last one wins.
+
+Example — five single-staff instruments plus one piano grand staff:
+```
+%%score Lead Arp Pad Kick Bass {Piano Piano#2}
+V:Piano
+E F G A |
+V:Piano#2 clef=bass
+C, C, G, G, |
+```
+Verify: `croma xml f.abc | grep -cE '<part id|<staves'` (here: six `<part id`, one `<staves>2`)"#,
     },
     AgentTopic {
         id: r#"part-instrument"#,
@@ -372,6 +401,23 @@ mod tests {
             .expect("the croma-xvoice-slur alias must resolve");
         assert_eq!(by_alias.id, "xvoice-slur");
         assert!(find_agent_topic("no-such-topic").is_none());
+    }
+
+    /// The `%%score` grouping topic (issue #259): reachable by every alias an
+    /// agent is likely to try, and its body states the three grouping semantics.
+    #[test]
+    fn score_topic_documents_staff_grouping() {
+        for query in ["score", "%%score", "grouping", "staves", "%%staves"] {
+            assert_eq!(
+                find_agent_topic(query).map(|t| t.id),
+                Some("score"),
+                "`{query}` must resolve to the score topic"
+            );
+        }
+        let topic = find_agent_topic("score").expect("the score topic must exist");
+        assert!(topic.body.contains("ONE staff"), "( ) overlay semantics");
+        assert!(topic.body.contains("grand staff"), "{{ }} semantics");
+        assert!(topic.body.contains("%%score Lead"), "runnable example");
     }
 
     #[test]

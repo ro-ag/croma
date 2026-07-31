@@ -26,7 +26,9 @@ vehicles, `key=value` fields, the `-hex=` rule for hostile characters).
 [`carriers.md`](carriers.md) is the canonical, implementation-facing spec.
 `croma agent` is its **agent-facing distillation**: the same carriers, framed as
 tasks with runnable examples and no internal pointers. A unit test asserts every
-carrier in `carriers.md` has a topic, so the two cannot drift.
+carrier in `carriers.md` has a topic, so the two cannot drift. A few topics go
+beyond the carriers to standard directives agents routinely misuse — e.g.
+`score`, the `%%score` staff-grouping semantics.
 
 ## Library access
 
