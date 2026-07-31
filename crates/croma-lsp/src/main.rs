@@ -514,10 +514,12 @@ mod transport_tests {
             .expect("send initialize");
 
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, init_id);
-                assert!(error.is_none(), "initialize errored: {error:?}");
-                assert!(result.is_some(), "initialize returned no result");
+                response_result.expect("initialize errored");
             }
             other => panic!("expected initialize response, got {other:?}"),
         }
@@ -627,9 +629,14 @@ mod transport_tests {
                 }))
                 .expect("send R2 request");
             match recv(&client) {
-                Message::Response(Response { id, error, .. }) => {
+                Message::Response(Response {
+                    id,
+                    response_result,
+                }) => {
                     assert_eq!(id, req_id, "{method} response id");
-                    assert!(error.is_none(), "{method} errored: {error:?}");
+                    if let Err(error) = response_result {
+                        panic!("{method} errored: {error:?}");
+                    }
                 }
                 other => panic!("expected {method} response, got {other:?}"),
             }
@@ -666,12 +673,14 @@ mod transport_tests {
             }))
             .expect("send semanticTokens");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, st_id);
-                assert!(error.is_none(), "semanticTokens errored: {error:?}");
+                let result = response_result.expect("semanticTokens errored");
                 let tokens: lsp_types::SemanticTokens =
-                    serde_json::from_value(result.expect("semanticTokens result"))
-                        .expect("valid SemanticTokens");
+                    serde_json::from_value(result).expect("valid SemanticTokens");
                 assert!(!tokens.data.is_empty(), "real tune should yield tokens");
             }
             other => panic!("expected semanticTokens response, got {other:?}"),
@@ -690,12 +699,14 @@ mod transport_tests {
             }))
             .expect("send formatting");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, fmt_id);
-                assert!(error.is_none(), "formatting errored: {error:?}");
+                let result = response_result.expect("formatting errored");
                 let edits: Vec<lsp_types::TextEdit> =
-                    serde_json::from_value(result.expect("formatting result"))
-                        .expect("valid TextEdit list");
+                    serde_json::from_value(result).expect("valid TextEdit list");
                 assert!(edits.len() <= 1, "at most one full-document edit");
             }
             other => panic!("expected formatting response, got {other:?}"),
@@ -711,12 +722,14 @@ mod transport_tests {
             }))
             .expect("send documentSymbol");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, sym_id);
-                assert!(error.is_none(), "documentSymbol errored: {error:?}");
+                let result = response_result.expect("documentSymbol errored");
                 let response: lsp_types::DocumentSymbolResponse =
-                    serde_json::from_value(result.expect("documentSymbol result"))
-                        .expect("valid DocumentSymbolResponse");
+                    serde_json::from_value(result).expect("valid DocumentSymbolResponse");
                 match response {
                     lsp_types::DocumentSymbolResponse::Nested(symbols) => {
                         assert_eq!(symbols.len(), 1, "one tune symbol");
@@ -738,12 +751,14 @@ mod transport_tests {
             }))
             .expect("send foldingRange");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, fold_id);
-                assert!(error.is_none(), "foldingRange errored: {error:?}");
+                let result = response_result.expect("foldingRange errored");
                 let folds: Vec<lsp_types::FoldingRange> =
-                    serde_json::from_value(result.expect("foldingRange result"))
-                        .expect("valid FoldingRange list");
+                    serde_json::from_value(result).expect("valid FoldingRange list");
                 assert_eq!(folds.len(), 1, "one fold per tune");
             }
             other => panic!("expected foldingRange response, got {other:?}"),
@@ -763,11 +778,14 @@ mod transport_tests {
             }))
             .expect("send hover");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, hover_id);
-                assert!(error.is_none(), "hover errored: {error:?}");
+                let result = response_result.expect("hover errored");
                 let hover: Option<lsp_types::Hover> =
-                    serde_json::from_value(result.expect("hover result")).expect("valid Hover");
+                    serde_json::from_value(result).expect("valid Hover");
                 assert!(hover.is_some(), "K: line should hover to the key doc");
             }
             other => panic!("expected hover response, got {other:?}"),
@@ -804,12 +822,14 @@ mod transport_tests {
             }))
             .expect("send completion");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, comp_id);
-                assert!(error.is_none(), "completion errored: {error:?}");
+                let result = response_result.expect("completion errored");
                 let items: Vec<lsp_types::CompletionItem> =
-                    serde_json::from_value(result.expect("completion result"))
-                        .expect("valid CompletionItem list");
+                    serde_json::from_value(result).expect("valid CompletionItem list");
                 assert!(
                     items.iter().any(|i| i.label == "K:"),
                     "header completion offers K:"
@@ -857,12 +877,14 @@ mod transport_tests {
             }))
             .expect("send codeAction");
         match recv(&client) {
-            Message::Response(Response { id, result, error }) => {
+            Message::Response(Response {
+                id,
+                response_result,
+            }) => {
                 assert_eq!(id, ca_id);
-                assert!(error.is_none(), "codeAction errored: {error:?}");
+                let result = response_result.expect("codeAction errored");
                 let actions: Vec<lsp_types::CodeAction> =
-                    serde_json::from_value(result.expect("codeAction result"))
-                        .expect("valid CodeAction list");
+                    serde_json::from_value(result).expect("valid CodeAction list");
                 assert_eq!(actions.len(), 1, "one fix-all action for Q:320s");
                 assert_eq!(
                     actions[0].kind,
