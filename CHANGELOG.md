@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-31
+
+### Added
+
+- **`score` agent help topic.** `croma agent score` (aliases: `%%score`,
+  `grouping`, `staves`, `%%staves`, `staff-grouping`) documents the `%%score` /
+  `%%staves` staff-grouping semantics with a runnable example: `( )` overlays its
+  voices on ONE staff of one part, `{ }` is a grand staff only when every member
+  is a staff of the same voice (`Piano`, `Piano#2`), and `[ ]` / bare voices keep
+  one single-staff part per voice — so LLM agents driving the dialect stop
+  cramming separate instruments onto one staff or merging unrelated voices into a
+  phantom keyboard part. ([#259], [#260])
+
+### Changed
+
+- **Dependency bumps.** `clap` 4.6.4, `serde` 1.0.229, `serde_json` 1.0.151, and
+  `lsp-server` 0.10.0; the croma-lsp transport test is ported to `lsp-server`
+  0.10's merged `Response::response_result` field. No library API changes.
+  ([#261])
+
 ## [1.2.0] - 2026-07-08
 
 ### Added
@@ -50,9 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inline `[I:MIDI=...]` spelling, so MusicXML-imported scores do not re-warn on
   round-trip parse when callers opt into carrier suppression. ([#246])
 
+[1.2.1]: https://github.com/ro-ag/croma/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ro-ag/croma/releases/tag/v1.2.0
 [1.1.4]: https://github.com/ro-ag/croma/releases/tag/v1.1.4
 [1.1.3]: https://github.com/ro-ag/croma/releases/tag/v1.1.3
+[#259]: https://github.com/ro-ag/croma/issues/259
+[#260]: https://github.com/ro-ag/croma/pull/260
+[#261]: https://github.com/ro-ag/croma/pull/261
 [#250]: https://github.com/ro-ag/croma/issues/250
 [#251]: https://github.com/ro-ag/croma/pull/251
 [#244]: https://github.com/ro-ag/croma/issues/244
