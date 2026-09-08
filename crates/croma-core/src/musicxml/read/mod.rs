@@ -932,6 +932,11 @@ impl Reader {
             .and_then(|attributes| read_attributes_divisions(self, attributes))
             .unwrap_or(divisions);
 
+        // Issue #267: a mid-measure `<clef number=N>` belongs to the voices on
+        // staff N, so the staff -> voice routing must be known BEFORE the measures
+        // are read (the per-voice `staff` assignment below happens after).
+        let staff_voices = staff_voice_map(part_node);
+
         for (position, measure_node) in children_named(part_node, "measure").enumerate() {
             let measure_id = self.read_measure_id(measure_node, position);
             // Only part 1's first measure may yield the score header tempo; in
@@ -946,6 +951,7 @@ impl Reader {
                 measure_id,
                 capture_header,
                 is_part_first_measure,
+                &staff_voices,
             );
             if header_tempo.is_none() {
                 header_tempo = outcome.header_tempo;
@@ -1161,6 +1167,7 @@ impl Reader {
         measure_id: MeasureId,
         capture_header_tempo: bool,
         is_part_first_measure: bool,
+        staff_voices: &std::collections::BTreeMap<u32, String>,
     ) -> MeasureOutcome {
         // S6d: the writer interleaves a part's multiple voices with `<backup>`
         // and a per-sequence `<voice>` number. MusicXML cursor motion is global
@@ -1497,13 +1504,14 @@ impl Reader {
                     if !header_attributes_consumed {
                         header_attributes_consumed = true;
                     } else {
-                        let state = voice_state_at(&mut voices, &current_voice, cursor);
+                        voice_state_at(&mut voices, &current_voice, cursor);
                         self.read_mid_measure_attributes(
                             child,
                             measure_id,
                             cursor,
-                            &mut state.events,
-                            &mut state.pending,
+                            &mut voices,
+                            &current_voice,
+                            staff_voices,
                         );
                         // S6b×S5a: the writer emits a true HEADER tempo
                         // (`write_initial_directions`) BEFORE any measure-sequence
@@ -1688,8 +1696,9 @@ impl Reader {
         attributes: Node<'_, '_>,
         measure_id: MeasureId,
         cursor: Fraction,
-        events: &mut Vec<TimedEvent>,
-        pending: &mut EventAttachments,
+        voices: &mut Vec<(String, VoiceMeasureState)>,
+        current_voice: &str,
+        staff_voices: &std::collections::BTreeMap<u32, String>,
     ) {
         for child in element_children(attributes) {
             let kind = match child.tag_name().name() {
@@ -1715,7 +1724,16 @@ impl Reader {
                 }
             };
             if let Some(kind) = kind {
-                events.push(TimedEvent {
+                // Issue #267: a `<clef number=N>` belongs to staff N, which in a
+                // grand-staff part is a DIFFERENT voice from the one active at this
+                // point in the measure (the reproducer's staff-2 change appears
+                // while voice 1 is current, and again in measure 2 before any note).
+                // Routing it to the active voice moved the change to the wrong
+                // staff; key/meter changes and single-staff parts keep the active
+                // voice, which is what `staff_voices` yields nothing for.
+                let voice = clef_staff_voice(&kind, child, staff_voices).unwrap_or(current_voice);
+                let state = voice_state_at(voices, voice, cursor);
+                state.events.push(TimedEvent {
                     measure: measure_id,
                     onset: cursor,
                     duration: Fraction::zero(),
@@ -1725,9 +1743,9 @@ impl Reader {
                 });
             }
         }
-        // `pending` is intentionally not consumed here; it flushes onto the next
-        // note (the change events carry no attachments, matching the lowering).
-        let _ = pending;
+        // A buffered direction/harmony is intentionally not consumed here; it
+        // flushes onto the next note (the change events carry no attachments,
+        // matching the lowering).
     }
 
     /// S6b: reconstruct a [`ClefChangeModel`] from a mid-tune `<clef>` element.
@@ -4879,6 +4897,29 @@ fn read_staves_count(attributes: Node<'_, '_>) -> u32 {
         .unwrap_or(1)
 }
 
+/// Issue #267: the voice that owns each staff of a grand-staff part — the
+/// lowest-numbered `<voice>` routed to that staff, which is where a mid-measure
+/// `<clef number=N>` change belongs. Empty for a single-staff part (`<staves>` is
+/// absent or 1), where `<clef>` carries no `number` and the active voice owns
+/// every change.
+fn staff_voice_map(part_node: Node<'_, '_>) -> std::collections::BTreeMap<u32, String> {
+    let staves = children_named(part_node, "measure")
+        .next()
+        .and_then(|measure| child_element(measure, "attributes"))
+        .map(read_staves_count)
+        .unwrap_or(1);
+    if staves <= 1 {
+        return std::collections::BTreeMap::new();
+    }
+    let mut voices: Vec<(String, u32)> = voice_staff_map(part_node).into_iter().collect();
+    voices.sort_by_key(|(voice, _)| parse_voice_number(voice));
+    let mut map = std::collections::BTreeMap::new();
+    for (voice, staff) in voices {
+        map.entry(staff).or_insert(voice);
+    }
+    map
+}
+
 /// The staff each `<voice>` lives on, from the first `<staff>` seen for that voice
 /// across the part's notes (default staff 1, default voice "1"). Routes each
 /// reconstructed [`Voice`] to its staff in a grand-staff part.
@@ -4985,6 +5026,22 @@ fn voice_state_at<'a>(
     let state = voice_state(voices, voice);
     state.cursor = cursor;
     state
+}
+
+/// Issue #267: the voice that owns a mid-measure `<clef number=N>` — the first
+/// voice routed to staff N. `None` for anything but a numbered clef, for a staff
+/// no voice was found on, and for every single-staff part (`staff_voices` is
+/// empty there), leaving those events with the active voice as before.
+fn clef_staff_voice<'a>(
+    kind: &TimedEventKind,
+    clef_node: Node<'_, '_>,
+    staff_voices: &'a std::collections::BTreeMap<u32, String>,
+) -> Option<&'a str> {
+    if !matches!(kind, TimedEventKind::ClefChange(_)) {
+        return None;
+    }
+    let staff = clef_node.attribute("number")?.trim().parse::<u32>().ok()?;
+    staff_voices.get(&staff).map(String::as_str)
 }
 
 /// S6d: read a `<measure-style><multiple-rest>N</multiple-rest>` count from an
