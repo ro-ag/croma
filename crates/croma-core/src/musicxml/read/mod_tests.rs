@@ -9951,3 +9951,129 @@ fn brace_over_distinct_parts_stays_two_parts() {
         "two distinct parts must not collapse into a multi-staff part, got:\n{xml}"
     );
 }
+
+/// Issue #267: a mid-tune `<clef>` must survive MusicXML -> ABC. The clef change
+/// events the reader builds carry no `musicxml_cursor_back` metadata (that field
+/// exists only for the clef-cursor carrier the ABC->XML direction plants), and the
+/// ABC writer emitted the carrier or nothing at all, so every ordinary clef change
+/// was silently dropped on the way out.
+#[test]
+fn mid_tune_clef_change_projects_to_inline_abc_field() {
+    let xml = concat!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">",
+        "<part-name>Music</part-name></score-part></part-list><part id=\"P1\">",
+        "<measure number=\"1\">",
+        "<attributes><divisions>2</divisions><key><fifths>0</fifths></key>",
+        "<time><beats>4</beats><beat-type>4</beat-type></time>",
+        "<clef><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration>",
+        "<voice>1</voice><type>quarter</type></note>",
+        "<attributes><clef><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>C</step><octave>3</octave></pitch><duration>6</duration>",
+        "<voice>1</voice><type>half</type></note>",
+        "</measure></part></score-partwise>",
+    );
+    let report = read_musicxml(xml);
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[K:clef=bass]"),
+        "a mid-tune <clef> must project as an inline `[K:clef=..]` field; got:\n{abc}"
+    );
+    // The change must survive re-export at the same position (one mid-tune
+    // `<attributes>` holding only the bass clef, after the first note).
+    let roundtrip = export_musicxml(&abc).expect("clef-change ABC should export");
+    assert!(
+        roundtrip
+            .musicxml
+            .contains("<attributes>\n        <clef>\n          <sign>F</sign>"),
+        "the clef change must re-export as its own mid-tune <attributes>; got:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+/// Issue #267: a `<clef number="N">` change belongs to the voices on staff `N`,
+/// not to whichever voice happened to be active at that point in the measure. The
+/// reproducer routes a staff-2 clef change that appears while voice 1 is current
+/// (after a `<backup>`/`<forward>` pair) and, in the next measure, in a leading
+/// `<attributes>` block before any note.
+#[test]
+fn numbered_clef_change_routes_to_its_staff_voice() {
+    let xml = concat!(
+        "<score-partwise version=\"4.0\"><part-list><score-part id=\"P1\">",
+        "<part-name>Piano</part-name></score-part></part-list><part id=\"P1\">",
+        "<measure number=\"1\"><attributes><divisions>8</divisions>",
+        "<key><fifths>3</fifths></key><time><beats>2</beats><beat-type>4</beat-type></time>",
+        "<staves>2</staves><clef number=\"1\"><sign>G</sign><line>2</line></clef>",
+        "<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
+        "<forward><duration>2</duration><voice>1</voice><staff>1</staff></forward>",
+        "<note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration>",
+        "<voice>1</voice><type>eighth</type><staff>1</staff></note>",
+        "<backup><duration>6</duration></backup>",
+        "<forward><duration>2</duration><voice>3</voice><staff>2</staff></forward>",
+        "<attributes><clef number=\"2\"><sign>G</sign><line>2</line></clef></attributes>",
+        "<note><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration>",
+        "<voice>3</voice><type>eighth</type><staff>2</staff></note></measure>",
+        "<measure number=\"2\"><attributes>",
+        "<clef number=\"2\"><sign>F</sign><line>4</line></clef></attributes>",
+        "<note><pitch><step>E</step><octave>4</octave></pitch><duration>16</duration>",
+        "<voice>1</voice><type>half</type><staff>1</staff></note>",
+        "<backup><duration>16</duration></backup>",
+        "<note><pitch><step>A</step><octave>3</octave></pitch><duration>16</duration>",
+        "<voice>3</voice><type>half</type><staff>2</staff></note></measure>",
+        "</part></score-partwise>",
+    );
+    let report = read_musicxml(xml);
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    let lower_staff = abc
+        .lines()
+        .skip_while(|line| !line.starts_with("V:P1#3"))
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        lower_staff.contains("[K:clef=treble]") && lower_staff.contains("[K:clef=bass]"),
+        "both staff-2 clef changes belong to the lower staff's voice; got:\n{abc}"
+    );
+    let upper_staff = abc
+        .lines()
+        .skip_while(|line| !line.starts_with("V:P1 "))
+        .take_while(|line| !line.starts_with("V:P1#3"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !upper_staff.contains("clef="),
+        "no clef change belongs to the upper staff's voice; got:\n{abc}"
+    );
+    // Re-export must put both changes back on staff 2.
+    let roundtrip = export_musicxml(&abc).expect("grand-staff clef ABC should export");
+    assert_eq!(
+        roundtrip.musicxml.matches("<clef number=\"2\">").count(),
+        3,
+        "staff 2 keeps its header clef plus both changes; got:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+/// Issue #267 guard: `write_abc` spells every pitch of a voice for ONE octave
+/// shift (the voice's `clef=±8`/`octave=`/`middle=`), so projecting a mid-tune
+/// clef change whose `±8`/`±15` component differs would move that shift on
+/// re-parse and transpose every following note by an octave. The inline field
+/// must carry the compensating `octave=`, keeping the round-trip pitch-exact.
+#[test]
+fn octave_shifting_clef_change_compensates_the_voice_shift() {
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\nV:1\nC C [K:clef=treble-8] C C |\n";
+    let x1 = export(abc);
+    let report = read_musicxml(&x1);
+    let projected = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        projected.contains("[K:clef=treble-8 octave=1]"),
+        "the -8 clef change must carry its `octave=` compensation; got:\n{projected}"
+    );
+    let x2 = export_musicxml(&projected)
+        .expect("clef-change projection should export")
+        .musicxml;
+    assert_eq!(
+        x1, x2,
+        "the octave-shifting clef change must round-trip pitch-exactly"
+    );
+}

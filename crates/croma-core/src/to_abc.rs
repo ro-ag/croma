@@ -260,6 +260,18 @@ fn clef_cursor_instruction(clef: &ClefChangeModel) -> Option<String> {
     Some(out)
 }
 
+/// The clef token for an inline `[K:clef=..]` field, or `None` when the text
+/// cannot be written as one. An inline field is single-line and ends at the
+/// first `]`, so a clef carrying a control character or a `]` would corrupt the
+/// music line; such text is left unwritten rather than emitted broken. Every
+/// clef croma itself produces (`treble`/`bass`/`alto`/`tenor`/`perc`, with an
+/// optional `±8`/`±15` suffix) is a plain token and passes.
+fn inline_clef_field_text(clef: &ClefChangeModel) -> Option<&str> {
+    let text = clef.clef.text.trim();
+    let writable = !text.is_empty() && !text.contains(']') && !text.chars().any(char::is_control);
+    writable.then_some(text)
+}
+
 fn barline_style_instruction(kind: BarlineKind) -> Option<&'static str> {
     match kind {
         BarlineKind::Dashed => Some("croma-barline-style style=dashed"),
@@ -747,28 +759,41 @@ fn abc_carrier_quoted(text: &str) -> String {
 fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
     let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
-        let clef = clef.text.as_str();
-        if clef.contains("-15") {
-            shift -= 2;
-        } else if clef.contains("+15") {
-            shift += 2;
-        } else if clef.contains("-8") {
-            shift -= 1;
-        } else if clef.contains("+8") {
-            shift += 1;
-        }
+        shift += clef_octave_shift(clef.text.as_str());
     }
-    if let Some(octave) = properties.octave.as_ref()
-        && let Ok(value) = octave.text.trim().parse::<i64>()
-    {
-        shift += value.clamp(-9, 9) as i32;
-    }
+    shift += voice_octave_param(properties);
     if let Some(middle) = properties.middle.as_ref() {
         shift += i32::from(crate::lower::voice::middle_octave_shift(
             middle.text.as_str(),
         ));
     }
     shift.clamp(-12, 12) as i8
+}
+
+/// The written->stored octave shift a `clef=` token contributes on its own
+/// (`±8`/`±15`), split out of [`voice_octave_shift`] so a mid-tune clef change
+/// can be compensated against the voice's baked-in shift.
+fn clef_octave_shift(clef: &str) -> i32 {
+    if clef.contains("-15") {
+        -2
+    } else if clef.contains("+15") {
+        2
+    } else if clef.contains("-8") {
+        -1
+    } else if clef.contains("+8") {
+        1
+    } else {
+        0
+    }
+}
+
+/// The voice's `octave=` modifier as the parser reads it (clamped to ±9), or 0.
+fn voice_octave_param(properties: &crate::model::VoicePropertiesModel) -> i32 {
+    properties
+        .octave
+        .as_ref()
+        .and_then(|octave| octave.text.trim().parse::<i64>().ok())
+        .map_or(0, |value| value.clamp(-9, 9) as i32)
 }
 
 /// A pitch moved back to its written octave for emission. Saturating, like
@@ -789,6 +814,18 @@ fn write_voice(
 ) -> String {
     let mut out = String::new();
     let shift = voice_octave_shift(&voice.properties);
+    // Every pitch below is written for THIS one shift, so a mid-tune clef change
+    // to a clef with a different `±8`/`±15` component must not move the shift when
+    // the ABC is re-read. `octave=` on the same inline field cancels the
+    // difference; `effective_octave_param` tracks what is currently in force so a
+    // change that needs no compensation emits a bare `clef=`.
+    let baseline_clef_shift = voice
+        .properties
+        .clef
+        .as_ref()
+        .map_or(0, |clef| clef_octave_shift(clef.text.as_str()));
+    let baseline_octave_param = voice_octave_param(&voice.properties);
+    let mut effective_octave_param = baseline_octave_param;
     // Overlay segments (`&`) grouped by the measure they belong to; spliced
     // before that measure's closing barline, in segment order.
     let mut overlays: std::collections::BTreeMap<u32, Vec<&crate::model::OverlaySegment>> =
@@ -1030,8 +1067,27 @@ fn write_voice(
                 out.push_str(&format!("[M:{}] ", meter.display));
             }
             TimedEventKind::ClefChange(clef) => {
+                // A clef change planted by the ABC->MusicXML direction carries the
+                // cursor metadata the carrier needs; the carrier holds the clef
+                // text itself, so it fully replaces the inline field.
                 if let Some(instruction) = clef_cursor_instruction(clef) {
                     out.push_str(&format!("[I:{instruction}] "));
+                } else if let Some(text) = inline_clef_field_text(clef) {
+                    // Issue #267: every OTHER clef change (notably each one the
+                    // MusicXML reader reconstructs, which never has cursor
+                    // metadata) is an ordinary ABC inline clef field. Without this
+                    // the event emitted nothing at all and the change was lost.
+                    let required =
+                        baseline_octave_param + baseline_clef_shift - clef_octave_shift(text);
+                    if required == effective_octave_param {
+                        out.push_str(&format!("[K:clef={text}] "));
+                    } else if (-9..=9).contains(&required) {
+                        out.push_str(&format!("[K:clef={text} octave={required}] "));
+                        effective_octave_param = required;
+                    }
+                    // A compensation outside the parser's ±9 `octave=` clamp cannot
+                    // be written, so the change stays unexpressed rather than
+                    // shifting every following pitch by an octave.
                 }
             }
             TimedEventKind::TempoChange(tempo) => {
