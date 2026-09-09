@@ -4266,3 +4266,26 @@ fn compact_ending_close_with_n_hex_falls_through_unrecognised() {
         export.diagnostics
     );
 }
+
+#[test]
+fn writer_emits_compact_carrier_spellings() {
+    let abc = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-direction-placement placement=below]!f!C ",
+        "[I:croma-lyric-extend verse=1]D E F |\n",
+        "w: one two three four\n",
+    );
+    let score = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    )
+    .value
+    .expect("score");
+    let out = crate::write_abc(&score, crate::AbcWriteOptions::default());
+    assert!(out.contains("[I:cr dp=b]"), "got:\n{out}");
+    assert!(out.contains("[I:cr le=1]"), "got:\n{out}");
+    assert!(
+        !out.contains("croma-direction-placement") && !out.contains("croma-lyric-extend"),
+        "no long spelling may survive for a coded carrier; got:\n{out}"
+    );
+}

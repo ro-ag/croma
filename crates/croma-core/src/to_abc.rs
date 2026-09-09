@@ -134,27 +134,30 @@ fn harmony_text_instruction(kind_text: &HarmonyKindText) -> Option<String> {
         // ABC-native chords carry no provenance; the writer rebuilds `text=` from
         // the chord string, so no carrier is emitted.
         HarmonyKindText::AbcNative => None,
-        HarmonyKindText::Textless => Some("croma-harmony-text textless=1".to_owned()),
-        HarmonyKindText::Text(value) => Some(format!(
-            "croma-harmony-text text=\"{}\"",
-            abc_carrier_quoted(value)
-        )),
+        HarmonyKindText::Textless => Some("cr htx".to_owned()),
+        HarmonyKindText::Text(value) => {
+            if needs_hex_inline_carrier(value) {
+                Some(format!("cr ht text-hex={}", hex_utf8(value)))
+            } else {
+                Some(format!("cr ht text=\"{}\"", abc_carrier_quoted(value)))
+            }
+        }
     }
 }
 
 fn direction_placement_instruction(placement: AnnotationPlacementModel) -> String {
     let placement = match placement {
-        AnnotationPlacementModel::Below => "below",
+        AnnotationPlacementModel::Below => "b",
         AnnotationPlacementModel::Above
         | AnnotationPlacementModel::Left
         | AnnotationPlacementModel::Right
-        | AnnotationPlacementModel::Free => "above",
+        | AnnotationPlacementModel::Free => "a",
     };
-    format!("croma-direction-placement placement={placement}")
+    format!("cr dp={placement}")
 }
 
 fn lyric_extend_instruction(verse: u32) -> String {
-    format!("croma-lyric-extend verse={verse}")
+    format!("cr le={verse}")
 }
 
 fn lyric_duplicate_instruction(lyric: &AlignedLyric) -> String {
@@ -185,11 +188,11 @@ fn hex_utf8(text: &str) -> String {
 }
 
 fn meter_restatement_instruction() -> &'static str {
-    "croma-meter-restatement"
+    "cr mr"
 }
 
 fn key_restatement_instruction() -> &'static str {
-    "croma-key-restatement"
+    "cr kr"
 }
 
 fn time_symbol_instruction(meter: &MeterModel) -> Option<String> {
@@ -206,7 +209,7 @@ fn time_symbol_instruction(meter: &MeterModel) -> Option<String> {
 }
 
 fn musicxml_forward_instruction() -> &'static str {
-    "croma-musicxml-forward"
+    "cr mf"
 }
 
 fn musicxml_sequence_backup_instruction(duration: Fraction) -> String {
@@ -432,17 +435,15 @@ fn strip_xvoice_slurs(
 
 fn ending_close_instruction(model: &crate::model::RepeatEndingCloseModel) -> Option<String> {
     let close_type = match model.close_type {
-        crate::model::RepeatEndingCloseType::Stop => "stop",
-        crate::model::RepeatEndingCloseType::Discontinue => "discontinue",
+        crate::model::RepeatEndingCloseType::Stop => "s",
+        crate::model::RepeatEndingCloseType::Discontinue => "d",
     };
     let location = match model.location {
-        crate::model::RepeatEndingCloseLocation::Left => "left",
-        crate::model::RepeatEndingCloseLocation::Right => "right",
+        crate::model::RepeatEndingCloseLocation::Left => "l",
+        crate::model::RepeatEndingCloseLocation::Right => "r",
     };
     let number = ending_number_value(&model.endings)?;
-    Some(format!(
-        "croma-ending-close type={close_type} location={location} number=\"{number}\""
-    ))
+    Some(format!("cr ec t={close_type} l={location} n=\"{number}\""))
 }
 
 fn ending_number_value(parts: &[crate::model::RepeatEndingPartModel]) -> Option<String> {

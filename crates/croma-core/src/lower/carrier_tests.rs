@@ -74,4 +74,10 @@ fn rejects_everything_that_is_not_a_registered_carrier() {
     assert!(expand_compact_carrier("crx dp=a").is_none());
     assert!(expand_compact_carrier("croma-musicxml-forward").is_none());
     assert!(expand_compact_carrier("cr dp=x").is_none());
+    // `n-hex=` has no ending-close arm on purpose (the writer's
+    // `ending_number_value` only ever emits digits, `-`, and `,`, so a hex
+    // ending label is unreachable by construction) — assert directly at the
+    // expansion boundary that the arm stays absent, rather than through an
+    // end-to-end `export_musicxml` check that would pass either way.
+    assert!(expand_compact_carrier("cr ec t=s l=r n-hex=3132").is_none());
 }
