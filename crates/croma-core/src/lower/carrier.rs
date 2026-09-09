@@ -72,8 +72,14 @@ pub(crate) fn expand_compact_carrier(value: &str) -> Option<String> {
 }
 
 /// `t=s l=r n="1"` -> `type=stop location=right number="1"`. The `n=` label is
-/// payload (it can hold `1-2` ranges, free text, or a `-hex=` variant), so it is
-/// passed through with its key renamed and its value untouched.
+/// payload (it can hold `1-2` ranges or comma lists), so it is passed through
+/// with its key renamed and its value untouched. Unlike other carriers'
+/// free-text fields, `number` has no `-hex=` variant: the writer
+/// (`ending_number_value` in `to_abc.rs`) only ever builds it from digits,
+/// `-`, and `,`, which `needs_hex_inline_carrier` never flags, so a `n-hex=`
+/// field cannot come from croma's own writer. A hand-written one falls
+/// through to `None` here and is handled by the caller's unknown-instruction
+/// path, same as any other unrecognised field.
 fn expand_ending_close(fields: &str) -> Option<String> {
     let mut out: Vec<String> = Vec::new();
     for field in split_fields(fields) {
@@ -84,7 +90,6 @@ fn expand_ending_close(fields: &str) -> Option<String> {
             ("l", "l") => "location=left".to_owned(),
             ("l", "r") => "location=right".to_owned(),
             ("n", value) => format!("number={value}"),
-            ("n-hex", value) => format!("number-hex={value}"),
             _ => return None,
         };
         out.push(expanded);

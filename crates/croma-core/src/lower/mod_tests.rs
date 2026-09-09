@@ -4215,3 +4215,54 @@ fn compact_carriers_lower_identically_to_long_spellings() {
         "compact and long carrier spellings must produce identical MusicXML"
     );
 }
+
+#[test]
+fn compact_ending_close_carrier_lowers_identically_to_long_spelling() {
+    // Regression for the ending-close arm specifically: `expand_ending_close`
+    // has its own field-rewrite table (`t=`/`l=`/`n=`), separate from the
+    // rest of `expand_compact_carrier`, so it needs its own end-to-end check.
+    let long = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-ending-close type=stop location=right number=\"1\"]C D E F |\n",
+    );
+    let compact = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:cr ec t=s l=r n=\"1\"]C D E F |\n",
+    );
+    assert_eq!(
+        crate::export_musicxml(compact)
+            .expect("compact must export")
+            .musicxml,
+        crate::export_musicxml(long)
+            .expect("long must export")
+            .musicxml,
+        "compact and long ending-close carriers must produce identical MusicXML"
+    );
+}
+
+#[test]
+fn compact_ending_close_with_n_hex_falls_through_unrecognised() {
+    // `n-hex=` is not a real ending-close spelling (the writer can never emit
+    // it: `ending_number_value` only builds digits/`-`/`,`, which
+    // `needs_hex_inline_carrier` never flags). A hand-written `n-hex=` must
+    // NOT be silently rewritten into an unparseable `number-hex=` long form;
+    // it should fall through to the unknown-instruction path untouched.
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:cr ec t=s l=r n-hex=3132]C D E F |\n",
+    );
+    let export = crate::export_musicxml(source).expect("must still export");
+    assert!(
+        !export.musicxml.contains("<ending"),
+        "no ending-close should have been produced\n{}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.field.inline_ignored"),
+        "the carrier should be reported as an ignored inline instruction: {:?}",
+        export.diagnostics
+    );
+}
