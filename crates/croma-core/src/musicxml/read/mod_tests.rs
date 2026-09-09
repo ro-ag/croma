@@ -10127,7 +10127,15 @@ fn legend_lists_only_the_codes_the_document_uses() {
         with_legend.starts_with("% croma carriers used in this file:"),
         "got:\n{with_legend}"
     );
-    assert!(with_legend.contains("[I:cr mr]"), "got:\n{with_legend}");
+    // The literal `[I:cr mr]` also appears in the tune body itself (see the
+    // fixture above), so asserting on it alone would pass even if the legend
+    // body were empty or wrong. Assert on the `mr` line's human-readable
+    // description instead, which only the legend text can contain.
+    assert!(
+        with_legend.contains("meter restatement"),
+        "legend body must describe the `mr` carrier it lists, not just emit \
+         the header; got:\n{with_legend}"
+    );
     assert!(
         !with_legend.contains("dp="),
         "unused codes must not be listed; got:\n{with_legend}"

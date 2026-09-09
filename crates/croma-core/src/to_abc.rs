@@ -24,18 +24,27 @@ pub struct AbcWriteOptions {
 const LEGEND_LINES: [(&str, &str); 8] = [
     (
         "dp",
-        "[I:cr dp=<a|b>]        direction placement (above/below)",
+        "[I:cr dp=<a|b>]                  direction placement (above/below)",
     ),
-    ("ht", "[I:cr ht text=\"…\"]     chord-symbol text"),
-    ("htx", "[I:cr htx]             chord symbol with no text"),
+    (
+        "ht",
+        "[I:cr ht text=\"…\"|text-hex=…]    chord-symbol text (text-hex when it contains ']', '%', or a control character)",
+    ),
+    (
+        "htx",
+        "[I:cr htx]                       chord symbol with no text",
+    ),
     (
         "le",
-        "[I:cr le=<n>]          lyric extend (melisma), verse n",
+        "[I:cr le=<n>]                    lyric extend (melisma), verse n",
     ),
-    ("mr", "[I:cr mr]              meter restatement"),
-    ("kr", "[I:cr kr]              key restatement"),
-    ("ec", "[I:cr ec t=… l=… n=…]  repeat-ending close"),
-    ("mf", "[I:cr mf]              MusicXML <forward>"),
+    ("mr", "[I:cr mr]                        meter restatement"),
+    ("kr", "[I:cr kr]                        key restatement"),
+    (
+        "ec",
+        "[I:cr ec t=<s|d> l=<l|r> n=\"…\"]  repeat-ending close",
+    ),
+    ("mf", "[I:cr mf]                        MusicXML <forward>"),
 ];
 
 /// Scans already-emitted ABC for `[I:cr <code>` carriers and returns the
