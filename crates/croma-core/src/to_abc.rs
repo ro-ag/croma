@@ -10,10 +10,83 @@ use crate::model::{
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct AbcWriteOptions {}
+pub struct AbcWriteOptions {
+    /// Prefix the output with a `%` comment block explaining the compact
+    /// `[I:cr <code> …]` carrier codes the document actually uses. Off by
+    /// default: the block is purely explanatory and never changes what the
+    /// file means (`%` starts a comment in ABC 2.1).
+    pub legend: bool,
+}
+
+/// One entry per compact carrier code the writer can emit, in the order the
+/// legend lists them. Only codes that actually occur in the produced ABC are
+/// included in the emitted legend (see [`used_carrier_codes`]).
+const LEGEND_LINES: [(&str, &str); 8] = [
+    (
+        "dp",
+        "[I:cr dp=<a|b>]        direction placement (above/below)",
+    ),
+    ("ht", "[I:cr ht text=\"…\"]     chord-symbol text"),
+    ("htx", "[I:cr htx]             chord symbol with no text"),
+    (
+        "le",
+        "[I:cr le=<n>]          lyric extend (melisma), verse n",
+    ),
+    ("mr", "[I:cr mr]              meter restatement"),
+    ("kr", "[I:cr kr]              key restatement"),
+    ("ec", "[I:cr ec t=… l=… n=…]  repeat-ending close"),
+    ("mf", "[I:cr mf]              MusicXML <forward>"),
+];
+
+/// Scans already-emitted ABC for `[I:cr <code>` carriers and returns the
+/// codes actually used, in registry (`LEGEND_LINES`) order. Detecting from
+/// the produced text (rather than re-deriving from the score model) keeps
+/// the legend honest about what the writer actually emitted.
+fn used_carrier_codes(abc: &str) -> Vec<&'static str> {
+    const NEEDLE: &str = "[I:cr ";
+    let mut found = [false; LEGEND_LINES.len()];
+    let mut search_from = 0;
+    while let Some(relative) = abc[search_from..].find(NEEDLE) {
+        let start = search_from + relative + NEEDLE.len();
+        let rest = &abc[start..];
+        let end = rest.find([']', ' ', '=']).unwrap_or(rest.len());
+        let code = &rest[..end];
+        if let Some(index) = LEGEND_LINES
+            .iter()
+            .position(|(registered, _)| *registered == code)
+        {
+            found[index] = true;
+        }
+        // Advance past the needle even when no code matched, so a
+        // pathological input can't loop forever re-finding the same spot.
+        search_from = start;
+    }
+    LEGEND_LINES
+        .iter()
+        .zip(found)
+        .filter_map(|((code, _), used)| used.then_some(*code))
+        .collect()
+}
+
+/// Renders the `%`-comment legend block for `codes`, or an empty string when
+/// `codes` is empty (the legend must never appear as a bare header).
+fn legend_block(codes: &[&'static str]) -> String {
+    if codes.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("% croma carriers used in this file:\n");
+    for code in codes {
+        let (_, line) = LEGEND_LINES
+            .iter()
+            .find(|(registered, _)| registered == code)
+            .expect("code came from LEGEND_LINES");
+        out.push_str(&format!("%   {line}\n"));
+    }
+    out
+}
 
 /// Emit canonical ABC for `score`. Output is a `croma fmt` fixed point.
-pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
+pub fn write_abc(score: &Score, options: AbcWriteOptions) -> String {
     let mut out = String::new();
     let meta = &score.metadata;
     out.push_str(&format!("X:{}\n", meta.reference.text.trim()));
@@ -58,6 +131,12 @@ pub fn write_abc(score: &Score, _options: AbcWriteOptions) -> String {
     }
     if !out.ends_with('\n') {
         out.push('\n');
+    }
+    if options.legend {
+        let legend = legend_block(&used_carrier_codes(&out));
+        if !legend.is_empty() {
+            out.insert_str(0, &legend);
+        }
     }
     out
 }

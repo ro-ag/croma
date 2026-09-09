@@ -10103,3 +10103,41 @@ fn octave_shifting_clef_change_compensates_the_voice_shift() {
         "the octave-shifting clef change must round-trip pitch-exactly"
     );
 }
+
+#[test]
+fn legend_lists_only_the_codes_the_document_uses() {
+    // `mr` (meter restatement) round-trips self-contained from plain ABC: an
+    // `[I:cr le=1]` melisma carrier, by contrast, only survives when it is
+    // paired with a matching `w:` lyric line, so it is not usable here as a
+    // minimal single-carrier fixture.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:cr mr][M:4/4]C D E F |\n";
+    let score = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    )
+    .value
+    .expect("score");
+
+    let plain = write_abc(&score, AbcWriteOptions::default());
+    assert!(!plain.contains('%'), "the legend is opt-in; got:\n{plain}");
+
+    let options = AbcWriteOptions { legend: true };
+    let with_legend = write_abc(&score, options);
+    assert!(
+        with_legend.starts_with("% croma carriers used in this file:"),
+        "got:\n{with_legend}"
+    );
+    assert!(with_legend.contains("[I:cr mr]"), "got:\n{with_legend}");
+    assert!(
+        !with_legend.contains("dp="),
+        "unused codes must not be listed; got:\n{with_legend}"
+    );
+
+    // The block is an ABC comment: it must not change what the file means.
+    assert_eq!(
+        export_musicxml(&with_legend)
+            .expect("legend ABC exports")
+            .musicxml,
+        export_musicxml(&plain).expect("plain ABC exports").musicxml,
+    );
+}
