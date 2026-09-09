@@ -2000,7 +2000,12 @@ fn parse_harmony_text_instruction(value: &str) -> Option<HarmonyKindText> {
     if parse_croma_bool(&fields, "textless") {
         return Some(HarmonyKindText::Textless);
     }
-    fields.get("text").cloned().map(HarmonyKindText::Text)
+    let text = if let Some(hex) = fields.get("text-hex") {
+        parse_croma_hex_utf8(hex)?
+    } else {
+        fields.get("text")?.clone()
+    };
+    Some(HarmonyKindText::Text(text))
 }
 
 fn parse_direction_placement_instruction(value: &str) -> Option<AnnotationPlacementModel> {

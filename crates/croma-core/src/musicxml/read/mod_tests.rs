@@ -3213,7 +3213,7 @@ fn foreign_harmony_unknown_kind_emits_bare_root_not_enum() {
 
 #[test]
 fn foreign_harmony_unknown_kind_round_trips_via_carrier() {
-    // End-to-end: the bare-root chord plus the `[I:croma-harmony-text]` carrier
+    // End-to-end: the bare-root chord plus the `[I:cr ht]` carrier
     // restores the original `<kind text="1">` on re-export — lossless despite ABC
     // having no native Roman-numeral/functional `<harmony>` form.
     let xml =
@@ -3250,6 +3250,33 @@ fn foreign_harmony_suffix_text_survives_abc_projection() {
             .musicxml
             .contains("<kind text=\"dim\">diminished</kind>"),
         "round-trip MusicXML must keep suffix-only kind@text:\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
+fn foreign_harmony_hex_text_survives_abc_projection() {
+    // `<kind text="]bad">` contains a `]` — writing it as `[I:cr ht text="..."]`
+    // verbatim would break the ABC line at the `]` before the tokenizer ever
+    // sees the closing bracket of the carrier itself, so the writer must fall
+    // back to the hex-escaped spelling (`cr ht text-hex=<hex>`), and the
+    // reader must have a matching `text-hex=` arm to decode it back. Without
+    // that arm, `parse_harmony_text_instruction` fails to parse the carrier,
+    // `HarmonyKindText` falls back to `AbcNative`, and the original text is
+    // silently lost (the bug this test pins).
+    let xml =
+        "<harmony><root><root-step>C</root-step></root><kind text=\"]bad\">other</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[I:cr ht text-hex=5d626164]"),
+        "ABC projection must carry hostile kind@text through the hex carrier:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc).expect("hex-carried harmony ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<kind text=\"]bad\">"),
+        "round-trip MusicXML must restore the original kind@text containing ']':\n{}",
         roundtrip.musicxml
     );
 }
