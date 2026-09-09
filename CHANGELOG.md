@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Round-trip carriers for the seven frequent kinds now use a compact spelling
+  (`[I:cr dp=a]` instead of `[I:croma-direction-placement placement=above]`),
+  cutting exported ABC by ~14.5%. The long spelling is still read — with a
+  deprecation warning — until 2.0, and `croma fmt` migrates it automatically.
+
+### Added
+
+- `croma read --legend` / `croma musicxml2abc --legend` prefix the ABC output
+  with a comment block explaining the carrier codes it uses.
+
 ## [1.2.1] - 2026-07-31
 
 ### Added

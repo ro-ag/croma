@@ -1,9 +1,9 @@
 # `croma agent` — help topics for AI agents
 
 `croma agent` explains croma's **non-standard ABC notations** — the
-`[I:croma-*]` / `%%croma-*` carriers — to an AI agent or LLM, so it can author
-ABC annotations that persist through to MusicXML. It is a built-in, offline help
-surface; nothing is fetched and no state is written.
+`[I:cr <code> ...]` / `[I:croma-*]` / `%%croma-*` carriers — to an AI agent or LLM, so
+it can author ABC annotations that persist through to MusicXML. It is a built-in,
+offline help surface; nothing is fetched and no state is written.
 
 ```sh
 croma agent                 # list every topic, grouped by category
@@ -19,7 +19,8 @@ croma agent <topic|alias>   # one notation: what it persists, syntax, example
   topic exits non-zero and lists the available ids.
 
 Start with `croma agent syntax` — the carrier convention itself (the two
-vehicles, `key=value` fields, the `-hex=` rule for hostile characters).
+vehicles, `key=value` fields, the compact `[I:cr <code> ...]` codes, and the
+`-hex=` rule for hostile characters).
 
 ## Relationship to `carriers.md`
 
