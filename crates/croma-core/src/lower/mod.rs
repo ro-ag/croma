@@ -1,5 +1,6 @@
 pub(crate) mod accidental;
 mod align;
+pub(crate) mod carrier;
 pub(crate) mod diagnostics;
 mod semantic;
 mod tempo;
@@ -579,17 +580,20 @@ impl MultiVoiceLowering {
             // through to the display-directive tail below and is dropped with a
             // diagnostic — carriers are NOT preserved verbatim across croma versions.
             'I' => {
-                if let Some(meter) =
-                    parse_initial_meter_instruction(&inline.value.value, inline.value.span)
-                {
+                // A compact `[I:cr <code> …]` carrier is rewritten into its
+                // long-form spelling here, so every `parse_*_instruction`
+                // below sees exactly one syntax and the two spellings cannot
+                // drift apart.
+                let raw = &inline.value.value;
+                let expanded = carrier::expand_compact_carrier(raw);
+                let value = expanded.as_deref().unwrap_or(raw.as_str());
+                if let Some(meter) = parse_initial_meter_instruction(value, inline.value.span) {
                     let state = self.current_state();
                     state.meter_duration = meter.duration;
                     state.initial_meter = Some(meter);
                     return;
                 }
-                if let Some(key) =
-                    parse_initial_key_instruction(&inline.value.value, inline.value.span)
-                {
+                if let Some(key) = parse_initial_key_instruction(value, inline.value.span) {
                     let state = self.current_state();
                     state.key_accidentals = key_accidental_policy_from_model(&key);
                     state.current_key = None;
@@ -597,45 +601,40 @@ impl MultiVoiceLowering {
                     return;
                 }
                 if let Some(instrument) =
-                    parse_note_instrument_instruction(&inline.value.value, inline.value.span)
+                    parse_note_instrument_instruction(value, inline.value.span)
                 {
                     self.current_state().pending_musicxml_instrument = Some(instrument);
                     return;
                 }
-                if let Some(harmony_text) = parse_harmony_text_instruction(&inline.value.value) {
+                if let Some(harmony_text) = parse_harmony_text_instruction(value) {
                     self.current_state().pending_musicxml_harmony_text = Some(harmony_text);
                     return;
                 }
-                if let Some(placement) = parse_direction_placement_instruction(&inline.value.value)
-                {
+                if let Some(placement) = parse_direction_placement_instruction(value) {
                     self.current_state().pending_musicxml_direction_placement = Some(placement);
                     return;
                 }
-                if let Some(verse) = parse_lyric_extend_instruction(&inline.value.value) {
+                if let Some(verse) = parse_lyric_extend_instruction(value) {
                     self.current_state()
                         .pending_musicxml_lyric_extends
                         .push(verse);
                     return;
                 }
-                if let Some(lyric) =
-                    parse_lyric_duplicate_instruction(&inline.value.value, inline.value.span)
-                {
+                if let Some(lyric) = parse_lyric_duplicate_instruction(value, inline.value.span) {
                     self.current_state()
                         .pending_musicxml_lyric_duplicates
                         .push(lyric);
                     return;
                 }
-                if parse_musicxml_forward_instruction(&inline.value.value) {
+                if parse_musicxml_forward_instruction(value) {
                     self.current_state().pending_musicxml_forward = true;
                     return;
                 }
-                if let Some(duration) =
-                    parse_musicxml_sequence_backup_instruction(&inline.value.value)
-                {
+                if let Some(duration) = parse_musicxml_sequence_backup_instruction(value) {
                     self.current_state().pending_musicxml_sequence_backup = Some(duration);
                     return;
                 }
-                if let Some(tuplet) = parse_musicxml_tuplet_instruction(&inline.value.value) {
+                if let Some(tuplet) = parse_musicxml_tuplet_instruction(value) {
                     self.current_state().push_musicxml_tuplet(
                         tuplet.source_pair_id,
                         tuplet.actual_notes,
@@ -645,7 +644,7 @@ impl MultiVoiceLowering {
                     );
                     return;
                 }
-                if let Some(xvoice) = parse_xvoice_slur_instruction(&inline.value.value) {
+                if let Some(xvoice) = parse_xvoice_slur_instruction(value) {
                     // A slur whose ends are in different voices: `(`/`)` cannot
                     // span two `V:` streams, so each end rides a carrier. The
                     // shared `pair=` re-pairs the ends across voices onto ONE
@@ -659,59 +658,51 @@ impl MultiVoiceLowering {
                     ));
                     return;
                 }
-                if parse_musicxml_after_grace_instruction(&inline.value.value) {
+                if parse_musicxml_after_grace_instruction(value) {
                     self.current_state().pending_musicxml_after_grace = true;
                     return;
                 }
-                if let Some(clef) =
-                    parse_clef_cursor_instruction(&inline.value.value, inline.value.span)
-                {
+                if let Some(clef) = parse_clef_cursor_instruction(value, inline.value.span) {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::ClefChange(clef));
                     return;
                 }
-                if let Some(kind) = parse_barline_style_instruction(&inline.value.value) {
+                if let Some(kind) = parse_barline_style_instruction(value) {
                     self.current_state().pending_musicxml_barline_kind = Some(kind);
                     return;
                 }
-                if let Some(tempo) = parse_tempo_instruction(&inline.value.value, inline.value.span)
-                {
+                if let Some(tempo) = parse_tempo_instruction(value, inline.value.span) {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::TempoChange(tempo));
                     return;
                 }
-                if let Some(tempo) =
-                    parse_sound_tempo_instruction(&inline.value.value, inline.value.span)
-                {
+                if let Some(tempo) = parse_sound_tempo_instruction(value, inline.value.span) {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::TempoChange(tempo));
                     return;
                 }
-                if parse_meter_restatement_instruction(&inline.value.value) {
+                if parse_meter_restatement_instruction(value) {
                     self.current_state().pending_musicxml_meter_restatement = true;
                     return;
                 }
-                if parse_key_restatement_instruction(&inline.value.value) {
+                if parse_key_restatement_instruction(value) {
                     self.current_state().pending_musicxml_key_restatement = true;
                     return;
                 }
-                if let Some(symbol) = parse_time_symbol_instruction(&inline.value.value) {
+                if let Some(symbol) = parse_time_symbol_instruction(value) {
                     self.current_state().pending_musicxml_time_symbol = Some(symbol);
                     return;
                 }
-                if let Some(display_number) = parse_measure_number_instruction(&inline.value.value)
-                {
+                if let Some(display_number) = parse_measure_number_instruction(value) {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::MeasureNumber { display_number });
                     return;
                 }
-                if let Some(close) =
-                    parse_ending_close_instruction(&inline.value.value, inline.value.span)
-                {
+                if let Some(close) = parse_ending_close_instruction(value, inline.value.span) {
                     self.current_state()
                         .lowered
                         .push(LoweredEvent::VariantEndingClose(close));

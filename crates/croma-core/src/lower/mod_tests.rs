@@ -4188,3 +4188,30 @@ fn standalone_body_meter_line_scopes_to_current_voice_timeline() {
         "V2 must stay in the header meter until its own M:3/4"
     );
 }
+
+#[test]
+fn compact_carriers_lower_identically_to_long_spellings() {
+    // Same tune twice: the only difference is carrier spelling. The lowered
+    // scores must be indistinguishable.
+    let long = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-direction-placement placement=below]!f!C ",
+        "[I:croma-lyric-extend verse=1]D ",
+        "[I:croma-harmony-text text=\"C7\"]\"C\"E F |\n",
+    );
+    let compact = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:cr dp=b]!f!C ",
+        "[I:cr le=1]D ",
+        "[I:cr ht text=\"C7\"]\"C\"E F |\n",
+    );
+    assert_eq!(
+        crate::export_musicxml(compact)
+            .expect("compact must export")
+            .musicxml,
+        crate::export_musicxml(long)
+            .expect("long must export")
+            .musicxml,
+        "compact and long carrier spellings must produce identical MusicXML"
+    );
+}
