@@ -11,7 +11,8 @@ use croma_core::{
     write_musicxml, write_musicxml_with_options,
 };
 use croma_fmt::{
-    Change, FixKind, FixResult, FormatOptions, auto_fix, format as fmt_format, is_formatted,
+    Change, FixKind, FixResult, FormatOptions, auto_fix, carrier_migrations, format as fmt_format,
+    is_formatted,
 };
 use owo_colors::OwoColorize;
 use serde_json::json;
@@ -217,6 +218,12 @@ fn run_fmt(args: FmtArgs) -> Result<ExitCode, CliError> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Plain `croma fmt` still migrates deprecated long-spelling carriers (it is
+    // a migration of croma's own output, not a curation of hand-written
+    // source). Report them here so `--check` names what it would rewrite rather
+    // than only saying the file would be reformatted.
+    report_migrations(&carrier_migrations(&source, options))?;
+
     if check {
         return check_result(is_formatted(&source, options), &file);
     }
@@ -336,6 +343,21 @@ fn check_result(clean: bool, file: &Path) -> Result<ExitCode, CliError> {
     }
 }
 
+/// Emit one stderr line per carrier respelling plain `croma fmt` applies.
+fn report_migrations(migrations: &[Change]) -> Result<(), CliError> {
+    let mut stderr = color_stderr();
+    for change in migrations {
+        writeln!(
+            stderr,
+            "migrated [{}] {}",
+            change.kind.label().green(),
+            fix_detail(change)
+        )
+        .map_err(stderr_error)?;
+    }
+    Ok(())
+}
+
 /// Emit one stderr line per applied or skipped auto-fix change.
 fn report_fixes(changes: &[Change], skipped: &[Change]) -> Result<(), CliError> {
     let mut stderr = color_stderr();
@@ -375,6 +397,7 @@ fn fix_detail(change: &Change) -> String {
             FixKind::MidiDirectiveSpacing => {
                 "collapsed whitespace in a %%MIDI directive".to_string()
             }
+            FixKind::CarrierCompaction => "compacted a croma carrier".to_string(),
         }
     } else {
         format!("`{}` -> `{}`", change.before, change.after)

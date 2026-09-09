@@ -7,6 +7,8 @@
 //! skipped. Detached *accidentals* (`^ g`) are deliberately not attempted —
 //! joining them adds a sharp, which changes a pitch and the gate would revert.
 
+use std::borrow::Cow;
+
 use croma_core::{MusicItem, MusicTokenKind, ParseOptions, Span, parse_document};
 
 use crate::verify::{PitchSeq, musicxml_of, pitch_seq_of};
@@ -94,7 +96,231 @@ fn collect_candidates(source: &str, options: ParseOptions) -> Vec<Change> {
     redundant_barlines(source, document, &mut candidates);
     field_spacing(source, document, &mut candidates);
     midi_directive_spacing(source, &mut candidates);
+    carrier_compaction(source, document, &mut candidates);
     candidates
+}
+
+// --- carrier compaction ----------------------------------------------------
+//
+// croma's round-trip carriers (`docs/carriers.md`) have two spellings: the
+// original `[I:croma-<long-name> …]` and the compact `[I:cr <code> …]` the
+// writer emits today. Reading both is croma-core's job; migrating a file from
+// the first to the second is this module's.
+//
+// The migration lives here, in the source-CHANGING lane, on purpose. The
+// formatting engine rebuilds each music line and then discards its own rebuild
+// unless the rebuild has the line's exact non-whitespace characters — it is
+// non-source-changing by construction, so a respelling attempted inside it
+// would be silently reverted. `crate::format` therefore runs
+// `migrate_carriers` over the source text *before* handing it to the engine,
+// and `auto_fix` collects the same rewrites as gated candidates so
+// `croma fmt --auto-fix --check` reports them.
+
+/// (long name, compact code) for the carriers that have one. Mirrors
+/// `croma_core::lower::carrier::COMPACT_CARRIERS`, which croma-core keeps
+/// private (it is an internal detail of a published crate, not API), so the two
+/// tables must be changed together — see `docs/carriers.md`. The other ~15
+/// carriers have no code and keep their long spelling in both directions.
+///
+/// `croma-harmony-text` has two codes: `htx` for the textless flag and `ht` for
+/// the text-carrying form. It is listed once, under `ht`; `compact_value`
+/// chooses between them from the fields.
+const COMPACT_CARRIERS: [(&str, &str); 7] = [
+    ("croma-direction-placement", "dp"),
+    ("croma-harmony-text", "ht"),
+    ("croma-lyric-extend", "le"),
+    ("croma-meter-restatement", "mr"),
+    ("croma-key-restatement", "kr"),
+    ("croma-ending-close", "ec"),
+    ("croma-musicxml-forward", "mf"),
+];
+
+/// Rewrite every deprecated long-spelling carrier in `source` to its compact
+/// form. Returns `source` untouched when there is nothing to migrate.
+pub(crate) fn migrate_carriers(source: &str, options: ParseOptions) -> Cow<'_, str> {
+    let mut changes = carrier_migrations(source, options);
+    if changes.is_empty() {
+        return Cow::Borrowed(source);
+    }
+    // Apply from the end so earlier byte offsets stay valid; the spans come
+    // from distinct inline fields, so they never overlap.
+    changes.sort_by_key(|change| std::cmp::Reverse(change.span.start));
+    let mut out = source.to_string();
+    for change in &changes {
+        out = apply(&out, change);
+    }
+    Cow::Owned(out)
+}
+
+/// Every carrier respelling `source` needs, in source order.
+pub(crate) fn carrier_migrations(source: &str, options: ParseOptions) -> Vec<Change> {
+    // Parsing is the expensive part and the overwhelming majority of ABC files
+    // contain no carrier at all; every long spelling contains this substring.
+    if !source.contains("croma-") {
+        return Vec::new();
+    }
+    let report = parse_document(source, options);
+    let mut out = Vec::new();
+    carrier_compaction(source, &report.value, &mut out);
+    out
+}
+
+/// `[I:croma-lyric-extend verse=1]` → `[I:cr le=1]`: propose the compact
+/// spelling for each inline `[I:…]` field holding a coded carrier.
+///
+/// The spans come from the parser's own inline-field items rather than from a
+/// text scan, which is what makes this safe around ABC's escapes: a `[I:…]`
+/// sequence inside a `%` comment or inside a quoted chord symbol/annotation is
+/// never an inline field, so it is never seen here, and the value span the
+/// parser hands over already ends at the field's closing `]`.
+fn carrier_compaction(source: &str, document: &croma_core::AbcDocument, out: &mut Vec<Change>) {
+    for tune in &document.music.tunes {
+        for line in &tune.lines {
+            for item in &line.items {
+                let MusicItem::InlineField(inline) = item else {
+                    continue;
+                };
+                if inline.code != 'I' {
+                    continue;
+                }
+                let Some(after) = compact_value(&inline.value.value) else {
+                    continue;
+                };
+                let span = inline.value.span;
+                let before = source.get(span.start..span.end).unwrap_or("");
+                if before == after {
+                    continue;
+                }
+                out.push(Change {
+                    kind: FixKind::CarrierCompaction,
+                    span,
+                    before: before.to_string(),
+                    after,
+                });
+            }
+        }
+    }
+}
+
+/// The compact spelling of an `[I:…]` payload, or `None` when the payload is not
+/// a coded carrier written in its long form.
+///
+/// This is the exact inverse of croma-core's `expand_compact_carrier`, and is
+/// deliberately strict: a payload whose fields do not match what croma's writer
+/// emits is left alone rather than guessed at, because a compact carrier the
+/// reader cannot expand is dropped outright instead of falling back.
+fn compact_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    let (long, code) = COMPACT_CARRIERS
+        .iter()
+        .copied()
+        .find(|(long, _)| matches_long_carrier(value, long))?;
+    let fields = split_fields(value[long.len()..].trim_start());
+    match code {
+        "dp" => match fields.as_slice() {
+            ["placement=above"] => Some("cr dp=a".to_owned()),
+            ["placement=below"] => Some("cr dp=b".to_owned()),
+            _ => None,
+        },
+        // `textless` wins over any text in croma-core's parser, so the textless
+        // form is matched first. The text form's field is passed through
+        // verbatim (quotes, escapes, and the `text-hex=` variant included):
+        // `cr ht <fields>` expands to `croma-harmony-text <fields>`.
+        "ht" => match fields.as_slice() {
+            ["textless=1"] => Some("cr htx".to_owned()),
+            [only] if only.starts_with("text=") || only.starts_with("text-hex=") => {
+                Some(format!("cr ht {only}"))
+            }
+            _ => None,
+        },
+        "le" => match fields.as_slice() {
+            [verse] => verse
+                .strip_prefix("verse=")
+                .filter(|verse| is_positive_integer(verse))
+                .map(|verse| format!("cr le={verse}")),
+            _ => None,
+        },
+        // Flag carriers: no fields at all, so the code alone says everything.
+        "mr" | "kr" | "mf" => fields.is_empty().then(|| format!("cr {code}")),
+        "ec" => compact_ending_close(&fields),
+        _ => None,
+    }
+}
+
+/// `type=stop location=right number="1"` → `cr ec t=s l=r n="1"`.
+///
+/// `number` is payload (a `1-2` range or a comma list) so its value is renamed
+/// but never rewritten. There is deliberately no `n-hex=` output: croma's writer
+/// only ever builds an ending label from digits, `-`, and `,`, so croma-core has
+/// no expansion arm for one.
+fn compact_ending_close(fields: &[&str]) -> Option<String> {
+    let mut close_type = None;
+    let mut location = None;
+    let mut number = None;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match (key, value) {
+            ("type", "stop") => close_type = Some("s"),
+            ("type", "discontinue") => close_type = Some("d"),
+            ("location", "left") => location = Some("l"),
+            ("location", "right") => location = Some("r"),
+            ("number", value) => number = Some(value),
+            _ => return None,
+        }
+    }
+    // `location` is optional in both spellings (it defaults to `right`); the
+    // other two are required, and without them the long form does not parse
+    // either.
+    let mut out = format!("cr ec t={}", close_type?);
+    if let Some(location) = location {
+        out.push_str(&format!(" l={location}"));
+    }
+    out.push_str(&format!(" n={}", number?));
+    Some(out)
+}
+
+/// Whether `value` (the whole `[I:…]` payload) is an occurrence of `long`: the
+/// name followed by end-of-value or whitespace, so `croma-musicxml-forward` does
+/// not match `croma-musicxml-forwarding`.
+fn matches_long_carrier(value: &str, long: &str) -> bool {
+    value
+        .strip_prefix(long)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+/// Split a carrier's field list on whitespace that is OUTSIDE double quotes, so
+/// a quoted value keeps its spaces (`number="1, 2"` is one field). Mirrors
+/// croma-core's `split_fields`, so what this treats as one field is what the
+/// reader will.
+fn split_fields(fields: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in fields.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ch if ch.is_whitespace() && !quoted => {
+                if let Some(begin) = start.take() {
+                    out.push(&fields[begin..index]);
+                }
+            }
+            _ => {
+                if start.is_none() {
+                    start = Some(index);
+                }
+            }
+        }
+    }
+    if let Some(begin) = start {
+        out.push(&fields[begin..]);
+    }
+    out
 }
 
 /// `K: C` → `K:C`: remove whitespace between an information field's colon and

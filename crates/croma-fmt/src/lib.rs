@@ -3,7 +3,8 @@
 //! Two modes:
 //! - [`format`] — a canonical, **idempotent**, **lossless** formatting. Musical
 //!   tokens are copied verbatim by source span; only whitespace, blank-line
-//!   runs, and the final newline are normalized.
+//!   runs, the final newline, and the *spelling* of croma's own round-trip
+//!   carriers ([`FixKind::CarrierCompaction`]) are normalized.
 //! - [`auto_fix`] — additionally applies safe curations of malformed input.
 //!   Every change is gated at runtime: it is kept only if the ordered pitch
 //!   sequence (step+alter+octave) is unchanged, otherwise reverted.
@@ -70,6 +71,11 @@ pub enum FixKind {
     /// 2.1); the canonical form follows its whitespace tokenization. The comment
     /// tail and any inert mid-line `%%MIDI` text are left untouched.
     MidiDirectiveSpacing,
+    /// A round-trip carrier written in its deprecated long spelling rewritten to
+    /// the compact one, e.g. `[I:croma-lyric-extend verse=1]` → `[I:cr le=1]`.
+    /// Applied by plain [`format`] (not only [`auto_fix`]): it is a migration of
+    /// croma's own output, not a curation of hand-written source.
+    CarrierCompaction,
 }
 
 impl FixKind {
@@ -83,6 +89,7 @@ impl FixKind {
             FixKind::RedundantBarline => "redundant-barline",
             FixKind::FieldSpacing => "field-spacing",
             FixKind::MidiDirectiveSpacing => "midi-directive-spacing",
+            FixKind::CarrierCompaction => "carrier-compaction",
         }
     }
 
@@ -98,8 +105,12 @@ impl FixKind {
             | FixKind::BareTempoSuffix => Gate::Pitch,
             // These must not change ANY rendered aspect; the structure gate
             // reverts e.g. an alignment-sensitive `w:` lyric whose leading
-            // whitespace turns out to matter.
-            FixKind::RedundantBarline | FixKind::FieldSpacing => Gate::Structure,
+            // whitespace turns out to matter. A carrier respelling belongs here
+            // too: the compact form expands back to the same long form the
+            // reader already understood, so the rendering must be identical.
+            FixKind::RedundantBarline | FixKind::FieldSpacing | FixKind::CarrierCompaction => {
+                Gate::Structure
+            }
             // `%%MIDI` is not rendered into MusicXML, so neither the pitch nor
             // the structure gate constrains it; a textual directive-token
             // invariant proves the edit changed only collapsible whitespace.
@@ -134,8 +145,25 @@ pub struct FixResult {
 }
 
 /// Format `source` into its canonical form. Idempotent and lossless.
+///
+/// Deprecated long-spelling croma carriers are migrated to the compact spelling
+/// first (see [`carrier_migrations`]), then the token-preserving engine runs.
+/// The order matters: the engine falls back to the raw line whenever its rebuild
+/// does not have the line's exact non-whitespace characters, so a respelling
+/// done *inside* the engine would be silently reverted. Doing it to the source
+/// text beforehand keeps the engine non-source-changing by construction.
 pub fn format(source: &str, options: FormatOptions) -> String {
-    engine::format(source, options.parse)
+    let migrated = fixes::migrate_carriers(source, options.parse);
+    engine::format(&migrated, options.parse)
+}
+
+/// The carrier respellings [`format`] would apply to `source`, in source order.
+///
+/// Exposed so a caller that only *checks* formatting (`croma fmt --check`) can
+/// say which deprecated carriers it would migrate instead of reporting a bare
+/// "would reformat".
+pub fn carrier_migrations(source: &str, options: FormatOptions) -> Vec<Change> {
+    fixes::carrier_migrations(source, options.parse)
 }
 
 /// True when `source` is already in canonical form.
@@ -209,6 +237,145 @@ mod tests {
         assert_eq!(
             verify::pitch_seq_of(src, ParseOptions::default()),
             verify::pitch_seq_of(&out, ParseOptions::default()),
+        );
+    }
+
+    // --- carrier compaction -------------------------------------------------
+
+    /// A tune body carrying every coded carrier in its long spelling, plus an
+    /// uncoded one, a comment and a quoted annotation that both *look* like
+    /// carriers, and a quoted value with a space in it.
+    const LONG_CARRIERS: &str = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-lyric-extend verse=1]C ",
+        "[I:croma-direction-placement placement=below]\"^cresc\"D ",
+        "[I:croma-harmony-text text=\"maj 7\"]\"Cmaj7\"E ",
+        "[I:croma-harmony-text textless=1]\"C\"F |\n",
+        "[I:croma-meter-restatement][I:croma-key-restatement]",
+        "[I:croma-musicxml-forward]G ",
+        "[I:croma-ending-close type=discontinue location=right number=\"1,2\"]A |\n",
+    );
+
+    #[test]
+    fn fmt_migrates_long_carrier_spellings_by_default() {
+        let src = "X:1\nM:4/4\nL:1/4\nK:C\n[I:croma-lyric-extend verse=1]C D E F |\n";
+        let out = fmt(src);
+        assert!(out.contains("[I:cr le=1]"), "got: {out:?}");
+        assert!(!out.contains("croma-lyric-extend"), "got: {out:?}");
+    }
+
+    #[test]
+    fn carrier_migration_is_idempotent() {
+        let once = fmt(LONG_CARRIERS);
+        let twice = fmt(&once);
+        assert_eq!(once, twice, "a second pass must be a no-op");
+        assert!(!once.contains("croma-"), "got: {once:?}");
+    }
+
+    #[test]
+    fn carrier_migration_covers_every_coded_carrier() {
+        let out = fmt(LONG_CARRIERS);
+        for compact in [
+            "[I:cr le=1]",
+            "[I:cr dp=b]",
+            "[I:cr ht text=\"maj 7\"]",
+            "[I:cr htx]",
+            "[I:cr mr]",
+            "[I:cr kr]",
+            "[I:cr mf]",
+            "[I:cr ec t=d l=r n=\"1,2\"]",
+        ] {
+            assert!(out.contains(compact), "missing {compact}: {out:?}");
+        }
+    }
+
+    /// The migration is a respelling, not a semantic edit: the score croma
+    /// exports must be byte-identical before and after.
+    #[test]
+    fn migrated_source_reads_identically() {
+        let migrated = fmt(LONG_CARRIERS);
+        assert!(
+            !migrated.contains("croma-"),
+            "nothing migrated: {migrated:?}"
+        );
+        let before = verify::musicxml_of(LONG_CARRIERS, ParseOptions::default());
+        let after = verify::musicxml_of(&migrated, ParseOptions::default());
+        assert!(before.is_some(), "fixture must lower");
+        assert_eq!(before, after, "the respelling changed the score");
+    }
+
+    #[test]
+    fn carrier_migration_leaves_uncoded_carriers_alone() {
+        let src = "X:1\nM:4/4\nL:1/4\nK:C\n[I:croma-after-grace]C D E F |\n";
+        let out = fmt(src);
+        assert!(
+            out.contains("[I:croma-after-grace]"),
+            "only the coded carriers migrate; got: {out:?}"
+        );
+    }
+
+    /// A `%` opens an ABC comment and a `"…"` is an annotation; neither is an
+    /// inline field, so a carrier-shaped sequence inside one must survive.
+    #[test]
+    fn carrier_migration_ignores_comments_and_quoted_text() {
+        let src = concat!(
+            "X:1\nM:4/4\nL:1/4\nK:C\n",
+            "C D E F | % [I:croma-lyric-extend verse=1] not a field\n",
+            "\"^[I:croma-key-restatement]\"G A B c |\n",
+        );
+        let out = fmt(src);
+        assert!(
+            out.contains("% [I:croma-lyric-extend verse=1] not a field"),
+            "comment was rewritten: {out:?}"
+        );
+        assert!(
+            out.contains("\"^[I:croma-key-restatement]\""),
+            "annotation was rewritten: {out:?}"
+        );
+    }
+
+    /// A carrier field whose payload is not what croma's writer emits is left
+    /// alone: a compact carrier the reader cannot expand would be dropped, so
+    /// guessing is worse than doing nothing.
+    #[test]
+    fn carrier_migration_skips_unrecognized_payloads() {
+        for value in [
+            "croma-direction-placement placement=sideways",
+            "croma-lyric-extend verse=one",
+            "croma-meter-restatement extra=1",
+            "croma-ending-close type=stop",
+            "croma-ending-closest type=stop number=\"1\"",
+        ] {
+            let src = format!("X:1\nM:4/4\nL:1/4\nK:C\n[I:{value}]C D E F |\n");
+            let out = fmt(&src);
+            assert!(out.contains(&format!("[I:{value}]")), "got: {out:?}");
+        }
+    }
+
+    /// `croma fmt` and `croma fmt --auto-fix` must not disagree about the
+    /// migration, so `--check` in either mode reports the same rewrite.
+    #[test]
+    fn auto_fix_reports_and_matches_the_default_migration() {
+        let fixed = auto_fix(LONG_CARRIERS, FormatOptions::default());
+        assert_eq!(fixed.output, fmt(LONG_CARRIERS));
+        assert!(fixed.skipped.is_empty(), "got: {:?}", fixed.skipped);
+        let migrations = fixed
+            .changes
+            .iter()
+            .filter(|change| change.kind == FixKind::CarrierCompaction)
+            .count();
+        assert_eq!(migrations, 8, "got: {:?}", fixed.changes);
+        assert_eq!(
+            carrier_migrations(LONG_CARRIERS, FormatOptions::default()).len(),
+            8,
+        );
+    }
+
+    #[test]
+    fn carrier_migration_is_lossless_for_pitches() {
+        assert_eq!(
+            verify::pitch_seq_of(LONG_CARRIERS, ParseOptions::default()),
+            verify::pitch_seq_of(&fmt(LONG_CARRIERS), ParseOptions::default()),
         );
     }
 
