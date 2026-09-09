@@ -51,12 +51,12 @@ static TOPICS: &[AgentTopic] = &[
         body: r#"croma round-trips MusicXML through ABC. ABC 2.1 cannot natively express every MusicXML fact, so croma stores those facts in namespaced **carriers** that ride inside the ABC text and are re-applied on the way back to MusicXML. Every other ABC tool ignores them, so the file stays playable in abc2midi / abcm2ps / abcjs while croma keeps full fidelity.
 
 Two vehicles:
-- inline `[I:croma-<name> k=v ...]` (or, for the eight coded carriers below, the compact `[I:cr <code> ...]`) — anchored to the following note / chord / barline / `[M:]` / `[K:]`. The default; use it for per-note and per-measure facts.
+- inline `[I:croma-<name> k=v ...]` (or, for the seven coded carriers below — eight codes, since `croma-harmony-text` has two — the compact `[I:cr <code> ...]`) — anchored to the following note / chord / barline / `[M:]` / `[K:]`. The default; use it for per-note and per-measure facts.
 - header `%%croma-<name> ...` — anchored to a voice or the score. Use only for score/voice-level facts. **Never compacted** — headers always use the long name.
 
 Fields are `key=value`, space-separated; double-quote a value with spaces (`name="Snare Drum"`). A boolean carrier carries no fields — the bare name is the flag (e.g. `[I:croma-musicxml-forward]`, or compact `[I:cr mf]`).
 
-**Compact spelling.** croma writes the eight most frequent carriers compact by default — `[I:cr <code> ...]` instead of `[I:croma-<name> ...]` — because it is shorter (~14.5% smaller exported ABC). Write compact yourself; the old long spelling still reads (with a one-time deprecation warning per kind) until croma 2.0, and `croma fmt` migrates any long spelling it finds back to compact automatically.
+**Compact spelling.** croma writes the seven most frequent carriers compact by default (eight codes below — `croma-harmony-text` has two, `ht` and `htx`) — `[I:cr <code> ...]` instead of `[I:croma-<name> ...]` — because it is shorter (~14.5% smaller exported ABC). Write compact yourself; the old long spelling still reads (with a one-time deprecation warning per kind) until croma 2.0, and `croma fmt` migrates any long spelling it finds back to compact automatically.
 
 | Code | Long name | Fields |
 |---|---|---|

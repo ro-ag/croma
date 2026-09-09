@@ -594,6 +594,9 @@ impl MultiVoiceLowering {
                 if expanded.is_none()
                     && let Some((long, code)) = carrier::compact_code_for_long(value)
                     && self.deprecated_carriers_seen.insert(long)
+                    && self
+                        .diagnostic_options
+                        .should_emit_croma_carrier_warning(long)
                 {
                     self.diagnostics.push(deprecated_carrier_spelling_warning(
                         inline.value.span,

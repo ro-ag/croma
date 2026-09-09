@@ -4335,3 +4335,43 @@ fn compact_carrier_spelling_does_not_warn() {
         "the compact spelling is current and must not warn"
     );
 }
+
+#[test]
+fn long_carrier_spelling_warning_respects_suppression() {
+    // `suppress_croma_carrier_warnings()` must silence the deprecation
+    // warning, mirroring its sibling `inline_instruction_ignored_warning`
+    // path. Each case below parses a fresh document, so the once-per-kind
+    // dedupe (`deprecated_carriers_seen`, scoped to one lowering run) cannot
+    // make a suppressed case look silent for the wrong reason.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:croma-lyric-extend verse=1]C D E F |\n";
+
+    let default_report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    assert!(
+        default_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.lower.deprecated_carrier_spelling"),
+        "the long spelling must still warn by default: {:?}",
+        default_report.diagnostics
+    );
+
+    let suppressed_report = crate::lower_score(
+        &crate::parse_document(
+            abc,
+            crate::ParseOptions::default().suppress_croma_carrier_warnings(),
+        )
+        .value,
+        crate::LowerOptions,
+    );
+    assert!(
+        !suppressed_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.lower.deprecated_carrier_spelling"),
+        "suppress_croma_carrier_warnings() must silence the deprecation warning: {:?}",
+        suppressed_report.diagnostics
+    );
+}
