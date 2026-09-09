@@ -138,24 +138,28 @@ pub(crate) struct LoweringState {
     /// Croma MusicXML-origin `[I:croma-note-instrument ...]` carrier waiting for
     /// the next timed note/rest/chord event.
     pub(crate) pending_musicxml_instrument: Option<MusicXmlInstrumentRef>,
-    /// Croma MusicXML-origin `[I:croma-harmony-text ...]` carrier waiting for
-    /// the next chord-symbol attachment. `None` means no carrier is pending; a
-    /// pending carrier decodes to a textless or explicit-text `<kind>` provenance.
+    /// Croma MusicXML-origin `[I:cr ht/htx ...]` (long spelling
+    /// `[I:croma-harmony-text ...]`) carrier waiting for the next chord-symbol
+    /// attachment. `None` means no carrier is pending; a pending carrier decodes
+    /// to a textless or explicit-text `<kind>` provenance.
     pub(crate) pending_musicxml_harmony_text: Option<HarmonyKindText>,
-    /// Croma MusicXML-origin `[I:croma-direction-placement ...]` carrier waiting
-    /// for the next decoration attachment.
+    /// Croma MusicXML-origin `[I:cr dp=<a|b>]` (long spelling
+    /// `[I:croma-direction-placement ...]`) carrier waiting for the next
+    /// decoration attachment.
     pub(crate) pending_musicxml_direction_placement: Option<AnnotationPlacementModel>,
-    /// Croma MusicXML-origin `[I:croma-lyric-extend ...]` carriers waiting for
-    /// the next timed note/rest/chord event. `w:` lyric alignment applies them
-    /// to the matching verse syllable after the music body has lowered.
+    /// Croma MusicXML-origin `[I:cr le=N]` (long spelling
+    /// `[I:croma-lyric-extend ...]`) carriers waiting for the next timed
+    /// note/rest/chord event. `w:` lyric alignment applies them to the matching
+    /// verse syllable after the music body has lowered.
     pub(crate) pending_musicxml_lyric_extends: Vec<u32>,
     /// Croma MusicXML-origin `[I:croma-lyric-duplicate ...]` carriers waiting
     /// for the next timed note/rest/chord event. `w:` carries the primary
     /// syllable; these carry same-note same-verse siblings ABC cannot spell.
     pub(crate) pending_musicxml_lyric_duplicates: Vec<AlignedLyric>,
-    /// Croma MusicXML-origin `[I:croma-musicxml-forward]` carrier waiting for
-    /// the next timed rest event. The rest advances ABC time; MusicXML emits it
-    /// back as `<forward>` instead of `<note><rest>`.
+    /// Croma MusicXML-origin `[I:cr mf]` (long spelling
+    /// `[I:croma-musicxml-forward]`) carrier waiting for the next timed rest
+    /// event. The rest advances ABC time; MusicXML emits it back as
+    /// `<forward>` instead of `<note><rest>`.
     pub(crate) pending_musicxml_forward: bool,
     /// Croma MusicXML-origin tuplets that ABC cannot spell directly, waiting for
     /// the next timed event.
@@ -174,11 +178,13 @@ pub(crate) struct LoweringState {
     /// the next parsed barline. Used for MusicXML bar styles ABC cannot spell
     /// natively, currently `dashed`.
     pub(crate) pending_musicxml_barline_kind: Option<BarlineKind>,
-    /// Croma MusicXML-origin `[I:croma-meter-restatement]` carrier waiting for
-    /// the next `[M:...]` field in this voice.
+    /// Croma MusicXML-origin `[I:cr mr]` (long spelling
+    /// `[I:croma-meter-restatement]`) carrier waiting for the next `[M:...]`
+    /// field in this voice.
     pub(crate) pending_musicxml_meter_restatement: bool,
-    /// Croma MusicXML-origin `[I:croma-key-restatement]` carrier waiting for the
-    /// next `[K:...]` field in this voice.
+    /// Croma MusicXML-origin `[I:cr kr]` (long spelling
+    /// `[I:croma-key-restatement]`) carrier waiting for the next `[K:...]`
+    /// field in this voice.
     pub(crate) pending_musicxml_key_restatement: bool,
     /// Croma MusicXML-origin `[I:croma-time-symbol ...]` carrier waiting for the
     /// next `M:`/`[M:...]` field in this voice.
@@ -619,9 +625,10 @@ impl LoweringState {
                     .tuplets
                     .append(&mut self.pending_musicxml_tuplets);
                 // Same for lyric carriers the reader flushes before a chord:
-                // a same-note `<extend/>` melisma (`[I:croma-lyric-extend ...]`)
-                // and a repeated same-verse `<lyric>` (`[I:croma-lyric-duplicate
-                // ...]`) bind to the chord head, mirroring the note/rest path
+                // a same-note `<extend/>` melisma (`[I:cr le=N]`, long spelling
+                // `[I:croma-lyric-extend ...]`) and a repeated same-verse
+                // `<lyric>` (`[I:croma-lyric-duplicate ...]`, uncoded) bind to
+                // the chord head, mirroring the note/rest path
                 // (`take_timed_attachments`). Omitting this dropped the hold and
                 // the duplicate credit lyrics on chord-led notes (PDMX lyric
                 // cluster).

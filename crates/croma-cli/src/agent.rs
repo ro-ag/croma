@@ -12,8 +12,8 @@ pub(crate) fn render_index(topics: &[AgentTopic]) -> String {
     let mut out = String::from(
         "croma special ABC notations — help topics\n\n\
          Run `croma agent <topic>` for the syntax and a copy-paste example.\n\
-         These `[I:croma-*]` / `%%croma-*` annotations carry MusicXML facts that\n\
-         plain ABC cannot express; other ABC tools ignore them.\n",
+         These `[I:cr <code> ...]` / `[I:croma-*]` / `%%croma-*` annotations carry\n\
+         MusicXML facts that plain ABC cannot express; other ABC tools ignore them.\n",
     );
     let mut current = "";
     for topic in topics {

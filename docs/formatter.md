@@ -16,12 +16,31 @@ croma fmt --auto-fix FILE # additionally apply safe, gated curations of loose so
 
 ## Two modes
 
-- **`format`** (plain `croma fmt`) — canonical, **lossless by construction**.
-  Musical tokens are copied verbatim by source byte span; only the whitespace
-  *between* tokens, blank-line runs, and the final newline are normalized.
-  Information-field values and stylesheet directives are kept byte-stable (only
-  trailing whitespace is trimmed). Because no musical byte is reconstructed,
-  collapsing a run of spaces to one space cannot change beaming or pitch.
+- **`format`** (plain `croma fmt`) — canonical and **lossless**, on two
+  different bases.
+
+  The *engine* is lossless **by construction**: musical tokens are copied
+  verbatim by source byte span, so only the whitespace *between* tokens,
+  blank-line runs, and the final newline are normalized. Information-field
+  values and stylesheet directives are kept byte-stable (only trailing
+  whitespace is trimmed). Because no musical byte is reconstructed, collapsing
+  a run of spaces to one space cannot change beaming or pitch.
+
+  The one exception is croma's **own round-trip carriers**: before the engine
+  runs, `format` respells a deprecated long-spelling carrier into its compact
+  equivalent (`[I:croma-lyric-extend verse=1]` → `[I:cr le=1]`, the
+  `CarrierCompaction` curation — see [`carriers.md`](carriers.md)). That
+  rewrites non-whitespace bytes inside an inline `I:` field value, so its
+  losslessness rests on the same **runtime gate** `--auto-fix` uses for a
+  `Structure` fix, not on construction: the migrated source must render
+  byte-identical MusicXML, or the whole migration is dropped and the source is
+  left alone. Nothing outside croma's `croma-*` namespace is touched, and the
+  respelling is done to the source text *before* the engine so the engine stays
+  non-source-changing (it falls back to the raw line whenever its rebuild does
+  not have the line's exact non-whitespace characters, which would otherwise
+  silently revert the edit). Applying it in plain `format` too is what keeps
+  `format` and `auto_fix` from disagreeing about whether a file needs changing.
+  The `%%croma-<name>` header vehicle is not respelled.
 
 - **`auto_fix`** (`--auto-fix`) — additionally applies a catalogue of safe
   curations that sanitise *loose* source into the canonical spelling the strict
@@ -63,14 +82,16 @@ are independent (in-process gate reuse vs. binary + regex pitch-seq) and agree:
 
 ## Safety gates
 
-Every `--auto-fix` curation declares the gate it must clear (`FixKind::gate()`).
-A candidate edit is applied to a trial string, re-checked, and kept only if its
-gate holds; otherwise it is reverted and listed in `skipped`.
+Every curation declares the gate it must clear (`FixKind::gate()`). A candidate
+edit is applied to a trial string, re-checked, and kept only if its gate holds;
+otherwise it is reverted and listed in `skipped` (`CarrierCompaction` under
+plain `format` has no report to list into, so a failed gate simply leaves the
+source unchanged).
 
 | Gate | Invariant enforced | Used by |
 |---|---|---|
 | `Pitch` | the ordered pitch sequence is unchanged (the edit may legitimately change the render, e.g. restoring a dropped duration/tempo) | `DetachedLength`, `ChordSymbolInBrackets`, `DoubledTempo`, `BareTempoSuffix` |
-| `Structure` | the full MusicXML rendering is byte-identical (no rendered aspect changes) | `RedundantBarline`, `FieldSpacing` |
+| `Structure` | the full MusicXML rendering is byte-identical (no rendered aspect changes) | `RedundantBarline`, `FieldSpacing`, `CarrierCompaction` |
 | `DirectiveTokens` | only whitespace inside active `%%MIDI` argument regions moves — no directive token, comment, or other line changes | `MidiDirectiveSpacing` |
 
 `DirectiveTokens` exists because `%%MIDI` is **not rendered into MusicXML**, so
@@ -80,7 +101,12 @@ textual one over the directive lines.
 ## The `--auto-fix` catalogue
 
 Each curation cites ABC 2.1 (canonical forms are spec-grounded, never
-abc2xml-isms). The one exception, `%%MIDI`, is flagged below.
+abc2xml-isms). Two are grounded elsewhere and flagged below: `%%MIDI` (an
+abc2midi convention) and `CarrierCompaction` (croma's own private namespace
+inside the spec's `I:` field).
+
+`CarrierCompaction` is also the one curation that is **not** exclusive to
+`--auto-fix`: plain `croma fmt` applies it too (see [Two modes](#two-modes)).
 
 | `FixKind` | Example | Gate | Reference |
 |---|---|---|---|
@@ -91,6 +117,7 @@ abc2xml-isms). The one exception, `%%MIDI`, is flagged below.
 | `RedundantBarline` | `\| \|` → `\|`, `]\|\|:` → `\|]:` | `Structure` | ABC 2.1 §4.8 |
 | `FieldSpacing` | `K: C` → `K:C` | `Structure` | ABC 2.1 §3 (field notation) |
 | `MidiDirectiveSpacing` | `%%MIDI beat 97 87  77 4` → `…87 77 4` | `DirectiveTokens` | abc2midi convention (see below) |
+| `CarrierCompaction` | `[I:croma-lyric-extend verse=1]` → `[I:cr le=1]` | `Structure` | [`carriers.md`](carriers.md) (croma namespace; applied by plain `fmt` too) |
 
 ### `BareTempoSuffix` and the reject → repair → recover pipeline
 

@@ -3213,7 +3213,7 @@ fn foreign_harmony_unknown_kind_emits_bare_root_not_enum() {
 
 #[test]
 fn foreign_harmony_unknown_kind_round_trips_via_carrier() {
-    // End-to-end: the bare-root chord plus the `[I:croma-harmony-text]` carrier
+    // End-to-end: the bare-root chord plus the `[I:cr ht]` carrier
     // restores the original `<kind text="1">` on re-export — lossless despite ABC
     // having no native Roman-numeral/functional `<harmony>` form.
     let xml =
@@ -3222,7 +3222,7 @@ fn foreign_harmony_unknown_kind_round_trips_via_carrier() {
     crate::musicxml::read::complete_score_for_abc(&mut score);
     let abc = write_abc(&score, AbcWriteOptions::default());
     assert!(
-        abc.contains("[I:croma-harmony-text text=\"1\"]\"C\""),
+        abc.contains("[I:cr ht text=\"1\"]\"C\""),
         "ABC projection must carry text=\"1\" beside a bare-root chord:\n{abc}"
     );
     let roundtrip = export_musicxml(&abc).expect("projected harmony ABC should export");
@@ -3240,7 +3240,7 @@ fn foreign_harmony_suffix_text_survives_abc_projection() {
     crate::musicxml::read::complete_score_for_abc(&mut score);
     let abc = write_abc(&score, AbcWriteOptions::default());
     assert!(
-        abc.contains("[I:croma-harmony-text text=\"dim\"]\"Bdim\""),
+        abc.contains("[I:cr ht text=\"dim\"]\"Bdim\""),
         "ABC projection must carry the source MusicXML kind@text suffix:\n{abc}"
     );
 
@@ -3255,13 +3255,40 @@ fn foreign_harmony_suffix_text_survives_abc_projection() {
 }
 
 #[test]
+fn foreign_harmony_hex_text_survives_abc_projection() {
+    // `<kind text="]bad">` contains a `]` — writing it as `[I:cr ht text="..."]`
+    // verbatim would break the ABC line at the `]` before the tokenizer ever
+    // sees the closing bracket of the carrier itself, so the writer must fall
+    // back to the hex-escaped spelling (`cr ht text-hex=<hex>`), and the
+    // reader must have a matching `text-hex=` arm to decode it back. Without
+    // that arm, `parse_harmony_text_instruction` fails to parse the carrier,
+    // `HarmonyKindText` falls back to `AbcNative`, and the original text is
+    // silently lost (the bug this test pins).
+    let xml =
+        "<harmony><root><root-step>C</root-step></root><kind text=\"]bad\">other</kind></harmony>";
+    let mut score = foreign_harmony_score(xml);
+    crate::musicxml::read::complete_score_for_abc(&mut score);
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(
+        abc.contains("[I:cr ht text-hex=5d626164]"),
+        "ABC projection must carry hostile kind@text through the hex carrier:\n{abc}"
+    );
+    let roundtrip = export_musicxml(&abc).expect("hex-carried harmony ABC should export");
+    assert!(
+        roundtrip.musicxml.contains("<kind text=\"]bad\">"),
+        "round-trip MusicXML must restore the original kind@text containing ']':\n{}",
+        roundtrip.musicxml
+    );
+}
+
+#[test]
 fn textless_harmony_stays_textless_through_abc_projection() {
     let xml = "<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>";
     let mut score = foreign_harmony_score(xml);
     crate::musicxml::read::complete_score_for_abc(&mut score);
     let abc = write_abc(&score, AbcWriteOptions::default());
     assert!(
-        abc.contains("[I:croma-harmony-text textless=1]\"C\""),
+        abc.contains("[I:cr htx]\"C\""),
         "ABC projection must carry the absent source kind@text:\n{abc}"
     );
 
@@ -3349,7 +3376,7 @@ fn textless_harmony_before_zero_duration_directions_survives_abc_projection() {
         "ABC projection must keep the intervening tempo-like words direction:\n{abc}"
     );
     assert!(
-        abc.contains("[I:croma-harmony-text textless=1]\"Bb\""),
+        abc.contains("[I:cr htx]\"Bb\""),
         "ABC projection must not drop harmony buffered before zero-duration directions:\n{abc}"
     );
 
@@ -3409,7 +3436,7 @@ fn textless_harmony_before_mid_tune_tempo_survives_abc_projection() {
     crate::musicxml::read::complete_score_for_abc(&mut score);
     let abc = write_abc(&score, AbcWriteOptions::default());
     assert!(
-        abc.contains("[Q:\"Verse\"] [I:croma-harmony-text textless=1]\"Bb\""),
+        abc.contains("[Q:\"Verse\"] [I:cr htx]\"Bb\""),
         "ABC projection must not drop harmony buffered before a mid-tune tempo:\n{abc}"
     );
 
@@ -6165,7 +6192,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-lyric-extend verse=1]C"),
+            abc.contains("[I:cr le=1]C"),
             "ABC projection needs a croma carrier because w: cannot spell same-note lyric extend:\n{abc}"
         );
 
@@ -6203,8 +6230,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-lyric-extend verse=1]")
-                && abc.contains("[I:croma-lyric-extend verse=2]"),
+            abc.contains("[I:cr le=1]") && abc.contains("[I:cr le=2]"),
             "ABC projection should preserve each verse's same-note extend carrier:\n{abc}"
         );
 
@@ -6457,7 +6483,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-musicxml-forward]"),
+            abc.contains("[I:cr mf]"),
             "ABC projection needs a croma carrier for a MusicXML <forward> cursor gap:\n{abc}"
         );
 
@@ -6509,7 +6535,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            !abc.contains("[I:croma-musicxml-forward]"),
+            !abc.contains("[I:cr mf]"),
             "a restatement after a backup must not rewind the ABC gap cursor and create a fake forward:\n{abc}"
         );
 
@@ -6712,7 +6738,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-musicxml-forward]"),
+            abc.contains("[I:cr mf]"),
             "ABC projection needs a croma carrier for a trailing MusicXML <forward>:\n{abc}"
         );
 
@@ -6762,7 +6788,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-musicxml-forward]"),
+            abc.contains("[I:cr mf]"),
             "ABC projection needs a croma carrier for a forward-only measure:\n{abc}"
         );
 
@@ -6965,7 +6991,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-meter-restatement] [M:4/4]"),
+            abc.contains("[I:cr mr] [M:4/4]"),
             "ABC projection must carry a private marker so the no-op [M:] survives re-lowering:\n{abc}"
         );
         assert_eq!(
@@ -7010,7 +7036,7 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("[I:croma-key-restatement] [K:"),
+            abc.contains("[I:cr kr] [K:"),
             "ABC projection must carry a private marker so the no-op [K:] survives re-lowering:\n{abc}"
         );
         assert_eq!(
@@ -10075,5 +10101,51 @@ fn octave_shifting_clef_change_compensates_the_voice_shift() {
     assert_eq!(
         x1, x2,
         "the octave-shifting clef change must round-trip pitch-exactly"
+    );
+}
+
+#[test]
+fn legend_lists_only_the_codes_the_document_uses() {
+    // `mr` (meter restatement) round-trips self-contained from plain ABC: an
+    // `[I:cr le=1]` melisma carrier, by contrast, only survives when it is
+    // paired with a matching `w:` lyric line, so it is not usable here as a
+    // minimal single-carrier fixture.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:cr mr][M:4/4]C D E F |\n";
+    let score = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    )
+    .value
+    .expect("score");
+
+    let plain = write_abc(&score, AbcWriteOptions::default());
+    assert!(!plain.contains('%'), "the legend is opt-in; got:\n{plain}");
+
+    let options = AbcWriteOptions { legend: true };
+    let with_legend = write_abc(&score, options);
+    assert!(
+        with_legend.starts_with("% croma carriers used in this file:"),
+        "got:\n{with_legend}"
+    );
+    // The literal `[I:cr mr]` also appears in the tune body itself (see the
+    // fixture above), so asserting on it alone would pass even if the legend
+    // body were empty or wrong. Assert on the `mr` line's human-readable
+    // description instead, which only the legend text can contain.
+    assert!(
+        with_legend.contains("meter restatement"),
+        "legend body must describe the `mr` carrier it lists, not just emit \
+         the header; got:\n{with_legend}"
+    );
+    assert!(
+        !with_legend.contains("dp="),
+        "unused codes must not be listed; got:\n{with_legend}"
+    );
+
+    // The block is an ABC comment: it must not change what the file means.
+    assert_eq!(
+        export_musicxml(&with_legend)
+            .expect("legend ABC exports")
+            .musicxml,
+        export_musicxml(&plain).expect("plain ABC exports").musicxml,
     );
 }

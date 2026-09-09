@@ -192,6 +192,10 @@ pub struct ReadArgs {
     /// How to project the reconstructed Score (default: MusicXML re-emission).
     #[arg(long, value_enum, default_value_t = ReadFormat::Xml)]
     pub format: ReadFormat,
+    /// Prefix the ABC output with a comment block explaining the croma carrier
+    /// codes it uses.
+    #[arg(long)]
+    pub legend: bool,
 }
 
 /// Arguments for `croma musicxml2abc`: read a MusicXML file and write ABC.
@@ -203,6 +207,10 @@ pub struct Musicxml2abcArgs {
     /// Write the ABC to this path instead of stdout.
     #[arg(short = 'o', long = "output")]
     pub output: Option<PathBuf>,
+    /// Prefix the ABC output with a comment block explaining the croma carrier
+    /// codes it uses.
+    #[arg(long)]
+    pub legend: bool,
 }
 
 /// The projection of a Score reconstructed from MusicXML, selected by

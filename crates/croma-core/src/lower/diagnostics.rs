@@ -16,6 +16,25 @@ pub(crate) fn invalid_tuplet_warning(span: Span) -> Diagnostic {
     ))
 }
 
+pub(crate) fn deprecated_carrier_spelling_warning(
+    span: Span,
+    long: &str,
+    compact: &str,
+) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.lower.deprecated_carrier_spelling",
+        format!(
+            "Carrier `{long}` uses the deprecated long spelling; write `[I:cr {compact} …]` \
+             instead. The long spelling is read until croma 2.0."
+        ),
+        span,
+    )
+    .with_recovery_note(RecoveryNote::new(
+        "The carrier was read normally; only its spelling is deprecated.",
+    ))
+}
+
 pub(crate) fn barline_export_policy_info(span: Span, kind: BarlineKind) -> Diagnostic {
     Diagnostic::new(
         Severity::Info,

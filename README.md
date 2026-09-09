@@ -31,8 +31,9 @@ loose source is repaired explicitly by `croma fmt --auto-fix`.
   MuseScore, Finale, Sibelius).
 - **Lossless round-trip + agent help** (`croma agent`): the
   `MusicXML → ABC → MusicXML` round-trip preserves facts ABC 2.1 cannot natively
-  express through private `[I:croma-*]` / `%%croma-*` carriers (ignorable by
-  other ABC tools); `croma agent` explains those notations to an AI agent / LLM,
+  express through private `[I:cr <code> …]` / `%%croma-*` carriers (ignorable by
+  other ABC tools; the older `[I:croma-<name> …]` spelling is still read until
+  2.0); `croma agent` explains those notations to an AI agent / LLM,
   with the same topics available as a `croma-core` API. See
   [`docs/carriers.md`](docs/carriers.md) and [`docs/agent.md`](docs/agent.md).
 - **Language server** (`croma-lsp`): a stdio LSP — diagnostics, formatting,

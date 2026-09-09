@@ -47,14 +47,29 @@ static TOPICS: &[AgentTopic] = &[
         id: r#"syntax"#,
         aliases: &[r#"carriers"#, r#"carrier"#, r#"annotations"#, r#"notation"#],
         category: r#"Basics"#,
-        summary: r#"the carrier convention: the two vehicles, key=value, the -hex= rule"#,
+        summary: r#"the carrier convention: the two vehicles, key=value, compact codes, the -hex= rule"#,
         body: r#"croma round-trips MusicXML through ABC. ABC 2.1 cannot natively express every MusicXML fact, so croma stores those facts in namespaced **carriers** that ride inside the ABC text and are re-applied on the way back to MusicXML. Every other ABC tool ignores them, so the file stays playable in abc2midi / abcm2ps / abcjs while croma keeps full fidelity.
 
 Two vehicles:
-- inline `[I:croma-<name> k=v ...]` — anchored to the following note / chord / barline / `[M:]` / `[K:]`. The default; use it for per-note and per-measure facts.
-- header `%%croma-<name> ...` — anchored to a voice or the score. Use only for score/voice-level facts.
+- inline `[I:croma-<name> k=v ...]` (or, for the seven coded carriers below — eight codes, since `croma-harmony-text` has two — the compact `[I:cr <code> ...]`) — anchored to the following note / chord / barline / `[M:]` / `[K:]`. The default; use it for per-note and per-measure facts.
+- header `%%croma-<name> ...` — anchored to a voice or the score. Use only for score/voice-level facts. **Never compacted** — headers always use the long name.
 
-Fields are `key=value`, space-separated; double-quote a value with spaces (`name="Snare Drum"`). A boolean carrier carries no fields — the bare name is the flag (e.g. `[I:croma-musicxml-forward]`).
+Fields are `key=value`, space-separated; double-quote a value with spaces (`name="Snare Drum"`). A boolean carrier carries no fields — the bare name is the flag (e.g. `[I:croma-musicxml-forward]`, or compact `[I:cr mf]`).
+
+**Compact spelling.** croma writes the seven most frequent carriers compact by default (eight codes below — `croma-harmony-text` has two, `ht` and `htx`) — `[I:cr <code> ...]` instead of `[I:croma-<name> ...]` — because it is shorter (~14.5% smaller exported ABC). Write compact yourself; the old long spelling still reads (with a one-time deprecation warning per kind) until croma 2.0, and `croma fmt` migrates any long spelling it finds back to compact automatically.
+
+| Code | Long name | Fields |
+|---|---|---|
+| `dp` | `croma-direction-placement` | `dp=<a\|b>` (a=above, b=below) |
+| `ht` | `croma-harmony-text` | `ht text="..."` or `ht text-hex=...` |
+| `htx` | `croma-harmony-text` | `htx` (the textless flag; no fields) |
+| `le` | `croma-lyric-extend` | `le=<verse>` |
+| `mr` | `croma-meter-restatement` | `mr` (flag) |
+| `kr` | `croma-key-restatement` | `kr` (flag) |
+| `ec` | `croma-ending-close` | `ec t=<s\|d> l=<l\|r> n="..."` |
+| `mf` | `croma-musicxml-forward` | `mf` (flag) |
+
+The other 15 carriers (e.g. `croma-clef-cursor`, `croma-musicxml-tuplet`, `croma-xvoice-slur`) have no code and keep their long spelling; run `croma agent <topic>` for each one's syntax.
 
 The `-hex=` rule: inside an inline `[I:...]`, the characters `]`, `%`, and raw control characters break the ABC tokenizer. When a free-text value contains one, croma emits a hex variant of the field instead — `text="John"` becomes `text-hex=4a6f686e` (the UTF-8 bytes as lowercase hex). Header `%%` lines are line-level and do not need it.
 
@@ -125,30 +140,35 @@ Verify: `croma xml f.abc | grep '<instrument '`"#,
     },
     AgentTopic {
         id: r#"harmony-text"#,
-        aliases: &[r#"croma-harmony-text"#, r#"chord-symbol-text"#],
+        aliases: &[
+            r#"croma-harmony-text"#,
+            r#"chord-symbol-text"#,
+            r#"ht"#,
+            r#"htx"#,
+        ],
         category: r#"Instruments & chord symbols"#,
         summary: r#"the printed text/provenance of a chord symbol (<harmony><kind text=...>)"#,
         body: r#"Persists a chord symbol's `<harmony><kind text=...>` provenance: `Textless` (a kind with no printed text) vs `Text(value)` (an explicit printed quality) vs (carrier absent) an ABC-native chord whose text croma rebuilds from the chord string.
 
-Vehicle: inline `[I:croma-harmony-text ...]` immediately before the quoted chord symbol. Free text uses the `-hex=` rule.
+Vehicle: inline `[I:cr ht ...]` (code `ht` for text, `htx` for the textless flag) immediately before the quoted chord symbol. Free text uses the `-hex=` rule. The long spelling `[I:croma-harmony-text ...]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
 Examples:
 ```
-[I:croma-harmony-text text="dim"]"Bdim"B
-[I:croma-harmony-text textless=1]"C"C
+[I:cr ht text="dim"]"Bdim"B
+[I:cr htx]"C"C
 ```
 Verify: `croma xml f.abc | grep -A2 '<harmony'`"#,
     },
     AgentTopic {
         id: r#"lyric-extend"#,
-        aliases: &[r#"croma-lyric-extend"#, r#"melisma"#, r#"extend"#],
+        aliases: &[r#"croma-lyric-extend"#, r#"melisma"#, r#"extend"#, r#"le"#],
         category: r#"Lyrics"#,
         summary: r#"a same-note melisma <extend/> on the primary syllable of a verse"#,
         body: r#"Persists the primary syllable's same-note `<extend/>` melisma flag for a verse — a syllable held with an extender that `w:` alone cannot mark on that note.
 
-Vehicle: inline `[I:croma-lyric-extend verse=N]` before the note; `w:` still carries the syllable text.
+Vehicle: inline `[I:cr le=N]` (code `le`) before the note; `w:` still carries the syllable text. The long spelling `[I:croma-lyric-extend verse=N]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
-Example: `[I:croma-lyric-extend verse=1]A2`
+Example: `[I:cr le=1]A2`
 Verify: `croma xml f.abc | grep '<extend'`"#,
     },
     AgentTopic {
@@ -193,14 +213,15 @@ Verify: `croma xml f.abc | grep '<sound tempo'`"#,
             r#"croma-direction-placement"#,
             r#"dynamic-placement"#,
             r#"wedge-placement"#,
+            r#"dp"#,
         ],
         category: r#"Directions"#,
         summary: r#"above/below placement for MusicXML direction decorations"#,
         body: r#"Persists a MusicXML `<direction placement=...>` on decorations that ABC spells as `!decor!`, including dynamics and hairpin wedges.
 
-Vehicle: inline `[I:croma-direction-placement placement=above|below]` immediately before the decoration.
+Vehicle: inline `[I:cr dp=<a|b>]` (code `dp`; `a`=above, `b`=below) immediately before the decoration. The long spelling `[I:croma-direction-placement placement=above|below]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
-Example: `[I:croma-direction-placement placement=above]!p!C`
+Example: `[I:cr dp=a]!p!C`
 Verify: `croma xml f.abc | grep '<direction placement'`"#,
     },
     AgentTopic {
@@ -229,26 +250,26 @@ Verify: `croma xml f.abc | grep -A3 '<time'`"#,
     },
     AgentTopic {
         id: r#"key-restatement"#,
-        aliases: &[r#"croma-key-restatement"#, r#"redundant-key"#],
+        aliases: &[r#"croma-key-restatement"#, r#"redundant-key"#, r#"kr"#],
         category: r#"Key & meter"#,
         summary: r#"flag: the following [K:] is a redundant restatement that must survive ABC dedupe"#,
         body: r#"A flag marking the following inline `[K:]` as a redundant restatement of the already-effective key that must survive ABC's dedupe (the source restated `<key>` even though it was unchanged).
 
-Vehicle: boolean inline `[I:croma-key-restatement]` immediately before the `[K:]`.
+Vehicle: boolean inline `[I:cr kr]` (code `kr`) immediately before the `[K:]`. The long spelling `[I:croma-key-restatement]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
-Example: `[I:croma-key-restatement] [K:F]`
+Example: `[I:cr kr] [K:F]`
 Verify: `croma xml f.abc | grep -c '<key'`"#,
     },
     AgentTopic {
         id: r#"meter-restatement"#,
-        aliases: &[r#"croma-meter-restatement"#, r#"redundant-meter"#],
+        aliases: &[r#"croma-meter-restatement"#, r#"redundant-meter"#, r#"mr"#],
         category: r#"Key & meter"#,
         summary: r#"flag: the following [M:] is a redundant restatement that must survive ABC dedupe"#,
         body: r#"A flag marking the following inline `[M:]` as a redundant restatement of the already-effective meter that must survive ABC's dedupe.
 
-Vehicle: boolean inline `[I:croma-meter-restatement]` immediately before the `[M:]`.
+Vehicle: boolean inline `[I:cr mr]` (code `mr`) immediately before the `[M:]`. The long spelling `[I:croma-meter-restatement]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
-Example: `[I:croma-meter-restatement] [M:4/4]`
+Example: `[I:cr mr] [M:4/4]`
 Verify: `croma xml f.abc | grep -c '<time'`"#,
     },
     AgentTopic {
@@ -265,14 +286,18 @@ Verify: `croma xml f.abc | grep '<time symbol'`"#,
     },
     AgentTopic {
         id: r#"forward"#,
-        aliases: &[r#"croma-musicxml-forward"#, r#"invisible-rest-gap"#],
+        aliases: &[
+            r#"croma-musicxml-forward"#,
+            r#"invisible-rest-gap"#,
+            r#"mf"#,
+        ],
         category: r#"Cursor & structure"#,
         summary: r#"flag: re-emit <forward> (a silent cursor advance) for an invisible-rest gap, not a <rest>"#,
         body: r#"A flag telling croma to re-emit the following invisible-rest gap as a MusicXML `<forward>` (a silent cursor advance) rather than a `<note><rest>`.
 
-Vehicle: boolean inline `[I:croma-musicxml-forward]` before the invisible rest (`x`).
+Vehicle: boolean inline `[I:cr mf]` (code `mf`) before the invisible rest (`x`). The long spelling `[I:croma-musicxml-forward]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
-Example: `[I:croma-musicxml-forward]x4`
+Example: `[I:cr mf]x4`
 Verify: `croma xml f.abc | grep '<forward'`"#,
     },
     AgentTopic {
@@ -349,14 +374,14 @@ Verify: `croma xml f.abc | grep '<measure number'`"#,
     },
     AgentTopic {
         id: r#"ending-close"#,
-        aliases: &[r#"croma-ending-close"#, r#"volta-close"#],
+        aliases: &[r#"croma-ending-close"#, r#"volta-close"#, r#"ec"#],
         category: r#"Cursor & structure"#,
         summary: r#"an explicit volta-bracket close (<ending type="stop|discontinue">)"#,
         body: r#"Persists an explicit volta-bracket close — `<ending type="stop|discontinue">` plus its side (location) and numbers — that ABC's repeat syntax does not spell on its own.
 
-Vehicle: inline `[I:croma-ending-close type=stop|discontinue location=right number=".."]`.
+Vehicle: inline `[I:cr ec t=<s|d> l=<l|r> n="..."]` (code `ec`; `t`: s=stop, d=discontinue; `l`: l=left, r=right). The long spelling `[I:croma-ending-close type=stop|discontinue location=right number=".."]` still reads (deprecated until croma 2.0; `croma fmt` migrates it automatically).
 
-Example: `[I:croma-ending-close type=discontinue location=right number="1,2"]`
+Example: `[I:cr ec t=d l=r n="1,2"]`
 Verify: `croma xml f.abc | grep '<ending'`"#,
     },
     AgentTopic {

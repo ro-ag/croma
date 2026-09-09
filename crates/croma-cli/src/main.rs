@@ -11,7 +11,8 @@ use croma_core::{
     write_musicxml, write_musicxml_with_options,
 };
 use croma_fmt::{
-    Change, FixKind, FixResult, FormatOptions, auto_fix, format as fmt_format, is_formatted,
+    Change, FixKind, FixResult, FormatOptions, auto_fix, carrier_migrations, format as fmt_format,
+    is_formatted,
 };
 use owo_colors::OwoColorize;
 use serde_json::json;
@@ -217,6 +218,12 @@ fn run_fmt(args: FmtArgs) -> Result<ExitCode, CliError> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Plain `croma fmt` still migrates deprecated long-spelling carriers (it is
+    // a migration of croma's own output, not a curation of hand-written
+    // source). Report them here so `--check` names what it would rewrite rather
+    // than only saying the file would be reformatted.
+    report_migrations(&carrier_migrations(&source, options))?;
+
     if check {
         return check_result(is_formatted(&source, options), &file);
     }
@@ -244,6 +251,7 @@ fn run_read(args: ReadArgs) -> Result<ExitCode, CliError> {
         file,
         output,
         format,
+        legend,
     } = args;
     let xml = read_source(&file)?;
     let (mut score, diagnostics) = read_score_from_xml(&xml)?;
@@ -258,7 +266,7 @@ fn run_read(args: ReadArgs) -> Result<ExitCode, CliError> {
         croma_core::complete_score_for_abc(&mut score);
     }
 
-    let projection = project_reconstructed(&score, format);
+    let projection = project_reconstructed(&score, format, legend);
     if let Some(output) = output {
         write_output(&output, &projection)?;
     } else {
@@ -272,11 +280,16 @@ fn run_read(args: ReadArgs) -> Result<ExitCode, CliError> {
 /// reconstruct a `Score`, and write ABC. A discoverable name for the conversion.
 #[cfg(feature = "musicxml-reader")]
 fn run_musicxml2abc(args: Musicxml2abcArgs) -> Result<ExitCode, CliError> {
-    let Musicxml2abcArgs { file, output } = args;
+    let Musicxml2abcArgs {
+        file,
+        output,
+        legend,
+    } = args;
     run_read(ReadArgs {
         file,
         output,
         format: ReadFormat::Abc,
+        legend,
     })
 }
 
@@ -292,10 +305,10 @@ fn read_score_from_xml(xml: &str) -> Result<(Score, Vec<Diagnostic>), CliError> 
 /// Project a reconstructed `Score` into the requested textual form: re-emitted
 /// MusicXML (`xml`), ABC (`abc`), or the `Score` debug dump (`dump`).
 #[cfg(feature = "musicxml-reader")]
-fn project_reconstructed(score: &Score, format: ReadFormat) -> String {
+fn project_reconstructed(score: &Score, format: ReadFormat, legend: bool) -> String {
     match format {
         ReadFormat::Xml => write_musicxml(score).musicxml,
-        ReadFormat::Abc => write_abc(score, AbcWriteOptions::default()),
+        ReadFormat::Abc => write_abc(score, AbcWriteOptions { legend }),
         ReadFormat::Dump => format!("{score:#?}"),
     }
 }
@@ -334,6 +347,21 @@ fn check_result(clean: bool, file: &Path) -> Result<ExitCode, CliError> {
         writeln!(stderr, "would reformat: {}", file.display()).map_err(stderr_error)?;
         Ok(ExitCode::FAILURE)
     }
+}
+
+/// Emit one stderr line per carrier respelling plain `croma fmt` applies.
+fn report_migrations(migrations: &[Change]) -> Result<(), CliError> {
+    let mut stderr = color_stderr();
+    for change in migrations {
+        writeln!(
+            stderr,
+            "migrated [{}] {}",
+            change.kind.label().green(),
+            fix_detail(change)
+        )
+        .map_err(stderr_error)?;
+    }
+    Ok(())
 }
 
 /// Emit one stderr line per applied or skipped auto-fix change.
@@ -375,6 +403,7 @@ fn fix_detail(change: &Change) -> String {
             FixKind::MidiDirectiveSpacing => {
                 "collapsed whitespace in a %%MIDI directive".to_string()
             }
+            FixKind::CarrierCompaction => "compacted a croma carrier".to_string(),
         }
     } else {
         format!("`{}` -> `{}`", change.before, change.after)
@@ -732,7 +761,7 @@ mod reader_tests {
             diagnostics.is_empty(),
             "a clean round-trip emits no reader diagnostics, got {diagnostics:?}"
         );
-        let projected_abc = project_reconstructed(&reconstructed, ReadFormat::Abc);
+        let projected_abc = project_reconstructed(&reconstructed, ReadFormat::Abc, false);
         assert!(
             !projected_abc.trim().is_empty(),
             "the ABC projection must be non-empty"
@@ -766,7 +795,7 @@ mod reader_tests {
         let (reconstructed, _diags) =
             read_score_from_xml(&xml).expect("reconstruction must succeed");
         assert_eq!(
-            project_reconstructed(&reconstructed, ReadFormat::Abc),
+            project_reconstructed(&reconstructed, ReadFormat::Abc, false),
             write_abc(&reconstructed, AbcWriteOptions::default()),
             "read --format abc must equal write_abc of the reconstructed Score"
         );
@@ -782,10 +811,26 @@ mod reader_tests {
         let xml = write_musicxml(&source_score).musicxml;
         let (reconstructed, _diags) =
             read_score_from_xml(&xml).expect("reconstruction must succeed");
-        let projected = project_reconstructed(&reconstructed, ReadFormat::Xml);
+        let projected = project_reconstructed(&reconstructed, ReadFormat::Xml, false);
         assert_eq!(
             projected, xml,
             "read --format xml must re-emit the writer's inverse-image bytes"
+        );
+    }
+
+    #[test]
+    fn read_format_abc_threads_the_legend_option() {
+        // Pins that `project_reconstructed`'s `legend` parameter reaches
+        // `write_abc` unchanged — the CLI wiring behind
+        // `croma read --format abc --legend` / `croma musicxml2abc --legend`.
+        let abc = "X:1\nT:Legend\nM:4/4\nL:1/4\nK:C\nC D E F |\n";
+        let xml = write_musicxml(&lower(abc)).musicxml;
+        let (reconstructed, _diags) =
+            read_score_from_xml(&xml).expect("reconstruction must succeed");
+        assert_eq!(
+            project_reconstructed(&reconstructed, ReadFormat::Abc, true),
+            write_abc(&reconstructed, AbcWriteOptions { legend: true }),
+            "read --format abc --legend must equal write_abc with legend enabled"
         );
     }
 
@@ -794,7 +839,7 @@ mod reader_tests {
         let abc = "X:1\nT:Dump\nM:4/4\nL:1/4\nK:C\nC |\n";
         let (reconstructed, _diags) =
             read_score_from_xml(&write_musicxml(&lower(abc)).musicxml).expect("reconstruction");
-        let dump = project_reconstructed(&reconstructed, ReadFormat::Dump);
+        let dump = project_reconstructed(&reconstructed, ReadFormat::Dump, false);
         assert!(
             dump.contains("Score"),
             "the dump projection must be the Score debug representation, got {dump:?}"

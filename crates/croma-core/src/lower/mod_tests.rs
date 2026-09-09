@@ -4188,3 +4188,269 @@ fn standalone_body_meter_line_scopes_to_current_voice_timeline() {
         "V2 must stay in the header meter until its own M:3/4"
     );
 }
+
+#[test]
+fn compact_carriers_lower_identically_to_long_spellings() {
+    // Same tune twice: the only difference is carrier spelling. The lowered
+    // scores must be indistinguishable.
+    let long = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-direction-placement placement=below]!f!C ",
+        "[I:croma-lyric-extend verse=1]D ",
+        "[I:croma-harmony-text text=\"C7\"]\"C\"E F |\n",
+    );
+    let compact = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:cr dp=b]!f!C ",
+        "[I:cr le=1]D ",
+        "[I:cr ht text=\"C7\"]\"C\"E F |\n",
+    );
+    assert_eq!(
+        crate::export_musicxml(compact)
+            .expect("compact must export")
+            .musicxml,
+        crate::export_musicxml(long)
+            .expect("long must export")
+            .musicxml,
+        "compact and long carrier spellings must produce identical MusicXML"
+    );
+}
+
+#[test]
+fn compact_ending_close_carrier_lowers_identically_to_long_spelling() {
+    // Regression for the ending-close arm specifically: `expand_ending_close`
+    // has its own field-rewrite table (`t=`/`l=`/`n=`), separate from the
+    // rest of `expand_compact_carrier`, so it needs its own end-to-end check.
+    let long = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-ending-close type=stop location=right number=\"1\"]C D E F |\n",
+    );
+    let compact = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:cr ec t=s l=r n=\"1\"]C D E F |\n",
+    );
+    assert_eq!(
+        crate::export_musicxml(compact)
+            .expect("compact must export")
+            .musicxml,
+        crate::export_musicxml(long)
+            .expect("long must export")
+            .musicxml,
+        "compact and long ending-close carriers must produce identical MusicXML"
+    );
+}
+
+#[test]
+fn compact_ending_close_with_n_hex_falls_through_unrecognised() {
+    // `n-hex=` is not a real ending-close spelling (the writer can never emit
+    // it: `ending_number_value` only builds digits/`-`/`,`, which
+    // `needs_hex_inline_carrier` never flags). A hand-written `n-hex=` must
+    // NOT be silently rewritten into an unparseable `number-hex=` long form;
+    // it should fall through to the unknown-instruction path untouched.
+    let source = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:cr ec t=s l=r n-hex=3132]C D E F |\n",
+    );
+    let export = crate::export_musicxml(source).expect("must still export");
+    assert!(
+        !export.musicxml.contains("<ending"),
+        "no ending-close should have been produced\n{}",
+        export.musicxml
+    );
+    assert!(
+        export
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.field.inline_ignored"),
+        "the carrier should be reported as an ignored inline instruction: {:?}",
+        export.diagnostics
+    );
+}
+
+#[test]
+fn writer_emits_compact_carrier_spellings() {
+    let abc = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-direction-placement placement=below]!f!C ",
+        "[I:croma-lyric-extend verse=1]D E F |\n",
+        "w: one two three four\n",
+    );
+    let score = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    )
+    .value
+    .expect("score");
+    let out = crate::write_abc(&score, crate::AbcWriteOptions::default());
+    assert!(out.contains("[I:cr dp=b]"), "got:\n{out}");
+    assert!(out.contains("[I:cr le=1]"), "got:\n{out}");
+    assert!(
+        !out.contains("croma-direction-placement") && !out.contains("croma-lyric-extend"),
+        "no long spelling may survive for a coded carrier; got:\n{out}"
+    );
+}
+
+#[test]
+fn long_carrier_spelling_warns_once_per_kind() {
+    let abc = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-lyric-extend verse=1]C ",
+        "[I:croma-lyric-extend verse=1]D ",
+        "[I:croma-direction-placement placement=above]!f!E F |\n",
+    );
+    let report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    let warnings: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "abc.lower.deprecated_carrier_spelling")
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "one warning per carrier KIND per document, not per occurrence: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|d| d.message.contains("croma-lyric-extend") && d.message.contains("cr le")),
+        "the warning must name both spellings: {warnings:?}"
+    );
+}
+
+#[test]
+fn compact_carrier_spelling_does_not_warn() {
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:cr le=1]C D E F |\n";
+    let report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.lower.deprecated_carrier_spelling"),
+        "the compact spelling is current and must not warn"
+    );
+}
+
+#[test]
+fn long_carrier_spelling_warning_respects_suppression() {
+    // `suppress_croma_carrier_warnings()` must silence the deprecation
+    // warning, mirroring its sibling `inline_instruction_ignored_warning`
+    // path. Each case below parses a fresh document, so the once-per-kind
+    // dedupe (`deprecated_carriers_seen`, scoped to one lowering run) cannot
+    // make a suppressed case look silent for the wrong reason.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:croma-lyric-extend verse=1]C D E F |\n";
+
+    let default_report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    assert!(
+        default_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.lower.deprecated_carrier_spelling"),
+        "the long spelling must still warn by default: {:?}",
+        default_report.diagnostics
+    );
+
+    let suppressed_report = crate::lower_score(
+        &crate::parse_document(
+            abc,
+            crate::ParseOptions::default().suppress_croma_carrier_warnings(),
+        )
+        .value,
+        crate::LowerOptions,
+    );
+    assert!(
+        !suppressed_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.lower.deprecated_carrier_spelling"),
+        "suppress_croma_carrier_warnings() must silence the deprecation warning: {:?}",
+        suppressed_report.diagnostics
+    );
+}
+
+#[test]
+fn unknown_compact_carrier_warns_by_its_code_and_can_be_suppressed() {
+    // An `[I:cr <code>]` whose code is not in the registry falls through to
+    // the unknown-instruction tail. Two things must hold there, and neither
+    // did while the tail reported only the payload's first word (`cr`): the
+    // warning must NAME the attempted code, so two unknown carriers are
+    // distinguishable in the output, and it must be silenceable by
+    // `suppress_croma_carrier_warnings()` exactly like an unknown
+    // `[I:croma-*]` — the compact spelling is the same private namespace.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:cr zz=1]C [I:cr qq]D E F |\n";
+
+    let default_report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    let ignored: Vec<&str> = default_report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "abc.field.inline_ignored")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ignored.iter().any(|message| message.contains("`cr zz`")),
+        "the warning must name the attempted code, not the bare namespace: {ignored:?}"
+    );
+    assert!(
+        ignored.iter().any(|message| message.contains("`cr qq`")),
+        "distinct unknown compact carriers must be distinguishable: {ignored:?}"
+    );
+
+    let suppressed_report = crate::lower_score(
+        &crate::parse_document(
+            abc,
+            crate::ParseOptions::default().suppress_croma_carrier_warnings(),
+        )
+        .value,
+        crate::LowerOptions,
+    );
+    assert!(
+        !suppressed_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.field.inline_ignored"),
+        "suppress_croma_carrier_warnings() must silence unknown compact carriers: {:?}",
+        suppressed_report.diagnostics
+    );
+}
+
+#[test]
+fn foreign_inline_instruction_warning_is_unchanged_by_the_compact_namespace() {
+    // The compact-namespace exception is scoped to the `cr` WORD: a foreign
+    // directive that merely starts with those letters, and a bare `[I:cr]`
+    // with no code, keep the old behaviour — reported by their first word and
+    // NOT silenceable, because they are not croma's.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:credits x=1]C [I:cr]D E F |\n";
+    let report = crate::lower_score(
+        &crate::parse_document(
+            abc,
+            crate::ParseOptions::default().suppress_croma_carrier_warnings(),
+        )
+        .value,
+        crate::LowerOptions,
+    );
+    let ignored: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "abc.field.inline_ignored")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ignored.iter().any(|message| message.contains("`credits`")),
+        "a foreign directive sharing the `cr` letters must still warn: {ignored:?}"
+    );
+    assert!(
+        ignored.iter().any(|message| message.contains("`cr`")),
+        "a bare `[I:cr]` carries no code and stays a foreign directive: {ignored:?}"
+    );
+}
