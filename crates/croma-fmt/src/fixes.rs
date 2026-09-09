@@ -136,7 +136,16 @@ const COMPACT_CARRIERS: [(&str, &str); 7] = [
 ];
 
 /// Rewrite every deprecated long-spelling carrier in `source` to its compact
-/// form. Returns `source` untouched when there is nothing to migrate.
+/// form. Returns `source` untouched when there is nothing to migrate, or when
+/// the rewrite does not clear the runtime gate.
+///
+/// The gate is this crate's premise: no candidate edit is trusted on the
+/// strength of its detector alone. It is the same bar `auto_fix` applies to a
+/// [`Gate::Structure`] fix — the source must lower, and the migrated source must
+/// render byte-identical MusicXML — so plain `format` and `auto_fix` cannot
+/// disagree about whether a file needs changing. The extra lowering is paid only
+/// by a file that actually holds a migratable carrier: `carrier_migrations`
+/// returns empty (before parsing) for everything else.
 pub(crate) fn migrate_carriers(source: &str, options: ParseOptions) -> Cow<'_, str> {
     let mut changes = carrier_migrations(source, options);
     if changes.is_empty() {
@@ -149,10 +158,15 @@ pub(crate) fn migrate_carriers(source: &str, options: ParseOptions) -> Cow<'_, s
     for change in &changes {
         out = apply(&out, change);
     }
+    if !structure_preserved(source, &out, options) {
+        return Cow::Borrowed(source);
+    }
     Cow::Owned(out)
 }
 
-/// Every carrier respelling `source` needs, in source order.
+/// Every carrier respelling `source` needs, in source order. These are
+/// *candidates*: [`migrate_carriers`] applies them only as a set, and only if
+/// that set clears the structure gate.
 pub(crate) fn carrier_migrations(source: &str, options: ParseOptions) -> Vec<Change> {
     // Parsing is the expensive part and the overwhelming majority of ABC files
     // contain no carrier at all; every long spelling contains this substring.
@@ -187,7 +201,12 @@ fn carrier_compaction(source: &str, document: &croma_core::AbcDocument, out: &mu
                     continue;
                 };
                 let span = inline.value.span;
-                let before = source.get(span.start..span.end).unwrap_or("");
+                // A span that does not address `source` (never expected — it
+                // came from parsing this very string) must not become an empty
+                // `before`, whose `apply` would delete the file's prefix.
+                let Some(before) = source.get(span.start..span.end) else {
+                    continue;
+                };
                 if before == after {
                     continue;
                 }
