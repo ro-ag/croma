@@ -1,6 +1,6 @@
 //! Compact carrier spelling (`[I:cr <code> …]`) expansion tests.
 
-use super::expand_compact_carrier;
+use super::{compact_code_for_long, expand_compact_carrier};
 
 #[test]
 fn expands_direction_placement_values() {
@@ -80,4 +80,58 @@ fn rejects_everything_that_is_not_a_registered_carrier() {
     // expansion boundary that the arm stays absent, rather than through an
     // end-to-end `export_musicxml` check that would pass either way.
     assert!(expand_compact_carrier("cr ec t=s l=r n-hex=3132").is_none());
+}
+
+#[test]
+fn compact_code_for_long_disambiguates_harmony_text() {
+    // `croma-harmony-text` has two compact codes; the registry lists `htx`
+    // first, so a naive first-match lookup would always report `htx`. The
+    // textless value must report `htx`, and a value carrying real text/kind
+    // fields must report `ht`.
+    assert_eq!(
+        compact_code_for_long("croma-harmony-text textless=1"),
+        Some(("croma-harmony-text", "htx"))
+    );
+    assert_eq!(
+        compact_code_for_long(r#"croma-harmony-text text="Cmaj7""#),
+        Some(("croma-harmony-text", "ht"))
+    );
+}
+
+#[test]
+fn compact_code_for_long_covers_the_other_coded_carriers() {
+    assert_eq!(
+        compact_code_for_long("croma-direction-placement placement=above"),
+        Some(("croma-direction-placement", "dp"))
+    );
+    assert_eq!(
+        compact_code_for_long("croma-lyric-extend verse=1"),
+        Some(("croma-lyric-extend", "le"))
+    );
+    assert_eq!(
+        compact_code_for_long("croma-meter-restatement"),
+        Some(("croma-meter-restatement", "mr"))
+    );
+    assert_eq!(
+        compact_code_for_long("croma-key-restatement"),
+        Some(("croma-key-restatement", "kr"))
+    );
+    assert_eq!(
+        compact_code_for_long(r#"croma-ending-close type=stop location=right number="1""#),
+        Some(("croma-ending-close", "ec"))
+    );
+    assert_eq!(
+        compact_code_for_long("croma-musicxml-forward"),
+        Some(("croma-musicxml-forward", "mf"))
+    );
+}
+
+#[test]
+fn compact_code_for_long_ignores_uncoded_and_unrelated_carriers() {
+    // Uncoded long spellings (the other ~15 carriers) and the compact
+    // spelling itself must never be reported as a deprecated long spelling.
+    assert!(compact_code_for_long("croma-clef-cursor id=1").is_none());
+    assert!(compact_code_for_long("croma-tempo bpm=120").is_none());
+    assert!(compact_code_for_long("cr le=1").is_none());
+    assert!(compact_code_for_long("croma-lyric-extend-suffix verse=1").is_none());
 }

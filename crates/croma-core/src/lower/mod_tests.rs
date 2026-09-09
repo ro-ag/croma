@@ -4289,3 +4289,49 @@ fn writer_emits_compact_carrier_spellings() {
         "no long spelling may survive for a coded carrier; got:\n{out}"
     );
 }
+
+#[test]
+fn long_carrier_spelling_warns_once_per_kind() {
+    let abc = concat!(
+        "X:1\nM:4/4\nL:1/4\nK:C\n",
+        "[I:croma-lyric-extend verse=1]C ",
+        "[I:croma-lyric-extend verse=1]D ",
+        "[I:croma-direction-placement placement=above]!f!E F |\n",
+    );
+    let report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    let warnings: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "abc.lower.deprecated_carrier_spelling")
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "one warning per carrier KIND per document, not per occurrence: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|d| d.message.contains("croma-lyric-extend") && d.message.contains("cr le")),
+        "the warning must name both spellings: {warnings:?}"
+    );
+}
+
+#[test]
+fn compact_carrier_spelling_does_not_warn() {
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:cr le=1]C D E F |\n";
+    let report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.lower.deprecated_carrier_spelling"),
+        "the compact spelling is current and must not warn"
+    );
+}

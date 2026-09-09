@@ -185,6 +185,9 @@ struct MultiVoiceLowering {
     /// small per-voice slur ids.
     xvoice_slur_pair_ids: Vec<(u32, u32)>,
     next_xvoice_slur_pair_id: u32,
+    /// Long-form carrier names already warned about in this document — the
+    /// warning is per KIND, not per occurrence (an old export carries hundreds).
+    deprecated_carriers_seen: std::collections::BTreeSet<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +225,7 @@ impl MultiVoiceLowering {
             diagnostic_options: field_state.dialect.diagnostics,
             xvoice_slur_pair_ids: Vec::new(),
             next_xvoice_slur_pair_id: XVOICE_SLUR_PAIR_ID_BASE,
+            deprecated_carriers_seen: std::collections::BTreeSet::new(),
         };
 
         for voice in &field_state.voices {
@@ -587,6 +591,16 @@ impl MultiVoiceLowering {
                 let raw = &inline.value.value;
                 let expanded = carrier::expand_compact_carrier(raw);
                 let value = expanded.as_deref().unwrap_or(raw.as_str());
+                if expanded.is_none()
+                    && let Some((long, code)) = carrier::compact_code_for_long(value)
+                    && self.deprecated_carriers_seen.insert(long)
+                {
+                    self.diagnostics.push(deprecated_carrier_spelling_warning(
+                        inline.value.span,
+                        long,
+                        code,
+                    ));
+                }
                 if let Some(meter) = parse_initial_meter_instruction(value, inline.value.span) {
                     let state = self.current_state();
                     state.meter_duration = meter.duration;

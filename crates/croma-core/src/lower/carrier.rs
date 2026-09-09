@@ -11,12 +11,6 @@
 /// carriers are coded; the remaining 15 keep their long spelling in both
 /// directions because recoding them saves ~639 B across a 60-file corpus
 /// sample.
-///
-/// Not read by this module (the match in [`expand_compact_carrier`] spells
-/// each code out for exhaustiveness-checking); the writer side (a later
-/// task) is the first consumer, so this stays `#[allow(dead_code)]` until
-/// then rather than being removed and re-added.
-#[allow(dead_code)]
 pub(crate) const COMPACT_CARRIERS: [(&str, &str); 8] = [
     ("dp", "croma-direction-placement"),
     ("htx", "croma-harmony-text"),
@@ -69,6 +63,43 @@ pub(crate) fn expand_compact_carrier(value: &str) -> Option<String> {
         )),
         _ => None,
     }
+}
+
+/// The registry entry whose LONG name this `[I:…]` value uses, as
+/// `(long name, compact code)`. Used to warn that a coded carrier was written
+/// in its deprecated long spelling.
+///
+/// `croma-harmony-text` has two codes (`ht` and `htx`) for the same long
+/// name; a naive first match always reports `htx` because it is listed
+/// first. Report `htx` only when the value carries `textless`, and `ht`
+/// otherwise, so the suggested compact spelling matches what the value
+/// actually expands to.
+pub(crate) fn compact_code_for_long(value: &str) -> Option<(&'static str, &'static str)> {
+    let value = value.trim();
+    let (matched_code, long) = COMPACT_CARRIERS
+        .iter()
+        .copied()
+        .find(|(_, long)| matches_long_carrier(value, long))?;
+    let code = if long == "croma-harmony-text" {
+        if value.contains("textless") {
+            "htx"
+        } else {
+            "ht"
+        }
+    } else {
+        matched_code
+    };
+    Some((long, code))
+}
+
+/// Whether `value` (the full `[I:…]` payload) is an occurrence of the given
+/// long-form carrier name: the name followed by either end of string or
+/// whitespace, so `croma-harmony-text` does not falsely match some longer
+/// unrelated name that happens to share the prefix.
+fn matches_long_carrier(value: &str, long: &str) -> bool {
+    value
+        .strip_prefix(long)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
 /// `t=s l=r n="1"` -> `type=stop location=right number="1"`. The `n=` label is
