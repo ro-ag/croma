@@ -54,6 +54,12 @@ seven is still **read**, with a one-time-per-kind deprecation warning
 (`abc.lower.deprecated_carrier_spelling`), until croma 2.0; plain `croma fmt` (no flag
 needed) rewrites any long spelling it finds back to compact.
 
+A code is short by design, so `croma read --format abc --legend` and
+`croma musicxml2abc --legend` prefix the ABC with a `%`-comment legend block naming
+the codes that tune actually uses — the codes are dropped from the block when the
+tune carries none. The legend is a comment: every other ABC tool ignores it, and
+croma reads the file identically with or without it.
+
 The registry is closed — only these eight codes exist, and no other carrier gets one
 without a spec change:
 
@@ -233,8 +239,13 @@ If those forward-compatibility warnings — or the deprecated-long-spelling warn
 can use `ParseOptions::suppress_croma_carrier_warnings()` (or
 `ExportOptions::suppress_croma_carrier_warnings()`), and the CLI exposes the same
 filter as `--silence-croma-carrier-warnings`. The filter applies to private
-`croma-` carrier names and to croma-managed `%%MIDI` / `[I:MIDI]` playback
-carriers; ordinary unsupported directives still warn.
+carrier names in **both** spellings — long `croma-*`, and compact, which the
+lowerer reports as the namespace plus the attempted code (`[I:cr zz=1]` warns
+about `` `cr zz` ``, not a bare `` `cr` ``, so two unknown codes stay
+distinguishable) — and to croma-managed `%%MIDI` / `[I:MIDI]` playback
+carriers. Ordinary unsupported directives still warn, including a directive
+that merely starts with those letters (`[I:credits …]`) and a bare `[I:cr]`,
+which carries no code and is not in the namespace.
 
 ## 8. Adding a carrier (checklist)
 

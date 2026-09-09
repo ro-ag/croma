@@ -24,13 +24,19 @@ Built with `cargo build -p croma-cli --features musicxml-reader`, the reader is
 reachable from two subcommands (both `#[cfg(feature = "musicxml-reader")]`;
 absent from the default zero-dep build):
 
-- `croma read <file.musicxml> [-o out] [--format xml|abc|dump]` — read XML →
-  `Score`, print reader diagnostics to stderr, project per `--format` (default
-  `xml` = `write_musicxml`, `abc` = `write_abc`, `dump` = the `Score` debug).
-  `--format xml` is the **pure inverse** `write_musicxml(read_musicxml(xml))`
-  (used by the reverse music21 comparator, R2).
-- `croma musicxml2abc <file.musicxml> [-o out.abc]` — read XML → `Score` → ABC
-  (`= read --format abc`), the headline conversion.
+- `croma read <file.musicxml> [-o out] [--format xml|abc|dump] [--legend]` —
+  read XML → `Score`, print reader diagnostics to stderr, project per
+  `--format` (default `xml` = `write_musicxml`, `abc` = `write_abc`, `dump` =
+  the `Score` debug). `--format xml` is the **pure inverse**
+  `write_musicxml(read_musicxml(xml))` (used by the reverse music21
+  comparator, R2).
+- `croma musicxml2abc <file.musicxml> [-o out.abc] [--legend]` — read XML →
+  `Score` → ABC (`= read --format abc`), the headline conversion.
+
+`--legend` prefixes the ABC output with a `%`-comment block explaining the
+compact croma carrier codes (`[I:cr le=1]`, …) it actually emitted — nothing is
+listed for a tune that carries none, and the flag is a no-op for the non-ABC
+projections. See [`carriers.md`](carriers.md).
 
 The croma-cli feature `musicxml-reader = ["croma-core/musicxml-reader"]` pulls
 `roxmltree` only when enabled; the default `cargo build -p croma-cli` stays

@@ -1,6 +1,7 @@
 //! Compact carrier spelling (`[I:cr <code> …]`) expansion tests.
 
-use super::{compact_code_for_long, expand_compact_carrier};
+use super::{compact_code_for_long, expand_compact_carrier, unknown_directive_name};
+use crate::options::is_croma_carrier_name;
 
 #[test]
 fn expands_direction_placement_values() {
@@ -134,4 +135,36 @@ fn compact_code_for_long_ignores_uncoded_and_unrelated_carriers() {
     assert!(compact_code_for_long("croma-tempo bpm=120").is_none());
     assert!(compact_code_for_long("cr le=1").is_none());
     assert!(compact_code_for_long("croma-lyric-extend-suffix verse=1").is_none());
+}
+
+#[test]
+fn unknown_directive_name_keeps_the_compact_code() {
+    // The reported name for an unrecognised `[I:…]` is its directive token,
+    // except in the compact namespace, where the code is kept so two unknown
+    // carriers are not both reported as `cr`.
+    assert_eq!(unknown_directive_name("cr zz"), "cr zz");
+    assert_eq!(unknown_directive_name("cr zz=1"), "cr zz");
+    assert_eq!(unknown_directive_name("cr dp=x more=1"), "cr dp");
+    assert_eq!(unknown_directive_name("CR zz"), "CR zz");
+    // No code to keep, and directives that merely share the letters: unchanged.
+    assert_eq!(unknown_directive_name("cr"), "cr");
+    assert_eq!(unknown_directive_name("credits x=1"), "credits");
+    assert_eq!(unknown_directive_name("tuplets 3"), "tuplets");
+    assert_eq!(unknown_directive_name("croma-future a=1"), "croma-future");
+    assert_eq!(unknown_directive_name(""), "");
+}
+
+#[test]
+fn reported_compact_names_are_recognised_as_croma_carriers() {
+    // `unknown_directive_name` and `is_croma_carrier_name` must agree, or an
+    // unknown compact carrier warns unsuppressibly. This is the join between
+    // them.
+    assert!(is_croma_carrier_name(&unknown_directive_name("cr zz=1")));
+    assert!(is_croma_carrier_name(&unknown_directive_name(
+        "croma-future"
+    )));
+    assert!(!is_croma_carrier_name(&unknown_directive_name(
+        "credits x=1"
+    )));
+    assert!(!is_croma_carrier_name(&unknown_directive_name("cr")));
 }

@@ -729,19 +729,13 @@ impl MultiVoiceLowering {
                 // abcm2ps `[I:setbarnb ...]`, `[I:tuplets ...]`) that do not
                 // change how music lowers; abc2xml skips them too. Dropped,
                 // but with a diagnostic — mirroring the header-line `I:` path.
-                let directive = inline
-                    .value
-                    .value
-                    .split_whitespace()
-                    .next()
-                    .and_then(|name| name.split('=').next())
-                    .unwrap_or_default();
+                let directive = carrier::unknown_directive_name(&inline.value.value);
                 if self
                     .diagnostic_options
-                    .should_emit_croma_carrier_warning(directive)
+                    .should_emit_croma_carrier_warning(&directive)
                 {
                     self.diagnostics
-                        .push(inline_instruction_ignored_warning(directive, inline.span));
+                        .push(inline_instruction_ignored_warning(&directive, inline.span));
                 }
             }
             // Any other inline field (`[w:]`, `[r:]`, `[N:]`, `[s:]`, `[U:]`,

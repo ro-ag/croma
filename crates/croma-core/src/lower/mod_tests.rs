@@ -4375,3 +4375,82 @@ fn long_carrier_spelling_warning_respects_suppression() {
         suppressed_report.diagnostics
     );
 }
+
+#[test]
+fn unknown_compact_carrier_warns_by_its_code_and_can_be_suppressed() {
+    // An `[I:cr <code>]` whose code is not in the registry falls through to
+    // the unknown-instruction tail. Two things must hold there, and neither
+    // did while the tail reported only the payload's first word (`cr`): the
+    // warning must NAME the attempted code, so two unknown carriers are
+    // distinguishable in the output, and it must be silenceable by
+    // `suppress_croma_carrier_warnings()` exactly like an unknown
+    // `[I:croma-*]` — the compact spelling is the same private namespace.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:cr zz=1]C [I:cr qq]D E F |\n";
+
+    let default_report = crate::lower_score(
+        &crate::parse_document(abc, crate::ParseOptions::default()).value,
+        crate::LowerOptions,
+    );
+    let ignored: Vec<&str> = default_report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "abc.field.inline_ignored")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ignored.iter().any(|message| message.contains("`cr zz`")),
+        "the warning must name the attempted code, not the bare namespace: {ignored:?}"
+    );
+    assert!(
+        ignored.iter().any(|message| message.contains("`cr qq`")),
+        "distinct unknown compact carriers must be distinguishable: {ignored:?}"
+    );
+
+    let suppressed_report = crate::lower_score(
+        &crate::parse_document(
+            abc,
+            crate::ParseOptions::default().suppress_croma_carrier_warnings(),
+        )
+        .value,
+        crate::LowerOptions,
+    );
+    assert!(
+        !suppressed_report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "abc.field.inline_ignored"),
+        "suppress_croma_carrier_warnings() must silence unknown compact carriers: {:?}",
+        suppressed_report.diagnostics
+    );
+}
+
+#[test]
+fn foreign_inline_instruction_warning_is_unchanged_by_the_compact_namespace() {
+    // The compact-namespace exception is scoped to the `cr` WORD: a foreign
+    // directive that merely starts with those letters, and a bare `[I:cr]`
+    // with no code, keep the old behaviour — reported by their first word and
+    // NOT silenceable, because they are not croma's.
+    let abc = "X:1\nM:4/4\nL:1/4\nK:C\n[I:credits x=1]C [I:cr]D E F |\n";
+    let report = crate::lower_score(
+        &crate::parse_document(
+            abc,
+            crate::ParseOptions::default().suppress_croma_carrier_warnings(),
+        )
+        .value,
+        crate::LowerOptions,
+    );
+    let ignored: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "abc.field.inline_ignored")
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ignored.iter().any(|message| message.contains("`credits`")),
+        "a foreign directive sharing the `cr` letters must still warn: {ignored:?}"
+    );
+    assert!(
+        ignored.iter().any(|message| message.contains("`cr`")),
+        "a bare `[I:cr]` carries no code and stays a foreign directive: {ignored:?}"
+    );
+}

@@ -30,10 +30,29 @@ impl DiagnosticOptions {
     }
 }
 
+/// Whether `name` is in croma's private carrier namespace, in either spelling:
+/// the long `croma-<name>` prefix, or the compact `cr <code>` pair the lowerer
+/// reports for an unrecognised compact carrier (see
+/// `crate::lower::carrier::unknown_directive_name`).
+///
+/// The two are matched differently on purpose. `croma-` is a *prefix* of one
+/// word, so a leading-slice test is exactly right. `cr` is a whole word: a
+/// leading-slice test would swallow `credits` and every other directive
+/// starting with those two letters, so the compact form is recognised only as
+/// the namespace word followed by a code.
 pub fn is_croma_carrier_name(name: &str) -> bool {
-    name.trim_start()
-        .get(.."croma-".len())
+    let name = name.trim_start();
+    name.get(.."croma-".len())
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("croma-"))
+        || is_compact_croma_carrier_name(name)
+}
+
+fn is_compact_croma_carrier_name(name: &str) -> bool {
+    name.split_once(char::is_whitespace)
+        .is_some_and(|(head, code)| {
+            head.eq_ignore_ascii_case(crate::lower::carrier::COMPACT_NAMESPACE)
+                && !code.trim().is_empty()
+        })
 }
 
 fn is_croma_managed_midi_name(name: &str) -> bool {

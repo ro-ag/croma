@@ -7,6 +7,10 @@
 //! existing `parse_*_instruction` functions already understand, so there is one
 //! parser per carrier and the two spellings cannot drift apart.
 
+/// The word that opens a compact carrier payload: `[I:cr <code> …]`. It is a
+/// whole word, not a prefix — `crx dp=a` is a foreign directive, not a carrier.
+pub(crate) const COMPACT_NAMESPACE: &str = "cr";
+
 /// The closed registry: (compact code, long-form name). Only the frequent
 /// carriers are coded; the remaining 15 keep their long spelling in both
 /// directions because recoding them saves ~639 B across a 60-file corpus
@@ -28,7 +32,7 @@ pub(crate) const COMPACT_CARRIERS: [(&str, &str); 8] = [
 /// through to the long-form parsers and then to the unknown-instruction path,
 /// which is what keeps a foreign `[I:cr …]` from being read as croma state.
 pub(crate) fn expand_compact_carrier(value: &str) -> Option<String> {
-    let rest = value.trim().strip_prefix("cr")?;
+    let rest = value.trim().strip_prefix(COMPACT_NAMESPACE)?;
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
@@ -63,6 +67,34 @@ pub(crate) fn expand_compact_carrier(value: &str) -> Option<String> {
         )),
         _ => None,
     }
+}
+
+/// The name to report — and to test for warning suppression — for an `[I:…]`
+/// no parser claimed: the first whitespace/`=`-delimited word of the payload.
+///
+/// The compact namespace is the one exception. Its payload is `cr <code>`, so
+/// the first word is the bare `cr`, and reporting that would be wrong twice
+/// over: every unknown compact carrier would be named identically in the
+/// output, and none of them could be silenced, because suppression keys off
+/// this same name and `cr` is not a `croma-` prefix. Keeping the code
+/// (`cr le`) names the attempted carrier and puts it inside the namespace
+/// [`crate::options::is_croma_carrier_name`] recognises. A bare `[I:cr]` has no
+/// code to keep, so it stays a foreign directive, as it was before.
+pub(crate) fn unknown_directive_name(value: &str) -> String {
+    let mut words = value.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    if first.eq_ignore_ascii_case(COMPACT_NAMESPACE)
+        && let Some(code) = words.next()
+    {
+        let code = directive_token(code);
+        return format!("{first} {code}");
+    }
+    directive_token(first).to_owned()
+}
+
+/// A directive token is the word up to its `=`: `le=1` names `le`, not `le=1`.
+fn directive_token(word: &str) -> &str {
+    word.split('=').next().unwrap_or_default()
 }
 
 /// The registry entry whose LONG name this `[I:…]` value uses, as
