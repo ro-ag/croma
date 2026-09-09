@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-08
+
 ### Changed
 
 - Round-trip carriers for the seven frequent kinds now use a compact spelling
   (`[I:cr dp=a]` instead of `[I:croma-direction-placement placement=above]`),
-  cutting exported ABC by ~14.5%. The long spelling is still read — with a
+  cutting exported ABC by ~14% (measured 14.3% over a 60-file MusicXML corpus sample). The long spelling is still read — with a
   deprecation warning — until 2.0, and `croma fmt` migrates it automatically.
   An unrecognised compact carrier is reported by the code it attempted
   (`cr zz`, not a bare `cr`) and is silenced by
@@ -21,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `croma read --legend` / `croma musicxml2abc --legend` prefix the ABC output
-  with a comment block explaining the carrier codes it uses.
+  with a comment block explaining the carrier codes it uses. ([#269])
+
+[#269]: https://github.com/ro-ag/croma/pull/269
 
 ## [1.2.1] - 2026-07-31
 
@@ -280,5 +284,6 @@ crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
   writer, reader, formatter, corpus throughput, and LSP latency, with a committed
   reference report in [`docs/benchmarks.md`](docs/benchmarks.md).
 
-[Unreleased]: https://github.com/ro-ag/croma/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ro-ag/croma/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ro-ag/croma/compare/v1.2.1...v1.3.0
 [0.9.0]: https://github.com/ro-ag/croma/releases/tag/v0.9.0
