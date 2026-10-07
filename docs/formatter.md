@@ -68,7 +68,7 @@ own gate machinery (`verify::pitch_seq_of` / `musicxml_of`). It is skipped by a
 normal `cargo test` (no corpus) and runs in ~20 s when pointed at the corpus:
 
 ```sh
-ABC_ROOT=$PWD/docs/untracked/corpus/zenodo-10k/abc \
+ABC_ROOT=$PWD/croma-test/docs/untracked/corpus/zenodo-10k/abc \
   cargo test -p croma-fmt --release corpus_proof -- --nocapture
 # corpus formatter proof: 10000 files, 0 violations
 ```
@@ -153,8 +153,8 @@ not lossless and there is no render gate to catch a mistake):
 - **Relocation / reordering** of directives — per-voice scoping makes a
   directive's position relative to `V:`/`K:` lines load-bearing.
 - **Score translation** of `%%MIDI program`/`channel`/`transpose` into
-  `<midi-instrument>`/`<transpose>` — a separate parser/exporter epic, still
-  deferred.
+  `<midi-instrument>`/`<transpose>` — that is the exporter's job (see
+  [`midi-directives.md`](midi-directives.md)), not the formatter's.
 
 ## Layout
 

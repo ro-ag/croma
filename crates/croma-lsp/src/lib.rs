@@ -1,7 +1,7 @@
 //! croma's language-server support, split into a **transport-free analysis
 //! layer** (this library) and a thin `lsp-server` shell (the `croma-lsp`
-//! binary), per the LSP promotion spec
-//! (`docs/superpowers/specs/2026-06-17-lsp-promotion.md`).
+//! binary); the design decisions live in the private croma-test repo under
+//! `specs/`.
 //!
 //! The library exposes pure, synchronous, panic-free functions that map source
 //! text to LSP payloads — currently [`diagnostics::diagnostics`] plus the
@@ -12,7 +12,7 @@
 //! `corpus_proof`.
 //!
 //! The LSP never diverges from the core: it adapts `croma-core`'s diagnostics
-//! and spans, it never reparses (spec decision 5). Any LSP-vs-core mismatch is a
+//! and spans, it never reparses, by design. Any LSP-vs-core mismatch is a
 //! bug in this adapter, not a new spec.
 //!
 //! The one diagnostic of its own is [`containment::internal_error_diagnostic`],

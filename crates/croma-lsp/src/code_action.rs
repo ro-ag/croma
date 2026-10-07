@@ -1,13 +1,13 @@
 //! `textDocument/codeAction`: a single "fix all" action wrapping
 //! [`croma_fmt::auto_fix`].
 //!
-//! Per the promotion spec (decision 3, "codeAction = whole-document replace"),
-//! `auto_fix` **formats first**, so its [`Change`](croma_fmt::Change) spans refer
-//! to the *formatted* source, not the client's buffer — mapping them back is
-//! fragile. Instead the code action is a **single [`TextEdit`] replacing the
-//! whole document** with `auto_fix(src).output`, of kind
-//! [`CodeActionKind::SOURCE_FIX_ALL`]. This is exact and matches the proven core
-//! byte-for-byte (the same shape as `textDocument/formatting`).
+//! By design the code action is a whole-document replace. `auto_fix` **formats
+//! first**, so its [`Change`](croma_fmt::Change) spans refer to the *formatted*
+//! source, not the client's buffer — mapping them back is fragile. Instead the
+//! code action is a **single [`TextEdit`] replacing the whole document** with
+//! `auto_fix(src).output`, of kind [`CodeActionKind::SOURCE_FIX_ALL`]. This is
+//! exact and matches the proven core byte-for-byte (the same shape as
+//! `textDocument/formatting`).
 //!
 //! The action is offered **only when `auto_fix` actually changed something**
 //! (`!changes.is_empty()`); a clean document yields an empty list. The title

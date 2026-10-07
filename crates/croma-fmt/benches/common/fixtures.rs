@@ -8,7 +8,7 @@
 //!
 //! Each fixture is valid ABC (parses + formats + auto-fixes cleanly). Size is the
 //! body-line count after a fixed 7-line header; adapted from `croma-lsp`'s proven
-//! `synthetic_abc_200()` generator (a representative cycle of notes, chords,
+//! `synthetic_abc` generator (a representative cycle of notes, chords,
 //! grace groups, decorations, tuplets, chord symbols, barlines, and
 //! accidentals).
 

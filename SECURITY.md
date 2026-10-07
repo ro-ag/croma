@@ -2,12 +2,13 @@
 
 ## Supported Versions
 
-Croma is pre-1.0. Security fixes are applied to the latest released version only.
+Security fixes are applied to the latest 1.x minor release only; older 1.x
+releases do not receive fixes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.9.x   | :white_check_mark: |
-| < 0.9   | :x:                |
+| 1.3.x   | :white_check_mark: |
+| < 1.3   | :x:                |
 
 ## Reporting a Vulnerability
 

@@ -7,7 +7,7 @@
 //! `(severity, code, message, span)` onto the LSP shape. The byte `span` is
 //! mapped to an in-bounds [`lsp_types::Range`] via
 //! [`crate::position::span_to_range`]; the LSP layer never reparses or invents
-//! diagnostics of its own (decision 5 in the promotion spec).
+//! diagnostics of its own, by design.
 
 use croma_core::{Severity, SourceText};
 use lsp_types::{DiagnosticSeverity, NumberOrString};

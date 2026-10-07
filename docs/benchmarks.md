@@ -6,8 +6,8 @@ MusicXML→ABC reader, `croma-lsp`) and the `tree-sitter-abc` grammar run. croma
 *correctness* is proven elsewhere (corpus parity, LSP legs A–E, grammar
 `tree-sitter test`); this document is purely about throughput and latency.
 
-It is the citable artifact for the benchmark epic (decisions in
-[`docs/superpowers/specs/2026-06-17-benchmark-suite-decisions.md`](superpowers/specs/2026-06-17-benchmark-suite-decisions.md)).
+It is the citable artifact for the benchmark epic (the decisions live in the
+private croma-test repo under `specs/`).
 The benchmark *harnesses* are additive and behavior-preserving — they measure, they
 never change product output. The numbers below are from a single deliberate
 `--release` run on the recording machine; **criterion carries the statistics**
@@ -256,7 +256,7 @@ uv run python tools/bench_corpus_throughput.py \
 Equivalent direct invocation (from the croma repo):
 
 ```sh
-ABC_ROOT="$(pwd)/docs/untracked/corpus/zenodo-10k/abc" \
+ABC_ROOT="$(pwd)/croma-test/docs/untracked/corpus/zenodo-10k/abc" \
   cargo test -p croma-fmt --release --test corpus_throughput -- --ignored --nocapture
 ```
 

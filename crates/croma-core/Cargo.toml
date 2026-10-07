@@ -17,9 +17,9 @@ path = "src/lib.rs"
 workspace = true
 
 [features]
-# Experimental, gated MusicXML -> Score reader (inverse of the writer). Pulls in
-# the only optional dependency (roxmltree); the default build stays dep-free and
-# crates.io-publishable.
+# MusicXML -> Score reader (inverse of the writer), enabled by the CLI. Pulls in
+# the only optional dependency (roxmltree); the default library build stays
+# dep-free and crates.io-publishable.
 musicxml-reader = ["dep:roxmltree"]
 
 [dependencies]
@@ -39,7 +39,7 @@ harness = false
 name = "writer"
 harness = false
 
-# Reader bench needs the gated MusicXML reader; skipped by a plain `cargo bench`.
+# Reader bench needs the `musicxml-reader` feature; skipped by a plain `cargo bench`.
 [[bench]]
 name = "reader"
 harness = false

@@ -24,8 +24,8 @@ loose source is repaired explicitly by `croma fmt --auto-fix`.
   and MusicXML 4.0 writer. This is the foundation everything else builds on.
 - **Formatter** (`croma fmt`, `croma fmt --auto-fix`, `croma-fmt`): a canonical
   ABC pretty-printer. Formatting is idempotent and lossless; `--auto-fix`
-  additionally sanitizes loose source (multi-voice alignment, redundant/malformed
-  barlines, whitespace) into spelling the strict parser reads cleanly.
+  additionally sanitizes loose source (redundant/malformed barlines, whitespace)
+  into spelling the strict parser reads cleanly.
 - **MusicXML → ABC** (`croma read`, `croma musicxml2abc`): the reverse reader —
   inverts croma's own writer and reads foreign MusicXML dialects (abc2xml,
   MuseScore, Finale, Sibelius).
@@ -138,14 +138,14 @@ Per-capability docs live in [`docs/`](docs/): [formatter](docs/formatter.md),
 
 croma's correctness is validated against a **real-world corpus of 10,000 ABC
 files** (the [Zenodo ABC dataset](https://doi.org/10.5281/zenodo.17694747)), not
-just hand-written unit tests (though there are ~800 of those too). Every shipped
+just hand-written unit tests (though there are about 1,100 of those too). Every shipped
 capability has a corpus-scale gate that must stay green:
 
 | Capability | Gate | Result (10k corpus) |
 | --- | --- | --- |
 | ABC → MusicXML writer | structural parity vs `abc2xml` (raw comparator) | **9,390 / 9,390** adjudicated matches |
 | Formatter | idempotent **and** lossless re-formatting | **10,000 / 10,000** |
-| MusicXML → ABC reader | self-loop XML re-emission | **9,935 / 9,935** |
+| MusicXML → ABC reader | self-loop XML re-emission | **9,933 / 9,935** |
 | MusicXML → ABC reader | foreign-dialect parity vs music21 | **98.50%** |
 | `croma-lsp` | diagnostics / formatting / token fidelity vs core | **10,000 / 0** mismatches |
 | `croma-lsp` | totality (no panics, no hangs on malformed input) | **0 panics / 10,000** |

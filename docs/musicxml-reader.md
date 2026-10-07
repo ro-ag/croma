@@ -2,27 +2,26 @@
 
 The reader inverts **croma's own writer** (`crates/croma-core/src/musicxml/`).
 It is **PROMOTED** (un-gated, 2026-06-16) — like the formatter before it — on the
-evidence below (self-loop idempotence **9,935/9,935**, totality 0-panic,
-reference-dialect music21 parity **98.50%**, reader→ABC round-trip **97.9%**). It
+evidence below (self-loop idempotence **9,933/9,935**, totality 0-panic,
+reference-dialect music21 parity **98.50%**, reader→ABC round-trip **99.5%**,
+48 structural diffs). It
 **ships in the default CLI build** (`croma read` / `croma musicxml2abc`). The
 `croma-core` **library** keeps it behind the opt-in `musicxml-reader` feature so
 its default build stays **zero-dependency + crates.io-publishable**; the only
-dependency (`roxmltree`) reaches the CLI *binary*, never the library default. (The
-LSP remains gated.)
+dependency (`roxmltree`) reaches the CLI *binary*, never the library default.
 
 - Entry point: `croma_core::read_musicxml(xml: &str) -> ParseReport<Score>`
   (`#[cfg(feature = "musicxml-reader")]`).
-- Promotion bar + evidence: [`superpowers/specs/2026-06-16-musicxml-reader-promotion.md`](superpowers/specs/2026-06-16-musicxml-reader-promotion.md).
-- Design: [`superpowers/specs/2026-06-15-musicxml-reader-design.md`](superpowers/specs/2026-06-15-musicxml-reader-design.md).
+- Promotion bar, design and decision trail: the private croma-test repo (`specs/`).
 - The writer is the spec. The reader inverts croma's dialect **exactly** and
   never mirrors an abc2xml-ism; foreign dialects are read gracefully (diagnostics)
   but never mimicked into the writer.
 
-## CLI surface (R1, gated)
+## CLI surface
 
-Built with `cargo build -p croma-cli --features musicxml-reader`, the reader is
+The CLI's default features include `musicxml-reader`, so the reader is
 reachable from two subcommands (both `#[cfg(feature = "musicxml-reader")]`;
-absent from the default zero-dep build):
+absent from a `--no-default-features` build):
 
 - `croma read <file.musicxml> [-o out] [--format xml|abc|dump] [--legend]` —
   read XML → `Score`, print reader diagnostics to stderr, project per
@@ -38,9 +37,9 @@ compact croma carrier codes (`[I:cr le=1]`, …) it actually emitted — nothing
 listed for a tune that carries none, and the flag is a no-op for the non-ABC
 projections. See [`carriers.md`](carriers.md).
 
-The croma-cli feature `musicxml-reader = ["croma-core/musicxml-reader"]` pulls
-`roxmltree` only when enabled; the default `cargo build -p croma-cli` stays
-dep-free and exposes neither subcommand.
+The croma-cli feature `musicxml-reader = ["croma-core/musicxml-reader"]` (on by
+default) pulls `roxmltree`; `cargo build -p croma-cli --no-default-features`
+builds a dep-free CLI that exposes neither subcommand.
 
 ### ABC projection completion (`complete_score_for_abc`)
 
@@ -60,16 +59,19 @@ cannot perturb the write_musicxml inverse.
 **Structural round-trip evidence** (croma-test's
 `tools/prove_reader_abc_roundtrip.py`, LOCAL-ONLY: `croma xml`→X1,
 `croma read X1 --format abc`→ABC', `croma xml ABC'`
-→X2, compare the normalized musical projection X1≡X2): **9,724 / 9,933 in-scope
-round-trip structurally (97.9%)**. The remaining 209 are adjudicated below — a
+→X2, compare the normalized musical projection X1≡X2): **9,885 / 9,933 in-scope
+round-trip structurally (99.5%, 48 diffs)**. The residual diffs are a
 valid-but-different Score that the lossy XML intermediate cannot always render
-back to byte-faithful ABC.
+back to byte-faithful ABC; the adjudication below was measured at phase-62, when
+the baseline was 209 diffs.
 
 ### Reader→ABC residual (adjudicated)
 
 After five completion passes (R1 + three residual-burndown phases + phase-62 P2/P3
-fixes), the reader→ABC structural round-trip stands at **9,724 / 9,933 (97.9%)** —
-**209 structural diffs**. Each was triaged from the **actual X1-vs-X2 projection
+fixes), the reader→ABC structural round-trip stood at **9,724 / 9,933 (97.9%)** —
+**209 structural diffs** (the figures and the histogram below are the phase-62
+snapshot; later work has since reduced the baseline to 48 diffs, and the category
+counts have not been re-measured). Each was triaged from the **actual X1-vs-X2 projection
 diff** (not the original ABC source) with a *decisive* test: does any sounding note
 or rest (pitch+alter+octave+duration) get dropped or added? **207 of the 209
 preserve every sounding fact** — they are valid-but-different *structural
@@ -116,8 +118,8 @@ regressions**).
 bracketed `P:` section label now emits whole-line (`P:…`) so it survives re-parse.
 Combined: **211 → 209** structural diffs (**2 files** fixed, **0 regressions**).
 
-See [`docs/superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md`](superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md)
-for the full adjudication rationale of the remaining items.
+The full adjudication rationale of the remaining items is in the private
+croma-test repo (`specs/`).
 
 ## Verification gate
 
@@ -141,12 +143,13 @@ the next stage's work list.
 
 ## Totality
 
-`read_musicxml` is **total and non-panicking** (design §2.2 / §6). A malformed
+`read_musicxml` is **total and non-panicking** by design. A malformed
 document yields a minimal `Score` plus an error diagnostic; unknown elements are
-ignored (with an optional warning). There is no
-`unwrap`/`expect`/`panic`/`todo`/`unreachable`/`debug_assert` and no index that
-can panic anywhere in the reader module tree — **not even in debug/test builds**
-(S6e removed the last `debug_assert!`, the grace-drain invariant guard, in favour
+ignored (with an optional warning). The reader avoids `unwrap`/`panic`/`todo`/
+`unreachable`/`debug_assert` and panicking indexes; the few remaining `expect`
+calls guard invariants checked just above them. No lint enforces this — the
+corpus totality gate (below) checks that nothing panics, **not even in debug/test
+builds** (S6e removed the last `debug_assert!`, the grace-drain invariant guard, in favour
 of a graceful degrade: an orphaned before-grace run is re-bound to the most recent
 main event, or dropped with a diagnostic when there is no host — never a panic).
 Unreconstructable `Span`s use the documented sentinel `READER_SPAN`
@@ -351,7 +354,7 @@ forward/reverse loop**: a `%%MIDI program` / `program <chan> <prog>` /
   else the part name), so recovering `program` (or leaving it `None` for a
   standalone channel/volume/pan) regenerates the **identical** `<instrument-name>`
   on re-write. Storing the name would risk a second, drifting spec.
-- **Float CC stability is proven exhaustively** (design §9): a unit test asserts
+- **Float CC stability is proven exhaustively**: a unit test asserts
   `round(parse(format!("{:.2}", cc/1.27)) × 1.27) == cc` and the pan analogue for
   **every** `cc ∈ 0..=127`, so `<volume>`/`<pan>` are idempotent. The reader also
   clamps a hand-edited out-of-range float to `0..=127` with a diagnostic rather
@@ -501,9 +504,11 @@ is read in `read_note_attachments`.
   **not** emitted as `<harmony>` at all; the writer demotes it to a
   `<direction><words>`, which the S5a direction reader already round-trips (as an
   `annotation` rather than a `chord_symbol` — a valid-but-different `Score` that
-  re-writes identically, which the gate accepts by design §9). A `<kind>` lacking a
-  `text` attribute is not croma's output and has no recoverable ABC source, so it is
-  skipped with a diagnostic rather than inventing a spelling from the kind value.
+  re-writes identically, which the gate accepts by design). A `<kind>` lacking a
+  `text` attribute is foreign functional harmony (as abc2xml/music21 emit): the
+  reader synthesises an ABC chord symbol from the `<root>`/`<kind>`/`<bass>`/
+  `<degree>` tree, and skips with a diagnostic only a kind it cannot model that
+  carries no usable text content.
   **No remaining harmony shapes** — `harmony` is fully cleared from the corpus
   first-divergence histogram.
 - **Lyrics.** Each `<lyric number=N>` → `verse = N`. The writer's syllabic state
@@ -666,7 +671,7 @@ divergences are unrelated single-voice issues — see the metric below).
   representation and would need all of that re-implemented. (ABC `&` overlays and
   `%%staves`-grouped body voices both lower to the overlay form on the *forward*
   side; the reader's extra-voices form is a valid-but-different `Score` that
-  re-writes identically, accepted by the gate per design §9.)
+  re-writes identically, accepted by the gate by design.)
 - **Per-voice partition (`read_measure`).** The writer emits each voice's notes
   contiguously, so the reader walks the measure once and routes every `<note>`
   (and the `<direction>`/`<harmony>`/mid-tune `<attributes>` emitted just before
@@ -704,10 +709,10 @@ divergences are unrelated single-voice issues — see the metric below).
   silently. The expanded bars of the run stay individual measures (the second bar
   is an ordinary `<rest measure="yes">`); only the first carries the glyph count.
 
-#### Unsupported residual (documented per design "stop where coverage flattens")
+#### Unsupported residual (documented under the design rule "stop where coverage flattens")
 
-**Final state (after phase-62): the corpus idempotent count is `9,935 / 9,935` —
-zero residual.** (S6d reached `9,912 / 9,935`; S6e's clean ordering fix added
+**State after phase-62: the corpus idempotent count was `9,935 / 9,935` —
+zero residual (the current baseline is `9,933 / 9,935`).** (S6d reached `9,912 / 9,935`; S6e's clean ordering fix added
 **+3 with 0 regressions**; R3 closed the 19-file demoted-chord-symbol ordering
 residual with 0 regressions; **phase-62 P2 closed the 1 remaining nested-tuplet
 residual** — see the phase-62 section below. All verified by corpus set-diff of the
@@ -905,14 +910,14 @@ idempotent: 9,935 / 9,935**.
   allowing the outer level to be reconstructed as `7:8` and the inner as `3:2 =
   (21/16) ÷ (7/8)` by division. The writer then re-emits `<type>eighth` (not
   `quarter`). A **corpus set-diff of the strictly-idempotent file set confirms 0
-  regressions, 1 new win**. The self-loop is now **fully idempotent — 9,935 /
-  9,935, zero residual**.
+  regressions, 1 new win**. At phase-62 the self-loop was **fully idempotent — 9,935 /
+  9,935, zero residual** (the current baseline is 9,933 / 9,935).
 
 Re-run the measurement with (note: pass an **absolute** `ABC_ROOT` — the test
 runs with the crate dir as its working directory):
 
 ```sh
-ABC_ROOT=/abs/path/to/docs/untracked/corpus/zenodo-10k/abc \
+ABC_ROOT=$PWD/croma-test/docs/untracked/corpus/zenodo-10k/abc \
   cargo test -p croma-core --release --features musicxml-reader \
   corpus_idempotence_measurement -- --nocapture
 ```
@@ -924,8 +929,8 @@ strictly-idempotent file names; two runs (baseline vs a change) can then be
 ## Phase-62 closeout (deferred items)
 
 Phase-62 resolved the three deferred items from the promotion and closed two
-reader→ABC structural diffs. Full adjudication rationale:
-[`docs/superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md`](superpowers/specs/2026-06-16-musicxml-reader-deferred-decisions.md).
+reader→ABC structural diffs. The full adjudication rationale is in the private
+croma-test repo (`specs/`).
 
 ### P2 — nested-tuplet inverse (reader-only, self-loop)
 
@@ -1014,7 +1019,7 @@ foreign-input robustness edge.
 0 corpus files use pedal directives. Writer-can't-express; left unread with a
 diagnostic. No sounding loss.
 
-### Summary gate numbers (phase-62 final)
+### Summary gate numbers (phase-62 final; the current baseline is 9,933 / 9,935 self-loop and 48 reader→ABC diffs)
 
 | Gate | Value |
 |---|---|

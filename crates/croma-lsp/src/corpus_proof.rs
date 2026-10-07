@@ -9,11 +9,13 @@
 //! fatal, and the gate asserts **0 panics**.
 //!
 //! It runs **in-process**, reusing the crate's own [`diagnostics`] and
-//! [`DocumentStore`], so the full sweep takes seconds rather than 10k subprocess
-//! spawns — mirroring `croma-fmt`'s `corpus_proof`. Env-gated on `ABC_ROOT`:
+//! [`DocumentStore`], so the full sweep takes seconds rather than 10k
+//! subprocess spawns — mirroring `croma-fmt`'s `corpus_proof`. Env-gated on
+//! `ABC_ROOT` (the corpus lives in the private croma-test repo; the path must
+//! be absolute):
 //!
 //! ```sh
-//! ABC_ROOT=docs/untracked/corpus/zenodo-10k/abc \
+//! ABC_ROOT=$PWD/croma-test/docs/untracked/corpus/zenodo-10k/abc \
 //!   cargo test -p croma-lsp --release -- --nocapture
 //! ```
 //!

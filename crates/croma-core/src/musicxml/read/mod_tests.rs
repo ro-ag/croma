@@ -1,6 +1,6 @@
-//! Stage-S1 reader tests.
+//! Reader tests.
 //!
-//! Two layers, mirroring the design's verification plan:
+//! Two layers:
 //!
 //! 1. **Per-element unit tests** (hard asserts): each TDD'd against one element
 //!    class, asserting BOTH the XML re-emission idempotence
@@ -8965,7 +8965,7 @@ fn corpus_abc_reemission_through_xml() {
 // in `metadata.directives`, and that `write_abc` emits the expected line.
 //
 // Self-loop-neutral: croma's own writer never emits `<part-group>`, so the
-// synthesis fires only on foreign XML and the self-loop 9935/9935 is
+// synthesis fires only on foreign XML and the self-loop 9933/9935 is
 // unchanged by construction.
 
 /// Minimal part XML: one measure, one C quarter note, at `<divisions>4</divisions>`.

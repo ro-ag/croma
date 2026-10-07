@@ -70,14 +70,14 @@ asserts it).
 ## Promotion evidence
 
 The five promotion-bar legs — analogous to the formatter's `10000/0` and the
-reader's `9935/9935` — are proven by an `ABC_ROOT`-gated, in-process harness
+reader's `9933/9935` — are proven by an `ABC_ROOT`-gated, in-process harness
 (`crates/croma-lsp/src/corpus_proof.rs`, mirroring the formatter's
 `corpus_proof.rs`) plus an in-memory `Connection` transport test, and reported by
 croma-test's black-box wrappers `tools/prove_lsp_totality.py` /
 `tools/prove_lsp_fidelity.py`:
 
 ```sh
-ABC_ROOT="$PWD/docs/untracked/corpus/zenodo-10k/abc" \
+ABC_ROOT="$PWD/croma-test/docs/untracked/corpus/zenodo-10k/abc" \
   cargo test -p croma-lsp --release -- --nocapture
 ```
 
@@ -93,9 +93,10 @@ A `>= 9000` file-count guard rejects a vacuous run (mis-set `ABC_ROOT`). The
 harness uses an **absolute** `ABC_ROOT` because `cargo test`'s cwd is the package
 directory.
 
-There is **no `unwrap`/`expect`/`panic!`/index-panic/`debug_assert!` in the
-non-test LSP source**; the workspace `unwrap_used` lint (denied under CI's
-`-D warnings`) enforces it, and the totality leg proves it dynamically.
+The non-test LSP source avoids `unwrap`/`expect`/`panic!`/panicking indexes and
+`debug_assert!`. The workspace `unwrap_used` lint (an error under CI's
+`-D warnings`) catches `unwrap`; nothing lints the others, so the totality leg
+checks them dynamically.
 
 ## Semantic-token legend
 

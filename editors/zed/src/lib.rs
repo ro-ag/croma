@@ -6,8 +6,8 @@
 //!
 //! 1. `worktree.which("croma-lsp")` — works today via
 //!    `cargo install --path crates/croma-lsp`.
-//! 2. A GitHub release auto-download for the current platform (lights up once
-//!    the release epic cuts binaries).
+//! 2. A GitHub release auto-download of the `croma-lsp` binary for the current
+//!    platform.
 //! 3. Otherwise a clear error pointing at `cargo install`.
 //!
 //! The platform → release-asset-name mapping is factored into the pure
@@ -17,7 +17,7 @@
 use zed_extension_api::{Architecture, Os};
 
 /// Name of the language server binary, as installed by
-/// `cargo install --path crates/croma-lsp` and (eventually) shipped in releases.
+/// `cargo install --path crates/croma-lsp` and shipped in GitHub releases.
 const LSP_BINARY: &str = "croma-lsp";
 
 /// Maps a target platform to the expected `croma-lsp` release-asset file name.
@@ -107,19 +107,18 @@ mod wasm_ext {
             }
 
             // 2) Otherwise try a GitHub release auto-download for this platform.
-            //    Functional once the release epic (C) publishes binaries; until
-            //    then `latest_github_release` simply errors and we fall through.
+            //    GitHub releases carry `croma-lsp` binaries; if the lookup or
+            //    download fails we fall through to the error below.
             if let Ok(command) = download_from_release(worktree) {
                 return Ok(command);
             }
 
             // 3) No server available — actionable error.
             Err(format!(
-                "`{LSP_BINARY}` not found. Install it with \
-                 `cargo install --path crates/croma-lsp` (from a croma checkout), \
-                 or `cargo install croma-lsp` once it is published to crates.io. \
-                 Automatic download from GitHub releases will work once \
-                 release binaries are published."
+                "`{LSP_BINARY}` is not on PATH and the GitHub release download \
+                 failed. Install it with `cargo install croma-lsp`, or put the \
+                 binary for your platform from \
+                 https://github.com/ro-ag/croma/releases on your PATH."
             ))
         }
     }

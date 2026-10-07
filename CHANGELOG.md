@@ -253,7 +253,7 @@ Releases.
 - A comprehensive README (capabilities, the 10k-corpus proof results, a benchmark
   baseline, and an `abc2xml` comparison) and a `CONTRIBUTING` guide.
 
-## [0.9.0] - 2026-06-17
+## 0.9.0 - 2026-06-17 (internal milestone, never tagged)
 
 First public, crates.io-ready release of the Croma toolkit. All four workspace
 crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
@@ -286,4 +286,7 @@ crates (`croma-core`, `croma-fmt`, `croma-cli`, `croma-lsp`) ship in lockstep at
 
 [Unreleased]: https://github.com/ro-ag/croma/compare/v1.3.0...HEAD
 [1.3.0]: https://github.com/ro-ag/croma/compare/v1.2.1...v1.3.0
-[0.9.0]: https://github.com/ro-ag/croma/releases/tag/v0.9.0
+[1.1.0]: https://github.com/ro-ag/croma/compare/v1.0.2...v1.1.0
+[1.0.2]: https://github.com/ro-ag/croma/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/ro-ag/croma/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/ro-ag/croma/releases/tag/v1.0.0

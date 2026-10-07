@@ -1,8 +1,7 @@
 //! Static documentation tables for hover and completion, sourced from the ABC
 //! 2.1 standard and **grounded in what `croma-core` actually recognises** — not
-//! invented. Per the promotion spec (decision 4, "hover/completion are static
-//! tables"), these are pure presentation over the core's existing taxonomy: no
-//! new spec, no core change.
+//! invented. By design (static tables), these are pure presentation over the
+//! core's existing taxonomy: no new spec, no core change.
 //!
 //! Two tables:
 //!

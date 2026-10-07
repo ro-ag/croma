@@ -21,8 +21,8 @@ one editor.
    cargo install --path crates/croma-lsp     # → ~/.cargo/bin/croma-lsp
    ```
 
-   (Once croma cuts binary releases the Zed extension downloads `croma-lsp`
-   automatically; until then, the `cargo install` above is the path.)
+   (If `croma-lsp` is not on your `PATH`, the Zed extension downloads the
+   binary for your platform from the GitHub release automatically.)
 
 2. Dev-install the extension: in Zed, run **`zed: install dev extension`** and
    select [`editors/zed/`](../editors/zed/README.md). Open any `.abc` file —
@@ -71,9 +71,8 @@ and buys none of this reuse.
 ## Binary distribution
 
 The Zed extension resolves `croma-lsp` **download-or-PATH**: PATH (`cargo install`)
-first, then GitHub-release auto-download per platform (lights up once the release
-epic publishes binaries), else a clear error. So the extension works today and
-gains zero-config install later without a code change.
+first, then GitHub-release auto-download per platform (GitHub Releases carry
+`croma-lsp` binaries for five platforms), else a clear error.
 
 ## Building the pieces
 

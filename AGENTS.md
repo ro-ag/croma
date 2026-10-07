@@ -59,7 +59,7 @@ any host. Never hardcode an absolute toolchain path.
   - **Formatter** (`croma fmt` / `--auto-fix`): canonical ABC pretty-printer,
     idempotent + lossless over the 10k corpus — [`docs/formatter.md`](docs/formatter.md).
   - **MusicXML→ABC reader** (`croma read` / `croma musicxml2abc`): inverts croma's
-    own writer (self-loop 9935/9935) and reads foreign MusicXML (abc2xml/MuseScore/
+    own writer (self-loop 9933/9935) and reads foreign MusicXML (abc2xml/MuseScore/
     Finale/Sibelius) at 98.50% music21 parity — [`docs/musicxml-reader.md`](docs/musicxml-reader.md).
   - **LSP** (`croma-lsp`): a thin stdio adapter over the core/formatter —
     diagnostics + formatting byte-identical to the core, ~1 ms latency —

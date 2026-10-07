@@ -9,7 +9,7 @@ separate, private [croma-test](https://github.com/ro-ag/croma-test) repository.
 - [formatter.md](formatter.md) — `croma fmt` / `--auto-fix`: canonical ABC
   pretty-printer, idempotent + lossless over the 10k corpus.
 - [musicxml-reader.md](musicxml-reader.md) — `croma read` / `croma musicxml2abc`:
-  MusicXML → ABC reader (self-loop 9935/9935, foreign music21 parity 98.50%).
+  MusicXML → ABC reader (self-loop 9933/9935, foreign music21 parity 98.50%).
 - [lsp.md](lsp.md) — `croma-lsp`: stdio language server, a thin adapter over the
   core/formatter.
 - [editors.md](editors.md) — the reusable `tree-sitter-abc` grammar + Zed
@@ -26,7 +26,7 @@ behavior is documented across the capability docs.
   namespace (the long `[I:croma-<name> …]` inline spelling is read until 2.0): how
   croma round-trips MusicXML facts ABC can't express while staying
   ignorable by other tools. Definition, syntax, the compact-code registry, the
-  round-trip contract, and the full 21-carrier catalogue. For an agent-facing distillation, see
+  round-trip contract, and the full 22-carrier catalogue. For an agent-facing distillation, see
   [agent.md](agent.md) / `croma agent`.
 - [midi-directives.md](midi-directives.md) — `%%MIDI` directive policy and its
   MusicXML translation.

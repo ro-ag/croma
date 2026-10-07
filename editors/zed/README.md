@@ -34,12 +34,12 @@ The extension resolves the language server with a **download-or-PATH** strategy:
    ```
 
    This installs `croma-lsp` into `~/.cargo/bin`; make sure that is on your
-   `PATH`. Once croma-lsp is published you will be able to
+   `PATH`. You can also install it from crates.io with
    `cargo install croma-lsp`.
 
-2. **Automatic GitHub-release download** — when croma cuts binary releases, the
-   extension downloads the right `croma-lsp` for your platform automatically. No
-   manual install needed. (Not yet functional — pending the release epic.)
+2. **Automatic GitHub-release download** — GitHub Releases carry `croma-lsp`
+   binaries for five platforms, and the extension downloads the right one for
+   your platform automatically. No manual install needed.
 
 3. Otherwise the extension shows a clear error pointing you back at step 1.
 

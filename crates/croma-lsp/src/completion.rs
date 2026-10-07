@@ -1,7 +1,7 @@
 //! `textDocument/completion`: offer field keys and decoration names.
 //!
-//! Per the promotion spec (decision 4, "hover/completion are static tables"),
-//! completion is pure presentation over [`crate::tables`]. It is **context-aware
+//! By design hover and completion are static tables, so completion is pure
+//! presentation over [`crate::tables`]. It is **context-aware
 //! but deliberately simple and deterministic** — robust to half-typed, mid-edit
 //! buffers (the totality gate drives it through "type as you go" keystrokes), so
 //! it works from the current line's text rather than a full structural parse:

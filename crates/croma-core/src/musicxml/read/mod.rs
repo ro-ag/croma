@@ -1,19 +1,19 @@
-//! Experimental MusicXML -> [`Score`] reader: the inverse of croma's own
-//! writer ([`super::write_score_partwise`]).
+//! MusicXML -> [`Score`] reader: the inverse of croma's own writer
+//! ([`super::write_score_partwise`]).
 //!
-//! **Status: gated + experimental** (behind `musicxml-reader`), exactly like the
-//! LSP, until it has corpus round-trip evidence comparable to the formatter's.
-//! The writer is the spec; this reader inverts *croma's* dialect only and never
-//! mirrors an abc2xml-ism (see `docs/musicxml-reader.md` and the design doc
-//! `docs/superpowers/specs/2026-06-15-musicxml-reader-design.md`).
+//! Behind the `musicxml-reader` feature, which the `croma` CLI enables. The
+//! writer is the spec; this reader inverts *croma's* dialect only and never
+//! mirrors an abc2xml-ism (see `docs/musicxml-reader.md`; the design decisions
+//! live in the private croma-test repo under `specs/`).
 //!
 //! # Totality
 //! [`read_musicxml`] is **total and non-panicking**: an unparseable document
 //! yields a minimal [`Score`] plus a diagnostic, and unknown elements are
-//! ignored (optionally with a diagnostic). There is no `unwrap`/`expect`/
-//! `panic`/`todo` and no index that can panic anywhere in this module tree.
+//! ignored (optionally with a diagnostic). Panics are not expected anywhere in
+//! this module tree (the few remaining `expect` calls guard invariants checked
+//! just above them); the corpus totality tests verify this.
 //!
-//! # Stages S1–S2 (this module)
+//! # Stages (this module)
 //! **S1:** `<score-partwise>` -> parts -> measures -> `<note>`
 //! (`<pitch>`/`<rest>`, `<duration>`/`<type>`/`<dot>`), `<backup>`/`<forward>`,
 //! plus the work-title/composer/credit metadata the writer reads back.
