@@ -6441,3 +6441,26 @@ fn additive_extension_header_meter_exports_composite_time() {
     assert!(xml.contains("<beats>2</beats>"));
     assert_eq!(count(&xml, "<beat-type>4</beat-type>"), 2);
 }
+
+#[test]
+fn divisions_conversion_does_not_overflow_for_extreme_fractions() {
+    // `numerator * 4 * divisions` can exceed u64 when both factors sit near
+    // u32::MAX; the conversion clamps to u32::MAX instead of panicking.
+    let huge = crate::model::Fraction::new(u32::MAX, 1);
+    assert_eq!(huge.to_divisions(u32::MAX), u32::MAX);
+}
+
+#[test]
+fn extreme_durations_export_without_panicking() {
+    // Thirty `>` compound a broken rhythm past any u32 ratio; a 4294967295-fold
+    // note against a 1/4294967295 one does the same with plain lengths; and a
+    // one-in-499999999 unit length overflows the divisions of a voice backup.
+    let long_broken = format!("X:1\nK:C\nA{}B\n", ">".repeat(30));
+    for source in [
+        long_broken.as_str(),
+        "X:1\nK:C\nA4294967295B/4294967295\n",
+        "X:1\nL:1/499999999\nK:C\nC2D2&E2\n",
+    ] {
+        assert!(export_musicxml(source).is_ok(), "{source:?}");
+    }
+}

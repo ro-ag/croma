@@ -1019,8 +1019,9 @@ impl Fraction {
     }
 
     pub(crate) fn to_divisions(self, divisions: u32) -> u32 {
-        let numerator = u64::from(self.numerator) * 4 * u64::from(divisions);
-        let denominator = u64::from(self.denominator);
+        // u128: `u32 * 4 * u32` can exceed u64. Results past u32 clamp.
+        let numerator = u128::from(self.numerator) * 4 * u128::from(divisions);
+        let denominator = u128::from(self.denominator.max(1));
         let value = numerator / denominator;
         u32::try_from(value.max(1)).unwrap_or(u32::MAX)
     }

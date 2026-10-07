@@ -112,8 +112,9 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn duration_to_divisions(&mut self, duration: Fraction, span: Span) -> u32 {
         let divisions = self.score.divisions.max(1);
-        let numerator = u64::from(duration.numerator) * 4 * u64::from(divisions);
-        let denominator = u64::from(duration.denominator.max(1));
+        // u128: `u32 * 4 * u32` can exceed u64. Results past u32 clamp.
+        let numerator = u128::from(duration.numerator) * 4 * u128::from(divisions);
+        let denominator = u128::from(duration.denominator.max(1));
         if numerator % denominator != 0 {
             self.diagnostics.push(non_integral_duration_warning(span));
         }
