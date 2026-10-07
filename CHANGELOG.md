@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Inputs that crashed or hung croma (found by an audit of 1.3.0) now convert
+  with a diagnostic: non-ASCII `K:` mode words
+  (`K:Cmé`), huge `Q:` beat sums, extreme note lengths and broken rhythms,
+  very fine unit lengths with voice overlays, and huge meter numerators under
+  `--engrave`. A multi-measure rest above 10,000 measures (`Z4294967295`) used
+  to hang; it is now capped with `abc.music.multirest.too_long`.
+- Duration arithmetic is exact: a length, broken rhythm or tuplet whose result
+  cannot be represented is ignored with `abc.music.duration_overflow` instead of
+  silently becoming a different ratio, and a divisions value that would
+  overflow is kept with `abc.music.divisions_overflow`.
+- `croma-lsp` no longer exits when analysis panics: the request gets a `null`
+  result, the document gets one `croma.lsp.internal_error` diagnostic, and the
+  server keeps running.
+- A bare `(5`, `(7` or `(9` tuplet in a compound meter (numerator a multiple of
+  three above three, e.g. 6/8, 9/8, 12/8, 6/4) now means "in the time of 3"
+  (ABC 2.1 §4.13); it was always 2.
+- Note decorations written just before a bar line (`!caesura!|G`, also
+  `detached-legato`, `falloff`, `doit`) reach the next note instead of being
+  dropped.
+- `--engrave` stem directions follow the clef actually written: an unknown clef
+  name such as `clef=F` prints a treble clef and now gets treble stems.
+- A hand-written `text-hex=` carrier can no longer put characters XML 1.0 cannot
+  carry into the MusicXML output.
+- Quoted field values keep backslash sequences other than `\\` and `\"` (such as
+  the ABC 2.1 §8.2 mnemonic `\'e`) instead of dropping the backslash.
+- MusicXML reader: two `<part-group>`s over the same parts and three-level
+  nesting are kept in `%%score` (`[{P1 P2}]`, `[{[P1 P2] P3} P4]`); `<lyric>`
+  numbers above 100 are dropped with `musicxml.read.lyric_number_out_of_range`
+  instead of writing thousands of empty `w:` lines.
+- `croma-lsp` hover and completion now cover every decoration the writer maps,
+  including all 26 dynamics.
+
+### Added
+
+- `%%score`/`%%staves` brackets and braces that span two or more parts are
+  written as MusicXML `<part-group>`, so grouping survives ABC → MusicXML →
+  ABC.
+- `croma_core::musicxml::DECORATION_NAMES`: every decoration name the MusicXML
+  writer maps.
+
+### Changed
+
+- Parsing and lyric alignment are linear in the number of lines; tunes with
+  thousands of `w:` lines were quadratic.
+- crates.io publishing and binary releases run only after a fmt/clippy/test
+  job passes on the tagged commit, and publishing runs only on a `v*` tag.
+- The Zed extension pins the grammar to a commit reachable from `main`.
+
+### Deprecated
+
+- `CromaError::EmptyInput`, `MissingKey` and `NoMusic` were never constructed;
+  those conditions arrive as `ParseFailed` with codes `abc.file.empty`,
+  `abc.file.missing_k` and `abc.file.no_music`. They will be removed in 2.0.
+
+### Documentation
+
+- The README and crate docs state what 1.x does and does not promise for
+  semver: the conversion entry points and option builders are stable; data
+  types may gain fields and variants in minor releases.
+- Corpus figures are restated against all 10,000 files (9,235 match abc2xml,
+  700 adjudicated, 65 without music) and the benchmark headline numbers were
+  re-measured.
+
 ## [1.3.0] - 2026-09-08
 
 ### Changed
