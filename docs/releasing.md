@@ -1,14 +1,10 @@
 # Releasing croma
 
-How croma is versioned, how the binary-release CI works, and the exact steps to
-cut a public release. This is a **runbook**: read it end-to-end before touching a
-tag or a publish command.
+How croma is versioned, how the release workflows work, and the exact steps to
+cut a release. This is a **runbook**: read it end-to-end before touching a tag.
 
-> **Status (milestone `0.9.0`, "code readiness").** The release *mechanics* —
-> crate metadata, `CHANGELOG.md`, and the binary-release CI in this document —
-> are in place and dry-run-validated. **Nothing is published and no public
-> release is cut.** `1.0.0` is reserved for the public launch. The full public
-> cut below is intentionally **deferred** and must only be run on an explicit go.
+Releases publish **only** from GitHub Actions when a `v*` tag is pushed. Never run
+`cargo publish` or `gh release create` by hand.
 
 ## Overview: lockstep versioning
 
@@ -20,9 +16,9 @@ in the root [`Cargo.toml`](../Cargo.toml):
 - `croma-cli` — the `croma` CLI binary.
 - `croma-lsp` — the stdio language server.
 
-They are released **in lockstep**: one version number moves them all. The current
-version is `0.9.0` ("code readiness"). `1.0.0` is reserved for the public launch
-(first crates.io publish + first public GitHub Release).
+They are released **in lockstep**: one version number moves them all, and every
+internal path dependency pins that same version. The released versions and their
+changes are in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## The asset-name contract
 
@@ -57,13 +53,21 @@ Notes:
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) has two
 trigger paths:
 
-- **`push` of a `v*` tag** → the `build` matrix runs on all five platforms, then
-  the `release` job (gated on `refs/tags/v*`) downloads every platform's artifacts
-  and runs `gh release create` to attach all ten binaries to that tag's **GitHub
-  Release**.
-- **`workflow_dispatch`** → the `build` matrix runs and uploads the binaries as
-  **Actions artifacts only**. The `release` job is skipped (no tag), so there is
-  **no GitHub Release and no tag** — a fully reversible dry-run.
+- **`push` of a `v*` tag** → the Linux `verify` job (fmt, clippy, workspace
+  tests, reader feature) runs first; only if it passes does the `build` matrix
+  run on all five platforms, then the `release` job (gated on `refs/tags/v*`)
+  downloads every platform's artifacts and runs `gh release create` to attach all
+  ten binaries to that tag's **GitHub Release**.
+- **`workflow_dispatch`** → `verify` and the `build` matrix run and upload the
+  binaries as **Actions artifacts only**. The `release` job is skipped (no tag),
+  so there is **no GitHub Release and no tag** — a fully reversible dry-run.
+
+[`.github/workflows/publish.yml`](../.github/workflows/publish.yml) fires on the
+same `v*` tag. It runs the same `verify` job and then publishes the crates in
+dependency order (`croma-core` → `croma-fmt` → `croma-cli` → `croma-lsp`),
+retrying while the crates.io index propagates and treating an already-published
+version as success. Both jobs only run on a `v*` tag: a manual dispatch from a
+branch publishes nothing.
 
 Runners and cross-compile:
 
@@ -116,55 +120,57 @@ You should see five artifacts — `croma-macos-arm64`, `croma-macos-x86_64`,
 containing its `croma-*` and `croma-lsp-*` binary. This proves every platform
 builds and every name matches the resolver, with **no tag and no release**.
 
-## The full public cut (`1.0.0`, DEFERRED)
+## Cutting a release
 
-> **Irreversible. Do only on an explicit go.** crates.io allows *yank*, never
-> *delete*; a pushed tag fires a public GitHub Release. Run this list only when
-> the project is committed to a public `1.0.0` launch.
+> **Irreversible once the tag is pushed.** crates.io allows *yank*, never
+> *delete*, and the tag fires a public GitHub Release. Push a tag only on an
+> explicit go for that release.
 
-1. **Bump the version.** Set `[workspace.package].version` to `1.0.0` in the root
-   `Cargo.toml`, and bump every internal path-dependency requirement to
-   `version = "1.0.0"`. Move the `CHANGELOG.md` `[Unreleased]` items under a new
-   `## [1.0.0] - <date>` heading. Land it via
-   `uv run tools/land.py <branch> -y`.
-2. **Tag the merge commit.** `git tag v1.0.0 && git push origin v1.0.0`. The
-   pushed tag fires `release.yml`, which builds the matrix and creates the GitHub
-   Release with all binaries attached.
-3. **Publish the crates, in dependency order.** Publish
-   `croma-core` → `croma-fmt` → `croma-cli` → `croma-lsp`, **waiting for each
-   crate to appear on the crates.io index before publishing the next dependent**
-   (a dependent will not resolve until its dependency is live). Requires
-   `cargo login` with a crates.io token.
+1. **Branch and bump.** On a fresh branch, set `[workspace.package].version` in
+   the root `Cargo.toml` and every internal path-dependency `version = "…"` to the
+   new version. Move the `CHANGELOG.md` `[Unreleased]` items under a new
+   `## [X.Y.Z] - <date>` heading and add its compare link at the bottom. Update
+   any version shown in `README.md` and the crate READMEs.
+2. **Run the full gate** ([below](#release-gate)), including the semver check
+   against the previous tag.
+3. **Land it** via PR and squash merge with a `chore(release): X.Y.Z` title
+   (`uv run tools/land.py <branch> -y`).
+4. **Tag the merge commit on `main` and push the tag** (only on the explicit go):
+   `git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z`.
+5. **Watch both workflows** (`gh run list --workflow publish.yml`,
+   `gh run list --workflow release.yml`) until green, then confirm crates.io shows
+   the new version for all four crates and the GitHub Release has ten binaries.
+6. **For a Zed-visible change**, open an `.abc` file on a machine with no
+   `croma-lsp` on `PATH` and confirm Zed downloads the new server binary.
 
-   ```sh
-   cargo publish -p croma-core
-   # wait for croma-core to land on the index, then:
-   cargo publish -p croma-fmt
-   cargo publish -p croma-cli
-   cargo publish -p croma-lsp
-   ```
+## Release gate
 
-   This step is **irreversible** — crates.io allows yank but never delete.
-4. **Verify auto-download end-to-end.** Install/enable the Zed extension, open an
-   `.abc` file on a machine with **no `croma-lsp` on `PATH`**, and confirm Zed
-   fetches the published `croma-lsp` binary from the GitHub Release and attaches
-   the server.
+Everything here must be green on the commit you will tag:
 
-## Pre-cut checklist
-
-Before any public cut, all of the following must be green:
-
-- **All proven gates:**
-  - `cargo test --workspace`
-  - `cargo clippy --workspace --all-targets -- -D warnings`
+- **Workspace checks** (with the pinned toolchain from `rust-toolchain.toml`
+  first on `PATH`):
   - `cargo fmt --all --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace`
+  - `cargo test -p croma-core --features musicxml-reader`
+  - `cargo clippy -p croma-core --all-targets --features musicxml-reader -- -D warnings`
   - zero-dependency guard: `cargo tree -p croma-core --edges normal | wc -l` == `1`
-  - LSP legs (diagnostics / formatting / totality / tokens / latency over 10k)
-  - fmt idempotent + lossless over the 10k-file corpus
-  - MusicXML reader self-loop + foreign parity
-  - `tree-sitter-abc` grammar corpus parse
-- **Publish set is publishable:** `cargo publish --dry-run` clean for
-  `croma-core`, `croma-fmt`, `croma-cli`, and `croma-lsp`.
+- **Corpus gates** in [croma-test](https://github.com/ro-ag/croma-test)
+  (`CROMA_DIR=$PWD ./croma-test/bootstrap.sh --with-reference`): fmt 10k lossless,
+  reader round-trip, LSP totality and fidelity, grammar coverage, and the abc2xml
+  whitelist. Compare each against its recorded baseline.
+- **Semver check** of the library crates against the previous release tag
+  (needs `cargo install cargo-semver-checks`):
+
+  ```sh
+  cargo semver-checks --baseline-rev v<previous-version> --all-features \
+    -p croma-core -p croma-fmt -p croma-lsp
+  ```
+
+  A reported break needs a decision before tagging: bump the major version, or
+  confirm it falls under the documented 1.x semver scope and note it in the
+  changelog. `croma-cli` is binary-only and is not checked.
+- **Publish set is publishable:** `cargo publish --dry-run -p <crate>` is clean
+  for all four crates.
 - **The dry-run workflow is green** with correctly-named assets (see
-  [Dry-run](#dry-run-no-public-effect)) — every `croma-lsp-*` name matches the
-  [asset-name contract](#the-asset-name-contract).
+  [Dry-run](#dry-run-no-public-effect)).
