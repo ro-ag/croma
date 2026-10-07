@@ -1,6 +1,7 @@
 //! Diagnostic and spec-reference builders for the lowering stage.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+use crate::lower::MAX_MULTI_MEASURE_REST;
 use crate::model::{BarlineKind, Fraction};
 
 pub(crate) fn invalid_tuplet_warning(span: Span) -> Diagnostic {
@@ -60,6 +61,21 @@ pub(crate) fn free_meter_multirest_warning(span: Span) -> Diagnostic {
     .with_spec_reference(abc_rest_reference())
     .with_recovery_note(RecoveryNote::new(
         "The rest count was preserved and each measure was lowered as one unit note length.",
+    ))
+}
+
+pub(crate) fn multirest_too_long_warning(span: Span, requested: u32) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.multirest.too_long",
+        format!(
+            "Multi-measure rest of {requested} measures exceeds the supported {MAX_MULTI_MEASURE_REST}; recovered as {MAX_MULTI_MEASURE_REST}"
+        ),
+        span,
+    )
+    .with_spec_reference(abc_rest_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The rest was lowered as the maximum supported number of measures.",
     ))
 }
 

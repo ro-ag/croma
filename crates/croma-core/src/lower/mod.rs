@@ -15,6 +15,12 @@ pub(crate) use crate::lower::voice::{
     lowered_timed_note, note_signature,
 };
 
+/// Upper bound on the measures one `Z<n>` multi-measure rest expands into. Each
+/// measure is lowered and written individually, so an absurd count
+/// (`Z4294967295`) would otherwise hang lowering. Ten thousand measures is far
+/// beyond any real tacet.
+pub(crate) const MAX_MULTI_MEASURE_REST: u32 = 10_000;
+
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lower::accidental::{accidental_from_field_sign, key_accidental_policy_from_model};
 use crate::lower::align::{align_lyrics, align_symbols};
@@ -764,7 +770,13 @@ impl MultiVoiceLowering {
                         .push_rest_group(rest, line.line_index, source_order);
                 }
                 MusicItem::MultiMeasureRest(rest) => {
-                    let count = rest.count.map(|count| count.value).unwrap_or(1).max(1);
+                    let requested = rest.count.map(|count| count.value).unwrap_or(1).max(1);
+                    if requested > MAX_MULTI_MEASURE_REST {
+                        self.current_state()
+                            .diagnostics
+                            .push(multirest_too_long_warning(rest.span, requested));
+                    }
+                    let count = requested.min(MAX_MULTI_MEASURE_REST);
                     let voice_meter = self.current_state().meter_duration;
                     if let Some(meter_duration) = voice_meter {
                         let source_order = self.next_source_order();

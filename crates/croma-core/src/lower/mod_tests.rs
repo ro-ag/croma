@@ -4454,3 +4454,29 @@ fn foreign_inline_instruction_warning_is_unchanged_by_the_compact_namespace() {
         "a bare `[I:cr]` carries no code and stays a foreign directive: {ignored:?}"
     );
 }
+
+#[test]
+fn multi_measure_rest_expansion_is_capped_with_a_warning() {
+    // `Z<n>` expands into n rest measures. An absurd count (Z4294967295) used
+    // to hang lowering, and with it `check`, `xml` and the LSP. The count is
+    // capped at MAX_MULTI_MEASURE_REST with a warning; the first measure
+    // carries the capped multiple-rest count.
+    let source = "X:1\nM:4/4\nL:1/4\nK:C\nZ4294967295\n";
+    let document = parse_document(source, ParseOptions::default()).value;
+    let report = parse_tune_report_from_document(&document);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "abc.music.multirest.too_long")
+    );
+    let tune = report.value.expect("expected tune");
+    let voice = &tune.score.parts[0].voices[0];
+    assert_eq!(voice.measures.len(), MAX_MULTI_MEASURE_REST as usize);
+
+    // A count at the cap is ordinary input and stays silent.
+    let source = format!("X:1\nM:4/4\nL:1/4\nK:C\nZ{MAX_MULTI_MEASURE_REST}\n");
+    let document = parse_document(&source, ParseOptions::default()).value;
+    let report = parse_tune_report_from_document(&document);
+    assert!(report.diagnostics.is_empty());
+}
