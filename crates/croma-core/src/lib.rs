@@ -128,6 +128,10 @@ pub fn export_musicxml_with_options(
 }
 
 #[cfg(test)]
+#[path = "totality_tests.rs"]
+mod totality_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
