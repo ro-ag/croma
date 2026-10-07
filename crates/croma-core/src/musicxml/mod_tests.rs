@@ -6531,3 +6531,27 @@ fn note_decorations_before_a_barline_wait_for_the_next_note() {
         );
     }
 }
+
+#[test]
+fn every_listed_decoration_name_is_mapped_by_the_writer() {
+    // DECORATION_NAMES is the public list tools (the LSP) build on, so each
+    // entry must really reach a notation, direction, hairpin or deliberate
+    // no-op rather than the unsupported-decoration warning.
+    for name in DECORATION_NAMES {
+        let source = format!("X:1\nL:1/4\nK:C\n!{name}!C D|\n");
+        let export = export_musicxml(&source).expect("score should export");
+        assert!(
+            !export
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+            "!{name}! is listed but not mapped: {:?}",
+            export.diagnostics
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    assert!(
+        DECORATION_NAMES.iter().all(|name| seen.insert(name)),
+        "duplicate name"
+    );
+}

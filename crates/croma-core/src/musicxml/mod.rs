@@ -20,6 +20,95 @@ mod note;
 pub mod read;
 mod score;
 
+/// Every decoration name (the text between `!…!`, in the spelling the parser
+/// stores, aliases included) that the MusicXML writer maps: to a notation, a
+/// dynamic or other direction, a hairpin, or a deliberate no-op (`roll`).
+/// Croma's private `croma-*`/`musicxml-*` carrier names are not listed. Tools
+/// such as the LSP build their hover and completion tables from this list.
+pub const DECORATION_NAMES: &[&str] = &[
+    // Articulations.
+    ".",
+    "staccato",
+    ">",
+    "accent",
+    "emphasis",
+    "tenuto",
+    "wedge",
+    "marcato",
+    "breath",
+    "caesura",
+    "detached-legato",
+    "falloff",
+    "doit",
+    "slide",
+    // Fermatas.
+    "fermata",
+    "invertedfermata",
+    // Ornaments.
+    "trill",
+    "mordent",
+    "lowermordent",
+    "uppermordent",
+    "pralltriller",
+    "turn",
+    "invertedturn",
+    "arpeggio",
+    "roll",
+    // Technical marks and fingerings.
+    "upbow",
+    "downbow",
+    "open",
+    "thumb",
+    "snap",
+    "+",
+    "plus",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    // Dynamics.
+    "pppppp",
+    "ppppp",
+    "pppp",
+    "ppp",
+    "pp",
+    "p",
+    "mp",
+    "mf",
+    "f",
+    "ff",
+    "fff",
+    "ffff",
+    "fffff",
+    "ffffff",
+    "sf",
+    "sfp",
+    "sfpp",
+    "fp",
+    "rf",
+    "rfz",
+    "sfz",
+    "sffz",
+    "fz",
+    "n",
+    "pf",
+    "sfzp",
+    // Navigation symbols.
+    "coda",
+    "segno",
+    // Hairpins.
+    "crescendo(",
+    "<(",
+    "crescendo)",
+    "<)",
+    "diminuendo(",
+    ">(",
+    "diminuendo)",
+    ">)",
+];
+
 pub fn write_score_partwise(score: &Score) -> ParseReport<String> {
     write_score_partwise_with_options(score, MusicXmlWriteOptions::default())
 }
