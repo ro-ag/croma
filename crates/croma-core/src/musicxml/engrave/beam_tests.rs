@@ -248,3 +248,25 @@ fn exotic_meter_falls_back_to_per_beat_breaks() {
         ["1:begin", "1:end", "1:begin", "1:end"]
     );
 }
+
+#[test]
+fn huge_meter_numerators_plan_like_any_x4_meter() {
+    // The fallback grouping and the per-beat minimums used to be sized by the
+    // meter numerator: M:268435457/4 overflowed the i32 node position and
+    // M:4294967295/4 tried to allocate ~34 GB. Only beats a note can reach
+    // matter, so a huge numerator must beam a bar exactly like 7/4 (also off the
+    // table, so on the same fallback) does.
+    let notes: Vec<_> = (0..8).map(|i| note(i * EIGHTH, EIGHTH, 1)).collect();
+    let expected = plan_text(&notes, meter(7, 4));
+    assert_eq!(plan_text(&notes, meter(268_435_457, 4)), expected);
+    assert_eq!(plan_text(&notes, meter(u32::MAX, 4)), expected);
+}
+
+#[test]
+fn engraved_export_with_huge_meter_does_not_panic() {
+    for meter_field in ["M:268435457/4", "M:4294967295/4"] {
+        let source = format!("X:1\n{meter_field}\nL:1/8\nK:C\nCDEFGABc|\n");
+        let options = crate::ExportOptions::default().engrave();
+        assert!(crate::export_musicxml_with_options(&source, options).is_ok());
+    }
+}
