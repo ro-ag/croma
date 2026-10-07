@@ -242,7 +242,9 @@ fn parse_key_mode(value: &str) -> Option<KeyMode> {
         return Some(KeyMode::Minor);
     }
 
-    let prefix = &lower[..lower.len().min(3)];
+    // `get` rather than slicing: a multi-byte letter can straddle byte 3, and
+    // such a word is no mode anyway.
+    let prefix = lower.get(..3).unwrap_or(&lower);
     match prefix {
         "maj" => Some(KeyMode::Major),
         "ion" => Some(KeyMode::Ionian),

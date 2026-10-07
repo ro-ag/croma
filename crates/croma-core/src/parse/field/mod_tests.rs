@@ -419,3 +419,20 @@ fn invalid_voice_stem_is_preserved_as_other_property_with_span() {
     assert_eq!(stem.value.value, "sideways");
     assert_eq!(report.value.source.slice(stem.span), Some("stem=sideways"));
 }
+
+#[test]
+fn key_mode_with_non_ascii_letters_is_unknown_not_a_panic() {
+    // Mode recognition looks at the first three bytes of the lowercased word.
+    // A multi-byte letter straddling that cut (`mé`, `dór`, `maé`) used to panic
+    // with "byte index is not a char boundary". Such a word is not a
+    // recognised mode, so like `K:Bass` the token is not read as a tonic.
+    for source in ["X:1\nK:Cmé\nC\n", "X:1\nK:Gdór\nC\n", "X:1\nK:Cmaé\nC\n"] {
+        let report = parse_document(source, ParseOptions::default());
+        let tune = report.value.fields.tune(0).expect("expected tune fields");
+        let key = tune.header.key.as_ref().expect("expected key");
+        assert_eq!(key.value.tonic, None, "{source:?}");
+    }
+
+    // The same word in an inline key change must not panic either.
+    let _ = parse_document("X:1\nK:C\nC[K:Cmé]D\n", ParseOptions::default());
+}
