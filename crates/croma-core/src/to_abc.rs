@@ -27,7 +27,7 @@ pub struct AbcWriteOptions {
 /// One entry per compact carrier code the writer can emit, in the order the
 /// legend lists them. Only codes that actually occur in the produced ABC are
 /// included in the emitted legend (see [`used_carrier_codes`]).
-const LEGEND_LINES: [(&str, &str); 8] = [
+pub(crate) const LEGEND_LINES: [(&str, &str); 8] = [
     (
         "dp",
         "[I:cr dp=<a|b>]                  direction placement (above/below)",

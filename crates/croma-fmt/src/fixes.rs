@@ -772,6 +772,10 @@ fn active_midi(line: &str) -> Option<(&str, &str)> {
 }
 
 #[cfg(test)]
+#[path = "fixes_tests.rs"]
+mod registry_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
