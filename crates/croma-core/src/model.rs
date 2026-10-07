@@ -925,6 +925,14 @@ pub(crate) enum LoweredEventAtomKind {
 }
 
 impl LoweredEventAtom {
+    pub(crate) fn span(&self) -> Span {
+        match self.kind {
+            LoweredEventAtomKind::Note { span, .. }
+            | LoweredEventAtomKind::Rest { span, .. }
+            | LoweredEventAtomKind::Spacer { span } => span,
+        }
+    }
+
     pub(crate) fn into_event(self, divisions: u32) -> Event {
         let duration = self.duration.to_divisions(divisions);
         match self.kind {
@@ -986,24 +994,43 @@ impl Fraction {
         }
     }
 
-    pub(crate) fn checked_mul(self, other: Self) -> Self {
-        Self::new(
-            self.numerator.saturating_mul(other.numerator),
-            self.denominator.saturating_mul(other.denominator),
+    /// The largest representable duration; what the saturating operations clamp to.
+    pub(crate) const MAX: Self = Self {
+        numerator: u32::MAX,
+        denominator: 1,
+    };
+
+    /// The exact product, or `None` when the reduced result does not fit u32/u32.
+    pub(crate) fn checked_mul(self, other: Self) -> Option<Self> {
+        Self::reduced_wide(
+            u128::from(self.numerator) * u128::from(other.numerator),
+            u128::from(self.denominator) * u128::from(other.denominator),
         )
     }
 
-    pub(crate) fn checked_mul_u32(self, value: u32) -> Self {
-        Self::new(self.numerator.saturating_mul(value), self.denominator)
+    /// The exact sum, or `None` when the reduced result does not fit u32/u32.
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        Self::reduced_wide(
+            u128::from(self.numerator) * u128::from(other.denominator)
+                + u128::from(other.numerator) * u128::from(self.denominator),
+            u128::from(self.denominator) * u128::from(other.denominator),
+        )
     }
 
-    pub(crate) fn checked_add(self, other: Self) -> Self {
-        let numerator = self
-            .numerator
-            .saturating_mul(other.denominator)
-            .saturating_add(other.numerator.saturating_mul(self.denominator));
-        let denominator = self.denominator.saturating_mul(other.denominator);
-        Self::new(numerator, denominator)
+    /// For running totals (onsets, cursors): the exact sum, or [`Fraction::MAX`]
+    /// when it does not fit. Lowering diagnoses an unrepresentable duration where
+    /// it is formed, so a total that still overflows only clamps.
+    pub(crate) fn saturating_add(self, other: Self) -> Self {
+        self.checked_add(other).unwrap_or(Self::MAX)
+    }
+
+    fn reduced_wide(numerator: u128, denominator: u128) -> Option<Self> {
+        let denominator = denominator.max(1);
+        let divisor = gcd_u128(numerator, denominator);
+        Some(Self {
+            numerator: u32::try_from(numerator / divisor).ok()?,
+            denominator: u32::try_from(denominator / divisor).ok()?,
+        })
     }
 
     pub(crate) fn less_than(self, other: Self) -> bool {
@@ -1027,11 +1054,12 @@ impl Fraction {
     }
 }
 
-pub(crate) fn lcm(left: u32, right: u32) -> u32 {
+/// The least common multiple, or `None` when it does not fit u32.
+pub(crate) fn checked_lcm(left: u32, right: u32) -> Option<u32> {
     if left == 0 || right == 0 {
-        return left.max(right).max(1);
+        return Some(left.max(right).max(1));
     }
-    (left / gcd(left, right)).saturating_mul(right)
+    (left / gcd(left, right)).checked_mul(right)
 }
 
 fn gcd(mut left: u32, mut right: u32) -> u32 {
@@ -1051,3 +1079,16 @@ pub(crate) fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
     }
     left.max(1)
 }
+
+fn gcd_u128(mut left: u128, mut right: u128) -> u128 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
+}
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

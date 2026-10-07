@@ -300,7 +300,7 @@ fn measure_actual_duration(measure: &VoiceMeasureTimeline) -> Fraction {
             event.kind,
             TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
         ) {
-            let end = event.onset.checked_add(event.duration);
+            let end = event.onset.saturating_add(event.duration);
             if actual.less_than(end) {
                 actual = end;
             }

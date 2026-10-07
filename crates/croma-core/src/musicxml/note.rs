@@ -147,7 +147,7 @@ impl<'score> MusicXmlWriter<'score> {
                 cursor = cursor.subtract(pre_backup);
                 self.write_mid_tune_clef(clef, sequence.staff, part);
                 self.write_forward(cursor_forward);
-                cursor = cursor.checked_add(cursor_forward);
+                cursor = cursor.saturating_add(cursor_forward);
                 continue;
             }
             if cursor.less_than(onset) {
@@ -164,7 +164,7 @@ impl<'score> MusicXmlWriter<'score> {
             };
             self.write_event(event, sequence, part, &tuplet_numbers, false, engrave);
             if event.advances_time() {
-                cursor = cursor.checked_add(event.duration());
+                cursor = cursor.saturating_add(event.duration());
                 last_onset = onset;
             }
         }
@@ -847,7 +847,7 @@ fn note_spelling(
         ));
         for candidate in note_type_candidates() {
             for dots in 0..=3 {
-                if dotted_fraction(candidate.fraction, dots) == normal_duration {
+                if Some(dotted_fraction(candidate.fraction, dots)) == normal_duration {
                     return NoteSpelling {
                         note_type: candidate.name,
                         dots,
@@ -883,7 +883,7 @@ fn note_spelling(
                 if candidate
                     .fraction
                     .checked_mul(Fraction::new(normal_notes, actual_notes))
-                    == duration
+                    == Some(duration)
                 {
                     return NoteSpelling {
                         note_type: candidate.name,
@@ -1000,7 +1000,7 @@ fn dotted_fraction(base: Fraction, dots: u8) -> Fraction {
     let mut dot = base;
     for _ in 0..dots {
         dot = Fraction::new(dot.numerator, dot.denominator.saturating_mul(2));
-        duration = duration.checked_add(dot);
+        duration = duration.saturating_add(dot);
     }
     duration
 }

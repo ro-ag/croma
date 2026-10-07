@@ -235,5 +235,7 @@ fn grace_base_unit(note_count: u32) -> Fraction {
 /// resulting fraction drives the `<type>`/`<dots>` spelling; grace notes still
 /// carry no `<duration>` element.
 fn grace_display_duration(note_count: u32, length_multiplier: Fraction) -> Fraction {
-    grace_base_unit(note_count).checked_mul(length_multiplier)
+    // A length too extreme to multiply out spells as the plain base unit.
+    let base = grace_base_unit(note_count);
+    base.checked_mul(length_multiplier).unwrap_or(base)
 }

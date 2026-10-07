@@ -64,6 +64,32 @@ pub(crate) fn free_meter_multirest_warning(span: Span) -> Diagnostic {
     ))
 }
 
+pub(crate) fn duration_overflow_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.duration_overflow",
+        "Duration is too long or too finely divided to represent; its length modifier was ignored",
+        span,
+    )
+    .with_spec_reference(abc_note_length_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The note or rest kept its duration from before the overflowing length, broken rhythm or tuplet factor.",
+    ))
+}
+
+pub(crate) fn divisions_overflow_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.divisions_overflow",
+        "Durations need more divisions per quarter note than MusicXML can carry; some durations were rounded",
+        span,
+    )
+    .with_spec_reference(abc_note_length_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The divisions value was kept at the largest common value that fits, and durations it cannot express exactly were rounded down.",
+    ))
+}
+
 pub(crate) fn multirest_too_long_warning(span: Span, requested: u32) -> Diagnostic {
     Diagnostic::new(
         Severity::Warning,
@@ -251,6 +277,11 @@ pub(crate) fn key_tonic_trailing_junk_ignored_warning(span: Span) -> Diagnostic 
 
 pub(crate) fn abc_barline_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.8 repeat/bar symbols")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+pub(crate) fn abc_note_length_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.3 note lengths")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
 }
 

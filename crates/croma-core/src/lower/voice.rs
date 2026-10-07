@@ -1,6 +1,8 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::accidental::{KeyAccidentalPolicy, MeasureAccidental, key_accidental_policy};
-use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference};
+use crate::lower::{
+    abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference, duration_overflow_warning,
+};
 use crate::model::{
     Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind,
     DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
@@ -499,6 +501,11 @@ impl LoweringState {
             written_accidental,
             note.accidental.map(|accidental| accidental.span),
         );
+        let duration = self.scaled_duration(
+            self.unit,
+            length_multiplier(note.length.as_ref()),
+            note.span,
+        );
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -511,9 +518,7 @@ impl LoweringState {
                         chord: false,
                         span: note.span,
                     },
-                    duration: self
-                        .unit
-                        .checked_mul(length_multiplier(note.length.as_ref())),
+                    duration,
                 },
                 true,
                 attachments,
@@ -530,6 +535,11 @@ impl LoweringState {
         source_order: u32,
     ) {
         let attachments = self.take_timed_attachments(&rest.attachments);
+        let duration = self.scaled_duration(
+            self.unit,
+            length_multiplier(rest.length.as_ref()),
+            rest.span,
+        );
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -538,9 +548,7 @@ impl LoweringState {
                         multiple_rest: None,
                         span: rest.span,
                     },
-                    duration: self
-                        .unit
-                        .checked_mul(length_multiplier(rest.length.as_ref())),
+                    duration,
                 },
                 false,
                 attachments,
@@ -652,8 +660,12 @@ impl LoweringState {
                 written_accidental,
                 member.note.accidental.map(|accidental| accidental.span),
             );
-            let member_multiplier =
-                length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
+            let member_multiplier = self.scaled_duration(
+                length_multiplier(member.note.length.as_ref()),
+                outer_multiplier,
+                member.note.span,
+            );
+            let duration = self.scaled_duration(self.unit, member_multiplier, member.note.span);
             events.push((
                 LoweredEventAtom {
                     kind: LoweredEventAtomKind::Note {
@@ -665,7 +677,7 @@ impl LoweringState {
                         chord: index > 0,
                         span: member.note.span,
                     },
-                    duration: self.unit.checked_mul(member_multiplier),
+                    duration,
                 },
                 index == 0,
                 attachments,
@@ -730,10 +742,11 @@ impl LoweringState {
         }
 
         self.finish_pending_tie_if_group_is_not_note(&events);
-        let (group_multiplier, pending_broken) = self.consume_group_multiplier();
+        let group_span = events[0].0.span();
+        let (group_multiplier, pending_broken) = self.consume_group_multiplier(group_span);
         let start_index = self.lowered.len();
         for (mut event, alignable, attachments) in events {
-            event.duration = event.duration.checked_mul(group_multiplier);
+            event.duration = self.scaled_duration(event.duration, group_multiplier, event.span());
             self.lowered.push(LoweredEvent::Timed(LoweredTimedEvent {
                 event,
                 line_index,
@@ -755,19 +768,41 @@ impl LoweringState {
         self.broken_left_available = true;
     }
 
-    fn consume_group_multiplier(&mut self) -> (Fraction, Option<PendingBrokenRhythm>) {
-        let mut multiplier = Fraction::one();
+    /// The broken-rhythm and tuplet factors that scale the next group. A factor
+    /// whose product with the others is not representable is dropped, with a
+    /// warning at `span` (the group being scaled).
+    fn consume_group_multiplier(&mut self, span: Span) -> (Fraction, Option<PendingBrokenRhythm>) {
         let pending_broken = self.pending_broken.take();
-        if let Some(pending) = &pending_broken {
-            multiplier = multiplier.checked_mul(pending.right_multiplier);
-        }
-
-        for tuplet in &self.active_tuplets {
-            if tuplet.remaining > 0 {
-                multiplier = multiplier.checked_mul(tuplet.multiplier);
-            }
+        let factors = pending_broken
+            .iter()
+            .map(|pending| pending.right_multiplier)
+            .chain(
+                self.active_tuplets
+                    .iter()
+                    .filter(|tuplet| tuplet.remaining > 0)
+                    .map(|tuplet| tuplet.multiplier),
+            )
+            .collect::<Vec<_>>();
+        let mut multiplier = Fraction::one();
+        for factor in factors {
+            multiplier = self.scaled_duration(multiplier, factor, span);
         }
         (multiplier, pending_broken)
+    }
+
+    /// `base × factor` for a duration taken from the source. When the exact
+    /// product is not representable, warn at `span` and keep `base`: the length
+    /// modifier, broken rhythm or tuplet that overflowed is ignored.
+    pub(crate) fn scaled_duration(
+        &mut self,
+        base: Fraction,
+        factor: Fraction,
+        span: Span,
+    ) -> Fraction {
+        base.checked_mul(factor).unwrap_or_else(|| {
+            self.diagnostics.push(duration_overflow_warning(span));
+            base
+        })
     }
 
     pub(crate) fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
@@ -801,10 +836,18 @@ impl LoweringState {
         pending: &PendingBrokenRhythm,
         right_group: &[usize],
     ) {
+        let mut overflowed = false;
         for index in &pending.left_group {
             if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(*index) {
-                timed.event.duration = timed.event.duration.checked_mul(pending.left_multiplier);
+                match timed.event.duration.checked_mul(pending.left_multiplier) {
+                    Some(duration) => timed.event.duration = duration,
+                    None => overflowed = true,
+                }
             }
+        }
+        if overflowed {
+            self.diagnostics
+                .push(duration_overflow_warning(pending.span));
         }
         if right_group.is_empty() {
             self.diagnostics
@@ -1061,7 +1104,7 @@ impl LoweringState {
             .rev()
             .take_while(|event| !matches!(event, LoweredEvent::Untimed(Event::Barline { .. })))
             .fold(Fraction::zero(), |total, event| match event {
-                LoweredEvent::Timed(timed) => total.checked_add(timed.event.duration),
+                LoweredEvent::Timed(timed) => total.saturating_add(timed.event.duration),
                 _ => total,
             });
         !elapsed.less_than(expected)

@@ -38,7 +38,8 @@ use crate::model::{
     PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
     ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff,
     StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind,
-    TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, lcm,
+    TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE,
+    checked_lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -93,8 +94,18 @@ pub(crate) fn lower_tune_music(
         .iter()
         .flat_map(|voice| voice.lowered.iter())
         .collect::<Vec<_>>();
+    // An event whose requirement would push the shared divisions past u32 keeps
+    // the current value instead; its duration is then rounded, with a warning.
+    let mut divisions_overflow = None;
     let divisions = all_lowered.iter().fold(8, |divisions, event| match event {
-        LoweredEvent::Timed(timed) => lcm(divisions, timed.event.duration.divisions_requirement()),
+        LoweredEvent::Timed(timed) => {
+            checked_lcm(divisions, timed.event.duration.divisions_requirement()).unwrap_or_else(
+                || {
+                    divisions_overflow.get_or_insert(timed.event.span());
+                    divisions
+                },
+            )
+        }
         LoweredEvent::Untimed(_)
         | LoweredEvent::Overlay(_)
         | LoweredEvent::VariantEnding(_)
@@ -106,6 +117,9 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::SectionLabel { .. }
         | LoweredEvent::MeasureNumber { .. } => divisions,
     });
+    if let Some(span) = divisions_overflow {
+        diagnostics.push(divisions_overflow_warning(span));
+    }
     let events = all_lowered
         .into_iter()
         .filter_map(|event| match event {
@@ -819,7 +833,12 @@ impl MultiVoiceLowering {
                         self.current_state()
                             .diagnostics
                             .push(free_meter_multirest_warning(rest.span));
-                        let duration = self.unit.checked_mul_u32(count);
+                        let unit = self.unit;
+                        let duration = self.current_state().scaled_duration(
+                            unit,
+                            Fraction::new(count, 1),
+                            rest.span,
+                        );
                         let source_order = self.next_source_order();
                         let attachments = self
                             .current_state()
@@ -2718,7 +2737,7 @@ fn complex_meter_duration(raw: &str) -> Option<Fraction> {
             total = total.checked_add(Fraction::new(
                 numerator.trim().parse().ok()?,
                 denominator.trim().parse().ok()?,
-            ));
+            ))?;
             saw_part = true;
         }
         return saw_part.then_some(total);

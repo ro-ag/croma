@@ -4480,3 +4480,27 @@ fn multi_measure_rest_expansion_is_capped_with_a_warning() {
     let report = parse_tune_report_from_document(&document);
     assert!(report.diagnostics.is_empty());
 }
+
+#[test]
+fn unrepresentable_durations_warn_and_keep_the_unscaled_length() {
+    // Thirty `>` make a broken-rhythm factor whose product with L:1/8 needs a
+    // denominator past u32; so does `B/4294967295`. Each warns and keeps the
+    // duration it had before the overflowing factor instead of a wrong ratio.
+    let broken = format!("X:1\nL:1/8\nK:C\nA{}B\n", ">".repeat(30));
+    for source in [broken.as_str(), "X:1\nL:1/8\nK:C\nAB/4294967295\n"] {
+        let document = parse_document(source, ParseOptions::default()).value;
+        let report = parse_tune_report_from_document(&document);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.music.duration_overflow"),
+            "{source:?}"
+        );
+    }
+
+    // Ordinary broken rhythm stays silent and exact.
+    let document = parse_document("X:1\nL:1/8\nK:C\nA>B\n", ParseOptions::default()).value;
+    let report = parse_tune_report_from_document(&document);
+    assert!(report.diagnostics.is_empty());
+}

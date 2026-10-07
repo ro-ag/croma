@@ -1319,7 +1319,7 @@ impl Reader {
                         attachments,
                     });
 
-                    cursor = cursor.checked_add(parsed.duration);
+                    cursor = cursor.saturating_add(parsed.duration);
                     state.cursor = cursor;
                     state.max_cursor = max_fraction(state.max_cursor, state.cursor);
                 }
@@ -1442,7 +1442,7 @@ impl Reader {
                 "forward" => {
                     if let Some(duration) = self.read_duration(child, divisions) {
                         let from = cursor;
-                        cursor = cursor.checked_add(duration);
+                        cursor = cursor.saturating_add(duration);
                         let state = voice_state(&mut voices, &current_voice);
                         mark_clef_cursor_restore_for_abc(
                             &mut state.events,
@@ -4368,7 +4368,7 @@ fn dotted_fraction(base: Fraction, dots: usize) -> Fraction {
     let mut dot = base;
     for _ in 0..dots {
         dot = Fraction::new(dot.numerator, dot.denominator.saturating_mul(2));
-        duration = duration.checked_add(dot);
+        duration = duration.saturating_add(dot);
     }
     duration
 }
@@ -5455,7 +5455,7 @@ fn preserve_voice_onset_gaps_for_abc(voice: &mut Voice) {
             }
 
             if abc_event_advances_cursor(&event.kind) {
-                cursor = event.onset.checked_add(event.duration);
+                cursor = event.onset.saturating_add(event.duration);
             } else if abc_event_has_position(&event.kind) {
                 cursor = max_fraction(cursor, event.onset);
             }
