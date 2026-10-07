@@ -1042,7 +1042,7 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
     left.max(1)
 }
 
-fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
+pub(crate) fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
         left = right;

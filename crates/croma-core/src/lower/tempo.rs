@@ -1,7 +1,7 @@
 //! Tempo (`Q:`) field parsing into the semantic tempo model.
 
 use crate::diagnostic::Span;
-use crate::model::{Fraction, TempoBeat, TempoBeatRole, TempoModel};
+use crate::model::{Fraction, TempoBeat, TempoBeatRole, TempoModel, gcd_u64};
 
 /// Parse an ABC `Q:` tempo field (ABC 2.1 §3.1.8) into a structured model.
 ///
@@ -136,14 +136,14 @@ fn parse_tempo_beat(remainder: &str, unit_note_length: Fraction) -> Option<Tempo
                     den,
                     unit_note_length.numerator,
                     unit_note_length.denominator,
-                );
+                )?;
                 num = a;
                 den = b;
                 saw_fraction = true;
                 continue;
             }
             let (fn_num, fn_den) = parse_fraction(token)?;
-            let (a, b) = add_fractions(num, den, fn_num, fn_den);
+            let (a, b) = add_fractions(num, den, fn_num, fn_den)?;
             num = a;
             den = b;
             saw_fraction = true;
@@ -198,13 +198,20 @@ fn parse_fraction(token: &str) -> Option<(u32, u32)> {
     }
 }
 
-fn add_fractions(a_num: u32, a_den: u32, b_num: u32, b_den: u32) -> (u32, u32) {
+/// Sum two beat fractions, reduced. The cross products are taken in u64 (two
+/// u32 products plus a sum cannot overflow it); `None` when the reduced sum
+/// still does not fit u32, so the caller treats the field as non-numeric.
+fn add_fractions(a_num: u32, a_den: u32, b_num: u32, b_den: u32) -> Option<(u32, u32)> {
     if a_den == 0 {
-        return (b_num, b_den);
+        return Some((b_num, b_den));
     }
-    let num = a_num * b_den + b_num * a_den;
-    let den = a_den * b_den;
-    reduce_fraction(num, den)
+    let num = u64::from(a_num) * u64::from(b_den) + u64::from(b_num) * u64::from(a_den);
+    let den = u64::from(a_den) * u64::from(b_den);
+    let divisor = gcd_u64(num, den);
+    Some((
+        u32::try_from(num / divisor).ok()?,
+        u32::try_from(den / divisor).ok()?,
+    ))
 }
 
 fn reduce_fraction(num: u32, den: u32) -> (u32, u32) {
@@ -223,3 +230,7 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
     }
     a.max(1)
 }
+
+#[cfg(test)]
+#[path = "tempo_tests.rs"]
+mod tests;
