@@ -49,7 +49,10 @@ The crate is split so the protocol logic is independent of the transport:
   optional position to `lsp_types` payloads. No I/O, no runtime.
 - **A thin `lsp-server` stdio loop** (`main.rs`) — owns the URI→text document
   store, negotiates capabilities, and dispatches each request/notification to the
-  matching pure function. No business logic.
+  matching pure function. No business logic. Every analysis call runs under
+  `containment::contain`: if croma-core ever panics, the request gets a `null`
+  result, the document gets one `croma.lsp.internal_error` diagnostic, and the
+  server keeps running.
 
 This is the same shape that lets the formatter prove itself in-process: the
 promotion legs below drive the **pure functions over the corpus** (seconds, no

@@ -14,6 +14,9 @@
 //! The LSP never diverges from the core: it adapts `croma-core`'s diagnostics
 //! and spans, it never reparses (spec decision 5). Any LSP-vs-core mismatch is a
 //! bug in this adapter, not a new spec.
+//!
+//! The one diagnostic of its own is [`containment::internal_error_diagnostic`],
+//! published only when analysing a document panicked (a core bug).
 
 // lsp-types 0.97's `Uri` wraps `fluent_uri::Uri`, which clippy flags as an
 // interior-mutable map key. Its `Hash`/`Eq` are over the URI string (the inner
@@ -26,6 +29,7 @@ use croma_core::{Diagnostic, export_musicxml};
 
 pub mod code_action;
 pub mod completion;
+pub mod containment;
 pub mod diagnostics;
 pub mod document;
 pub mod formatting;
@@ -40,6 +44,7 @@ mod corpus_proof;
 
 pub use code_action::code_actions;
 pub use completion::completion;
+pub use containment::{contain, internal_error_diagnostic};
 pub use diagnostics::diagnostics;
 pub use document::DocumentStore;
 pub use formatting::formatting;
