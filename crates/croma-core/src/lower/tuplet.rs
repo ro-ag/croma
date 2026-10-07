@@ -1,7 +1,7 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::{
     ActiveTuplet, CompletedTuplet, LoweredEvent, LoweringState, abc_tuplet_reference,
-    invalid_tuplet_warning,
+    default_tuplet_q, invalid_tuplet_warning,
 };
 use crate::model::{Fraction, TupletAttachment, TupletRole};
 use crate::syntax::TupletSyntax;
@@ -33,7 +33,10 @@ impl LoweringState {
 
     pub(crate) fn start_tuplet(&mut self, tuplet: &TupletSyntax) {
         let p = tuplet.p.value;
-        let q = tuplet.q_value();
+        let q = tuplet
+            .q
+            .map(|q| q.value)
+            .unwrap_or_else(|| default_tuplet_q(p, self.compound_meter));
         let r = tuplet.r_value();
         if !(2..=9).contains(&p) || q == 0 || r == 0 {
             self.diagnostics.push(invalid_tuplet_warning(tuplet.span));

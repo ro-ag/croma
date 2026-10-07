@@ -6464,3 +6464,29 @@ fn extreme_durations_export_without_panicking() {
         assert!(export_musicxml(source).is_ok(), "{source:?}");
     }
 }
+
+#[test]
+fn bare_odd_tuplets_take_q_from_the_meter() {
+    // ABC 2.1 §4.13: `(5`, `(7` and `(9` mean n notes in the time of 3 in a
+    // compound meter and of 2 otherwise. Compound here is a literal numerator
+    // that is a multiple of three above three, whatever the denominator.
+    let normal_notes = |meter: &str, music: &str| {
+        let source = format!("X:1\nM:{meter}\nL:1/8\nK:C\n{music}\n");
+        let export = export_musicxml(&source).expect("tuplet should export");
+        let xml = export.musicxml;
+        let start = xml.find("<normal-notes>").expect("time-modification") + "<normal-notes>".len();
+        xml[start..start + 1].to_owned()
+    };
+    for meter in ["6/8", "9/8", "12/8", "6/4", "9/16"] {
+        assert_eq!(normal_notes(meter, "(5ABcde f|"), "3", "M:{meter}");
+        assert_eq!(normal_notes(meter, "(7ABcdefg|"), "3", "M:{meter}");
+    }
+    for meter in ["2/4", "3/4", "4/4", "3/8", "C", "C|"] {
+        assert_eq!(normal_notes(meter, "(5ABcde f|"), "2", "M:{meter}");
+    }
+    // Fixed defaults and explicit q ignore the meter.
+    assert_eq!(normal_notes("6/8", "(3ABc d|"), "2");
+    assert_eq!(normal_notes("6/8", "(5:2ABcde f|"), "2");
+    // An inline meter change applies to the tuplets after it.
+    assert_eq!(normal_notes("2/4", "[M:6/8](5ABcde f|"), "3");
+}

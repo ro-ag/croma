@@ -189,6 +189,8 @@ struct MultiVoiceLowering {
     /// Header meter duration used to seed each voice when its stream first
     /// appears. Body `M:` changes update only the current voice.
     meter_duration: Option<Fraction>,
+    /// Whether the header meter is compound; seeds each voice like `meter_duration`.
+    compound_meter: bool,
     voices: Vec<LoweringState>,
     current_voice: String,
     source_order: u32,
@@ -236,6 +238,10 @@ impl MultiVoiceLowering {
                 .meter
                 .as_ref()
                 .and_then(|meter| meter_duration(&meter.value)),
+            compound_meter: field_state
+                .meter
+                .as_ref()
+                .is_some_and(|meter| meter_is_compound(&meter.value)),
             voices: Vec::new(),
             current_voice: String::new(),
             source_order: 0,
@@ -354,6 +360,7 @@ impl MultiVoiceLowering {
         let voice = self.current_state();
         voice.finish_open_tuplets_at_boundary();
         voice.meter_duration = duration;
+        voice.compound_meter = meter_is_compound(&meter.value);
         // Record the change at the current voice's position so exporters can
         // reproduce it. A change to the voice's already-effective meter
         // (header included) records nothing: interleaved sources restate
@@ -627,6 +634,7 @@ impl MultiVoiceLowering {
                 if let Some(meter) = parse_initial_meter_instruction(value, inline.value.span) {
                     let state = self.current_state();
                     state.meter_duration = meter.duration;
+                    state.compound_meter = meter_is_compound(&parse_meter(&meter.display));
                     state.initial_meter = Some(meter);
                     return;
                 }
@@ -1060,6 +1068,7 @@ impl MultiVoiceLowering {
             self.unit,
             self.key.as_ref(),
             self.meter_duration,
+            self.compound_meter,
         );
         self.voices.push(state);
         self.voices.len() - 1
@@ -2792,9 +2801,21 @@ fn barline_lowering_kinds_with_kind(
     vec![kind]
 }
 
-pub(crate) fn default_tuplet_q(p: u32) -> u32 {
+/// A meter is compound when its literal numerator is a multiple of three above
+/// three (6/8, 9/8, 12/8, but also 6/4 or 9/16), whatever the denominator. ABC
+/// 2.1 §4.13 names 6/8, 9/8 and 12/8 as examples; `C`, `C|`, free and additive
+/// meters are not compound.
+pub(crate) fn meter_is_compound(meter: &Meter) -> bool {
+    matches!(meter.kind, MeterKind::Fraction { numerator, .. } if numerator > 3 && numerator % 3 == 0)
+}
+
+/// The `q` of a tuplet written without one (ABC 2.1 §4.13): `(2`, `(4`, `(8`
+/// take 3; `(3`, `(6` take 2; `(5`, `(7`, `(9` take 3 in compound meter and 2
+/// otherwise.
+pub(crate) fn default_tuplet_q(p: u32, compound_meter: bool) -> u32 {
     match p {
         2 | 4 | 8 => 3,
+        5 | 7 | 9 if compound_meter => 3,
         _ => 2,
     }
 }

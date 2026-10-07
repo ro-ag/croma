@@ -2,7 +2,6 @@
 //! music line into notes, rests, chords, decorations, and barlines.
 
 use crate::diagnostic::Span;
-use crate::lower::default_tuplet_q;
 use crate::model::{Accidental, BarlineKind, Fraction, RestVisibility};
 use crate::syntax::field::{
     InlineFieldSyntax, MalformedSyntax, MusicFieldLine, PreservedDirectiveSyntax,
@@ -334,12 +333,6 @@ pub struct TupletSyntax {
 }
 
 impl TupletSyntax {
-    pub(crate) fn q_value(&self) -> u32 {
-        self.q
-            .map(|q| q.value)
-            .unwrap_or_else(|| default_tuplet_q(self.p.value))
-    }
-
     pub(crate) fn r_value(&self) -> u32 {
         self.r.map(|r| r.value).unwrap_or(self.p.value)
     }

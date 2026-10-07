@@ -88,6 +88,9 @@ pub(crate) struct LoweringState {
     /// current voice, like abc2xml; a standalone `M:` line updates every
     /// voice). Drives multi-measure-rest expansion.
     pub(crate) meter_duration: Option<Fraction>,
+    /// Whether that meter is compound (see `meter_is_compound`), which sets the
+    /// default `q` of a bare `(5`, `(7` or `(9` tuplet.
+    pub(crate) compound_meter: bool,
     pub(crate) lowered: Vec<LoweredEvent>,
     pub(crate) time_groups: Vec<Vec<usize>>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -242,6 +245,7 @@ impl LoweringState {
         unit: Fraction,
         key: Option<&KeySignature>,
         meter_duration: Option<Fraction>,
+        compound_meter: bool,
     ) -> Self {
         let source_span = id.span;
         Self {
@@ -253,6 +257,7 @@ impl LoweringState {
             initial_meter: None,
             unit,
             meter_duration,
+            compound_meter,
             lowered: Vec::new(),
             time_groups: Vec::new(),
             diagnostics: Vec::new(),
