@@ -1062,7 +1062,7 @@ pub(crate) fn checked_lcm(left: u32, right: u32) -> Option<u32> {
     (left / gcd(left, right)).checked_mul(right)
 }
 
-fn gcd(mut left: u32, mut right: u32) -> u32 {
+pub(crate) fn gcd(mut left: u32, mut right: u32) -> u32 {
     while right != 0 {
         let remainder = left % right;
         left = right;
@@ -1078,6 +1078,33 @@ pub(crate) fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
         right = remainder;
     }
     left.max(1)
+}
+
+/// The ratio `actual:normal` scaled by `factor_actual:factor_normal`, kept
+/// unreduced when it fits u32 (tuplet ratios are written as given) and reduced
+/// only when it must be; `None` when even the reduced ratio does not fit.
+pub(crate) fn checked_ratio_product(
+    actual: u32,
+    normal: u32,
+    factor_actual: u32,
+    factor_normal: u32,
+) -> Option<(u32, u32)> {
+    let actual = u64::from(actual) * u64::from(factor_actual);
+    let normal = u64::from(normal) * u64::from(factor_normal);
+    ratio_to_u32(actual, normal)
+}
+
+/// `numerator:denominator` as u32s: unchanged when both fit, else reduced, else
+/// `None`.
+pub(crate) fn ratio_to_u32(numerator: u64, denominator: u64) -> Option<(u32, u32)> {
+    if numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX) {
+        return Some((numerator as u32, denominator as u32));
+    }
+    let gcd = gcd_u64(numerator, denominator);
+    let numerator = numerator / gcd;
+    let denominator = denominator / gcd;
+    (numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX))
+        .then_some((numerator as u32, denominator as u32))
 }
 
 fn gcd_u128(mut left: u128, mut right: u128) -> u128 {

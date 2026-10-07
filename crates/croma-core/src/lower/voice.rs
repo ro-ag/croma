@@ -1768,26 +1768,39 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
 pub(crate) fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
     let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
-        let clef = clef.text.as_str();
-        if clef.contains("-15") {
-            shift -= 2;
-        } else if clef.contains("+15") {
-            shift += 2;
-        } else if clef.contains("-8") {
-            shift -= 1;
-        } else if clef.contains("+8") {
-            shift += 1;
-        }
+        shift += i32::from(clef_octave_shift(clef.text.as_str()));
     }
-    if let Some(octave) = properties.octave.as_ref()
-        && let Ok(value) = octave.text.trim().parse::<i64>()
-    {
-        shift += value.clamp(-9, 9) as i32;
-    }
+    shift += voice_octave_param(properties);
     if let Some(middle) = properties.middle.as_ref() {
         shift += i32::from(middle_octave_shift(middle.text.as_str()));
     }
     shift.clamp(-12, 12) as i8
+}
+
+/// The octave shift a clef name's `±8`/`±15` suffix declares on its own. The
+/// MusicXML writer prints it as `<clef-octave-change>`, and the ABC writer
+/// compensates a mid-tune clef change against it.
+pub(crate) fn clef_octave_shift(clef: &str) -> i8 {
+    if clef.contains("-15") {
+        -2
+    } else if clef.contains("+15") {
+        2
+    } else if clef.contains("-8") {
+        -1
+    } else if clef.contains("+8") {
+        1
+    } else {
+        0
+    }
+}
+
+/// The voice's `octave=` modifier as the parser reads it (clamped to ±9), or 0.
+pub(crate) fn voice_octave_param(properties: &VoicePropertiesModel) -> i32 {
+    properties
+        .octave
+        .as_ref()
+        .and_then(|octave| octave.text.trim().parse::<i64>().ok())
+        .map_or(0, |value| value.clamp(-9, 9) as i32)
 }
 
 /// Octave shift declared by a `middle=<pitch>` clef modifier, replicating

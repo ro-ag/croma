@@ -4204,7 +4204,7 @@ fn patch_inner_tuplet_ratio(
     if den == 0 {
         return;
     }
-    let g = super::gcd_u64(num, den);
+    let g = crate::model::gcd_u64(num, den);
     let inner_actual = num / g;
     let inner_normal = den / g;
     // Only patch if the result fits in u32.

@@ -1,7 +1,7 @@
 //! Tempo (`Q:`) field parsing into the semantic tempo model.
 
 use crate::diagnostic::Span;
-use crate::model::{Fraction, TempoBeat, TempoBeatRole, TempoModel, gcd_u64};
+use crate::model::{Fraction, TempoBeat, TempoBeatRole, TempoModel, gcd, gcd_u64};
 
 /// Parse an ABC `Q:` tempo field (ABC 2.1 §3.1.8) into a structured model.
 ///
@@ -202,15 +202,6 @@ fn reduce_fraction(num: u32, den: u32) -> (u32, u32) {
     }
     let divisor = gcd(num, den);
     (num / divisor, den / divisor)
-}
-
-fn gcd(mut a: u32, mut b: u32) -> u32 {
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a.max(1)
 }
 
 #[cfg(test)]

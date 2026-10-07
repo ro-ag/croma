@@ -6,6 +6,7 @@ use super::meter::{default_unit_note_length_for_meter, ensure_default_unit_note_
 use super::voice::upsert_voice_definition;
 use super::*;
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+pub(super) use crate::escape::is_escaped;
 use crate::options::{AbcSpecVersion, ParseMode};
 use crate::source::SourceText;
 
@@ -91,18 +92,6 @@ pub(super) fn trim_quoted_value_span(value: &str, start_offset: usize) -> Spanne
         );
     }
     trimmed
-}
-
-pub(super) fn is_escaped(text: &str, offset: usize) -> bool {
-    let mut slash_count = 0;
-    for byte in text[..offset].bytes().rev() {
-        if byte == b'\\' {
-            slash_count += 1;
-        } else {
-            break;
-        }
-    }
-    slash_count % 2 == 1
 }
 
 pub(super) fn split_assignment(value: Spanned<String>) -> (Spanned<String>, Spanned<String>) {

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::Span;
+use crate::escape::is_escaped;
 use crate::source::SourceText;
 
 pub(crate) fn classify_lines(source: &SourceText) -> LineMap {
@@ -730,18 +731,6 @@ fn music_score_line_break(text: &str, line_offset: usize) -> ScoreLineBreak {
     ScoreLineBreak::Suppressed {
         marker_span: Span::new(marker_start, marker_start + 1),
     }
-}
-
-fn is_escaped(text: &str, offset: usize) -> bool {
-    let mut slash_count = 0;
-    for byte in text[..offset].bytes().rev() {
-        if byte == b'\\' {
-            slash_count += 1;
-        } else {
-            break;
-        }
-    }
-    slash_count % 2 == 1
 }
 
 fn directive_name(text: &str) -> Option<&str> {

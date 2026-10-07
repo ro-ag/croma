@@ -3,6 +3,7 @@
 //! The lowering half (text-AST -> model) remains in `crate::lower`.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+pub(super) use crate::escape::is_escaped;
 use crate::lower::{abc_field_reference, music_code_span};
 use crate::model::RestVisibility;
 use crate::parse::ParseReport;
@@ -1134,18 +1135,6 @@ pub(super) fn user_symbol_canonical_name(replacement: &str) -> Option<String> {
         return Some(canonical);
     }
     Some(inner.to_string())
-}
-
-pub(super) fn is_escaped(text: &str, offset: usize) -> bool {
-    let mut slash_count = 0;
-    for byte in text[..offset].bytes().rev() {
-        if byte == b'\\' {
-            slash_count += 1;
-        } else {
-            break;
-        }
-    }
-    slash_count % 2 == 1
 }
 
 pub(super) fn classify_quoted_text(text: &str) -> QuotedTextKind {

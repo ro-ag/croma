@@ -592,7 +592,7 @@ impl TimeModification {
                 continue;
             }
             seen_pairs.push(tuplet.pair_id);
-            let Some(product) = checked_ratio_product(
+            let Some(product) = crate::model::checked_ratio_product(
                 actual_notes,
                 normal_notes,
                 tuplet.actual_notes,
@@ -614,37 +614,6 @@ impl TimeModification {
             }),
         )
     }
-}
-
-fn checked_ratio_product(
-    actual: u32,
-    normal: u32,
-    factor_actual: u32,
-    factor_normal: u32,
-) -> Option<(u32, u32)> {
-    let actual = u64::from(actual) * u64::from(factor_actual);
-    let normal = u64::from(normal) * u64::from(factor_normal);
-    ratio_to_u32(actual, normal)
-}
-
-fn ratio_to_u32(actual: u64, normal: u64) -> Option<(u32, u32)> {
-    if actual <= u64::from(u32::MAX) && normal <= u64::from(u32::MAX) {
-        return Some((actual as u32, normal as u32));
-    }
-    let gcd = gcd_u64(actual, normal);
-    let actual = actual / gcd;
-    let normal = normal / gcd;
-    (actual <= u64::from(u32::MAX) && normal <= u64::from(u32::MAX))
-        .then_some((actual as u32, normal as u32))
-}
-
-fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
-    while right != 0 {
-        let remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-    left.max(1)
 }
 
 #[derive(Debug, Clone, Copy)]

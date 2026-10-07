@@ -248,17 +248,7 @@ pub(crate) struct ClefModel {
 /// treble (ABC 2.1); the engraving stem rules derive their staff from this.
 pub(crate) fn clef_model(clef: Option<&str>) -> ClefModel {
     let clef = clef.unwrap_or("treble").to_ascii_lowercase();
-    let octave_change = if clef.contains("-15") {
-        -2
-    } else if clef.contains("+15") {
-        2
-    } else if clef.contains("-8") {
-        -1
-    } else if clef.contains("+8") {
-        1
-    } else {
-        0
-    };
+    let octave_change = crate::lower::voice::clef_octave_shift(&clef);
     let (sign, line) = if clef.contains("bass") {
         ("F", "4")
     } else if clef.contains("alto") {

@@ -7,6 +7,12 @@ use crate::model::{
     HarmonyKindText, KeySignatureModel, Measure, MeterModel, SlurRole, TempoBeatRole, TempoModel,
     TieRole, TupletAttachment, TupletRole,
 };
+// The written->stored octave shift for a voice's `clef=` (`±8`/`±15`),
+// `octave=` and `middle=` modifiers is the parser's own
+// (`lower::voice::voice_octave_shift`). Stored pitches already carry it, so the
+// writer SUBTRACTS it to recover the written octave (the re-parse re-applies
+// the echoed modifiers).
+use crate::lower::voice::{clef_octave_shift, voice_octave_param, voice_octave_shift};
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -837,54 +843,6 @@ fn abc_carrier_quoted(text: &str) -> String {
         .replace('"', "\\\"")
 }
 
-/// Replicates the parser's written->stored octave shift for a voice's
-/// `clef=` (`±8`/`±15`), `octave=` and `middle=` modifiers. Stored pitches
-/// already carry the shift, so the writer SUBTRACTS it to recover the written
-/// octave (the re-parse re-applies the echoed modifiers).
-///
-/// MUST stay value-for-value identical to `lower::voice::voice_octave_shift`
-/// (same clamps: `octave=` to ±9, total to ±12) or every `octave=`/`clef±`
-/// voice breaks round-trip.
-fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
-    let mut shift: i32 = 0;
-    if let Some(clef) = properties.clef.as_ref() {
-        shift += clef_octave_shift(clef.text.as_str());
-    }
-    shift += voice_octave_param(properties);
-    if let Some(middle) = properties.middle.as_ref() {
-        shift += i32::from(crate::lower::voice::middle_octave_shift(
-            middle.text.as_str(),
-        ));
-    }
-    shift.clamp(-12, 12) as i8
-}
-
-/// The written->stored octave shift a `clef=` token contributes on its own
-/// (`±8`/`±15`), split out of [`voice_octave_shift`] so a mid-tune clef change
-/// can be compensated against the voice's baked-in shift.
-fn clef_octave_shift(clef: &str) -> i32 {
-    if clef.contains("-15") {
-        -2
-    } else if clef.contains("+15") {
-        2
-    } else if clef.contains("-8") {
-        -1
-    } else if clef.contains("+8") {
-        1
-    } else {
-        0
-    }
-}
-
-/// The voice's `octave=` modifier as the parser reads it (clamped to ±9), or 0.
-fn voice_octave_param(properties: &crate::model::VoicePropertiesModel) -> i32 {
-    properties
-        .octave
-        .as_ref()
-        .and_then(|octave| octave.text.trim().parse::<i64>().ok())
-        .map_or(0, |value| value.clamp(-9, 9) as i32)
-}
-
 /// A pitch moved back to its written octave for emission. Saturating, like
 /// the lowering-side addition, so a boundary-saturated stored octave cannot
 /// overflow back out of i8.
@@ -912,7 +870,7 @@ fn write_voice(
         .properties
         .clef
         .as_ref()
-        .map_or(0, |clef| clef_octave_shift(clef.text.as_str()));
+        .map_or(0, |clef| i32::from(clef_octave_shift(clef.text.as_str())));
     let baseline_octave_param = voice_octave_param(&voice.properties);
     let mut effective_octave_param = baseline_octave_param;
     // Overlay segments (`&`) grouped by the measure they belong to; spliced
@@ -1166,8 +1124,8 @@ fn write_voice(
                     // MusicXML reader reconstructs, which never has cursor
                     // metadata) is an ordinary ABC inline clef field. Without this
                     // the event emitted nothing at all and the change was lost.
-                    let required =
-                        baseline_octave_param + baseline_clef_shift - clef_octave_shift(text);
+                    let required = baseline_octave_param + baseline_clef_shift
+                        - i32::from(clef_octave_shift(text));
                     if required == effective_octave_param {
                         out.push_str(&format!("[K:clef={text}] "));
                     } else if (-9..=9).contains(&required) {
@@ -1324,44 +1282,14 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 fn multiply_tuplet_scale(slot: &mut Option<TupletScale>, actual: u32, normal: u32) {
     match slot {
         Some(TupletScale::Ratio(active_actual, active_normal)) => {
-            *slot = checked_ratio_product(*active_actual, *active_normal, actual, normal)
-                .map(|(actual, normal)| TupletScale::Ratio(actual, normal))
-                .or(Some(TupletScale::Overflow));
+            *slot =
+                crate::model::checked_ratio_product(*active_actual, *active_normal, actual, normal)
+                    .map(|(actual, normal)| TupletScale::Ratio(actual, normal))
+                    .or(Some(TupletScale::Overflow));
         }
         Some(TupletScale::Overflow) => {}
         None => *slot = Some(TupletScale::Ratio(actual, normal)),
     }
-}
-
-fn checked_ratio_product(
-    actual: u32,
-    normal: u32,
-    factor_actual: u32,
-    factor_normal: u32,
-) -> Option<(u32, u32)> {
-    let actual = u64::from(actual) * u64::from(factor_actual);
-    let normal = u64::from(normal) * u64::from(factor_normal);
-    ratio_to_u32(actual, normal)
-}
-
-fn ratio_to_u32(numerator: u64, denominator: u64) -> Option<(u32, u32)> {
-    if numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX) {
-        return Some((numerator as u32, denominator as u32));
-    }
-    let gcd = gcd_u64(numerator, denominator);
-    let numerator = numerator / gcd;
-    let denominator = denominator / gcd;
-    (numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX))
-        .then_some((numerator as u32, denominator as u32))
-}
-
-fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
-    while right != 0 {
-        let remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-    left.max(1)
 }
 
 /// Attachments emitted BEFORE a note/rest head.
@@ -2015,7 +1943,7 @@ fn notated_duration(duration: Rational, tuplet: Option<TupletScale>) -> Rational
 fn scaled_rational(duration: Rational, actual: u32, normal: u32) -> Option<Rational> {
     let numerator = u64::from(duration.numerator) * u64::from(actual);
     let denominator = u64::from(duration.denominator) * u64::from(normal);
-    ratio_to_u32(numerator, denominator)
+    crate::model::ratio_to_u32(numerator, denominator)
         .map(|(numerator, denominator)| Rational::new(numerator, denominator))
 }
 

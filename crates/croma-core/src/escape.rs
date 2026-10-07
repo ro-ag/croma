@@ -26,6 +26,20 @@ pub(crate) fn unescape_quoted(text: &str) -> String {
     out
 }
 
+/// Whether the byte at `offset` in `text` is escaped: preceded by an odd run of
+/// backslashes.
+pub(crate) fn is_escaped(text: &str, offset: usize) -> bool {
+    let mut slash_count = 0;
+    for byte in text[..offset].bytes().rev() {
+        if byte == b'\\' {
+            slash_count += 1;
+        } else {
+            break;
+        }
+    }
+    slash_count % 2 == 1
+}
+
 #[cfg(test)]
 #[path = "escape_tests.rs"]
 mod tests;

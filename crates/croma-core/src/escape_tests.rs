@@ -15,3 +15,11 @@ fn keeps_other_backslash_sequences_and_a_trailing_backslash() {
     assert_eq!(unescape_quoted(r"\ss"), r"\ss");
     assert_eq!(unescape_quoted(r"end\"), r"end\");
 }
+
+#[test]
+fn a_character_is_escaped_by_an_odd_run_of_backslashes() {
+    assert!(super::is_escaped(r#"a\""#, 2));
+    assert!(!super::is_escaped(r#"a\\""#, 3));
+    assert!(super::is_escaped(r#"a\\\""#, 4));
+    assert!(!super::is_escaped(r#"""#, 0));
+}
