@@ -6555,3 +6555,45 @@ fn every_listed_decoration_name_is_mapped_by_the_writer() {
         "duplicate name"
     );
 }
+
+#[test]
+fn score_brackets_and_braces_emit_part_groups() {
+    // `%%score` brackets and braces group parts on the page; the writer used to
+    // drop them, so XML -> ABC -> XML lost the grouping the reader recovers.
+    let part_list = |score: &str, voices: &[&str]| {
+        let body: String = voices.iter().map(|v| format!("V:{v}\nC4|\n")).collect();
+        let source = format!("X:1\n%%score {score}\nL:1/4\nK:C\n{body}");
+        let xml = export_musicxml(&source)
+            .expect("score should export")
+            .musicxml;
+        let start = xml.find("<part-list>").expect("part-list");
+        let end = xml.find("</part-list>").expect("part-list end");
+        xml[start..end]
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.starts_with("<part-group")
+                    || line.starts_with("<group-symbol")
+                    || line.starts_with("<score-part ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    assert_eq!(
+        part_list("[V1 V2] V3", &["V1", "V2", "V3"]),
+        "<part-group number=\"1\" type=\"start\">\n<group-symbol>bracket</group-symbol>\n\
+         <score-part id=\"P1\">\n<score-part id=\"P2\">\n<part-group number=\"1\" type=\"stop\"/>\n\
+         <score-part id=\"P3\">"
+    );
+    // Nested: the bracket opens first and closes last.
+    assert_eq!(
+        part_list("[{A B} C]", &["A", "B", "C"]),
+        "<part-group number=\"1\" type=\"start\">\n<group-symbol>bracket</group-symbol>\n\
+         <part-group number=\"2\" type=\"start\">\n<group-symbol>brace</group-symbol>\n\
+         <score-part id=\"P1\">\n<score-part id=\"P2\">\n<part-group number=\"2\" type=\"stop\"/>\n\
+         <score-part id=\"P3\">\n<part-group number=\"1\" type=\"stop\"/>"
+    );
+    // A one-part group and parentheses emit nothing.
+    assert!(!part_list("[A] (B C)", &["A", "B", "C"]).contains("part-group"));
+}

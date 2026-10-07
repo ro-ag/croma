@@ -10258,3 +10258,16 @@ fn huge_lyric_numbers_are_dropped_instead_of_expanding_into_empty_verses() {
         "verse 2 keeps its position:\n{abc}"
     );
 }
+
+#[test]
+fn score_grouping_survives_abc_to_xml_to_abc() {
+    // The writer now emits `<part-group>` for `%%score` brackets and braces, and
+    // the reader turns them back into `%%score`, so grouping round-trips.
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let source = "X:1\n%%score [{V1 V2} V3] V4\nL:1/4\nK:C\n\
+                  V:V1\nC4|\nV:V2\nD4|\nV:V3\nE4|\nV:V4\nF4|\n";
+    let xml = crate::export_musicxml(source).expect("export").musicxml;
+    let score = read_musicxml(&xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(abc.contains("%%score [{P1 P2} P3] P4\n"), "{abc}");
+}
