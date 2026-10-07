@@ -238,13 +238,15 @@ fn strip_grouping_parentheses(value: &str) -> &str {
         .trim()
 }
 
-struct ClefModel {
-    sign: &'static str,
-    line: &'static str,
+pub(crate) struct ClefModel {
+    pub(crate) sign: &'static str,
+    pub(crate) line: &'static str,
     octave_change: i8,
 }
 
-fn clef_model(clef: Option<&str>) -> ClefModel {
+/// The MusicXML clef written for an ABC clef name. Unknown names fall back to
+/// treble (ABC 2.1); the engraving stem rules derive their staff from this.
+pub(crate) fn clef_model(clef: Option<&str>) -> ClefModel {
     let clef = clef.unwrap_or("treble").to_ascii_lowercase();
     let octave_change = if clef.contains("-15") {
         -2

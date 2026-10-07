@@ -7,7 +7,7 @@ use crate::model::{
 use crate::options::MusicXmlWriteOptions;
 use crate::parse::ParseReport;
 
-mod attributes;
+pub(crate) mod attributes;
 mod barline;
 mod direction;
 mod engrave;

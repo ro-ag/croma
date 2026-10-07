@@ -78,3 +78,43 @@ fn tie_orientation_rules() {
     assert_eq!(tie_orientation(Some(true), true), "over"); // multivoice, stem side
     assert_eq!(tie_orientation(Some(false), true), "under");
 }
+
+#[test]
+fn stem_staff_follows_the_printed_clef() {
+    // `F` and `C` are not ABC clef names, so the writer prints a treble clef
+    // for them; the stem rules used to read them as bass and alto, putting
+    // treble-staff stems the wrong way. Every name maps through the one clef
+    // model now.
+    for (clef, middle) in [
+        ("F", ('B', 4)),
+        ("C", ('B', 4)),
+        ("bass", ('D', 3)),
+        ("bass+8", ('D', 3)),
+        ("alto", ('C', 4)),
+        ("tenor", ('A', 3)),
+        ("perc", ('B', 4)),
+    ] {
+        assert_eq!(
+            middle_distance(Some(clef), middle.0, middle.1),
+            0,
+            "clef={clef}"
+        );
+    }
+}
+
+#[test]
+fn engraved_stem_matches_the_clef_written_for_an_unknown_name() {
+    let engrave = |clef: &str| {
+        let source = format!("X:1\nL:1/4\nK:C clef={clef}\nB,B,B,B,|\n");
+        let options = crate::ExportOptions::default().engrave();
+        crate::export_musicxml_with_options(&source, options)
+            .expect("engraving export should succeed")
+            .musicxml
+    };
+    let unknown = engrave("F");
+    assert!(unknown.contains("<sign>G</sign>"));
+    assert_eq!(
+        unknown.matches("<stem>up</stem>").count(),
+        engrave("treble").matches("<stem>up</stem>").count()
+    );
+}

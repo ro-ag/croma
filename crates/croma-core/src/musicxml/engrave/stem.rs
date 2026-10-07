@@ -3,6 +3,8 @@
 //! note's signed distance from the staff's middle line drives auto stem direction,
 //! and voice parity overrides it when a staff carries multiple voices.
 
+use crate::musicxml::attributes::clef_model;
+
 /// Diatonic step index of a pitch letter (C = 0 … B = 6).
 fn step_index(step: char) -> i32 {
     match step.to_ascii_uppercase() {
@@ -52,16 +54,17 @@ enum ClefFamily {
     Tenor,
 }
 
+/// The staff the stem and rest rules assume, taken from the clef the writer
+/// actually prints (`clef_model`), so the two cannot disagree: `clef=F` is not
+/// an ABC clef name, prints as treble, and so gets treble stems.
 fn clef_family(clef_text: Option<&str>) -> ClefFamily {
-    let text = clef_text.unwrap_or("treble").trim().to_ascii_lowercase();
-    if text.starts_with("bass") || text.starts_with('f') {
-        ClefFamily::Bass
-    } else if text.starts_with("tenor") {
-        ClefFamily::Tenor
-    } else if text.starts_with("alto") || text.starts_with("c") {
-        ClefFamily::Alto
-    } else {
-        ClefFamily::Treble
+    let clef = clef_model(clef_text);
+    match (clef.sign, clef.line) {
+        ("F", _) => ClefFamily::Bass,
+        ("C", "4") => ClefFamily::Tenor,
+        ("C", _) => ClefFamily::Alto,
+        // G clef and the percussion clef share the treble staff positions.
+        _ => ClefFamily::Treble,
     }
 }
 
