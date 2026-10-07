@@ -669,9 +669,10 @@ impl Reader {
         };
 
         let mut entries: Vec<PartListEntry> = Vec::new();
-        // Each active group: (number, symbol, accumulated part_ids).
-        let mut open_groups: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
-        // Completed groups, in close order.
+        // Each active group: (number, symbol, accumulated part_ids, start order).
+        let mut open_groups: Vec<(String, Option<String>, Vec<String>, usize)> = Vec::new();
+        let mut groups_started = 0usize;
+        // Completed groups, in close order (sorted into start order below).
         let mut groups: Vec<PartGroupEntry> = Vec::new();
 
         for child in element_children(part_list) {
@@ -681,7 +682,7 @@ impl Reader {
                     let name = child_text(child, "part-name").map(str::to_owned);
                     let instruments = self.read_part_instruments(child);
                     // Add this part id to every open group (outer → inner).
-                    for (_, _, ids) in &mut open_groups {
+                    for (_, _, ids, _) in &mut open_groups {
                         ids.push(id.clone());
                     }
                     entries.push(PartListEntry {
@@ -696,22 +697,28 @@ impl Reader {
                     match type_attr {
                         "start" => {
                             let symbol = child_text(child, "group-symbol").map(str::to_owned);
-                            open_groups.push((number, symbol, Vec::new()));
+                            open_groups.push((number, symbol, Vec::new(), groups_started));
+                            groups_started += 1;
                         }
                         "stop" => {
                             // Find the matching open group by number (innermost
                             // match, per the MusicXML nesting model).
                             if let Some(pos) =
-                                open_groups.iter().rposition(|(n, _, _)| n == &number)
+                                open_groups.iter().rposition(|(n, _, _, _)| n == &number)
                             {
-                                let (_, symbol_opt, part_ids) = open_groups.remove(pos);
+                                let (_, symbol_opt, part_ids, start_order) =
+                                    open_groups.remove(pos);
                                 let symbol = match symbol_opt.as_deref().unwrap_or_default() {
                                     "brace" => '{',
                                     "bracket" | "square" => '[',
                                     _ => '\0', // "line" or absent → no delimiter
                                 };
                                 if !part_ids.is_empty() {
-                                    groups.push(PartGroupEntry { symbol, part_ids });
+                                    groups.push(PartGroupEntry {
+                                        symbol,
+                                        part_ids,
+                                        start_order,
+                                    });
                                 }
                             }
                         }
@@ -724,7 +731,7 @@ impl Reader {
 
         // Fix 2: any group still open (no matching `stop`) is unbalanced.
         // Emit a warning for each rather than silently dropping it.
-        for (number, _, _) in &open_groups {
+        for (number, _, _, _) in &open_groups {
             self.warn(
                 "musicxml.read.unbalanced_part_group",
                 format!(
@@ -3328,6 +3335,9 @@ struct PartListEntry {
 struct PartGroupEntry {
     symbol: char,
     part_ids: Vec<String>,
+    /// Position of the group's `start` among all `<part-group>` starts. Two
+    /// groups over the same parts nest by it: the earlier start is outer.
+    start_order: usize,
 }
 
 /// The full `<part-list>` read result: the ordered `<score-part>` entries
@@ -3484,18 +3494,9 @@ fn part_score_block_text(part_id: &str, part_score_blocks: &[PartScoreBlock]) ->
 /// - `brace` → `{P1 P2}`
 /// - `line`/absent → `P1 P2` (no delimiters)
 ///
-/// **Nested groups.** When multiple groups are present (nested or sequential), the
-/// directive text is built by rendering each group with its delimiters in the order
-/// they were encountered, then deduplicating consecutive ids to avoid repeating a
-/// part that the outer group already emitted. The nesting logic:
-/// - Groups are sorted by decreasing `part_ids.len()` so that enclosing groups are
-///   rendered before the inner groups they contain.
-/// - Parts already emitted by a sub-group are NOT repeated at the enclosing level;
-///   instead the sub-group's bracketed token block is inserted where those ids were.
-///
-/// **Single-group fast path.** When there is exactly one group, we emit the simple
-/// `[id1 id2 …]` or `{id1 id2}` form directly, which covers the vast majority of
-/// corpus files.
+/// **Nested groups.** Groups nest by part containment (see [`build_score_text`]):
+/// an inner group's block is substituted where its parts sit in the enclosing
+/// group, at any depth, and groups over identical parts nest in start order.
 ///
 /// **Fix 3 — ungrouped parts.** `all_part_ids` is the full `<score-part>` list
 /// in document order. When ≥1 group exists AND ≥1 part is outside every group, the
@@ -3544,164 +3545,104 @@ fn synthesize_score_directive(
 /// not covered by any group are emitted as bare voice-id tokens at their
 /// document-order positions (Fix 3 — ungrouped-part fidelity).
 ///
-/// **Algorithm.**
-///
-/// 1. Identify *top-level* groups — groups whose `part_ids` are NOT a strict
-///    subset of any other group in the list.  Sibling groups are both top-level;
-///    an enclosing wrapper is top-level while its inner groups are not.
-///
-/// 2. Sort top-level groups by the position of their first `part_id` in the
-///    global ordered part list (a union of all part ids in document order).
-///    This preserves document order for sibling groups.
-///
-/// 3. For each top-level group, render it using `render_group_with_subs`, which
-///    substitutes any inner sub-group blocks inline.
-///
-/// 4. Walk `all_part_ids` in document order.  For each id that is the first id
-///    of a top-level group, emit that group's rendered block and skip the
-///    remaining ids of the group.  For each id that belongs to no group at all,
-///    emit it as a bare token.  Skip ids that are non-first members of a
-///    top-level group (they were consumed by the group block in step 4).
-///
-/// 5. Join all collected tokens with `" "`.
+/// **Algorithm.** The groups form a containment tree (see [`group_parents`]):
+/// each group's parent is the smallest group that contains it, and two groups
+/// over the same parts nest in start order (a bracket and a brace over
+/// P1 P2 give `[{P1 P2}]`).  Walk `all_part_ids` in document order: an id that
+/// starts a top-level group emits that group, rendered recursively with its
+/// children substituted in place; an id in no group is a bare token; ids
+/// consumed by a group block are skipped.
 fn build_score_text(
     groups: &[PartGroupEntry],
     all_part_ids: &[&str],
     part_score_blocks: &[PartScoreBlock],
 ) -> String {
-    if groups.is_empty() {
-        return all_part_ids
-            .iter()
-            .map(|id| part_score_block_text(id, part_score_blocks))
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
-
-    // Step 1: find top-level groups — not a strict subset of any other group.
-    // A group G is top-level iff there is no other group H such that every
-    // part_id in G is also in H (i.e. G ⊆ H strictly).
-    let top_level_indices: Vec<usize> = (0..groups.len())
-        .filter(|&i| {
-            let g = &groups[i];
-            // G is NOT contained in any OTHER group H.
-            !groups.iter().enumerate().any(|(j, h)| {
-                j != i
-                    && !h.part_ids.is_empty()
-                    && g.part_ids.iter().all(|id| h.part_ids.contains(id))
-            })
-        })
-        .collect();
-
-    // Fast path: single top-level group AND no ungrouped parts → the pre-fix
-    // simple form; avoids rebuilding the document-order walk for the common case.
-    let all_grouped: bool = all_part_ids
-        .iter()
-        .all(|&id| groups.iter().any(|g| g.part_ids.iter().any(|p| p == id)));
-    if top_level_indices.len() == 1 && all_grouped {
-        let idx = top_level_indices[0];
-        if groups.len() == 1 {
-            return render_group(&groups[idx], part_score_blocks);
-        }
-        return render_group_with_subs(&groups[idx], groups, idx, part_score_blocks);
-    }
-
-    // Step 2: stable document order for top-level groups.  Build a global part
-    // order from all part_ids across all groups (union, first-seen), augmented
-    // with any ungrouped ids from `all_part_ids`.
-    let mut global_order: Vec<&str> = Vec::new();
-    for &id in all_part_ids {
-        if !global_order.contains(&id) {
-            global_order.push(id);
-        }
-    }
-    for g in groups {
-        for id in &g.part_ids {
-            if !global_order.contains(&id.as_str()) {
-                global_order.push(id.as_str());
-            }
-        }
-    }
-    let position_of = |id: &str| -> usize {
-        global_order
-            .iter()
-            .position(|&s| s == id)
-            .unwrap_or(usize::MAX)
+    let parents = group_parents(groups);
+    let children_of = |parent: Option<usize>| -> Vec<usize> {
+        (0..groups.len())
+            .filter(|&i| !groups[i].part_ids.is_empty() && parents[i] == parent)
+            .collect()
     };
 
-    let mut sorted_top: Vec<usize> = top_level_indices;
-    sorted_top.sort_by_key(|&i| {
-        groups[i]
-            .part_ids
-            .first()
-            .map_or(usize::MAX, |id| position_of(id))
-    });
-
-    // Step 3: render each top-level group with its sub-group substitutions.
-    // Build a map: first_id → (rendered_block, set of all ids consumed by that group).
-    let mut top_by_first: std::collections::HashMap<&str, (String, &[String])> = Default::default();
-    for &idx in &sorted_top {
-        let g = &groups[idx];
-        if let Some(first) = g.part_ids.first() {
-            let block = if groups.len() == 1 {
-                render_group(g, part_score_blocks)
-            } else {
-                render_group_with_subs(g, groups, idx, part_score_blocks)
-            };
-            top_by_first.insert(first.as_str(), (block, &g.part_ids));
-        }
-    }
-
-    // Step 4: walk all_part_ids in document order, emitting group blocks or bare tokens.
+    let top_level = children_of(None);
     let mut result_tokens: Vec<String> = Vec::new();
     let mut skip_ids: std::collections::HashSet<&str> = Default::default();
     for &id in all_part_ids {
         if skip_ids.contains(id) {
             continue;
         }
-        if let Some((block, consumed_ids)) = top_by_first.get(id) {
-            result_tokens.push(block.clone());
-            // Mark all ids in this top-level group as consumed so we don't
-            // emit them again as bare tokens.
-            for cid in *consumed_ids {
-                skip_ids.insert(cid.as_str());
+        let starting = top_level
+            .iter()
+            .copied()
+            .filter(|&i| groups[i].part_ids.first().is_some_and(|first| first == id))
+            .max_by_key(|&i| groups[i].part_ids.len());
+        if let Some(index) = starting {
+            result_tokens.push(render_group_tree(
+                index,
+                groups,
+                &parents,
+                part_score_blocks,
+            ));
+            for consumed in &groups[index].part_ids {
+                skip_ids.insert(consumed.as_str());
             }
         } else {
-            // Ungrouped part: emit as bare voice-id token.
             result_tokens.push(part_score_block_text(id, part_score_blocks));
         }
     }
-
-    // Step 5: join all collected tokens.
     result_tokens.join(" ")
 }
 
-/// Render one group, substituting any inner sub-groups (groups whose `part_ids`
-/// are a strict subset of this group) inline at the position of their first part.
-fn render_group_with_subs(
-    group: &PartGroupEntry,
-    all_groups: &[PartGroupEntry],
-    self_idx: usize,
+/// The parent of each group in the containment tree: the smallest other group
+/// whose parts include all of this group's parts, or `None` for a top-level
+/// group.  Groups with identical part sets chain in start order (the first
+/// started is outermost), so neither is lost and the relation stays a tree.  Empty
+/// groups have no parent and are never rendered.
+fn group_parents(groups: &[PartGroupEntry]) -> Vec<Option<usize>> {
+    let contains = |outer: &PartGroupEntry, inner: &PartGroupEntry| {
+        inner.part_ids.iter().all(|id| outer.part_ids.contains(id))
+    };
+    (0..groups.len())
+        .map(|i| {
+            let group = &groups[i];
+            if group.part_ids.is_empty() {
+                return None;
+            }
+            (0..groups.len())
+                .filter(|&j| {
+                    let candidate = &groups[j];
+                    j != i
+                        && contains(candidate, group)
+                        && (candidate.part_ids.len() > group.part_ids.len()
+                            // Same parts: only a group started earlier encloses.
+                            || candidate.start_order < group.start_order)
+                })
+                // Smallest enclosing group; among identical sets, the latest
+                // earlier start, so a run of identical groups nests as a chain.
+                .min_by_key(|&j| {
+                    (
+                        groups[j].part_ids.len(),
+                        std::cmp::Reverse(groups[j].start_order),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Render group `index` with its children in the containment tree substituted
+/// inline at the position of their first part, recursively, so every nesting
+/// level survives (bracket > brace > line keeps all three).
+fn render_group_tree(
+    index: usize,
+    groups: &[PartGroupEntry],
+    parents: &[Option<usize>],
     part_score_blocks: &[PartScoreBlock],
 ) -> String {
-    // Build a map: first part_id of each sub-group → (rendered block, all sub ids).
-    let mut sub_blocks: std::collections::HashMap<&str, (String, &[String])> = Default::default();
-    for (i, g) in all_groups.iter().enumerate() {
-        if i == self_idx || g.part_ids.is_empty() {
-            continue;
-        }
-        // Sub-group: all of g's parts are in `group`, AND g is not the group itself.
-        let is_sub = g.part_ids.iter().all(|id| group.part_ids.contains(id));
-        if is_sub {
-            sub_blocks.insert(
-                g.part_ids[0].as_str(),
-                (render_group(g, part_score_blocks), &g.part_ids),
-            );
-        }
-    }
+    let group = &groups[index];
+    let children: Vec<usize> = (0..groups.len())
+        .filter(|&i| !groups[i].part_ids.is_empty() && parents[i] == Some(index))
+        .collect();
 
-    // Walk this group's part_ids, substituting sub-group blocks in place.
-    let open = open_char(group.symbol);
-    let close = close_char(group.symbol);
     let mut tokens: Vec<String> = Vec::new();
     let mut skip_remaining: usize = 0;
     for id in &group.part_ids {
@@ -3709,35 +3650,28 @@ fn render_group_with_subs(
             skip_remaining -= 1;
             continue;
         }
-        if let Some((block, sub_ids)) = sub_blocks.get(id.as_str()) {
-            skip_remaining = sub_ids.len().saturating_sub(1);
-            tokens.push(block.clone());
+        // Children are disjoint in well-formed input; if two overlapping ones
+        // start on the same part, the larger wins (the smaller cannot be
+        // expressed in `%%score`).
+        let child = children
+            .iter()
+            .copied()
+            .filter(|&i| groups[i].part_ids.first() == Some(id))
+            .max_by_key(|&i| groups[i].part_ids.len());
+        if let Some(child) = child {
+            skip_remaining = groups[child].part_ids.len().saturating_sub(1);
+            tokens.push(render_group_tree(child, groups, parents, part_score_blocks));
         } else {
             tokens.push(part_score_block_text(id, part_score_blocks));
         }
     }
     let inner = tokens.join(" ");
+    let open = open_char(group.symbol);
+    let close = close_char(group.symbol);
     if open == '\0' {
         inner
     } else {
         format!("{open}{inner}{close}")
-    }
-}
-
-/// Render one group as its bracketed string, e.g. `[P1 P2 P3]` or `{P1 P2}`.
-fn render_group(group: &PartGroupEntry, part_score_blocks: &[PartScoreBlock]) -> String {
-    let open = open_char(group.symbol);
-    let close = close_char(group.symbol);
-    let ids = group
-        .part_ids
-        .iter()
-        .map(|id| part_score_block_text(id, part_score_blocks))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if open == '\0' {
-        ids
-    } else {
-        format!("{open}{ids}{close}")
     }
 }
 

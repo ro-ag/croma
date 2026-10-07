@@ -10149,3 +10149,72 @@ fn legend_lists_only_the_codes_the_document_uses() {
         export_musicxml(&plain).expect("plain ABC exports").musicxml,
     );
 }
+
+/// The `%%score` text the reader synthesises for a `<part-list>` body (the
+/// groups and `<score-part>`s between `<part-list>` tags) over parts P1..Pn.
+fn score_text_for_part_list(part_list: &str, part_count: usize) -> String {
+    let parts: String = (1..=part_count)
+        .map(|n| minimal_part(&format!("P{n}")))
+        .collect();
+    let xml = format!(
+        "<?xml version=\"1.0\"?>\n<score-partwise>\n  <part-list>\n{part_list}  </part-list>\n\
+         {parts}</score-partwise>\n"
+    );
+    let score = read_musicxml(&xml).value;
+    assert_eq!(score.metadata.directives.len(), 1, "one %%score directive");
+    score.metadata.directives[0].value.text.clone()
+}
+
+fn group_start(number: u32, symbol: &str) -> String {
+    format!(
+        "    <part-group number=\"{number}\" type=\"start\"><group-symbol>{symbol}</group-symbol></part-group>\n"
+    )
+}
+
+fn group_stop(number: u32) -> String {
+    format!("    <part-group number=\"{number}\" type=\"stop\"/>\n")
+}
+
+fn score_part(id: &str) -> String {
+    format!("    <score-part id=\"{id}\"><part-name/></score-part>\n")
+}
+
+#[test]
+fn part_groups_over_identical_parts_nest_in_start_order() {
+    // A bracket and a brace both spanning P1 P2 used to cancel out (each counted
+    // as inside the other, so neither was top-level) and gave `P1 P2`. Both
+    // survive, the one started first outermost, whichever stops first.
+    for (first_stop, second_stop) in [(2, 1), (1, 2)] {
+        let part_list = [
+            group_start(1, "bracket"),
+            group_start(2, "brace"),
+            score_part("P1"),
+            score_part("P2"),
+            group_stop(first_stop),
+            group_stop(second_stop),
+        ]
+        .concat();
+        assert_eq!(score_text_for_part_list(&part_list, 2), "[{P1 P2}]");
+    }
+}
+
+#[test]
+fn three_level_part_group_nesting_keeps_every_level() {
+    // bracket{P1-P4} > brace{P1-P3} > bracket{P1-P2}: sub-groups were keyed by
+    // their first part and rendered one level deep, so the innermost group
+    // (sharing P1 with the brace) was lost. Every level must survive.
+    let part_list = [
+        group_start(1, "bracket"),
+        group_start(2, "brace"),
+        group_start(3, "bracket"),
+        score_part("P1"),
+        score_part("P2"),
+        group_stop(3),
+        score_part("P3"),
+        group_stop(2),
+        score_part("P4"),
+        group_stop(1),
+    ]
+    .concat();
+    assert_eq!(score_text_for_part_list(&part_list, 4), "[{[P1 P2] P3} P4]");
+}
