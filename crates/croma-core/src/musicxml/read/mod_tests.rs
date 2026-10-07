@@ -10218,3 +10218,43 @@ fn three_level_part_group_nesting_keeps_every_level() {
     .concat();
     assert_eq!(score_text_for_part_list(&part_list, 4), "[{[P1 P2] P3} P4]");
 }
+
+#[test]
+fn huge_lyric_numbers_are_dropped_instead_of_expanding_into_empty_verses() {
+    // Verse N is the Nth `w:` line in ABC, so `<lyric number="65536">` used to
+    // write 65,535 `w:*` placeholders. Numbers above MAX_LYRIC_VERSE are now
+    // dropped with a warning; ordinary numbers still read.
+    let lyric_part = |number: &str| {
+        format!(
+            "<?xml version=\"1.0\"?>\n<score-partwise>\n  <part-list>\n\
+             <score-part id=\"P1\"><part-name/></score-part>\n  </part-list>\n\
+             <part id=\"P1\"><measure number=\"1\">\
+             <attributes><divisions>4</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>\
+             <voice>1</voice><type>quarter</type>\
+             <lyric number=\"{number}\"><syllabic>single</syllabic><text>la</text></lyric>\
+             </note></measure></part>\n</score-partwise>\n"
+        )
+    };
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+
+    let report = read_musicxml(&lyric_part("65536"));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "musicxml.read.lyric_number_out_of_range")
+    );
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.lines().filter(|line| line.starts_with("w:")).count() <= 1,
+        "{abc}"
+    );
+
+    let report = read_musicxml(&lyric_part("2"));
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.contains("w:*\nw:la"),
+        "verse 2 keeps its position:\n{abc}"
+    );
+}

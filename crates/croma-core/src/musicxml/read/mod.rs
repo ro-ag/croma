@@ -2830,6 +2830,17 @@ impl Reader {
                 .attribute("number")
                 .and_then(|raw| raw.trim().parse::<u32>().ok())
                 .unwrap_or(1);
+            if verse > MAX_LYRIC_VERSE {
+                // ABC numbers verses by position, so verse N needs N `w:` lines;
+                // one `number="65536"` would expand into 65,535 placeholders.
+                self.warn(
+                    "musicxml.read.lyric_number_out_of_range",
+                    format!(
+                        "<lyric number=\"{verse}\"> is above the supported {MAX_LYRIC_VERSE} verses; not reconstructed"
+                    ),
+                );
+                continue;
+            }
 
             let text_node = child_element(lyric, "text");
             if text_node.is_none() && child_element(lyric, "extend").is_some() {
@@ -3320,6 +3331,11 @@ struct PartListEntry {
     name: Option<String>,
     instruments: Vec<MusicXmlPartInstrumentModel>,
 }
+
+/// The highest `<lyric number>` read back as a verse. Real scores number verses
+/// in single digits; ABC spells verse N as the Nth `w:` line, so a larger
+/// number would only add empty placeholder lines.
+const MAX_LYRIC_VERSE: u32 = 100;
 
 /// P1a: one `<part-group>` span recovered from the `<part-list>`.
 ///
