@@ -98,18 +98,17 @@
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
-    AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent, ClefChangeModel,
-    DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, HarmonyKindText, KeyAccidentalModel,
-    KeySignatureModel, LyricControl, Measure, MeasureBarline, MeasureId, MeterModel,
-    MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part,
-    PartId, Pitch, RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
-    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
-    Voice, VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind, ChordEvent,
+    ChordMemberEvent, ClefChangeModel, DecorationAttachment, DecorationSourceKind,
+    EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment, GraceNoteEvent,
+    HarmonyKindText, KeyAccidentalModel, KeySignatureModel, LyricControl, Measure, MeasureBarline,
+    MeasureId, MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel,
+    NoteEvent, Part, PartId, Pitch, RepeatEndingCloseLocation, RepeatEndingCloseModel,
+    RepeatEndingCloseType, RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility,
+    Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel,
+    ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel,
+    TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment,
+    TupletRole, Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -166,44 +165,7 @@ pub fn read_musicxml(xml: &str) -> ParseReport<Score> {
 /// A minimal [`Score`] with documented defaults for every field the writer
 /// reads. Used for the empty/error case and as the base the reader fills in.
 fn empty_score(diagnostics: Vec<Diagnostic>) -> Score {
-    Score {
-        metadata: empty_metadata(),
-        parts: Vec::new(),
-        diagnostics,
-        divisions: 1,
-        source_span: READER_SPAN,
-        accidental_policy: AccidentalPolicy {
-            // Matches the lowering's default so a reconstructed score's writer
-            // behaviour (which consults `preserve_explicit_accidentals`) agrees
-            // with a freshly lowered one.
-            preserve_explicit_accidentals: true,
-            reset_at_barlines: true,
-            scope: AccidentalScope::PitchAndOctave,
-            source_span: READER_SPAN,
-        },
-    }
-}
-
-fn empty_metadata() -> ScoreMetadata {
-    ScoreMetadata {
-        // `reference` (ABC `X:`) is never emitted by the writer, so it is
-        // invisible to the idempotence gate; a blank line is the documented
-        // default.
-        reference: TextLine {
-            text: String::new(),
-            span: READER_SPAN,
-        },
-        title: None,
-        composers: Vec::new(),
-        tempo: None,
-        tempo_model: None,
-        meter: None,
-        key: None,
-        directives: Vec::new(),
-        preserved_directives: Vec::new(),
-        post_tune_lyrics: Vec::new(),
-        source_span: READER_SPAN,
-    }
+    Score::empty(READER_SPAN, diagnostics)
 }
 
 #[derive(Default)]
@@ -362,7 +324,7 @@ impl Reader {
                     if let Some(step) = pending_step {
                         let accidental = node_text(child)
                             .and_then(|name| self.accidental_from_name(name))
-                            .or_else(|| pending_alter.and_then(accidental_from_alter))
+                            .or_else(|| pending_alter.and_then(Accidental::from_alter))
                             .unwrap_or(Accidental::Natural);
                         explicit_accidentals.push(KeyAccidentalModel {
                             step,
@@ -2164,7 +2126,7 @@ impl Reader {
                 Fraction::new(1, 8)
             });
         let dots = children_named(note_node, "dot").count();
-        dotted_fraction(base, dots)
+        base.dotted(dots)
     }
 
     /// S6c: fold a `<chord/>` member note into the previous main event, inverting
@@ -3120,7 +3082,7 @@ impl Reader {
             if let Some(text) = node_text(element) {
                 out.push(named_decoration(&format!(
                     "musicxml-tech-fingering-hex-{}",
-                    hex_utf8(text)
+                    crate::hex::encode_hex_utf8(text)
                 )));
             } else {
                 self.warn(
@@ -3197,7 +3159,7 @@ impl Reader {
             && number.bytes().all(|byte| byte.is_ascii_digit())
         {
             let text = node_text(element)
-                .map(|text| format!("-hex-{}", hex_utf8(text)))
+                .map(|text| format!("-hex-{}", crate::hex::encode_hex_utf8(text)))
                 .unwrap_or_default();
             out.push(named_decoration(&format!(
                 "musicxml-{tag}-{spanner_type}-{line_type}-{number}{text}"
@@ -3935,7 +3897,7 @@ impl GraceGroupBuilder {
     /// one), matching the writer's `grace_base_unit` selector.
     fn finish(mut self) -> GraceGroupAttachment {
         let note_count = u32::try_from(self.events.len()).unwrap_or(u32::MAX);
-        let base_unit = grace_base_unit(note_count);
+        let base_unit = super::grace::grace_base_unit(note_count);
         for event in &mut self.events {
             match &mut event.kind {
                 GraceEventKind::Note(note) => {
@@ -4232,20 +4194,6 @@ fn patch_inner_tuplet_ratio(
 /// S6c: the writer's count-based grace base unit ([`MusicXmlWriter`]'s
 /// `grace_base_unit`): 1/8 for a single-element grace group, 1/16 otherwise. A
 /// grace note's display duration is this scaled by its `length_multiplier`.
-fn grace_base_unit(note_count: u32) -> Fraction {
-    if note_count <= 1 {
-        Fraction {
-            numerator: 1,
-            denominator: 8,
-        }
-    } else {
-        Fraction {
-            numerator: 1,
-            denominator: 16,
-        }
-    }
-}
-
 /// `left / right` (exact rational division). Used to recover a grace note's
 /// `length_multiplier = display_duration / base_unit`. A zero/degenerate divisor
 /// yields zero (never a panic); the writer never emits a zero base unit.
@@ -4313,16 +4261,6 @@ fn note_type_fraction(name: &str) -> Option<Fraction> {
 
 /// S6c: a base note value plus `dots` augmentation dots, the inverse of the
 /// writer's `dotted_fraction` (each dot adds half the previous increment).
-fn dotted_fraction(base: Fraction, dots: usize) -> Fraction {
-    let mut duration = base;
-    let mut dot = base;
-    for _ in 0..dots {
-        dot = Fraction::new(dot.numerator, dot.denominator.saturating_mul(2));
-        duration = duration.saturating_add(dot);
-    }
-    duration
-}
-
 /// A [`DecorationAttachment`] with the canonical [`DecorationSourceKind::Named`]
 /// source. The reconstructed `name` is chosen so the writer's
 /// `decoration_notation` re-emits the identical MusicXML element; `Named` (the
@@ -4560,17 +4498,6 @@ fn subtract_fraction(left: Fraction, right: Fraction) -> Fraction {
 /// Map a numeric `<key-alter>` back to an [`Accidental`] (the fallback inverse
 /// when `<key-accidental>` is absent or unrecognised). Mirrors
 /// [`Accidental::alter`].
-fn accidental_from_alter(alter: i8) -> Option<Accidental> {
-    match alter {
-        -2 => Some(Accidental::DoubleFlat),
-        -1 => Some(Accidental::Flat),
-        0 => Some(Accidental::Natural),
-        1 => Some(Accidental::Sharp),
-        2 => Some(Accidental::DoubleSharp),
-        _ => None,
-    }
-}
-
 /// S6a: the inverse of [`MusicXmlWriter::write_barline`]'s `bar-style` map,
 /// disambiguated by `location` and the `<repeat>` direction. The forward map is
 /// many-to-one on `bar-style` alone (`heavy-light` ← both `Initial` and
@@ -4799,16 +4726,6 @@ fn node_text<'a>(node: Node<'a, '_>) -> Option<&'a str> {
 /// for an empty element like `<creator type="composer"></creator>`.
 fn raw_text<'a>(node: Node<'a, '_>) -> &'a str {
     node.text().unwrap_or("")
-}
-
-fn hex_utf8(text: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(text.len() * 2);
-    for byte in text.as_bytes() {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
 }
 
 /// The trimmed text of the first `name` child element of `node`.
@@ -5214,7 +5131,7 @@ fn complete_note_accidental_for_abc(
             .copied()
             .unwrap_or_else(|| key_signature_alter(current_key, step));
         if implied_alter != pitch.alter
-            && let Some(kind) = accidental_from_alter(pitch.alter)
+            && let Some(kind) = Accidental::from_alter(pitch.alter)
         {
             *written_accidental = Some(AccidentalMark {
                 kind,
@@ -5242,8 +5159,7 @@ fn key_signature_alter(key: Option<&KeySignatureModel>, step: char) -> i8 {
     {
         return explicit.accidental.alter();
     }
-    const SHARPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
-    const FLATS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+    use crate::model::{FLAT_ORDER as FLATS, SHARP_ORDER as SHARPS};
     if key.fifths > 0 {
         let count = usize::from(key.fifths.unsigned_abs()).min(SHARPS.len());
         if SHARPS[..count].contains(&step) {
@@ -5962,26 +5878,12 @@ fn key_display_for_abc(key: &KeySignatureModel) -> String {
     let mut display = tonic;
     for accidental in &key.explicit_accidentals {
         display.push(' ');
-        display.push_str(key_accidental_sign_token(accidental.accidental));
+        display.push_str(accidental.accidental.abc_sign());
         // The step is stored uppercase; the parser uppercases the note letter, so
         // a lowercase token (the common ABC spelling) re-parses identically.
         display.push(accidental.step.to_ascii_lowercase());
     }
     display
-}
-
-/// P3: the ABC accidental-sign prefix for a key accidental, the inverse of the
-/// parser's `<sign><note>` accidental tokens (ABC 2.1 §3.1.14): `^`/`_`/`=` and
-/// the doubles `^^`/`__`.
-#[cfg(feature = "musicxml-reader")]
-fn key_accidental_sign_token(accidental: Accidental) -> &'static str {
-    match accidental {
-        Accidental::DoubleFlat => "__",
-        Accidental::Flat => "_",
-        Accidental::Natural => "=",
-        Accidental::Sharp => "^",
-        Accidental::DoubleSharp => "^^",
-    }
 }
 
 /// Canonical ABC `K:` display for a major key with the given circle-of-fifths

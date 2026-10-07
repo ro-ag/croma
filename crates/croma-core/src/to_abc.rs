@@ -186,7 +186,7 @@ fn sound_tempo_instruction(tempo: &TempoModel) -> Option<String> {
     );
     if let Some(text) = &tempo.text {
         if needs_hex_inline_carrier(text) {
-            out.push_str(&format!(" text-hex={}", hex_utf8(text)));
+            out.push_str(&format!(" text-hex={}", crate::hex::encode_hex_utf8(text)));
         } else {
             out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
         }
@@ -205,7 +205,7 @@ fn tempo_instruction(tempo: &TempoModel) -> Option<String> {
     let mut out = format!("croma-tempo role={role}");
     if let Some(text) = &tempo.text {
         if needs_hex_inline_carrier(text) {
-            out.push_str(&format!(" text-hex={}", hex_utf8(text)));
+            out.push_str(&format!(" text-hex={}", crate::hex::encode_hex_utf8(text)));
         } else {
             out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
         }
@@ -231,7 +231,10 @@ fn harmony_text_instruction(kind_text: &HarmonyKindText) -> Option<String> {
         HarmonyKindText::Textless => Some("cr htx".to_owned()),
         HarmonyKindText::Text(value) => {
             if needs_hex_inline_carrier(value) {
-                Some(format!("cr ht text-hex={}", hex_utf8(value)))
+                Some(format!(
+                    "cr ht text-hex={}",
+                    crate::hex::encode_hex_utf8(value)
+                ))
             } else {
                 Some(format!("cr ht text=\"{}\"", abc_carrier_quoted(value)))
             }
@@ -257,7 +260,10 @@ fn lyric_extend_instruction(verse: u32) -> String {
 fn lyric_duplicate_instruction(lyric: &AlignedLyric) -> String {
     let mut out = format!("croma-lyric-duplicate verse={}", lyric.verse);
     if needs_hex_inline_carrier(&lyric.text) {
-        out.push_str(&format!(" text-hex={}", hex_utf8(&lyric.text)));
+        out.push_str(&format!(
+            " text-hex={}",
+            crate::hex::encode_hex_utf8(&lyric.text)
+        ));
     } else {
         out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(&lyric.text)));
     }
@@ -269,16 +275,6 @@ fn lyric_duplicate_instruction(lyric: &AlignedLyric) -> String {
 
 fn needs_hex_inline_carrier(text: &str) -> bool {
     text.chars().any(|c| c == ']' || c == '%' || c.is_control())
-}
-
-fn hex_utf8(text: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(text.len() * 2);
-    for byte in text.as_bytes() {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 fn meter_restatement_instruction() -> &'static str {
@@ -337,7 +333,10 @@ fn clef_cursor_instruction(clef: &ClefChangeModel) -> Option<String> {
     let cursor_back = clef.musicxml_cursor_back?;
     let mut out = String::from("croma-clef-cursor");
     if needs_hex_inline_carrier(&clef.clef.text) {
-        out.push_str(&format!(" clef-hex={}", hex_utf8(&clef.clef.text)));
+        out.push_str(&format!(
+            " clef-hex={}",
+            crate::hex::encode_hex_utf8(&clef.clef.text)
+        ));
     } else {
         out.push_str(&format!(
             " clef=\"{}\"",
@@ -607,7 +606,10 @@ fn initial_meter_carrier(score: &Score, meter: &MeterModel) -> Option<String> {
 fn measure_number_instruction(display_number: &str) -> String {
     let mut out = "croma-measure-number".to_owned();
     if needs_hex_inline_carrier(display_number) {
-        out.push_str(&format!(" n-hex={}", hex_utf8(display_number)));
+        out.push_str(&format!(
+            " n-hex={}",
+            crate::hex::encode_hex_utf8(display_number)
+        ));
     } else if display_number.chars().any(char::is_whitespace) {
         out.push_str(&format!(" n=\"{}\"", abc_carrier_quoted(display_number)));
     } else {
@@ -1710,22 +1712,12 @@ fn barline_str(kind: BarlineKind) -> &'static str {
 }
 
 /// ABC glyph for an explicitly written accidental.
-fn accidental_glyph(kind: Accidental) -> &'static str {
-    match kind {
-        Accidental::DoubleFlat => "__",
-        Accidental::Flat => "_",
-        Accidental::Natural => "=",
-        Accidental::Sharp => "^",
-        Accidental::DoubleSharp => "^^",
-    }
-}
-
 /// Accidental prefix for a note: the originally written accidental's glyph,
 /// or nothing. Every other alter (key signature, measure carry, tie carry
 /// across barlines) is reproduced by the parser's own accidental propagation
 /// on re-parse, so no synthesized glyph is ever needed.
 fn note_accidental(written: Option<Accidental>) -> &'static str {
-    written.map(accidental_glyph).unwrap_or("")
+    written.map(Accidental::abc_sign).unwrap_or("")
 }
 
 /// Render one `&` overlay segment: `& ` plus its events, grouping consecutive

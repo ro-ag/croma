@@ -1,6 +1,18 @@
 //! Hex-encoded UTF-8 text in croma carriers (`text-hex=`, `clef-hex=`,
 //! `n-hex=`, `…-hex-<digits>` decoration names).
 
+/// Encode `text` as lowercase hex of its UTF-8 bytes, the carrier spelling
+/// that survives any ABC context (no quotes, brackets or `%`).
+pub(crate) fn encode_hex_utf8(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(text.len() * 2);
+    for byte in text.as_bytes() {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 /// Decode `hex` (two digits per byte, either case) into text. `None` when the
 /// digits are malformed, the bytes are not UTF-8, or the text holds a character
 /// XML 1.0 cannot carry, so a hand-written carrier can never put one into the

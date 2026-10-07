@@ -847,7 +847,7 @@ fn note_spelling(
         ));
         for candidate in note_type_candidates() {
             for dots in 0..=3 {
-                if Some(dotted_fraction(candidate.fraction, dots)) == normal_duration {
+                if Some(candidate.fraction.dotted(usize::from(dots))) == normal_duration {
                     return NoteSpelling {
                         note_type: candidate.name,
                         dots,
@@ -861,7 +861,7 @@ fn note_spelling(
 
     for candidate in note_type_candidates() {
         for dots in 0..=3 {
-            if dotted_fraction(candidate.fraction, dots) == duration {
+            if candidate.fraction.dotted(usize::from(dots)) == duration {
                 return NoteSpelling {
                     note_type: candidate.name,
                     dots,
@@ -993,14 +993,4 @@ fn note_type_candidates() -> &'static [NoteTypeCandidate] {
             },
         },
     ]
-}
-
-fn dotted_fraction(base: Fraction, dots: u8) -> Fraction {
-    let mut duration = base;
-    let mut dot = base;
-    for _ in 0..dots {
-        dot = Fraction::new(dot.numerator, dot.denominator.saturating_mul(2));
-        duration = duration.saturating_add(dot);
-    }
-    duration
 }

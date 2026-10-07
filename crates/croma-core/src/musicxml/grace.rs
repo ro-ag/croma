@@ -216,7 +216,7 @@ fn grace_member_attachments(note: &GraceNoteEvent) -> EventAttachments {
 /// Count-based grace base unit, matching abc2xml: 1/8 for a single grace note in
 /// the group, 1/16 otherwise. The grace note's written length modifier is
 /// applied on top of this (see [`grace_display_duration`]).
-fn grace_base_unit(note_count: u32) -> Fraction {
+pub(crate) fn grace_base_unit(note_count: u32) -> Fraction {
     if note_count <= 1 {
         Fraction {
             numerator: 1,

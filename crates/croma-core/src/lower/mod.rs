@@ -31,15 +31,14 @@ use std::collections::BTreeMap;
 
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, AnnotationPlacementModel,
-    BarlineKind, ClefChangeModel, Event, EventAttachments, Fraction, HarmonyKindText,
-    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, LyricControl,
-    MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part,
-    PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff,
-    StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind,
-    TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE,
-    checked_lcm,
+    Accidental, AccidentalPolicy, AlignedLyric, AnnotationPlacementModel, BarlineKind,
+    ClefChangeModel, Event, EventAttachments, Fraction, HarmonyKindText, KeyAccidentalModel,
+    KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, LyricControl, MeterModel,
+    MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part, PartId,
+    PreservedDirective, RestVisibility, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
+    ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff, StaffId, StemDirectionModel,
+    TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, checked_lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -1593,12 +1592,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
         diagnostics: input.diagnostics.to_vec(),
         divisions: input.divisions,
         source_span: input.source_span,
-        accidental_policy: AccidentalPolicy {
-            preserve_explicit_accidentals: true,
-            reset_at_barlines: true,
-            scope: AccidentalScope::PitchAndOctave,
-            source_span: input.source_span,
-        },
+        accidental_policy: AccidentalPolicy::abc_default(input.source_span),
     }
 }
 
@@ -2470,7 +2464,7 @@ fn parse_initial_key_accidentals(value: &str, span: Span) -> Vec<KeyAccidentalMo
             let (step, alter) = item.split_once(':')?;
             let step = step.trim().chars().next()?.to_ascii_uppercase();
             let alter = alter.trim().parse::<i8>().ok()?;
-            let accidental = accidental_from_alter(alter)?;
+            let accidental = Accidental::from_alter(alter)?;
             Some(KeyAccidentalModel {
                 step,
                 accidental,
@@ -2478,17 +2472,6 @@ fn parse_initial_key_accidentals(value: &str, span: Span) -> Vec<KeyAccidentalMo
             })
         })
         .collect()
-}
-
-fn accidental_from_alter(alter: i8) -> Option<Accidental> {
-    match alter {
-        -2 => Some(Accidental::DoubleFlat),
-        -1 => Some(Accidental::Flat),
-        0 => Some(Accidental::Natural),
-        1 => Some(Accidental::Sharp),
-        2 => Some(Accidental::DoubleSharp),
-        _ => None,
-    }
 }
 
 fn parse_croma_i8(fields: &BTreeMap<String, String>, key: &str) -> Option<i8> {

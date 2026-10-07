@@ -29,6 +29,21 @@ pub struct Score {
     pub accidental_policy: AccidentalPolicy,
 }
 
+impl Score {
+    /// A score with no parts: what a tune that fails to lower, or an empty
+    /// MusicXML document, produces.
+    pub(crate) fn empty(span: Span, diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            metadata: ScoreMetadata::empty(span),
+            parts: Vec::new(),
+            diagnostics,
+            divisions: 1,
+            source_span: span,
+            accidental_policy: AccidentalPolicy::abc_default(span),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScoreMetadata {
     pub reference: TextLine,
@@ -43,6 +58,28 @@ pub struct ScoreMetadata {
     pub preserved_directives: Vec<PreservedDirective>,
     pub post_tune_lyrics: Vec<TextLine>,
     pub source_span: Span,
+}
+
+impl ScoreMetadata {
+    /// No title, tempo, meter, key or directives; a blank `X:` reference.
+    pub(crate) fn empty(span: Span) -> Self {
+        Self {
+            reference: TextLine {
+                text: String::new(),
+                span,
+            },
+            title: None,
+            composers: Vec::new(),
+            tempo: None,
+            tempo_model: None,
+            meter: None,
+            key: None,
+            directives: Vec::new(),
+            preserved_directives: Vec::new(),
+            post_tune_lyrics: Vec::new(),
+            source_span: span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +190,19 @@ pub struct AccidentalPolicy {
     pub reset_at_barlines: bool,
     pub scope: AccidentalScope,
     pub source_span: Span,
+}
+
+impl AccidentalPolicy {
+    /// ABC's rule: explicit accidentals are kept and last to the end of the
+    /// bar, per pitch and octave.
+    pub(crate) fn abc_default(span: Span) -> Self {
+        Self {
+            preserve_explicit_accidentals: true,
+            reset_at_barlines: true,
+            scope: AccidentalScope::PitchAndOctave,
+            source_span: span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -861,6 +911,29 @@ pub enum Accidental {
 }
 
 impl Accidental {
+    /// The accidental for a semitone alteration in -2..=2, if any.
+    pub(crate) fn from_alter(alter: i8) -> Option<Self> {
+        match alter {
+            -2 => Some(Self::DoubleFlat),
+            -1 => Some(Self::Flat),
+            0 => Some(Self::Natural),
+            1 => Some(Self::Sharp),
+            2 => Some(Self::DoubleSharp),
+            _ => None,
+        }
+    }
+
+    /// The ABC sign written before a note or a key step: `__ _ = ^ ^^`.
+    pub(crate) fn abc_sign(self) -> &'static str {
+        match self {
+            Self::DoubleFlat => "__",
+            Self::Flat => "_",
+            Self::Natural => "=",
+            Self::Sharp => "^",
+            Self::DoubleSharp => "^^",
+        }
+    }
+
     pub(crate) fn alter(self) -> i8 {
         match self {
             Self::DoubleFlat => -2,
@@ -1033,6 +1106,18 @@ impl Fraction {
         })
     }
 
+    /// This value with `dots` augmentation dots, each adding half the previous
+    /// increment.
+    pub(crate) fn dotted(self, dots: usize) -> Self {
+        let mut duration = self;
+        let mut dot = self;
+        for _ in 0..dots {
+            dot = Self::new(dot.numerator, dot.denominator.saturating_mul(2));
+            duration = duration.saturating_add(dot);
+        }
+        duration
+    }
+
     pub(crate) fn less_than(self, other: Self) -> bool {
         u64::from(self.numerator) * u64::from(other.denominator)
             < u64::from(other.numerator) * u64::from(self.denominator)
@@ -1053,6 +1138,10 @@ impl Fraction {
         u32::try_from(value.max(1)).unwrap_or(u32::MAX)
     }
 }
+
+/// Key-signature order of sharps and flats (ABC 2.1 §3.1.14).
+pub(crate) const SHARP_ORDER: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+pub(crate) const FLAT_ORDER: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
 
 /// The least common multiple, or `None` when it does not fit u32.
 pub(crate) fn checked_lcm(left: u32, right: u32) -> Option<u32> {

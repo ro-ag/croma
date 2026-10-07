@@ -5,7 +5,7 @@
 use super::meter::{default_unit_note_length_for_meter, ensure_default_unit_note_length};
 use super::voice::upsert_voice_definition;
 use super::*;
-use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 pub(super) use crate::escape::is_escaped;
 use crate::options::{AbcSpecVersion, ParseMode};
 use crate::source::SourceText;
@@ -231,10 +231,7 @@ pub(super) fn invalid_field_warning(code: &'static str, field: &str, span: Span)
     ))
 }
 
-pub(super) fn abc_field_reference() -> SpecReference {
-    SpecReference::new("ABC 2.1 information fields")
-        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
-}
+pub(super) use crate::lower::abc_field_reference;
 
 impl<'source> FieldParser<'source> {
     pub(super) fn apply_field_state(&mut self, field_index: usize) {
