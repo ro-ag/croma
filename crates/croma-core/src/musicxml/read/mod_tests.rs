@@ -5569,9 +5569,20 @@ fn corpus_idempotence_measurement() {
         eprintln!("  {tag}: {count}");
     }
 
-    // No hard count for S1 — most files use later-stage elements. We only
-    // require the loop to be total (no panic) over the whole corpus.
+    // The loop must be total (no panic) over the whole corpus. The pass count
+    // depends on the corpus, which lives in croma-test, so the floor comes from
+    // there: `READER_SELFLOOP_MIN` (set by croma-test's bootstrap to the
+    // recorded baseline) turns a drop below it into a failure.
     assert!(exported > 0, "expected at least one corpus file to export");
+    if let Some(min) = std::env::var("READER_SELFLOOP_MIN")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    {
+        assert!(
+            idempotent >= min,
+            "reader self-loop regressed: {idempotent}/{exported} round-trip, baseline {min}"
+        );
+    }
 }
 
 // --- Totality fuzz (design §6: read_musicxml must not panic on any file) -----
