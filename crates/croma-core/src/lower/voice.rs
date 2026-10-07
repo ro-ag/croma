@@ -11,6 +11,7 @@ use crate::model::{
     SlurAttachment, SlurRole, TextAttachment, TupletAttachment, TupletRole, VoiceId,
     VoicePropertiesModel,
 };
+use crate::musicxml::notation::decoration_notation;
 use crate::parse::field::KeySignature;
 use crate::syntax::{
     AnnotationPlacement, AttachmentBundle, BrokenRhythmDirection, BrokenRhythmSyntax, ChordSyntax,
@@ -461,7 +462,7 @@ impl LoweringState {
 
         let mut remaining_decorations = Vec::new();
         for decoration in self.pending_decorations.drain(..) {
-            if decoration_binds_to_barline(decoration.name.as_str()) {
+            if decoration_binds_to_barline(&decoration) {
                 direction_span = Some(merge_spans(direction_span, decoration.span));
                 attachments.decorations.push(decoration);
             } else {
@@ -1638,43 +1639,14 @@ fn quoted_text_may_be_harmony(text: &str) -> bool {
     matches!(text.trim_start().chars().next(), Some('A'..='G'))
 }
 
-fn decoration_binds_to_barline(name: &str) -> bool {
-    !matches!(
-        name,
-        "." | "staccato"
-            | ">"
-            | "accent"
-            | "emphasis"
-            | "tenuto"
-            | "wedge"
-            | "marcato"
-            | "breath"
-            | "fermata"
-            | "invertedfermata"
-            | "trill"
-            | "mordent"
-            | "lowermordent"
-            | "uppermordent"
-            | "pralltriller"
-            | "turn"
-            | "invertedturn"
-            | "upbow"
-            | "downbow"
-            | "open"
-            | "thumb"
-            | "snap"
-            | "+"
-            | "plus"
-            | "0"
-            | "1"
-            | "2"
-            | "3"
-            | "4"
-            | "5"
-            | "arpeggio"
-            | "slide"
-            | "roll"
-    )
+/// Whether a decoration still pending at a bar line belongs to the bar line (a
+/// dynamic, text or other direction) rather than waiting for the next note.
+/// Note-bound decorations are exactly those the MusicXML writer renders as a
+/// notation, plus `roll` (`~`), a note ornament the writer suppresses. Sharing
+/// the writer's list means a note decoration (`!caesura!|G`) can no longer be
+/// bound to the bar line and dropped there.
+fn decoration_binds_to_barline(decoration: &DecorationAttachment) -> bool {
+    decoration.name != "roll" && decoration_notation(decoration).is_none()
 }
 
 pub(crate) fn decoration_attachment_model(decoration: &DecorationSyntax) -> DecorationAttachment {

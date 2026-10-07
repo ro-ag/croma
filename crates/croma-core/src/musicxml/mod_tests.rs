@@ -6508,3 +6508,26 @@ fn hex_text_carriers_cannot_inject_non_xml_characters() {
         "control characters leaked into MusicXML"
     );
 }
+
+#[test]
+fn note_decorations_before_a_barline_wait_for_the_next_note() {
+    // A decoration written just before `|` precedes the next note. Lowering
+    // kept its own copy of the note-decoration list, missing caesura,
+    // detached-legato, falloff and doit, so those were bound to the bar line
+    // and silently dropped. They now reach the next note like `!tenuto!|`.
+    for (decoration, element) in [
+        ("caesura", "<caesura"),
+        ("detached-legato", "<detached-legato"),
+        ("falloff", "<falloff"),
+        ("doit", "<doit"),
+        ("tenuto", "<tenuto"),
+    ] {
+        let source = format!("X:1\nM:4/4\nL:1/4\nK:C\nCDEF!{decoration}!|G4|\n");
+        let export = export_musicxml(&source).expect("score should export");
+        assert!(
+            export.musicxml.contains(element),
+            "!{decoration}! before a bar line was dropped:\n{}",
+            export.musicxml
+        );
+    }
+}

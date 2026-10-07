@@ -14,7 +14,7 @@ mod engrave;
 mod grace;
 mod harmony;
 mod lyric;
-mod notation;
+pub(crate) mod notation;
 mod note;
 #[cfg(feature = "musicxml-reader")]
 pub mod read;
