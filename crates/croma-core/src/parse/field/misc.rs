@@ -86,26 +86,11 @@ pub(super) fn trim_quoted_value_span(value: &str, start_offset: usize) -> Spanne
         let inner_start = trimmed.span.start + 1;
         let inner_end = trimmed.span.end.saturating_sub(1);
         return Spanned::new(
-            unescape_text(&trimmed.value[1..trimmed.value.len() - 1]),
+            crate::escape::unescape_quoted(&trimmed.value[1..trimmed.value.len() - 1]),
             Span::new(inner_start, inner_end),
         );
     }
     trimmed
-}
-
-pub(super) fn unescape_text(value: &str) -> String {
-    let mut output = String::new();
-    let mut chars = value.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\'
-            && let Some(next) = chars.next()
-        {
-            output.push(next);
-        } else {
-            output.push(ch);
-        }
-    }
-    output
 }
 
 pub(super) fn is_escaped(text: &str, offset: usize) -> bool {

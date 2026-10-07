@@ -6,6 +6,7 @@
 pub mod agent;
 pub mod diagnostic;
 pub mod error;
+mod escape;
 mod hex;
 mod lower;
 pub mod model;

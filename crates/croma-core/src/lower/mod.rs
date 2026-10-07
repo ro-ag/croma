@@ -2564,19 +2564,18 @@ fn parse_croma_key_values(value: &str) -> BTreeMap<String, String> {
         }
         let mut field_value = String::new();
         if chars.next_if(|(_, ch)| *ch == '"').is_some() {
+            // Collect up to the closing unescaped quote, then undo the writer's
+            // escapes in one place.
+            let mut raw = String::new();
             let mut escaped = false;
             for (_, ch) in chars.by_ref() {
-                if escaped {
-                    field_value.push(ch);
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == '"' {
+                if !escaped && ch == '"' {
                     break;
-                } else {
-                    field_value.push(ch);
                 }
+                escaped = !escaped && ch == '\\';
+                raw.push(ch);
             }
+            field_value = crate::escape::unescape_quoted(&raw);
         } else {
             while let Some((_, ch)) = chars.peek().copied() {
                 if ch.is_whitespace() {

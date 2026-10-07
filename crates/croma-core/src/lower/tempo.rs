@@ -66,11 +66,13 @@ fn extract_quoted_text(raw: &str) -> (Option<String>, String) {
     let Some(close_rel) = find_unescaped_quote(rest) else {
         // Unterminated quote: treat the remainder as text, leave nothing numeric.
         return (
-            Some(unescape_quoted_text(rest).trim().to_owned()),
+            Some(crate::escape::unescape_quoted(rest).trim().to_owned()),
             raw[..open].to_owned(),
         );
     };
-    let text = unescape_quoted_text(&rest[..close_rel]).trim().to_owned();
+    let text = crate::escape::unescape_quoted(&rest[..close_rel])
+        .trim()
+        .to_owned();
     let mut remainder = raw[..open].to_owned();
     remainder.push(' ');
     remainder.push_str(&rest[close_rel + 1..]);
@@ -96,26 +98,6 @@ fn has_closed_quote(raw: &str) -> bool {
     raw.find('"')
         .and_then(|open| find_unescaped_quote(&raw[open + 1..]))
         .is_some()
-}
-
-fn unescape_quoted_text(text: &str) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-        match chars.next() {
-            Some(escaped @ ('"' | '\\')) => out.push(escaped),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
-        }
-    }
-    out
 }
 
 /// Parse the numeric portion of a `Q:` field into a [`TempoBeat`].
