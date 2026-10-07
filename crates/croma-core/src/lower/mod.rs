@@ -2522,27 +2522,7 @@ fn parse_croma_u8(fields: &BTreeMap<String, String>, key: &str) -> Option<u8> {
 }
 
 fn parse_croma_hex_utf8(value: &str) -> Option<String> {
-    let value = value.trim();
-    if !value.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(value.len() / 2);
-    let mut chars = value.bytes();
-    while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
-        let hi = hex_nibble(hi)?;
-        let lo = hex_nibble(lo)?;
-        bytes.push((hi << 4) | lo);
-    }
-    String::from_utf8(bytes).ok()
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    crate::hex::decode_hex_utf8(value.trim())
 }
 
 fn parse_croma_key_values(value: &str) -> BTreeMap<String, String> {

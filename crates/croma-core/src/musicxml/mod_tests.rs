@@ -6490,3 +6490,21 @@ fn bare_odd_tuplets_take_q_from_the_meter() {
     // An inline meter change applies to the tuplets after it.
     assert_eq!(normal_notes("2/4", "[M:6/8](5ABcde f|"), "3");
 }
+
+#[test]
+fn hex_text_carriers_cannot_inject_non_xml_characters() {
+    // `[I:cr ht text-hex=41014200]` decodes to "A\u{1}B\u{0}". The lowering
+    // decoder lacked the XML-character filter its MusicXML twin had, so the
+    // export carried raw control characters: ill-formed XML. The carrier is now
+    // rejected like any other malformed hex.
+    let export = export_musicxml("X:1\nK:C\n[I:cr ht text-hex=41014200]\"C\"C|\n")
+        .expect("score should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export
+            .musicxml
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t' | '\r')),
+        "control characters leaked into MusicXML"
+    );
+}
