@@ -143,7 +143,7 @@ capability has a corpus-scale gate that must stay green:
 
 | Capability | Gate | Result (10k corpus) |
 | --- | --- | --- |
-| ABC → MusicXML writer | structural parity vs `abc2xml` (raw comparator) | **9,390 / 9,390** adjudicated matches |
+| ABC → MusicXML writer | structural parity vs `abc2xml` (raw comparator) | **9,235 / 10,000** match; the other 765 are 700 adjudicated divergences and 65 files with no music |
 | Formatter | idempotent **and** lossless re-formatting | **10,000 / 10,000** |
 | MusicXML → ABC reader | self-loop XML re-emission | **9,933 / 9,935** |
 | MusicXML → ABC reader | foreign-dialect parity vs music21 | **98.50%** |
@@ -153,7 +153,10 @@ capability has a corpus-scale gate that must stay green:
 
 Plus `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`, and
 `cargo fmt --check` on every change. Each gate's residual is *adjudicated* — a
-documented, spec-justified non-bug — never an unexplained failure.
+documented, spec-justified non-bug — never an unexplained failure. The figures
+were last measured on 2026-10-07; the corpus, the adjudications and the
+foreign-dialect (music21) measurement live in the private croma-test repository,
+so they cannot yet be reproduced from this repository alone.
 
 The corpus, the abc2xml comparator, the spec knowledge base, and the Python
 provers live in a companion repository, **croma-test**, so a developer working on
@@ -166,16 +169,16 @@ corpus is absent); the full matrix runs from croma-test.
 [`abc2xml`](https://wim.vree.org/svgParse/abc2xml.html) (by Willem Vree) is the
 long-standing reference ABC→MusicXML converter, and it is croma's correctness
 *baseline*: croma is validated against it over the full 10k corpus. Where abc2xml
-is spec-correct, croma matches it (9,390 / 9,390 structural matches); croma
-diverges only where abc2xml departs from the ABC 2.1 spec, and every such case is
-adjudicated and documented. croma is a from-scratch, library-first reimplementation
+is spec-correct, croma matches it (9,235 of the 10,000 files match structurally);
+croma diverges only where abc2xml departs from the ABC 2.1 spec, and every such
+case (700 files) is adjudicated and documented. croma is a from-scratch, library-first reimplementation
 that improves on the reference in several ways:
 
 | | abc2xml | croma |
 | --- | --- | --- |
 | **Direction** | ABC → MusicXML (the reverse is a separate script, `xml2abc`) | ABC ↔ MusicXML in one library |
 | **Form** | a Python script (needs a Python runtime) | a Rust library + native binaries — zero-dependency, embeddable, crates.io-publishable, callable from any language |
-| **Speed** | interpreted Python | compiled Rust — **7,081** ABC→MusicXML files/s and **43,247** parse files/s over the 10k corpus |
+| **Speed** | interpreted Python | compiled Rust — **7,007** ABC→MusicXML files/s and **50,391** parse files/s over the 10k corpus |
 | **Malformed input** | permissive — silent best-effort heuristics | strict ABC 2.1 — structured **diagnostics** (codes + spans); recovers only when the intent is unambiguous, and always warns |
 | **Output artifacts** | inserts spurious elements as heuristic side effects — e.g. empty leading/section measures, phantom measures | spec-faithful, **minimal** MusicXML — declines those artifacts; most croma↔abc2xml divergences are exactly such an artifact croma omits |
 | **Beyond conversion** | converter only | also a **formatter** (idempotent + lossless), a **language server** (live editor diagnostics / formatting / completion), a reusable **tree-sitter grammar**, and a **Zed extension** |
@@ -191,18 +194,19 @@ claims.)
 
 ## Benchmarks
 
-Headline throughput/latency (Apple M4 Max, Rust 1.96.0, `--release`). Full
-methodology, per-call micro-benchmarks, and reproduction steps:
+Headline throughput/latency, measured 2026-10-07 at commit `98ed4bd` (Apple M4
+Max, Rust 1.96.0, `--release`). Full methodology, per-call micro-benchmarks, and
+reproduction steps:
 [`docs/benchmarks.md`](docs/benchmarks.md).
 
 | Layer | Headline |
 | --- | --- |
-| Parser (corpus, in-process) | **43,247 files/s** · 23.9 MB/s |
-| Formatter (corpus, in-process) | **27,450 files/s** · 15.2 MB/s |
-| ABC → MusicXML writer (corpus) | **7,081 files/s** · 3.9 MB/s |
-| LSP diagnostics, real-size p99 | **≤ 4.76 ms** (release ceiling 50 ms) |
-| LSP semantic tokens, real-size p99 | **≤ 0.62 ms** |
-| `tree-sitter-abc` (steady state) | **~8.5–8.9 MB/s** |
+| Parser (corpus, in-process) | **50,391 files/s** · 27.9 MB/s |
+| Formatter (corpus, in-process) | **32,139 files/s** · 17.8 MB/s |
+| ABC → MusicXML writer (corpus) | **7,007 files/s** · 3.9 MB/s |
+| LSP diagnostics, real-size p99 | **≤ 5.7 ms** (release ceiling 50 ms) |
+| LSP semantic tokens, real-size p99 | **≤ 0.49 ms** |
+| `tree-sitter-abc` (steady state) | **~9.0–9.2 MB/s** |
 
 The corpus median file is 14 lines (max 244); at those sizes every operation is
 in the low-millisecond range. The ABC→MusicXML export path is super-linear on

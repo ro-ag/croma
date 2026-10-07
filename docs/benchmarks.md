@@ -22,10 +22,16 @@ not the git-ignored `target/criterion/` HTML.
 | --- | --- |
 | **CPU** | Apple M4 Max (16 cores) |
 | **RAM** | 64 GB |
-| **OS** | macOS 26.5.1 (Darwin 25.5.0, arm64) |
+| **OS** | macOS 27.0.1 (Darwin 27.0.0, arm64) |
 | **Toolchain** | Rust 1.96.0 (pinned by `rust-toolchain.toml`) |
-| **Commit** | `cb9c099` (current HEAD; this report adds no code, so every number reflects this code state) |
+| **Commit** | `98ed4bd`, measured 2026-10-07 (sections 2–4) |
 | **Build** | `--release` |
+
+**Two measurement dates.** The corpus throughput, LSP latency and grammar
+numbers (sections 2–4) were re-measured on 2026-10-07 at `98ed4bd`. The
+criterion micro-benchmarks (section 1) were recorded in June 2026, before 1.0.0,
+at commit `cb9c099` on macOS 26.5.1; that commit predates a history rewrite and
+is not in this repository's history, and section 1 has not been re-run since.
 
 **Corpus** (used by the corpus-scale and grammar layers): `zenodo-10k` —
 10,000 ABC files, ~5.5 MB total (5,533,070 bytes). Per-file line counts:
@@ -110,12 +116,15 @@ is unset and asserts ≥ 9,000 files when set.
 
 | path | entry point | files | wall | files/s | MB/s |
 | --- | --- | --- | --- | --- | --- |
-| parse | `parse_document` | 10,000 | 0.23 s | **43,247** | **23.9** |
-| export | `export_musicxml` (ABC→XML) | 10,000 | 1.41 s | **7,081** | **3.9** |
-| fmt | `format` | 10,000 | 0.36 s | **27,450** | **15.2** |
+| parse | `parse_document` | 10,000 | 0.20 s | **50,391** | **27.9** |
+| export | `export_musicxml` (ABC→XML) | 10,000 | 1.43 s | **7,007** | **3.9** |
+| fmt | `format` | 10,000 | 0.31 s | **32,139** | **17.8** |
 
-These agree with the per-call micro-benchmarks: corpus parse ≈ 24 MB/s matches the
-fixture parser, corpus fmt ≈ 15 MB/s matches the formatter, and corpus export
+Median of three runs. Export's 65 errors are the corpus files with no music.
+
+These are in line with the (older) per-call micro-benchmarks: corpus parse ≈ 28 MB/s
+against the fixture parser's 25 MiB/s, corpus fmt ≈ 18 MB/s against the formatter's
+14 MiB/s, and corpus export
 ≈ 3.9 MB/s sits between the writer's small/avg fixtures (the corpus skews small —
 median 14 lines — so export amortizes near its fast end).
 
@@ -131,22 +140,26 @@ document; small ≈ 20 lines, large ≈ 1000 lines. All values in **milliseconds
 
 | request | small p50/p95/p99 | avg p50/p95/p99 | large p50/p95/p99 |
 | --- | --- | --- | --- |
-| diagnostics | 0.23 / 0.25 / 0.31 | 4.47 / 4.69 / 4.76 | 59.44 / 62.37 / 62.77 |
-| semantic_tokens | 0.04 / 0.05 / 0.05 | 0.56 / 0.60 / 0.62 | 2.99 / 3.17 / 3.27 |
-| formatting | 0.05 / 0.06 / 0.08 | 0.64 / 0.71 / 0.76 | 3.41 / 3.60 / 3.67 |
-| hover | 0.03 / 0.03 / 0.03 | 0.38 / 0.45 / 0.52 | 2.08 / 2.24 / 2.31 |
-| completion | 0.01 / 0.01 / 0.01 | 0.01 / 0.01 / 0.01 | 0.03 / 0.03 / 0.03 |
-| code_action | 0.23 / 0.25 / 0.29 | 3.00 / 3.19 / 3.23 | 18.36 / 18.99 / 19.22 |
+| diagnostics | 0.25 / 0.29 / 0.31 | 4.85 / 5.02 / 5.05 | 59.49 / 62.70 / 63.60 |
+| semantic_tokens | 0.05 / 0.05 / 0.05 | 0.48 / 0.49 / 0.49 | 2.56 / 2.59 / 2.60 |
+| formatting | 0.05 / 0.05 / 0.06 | 0.56 / 0.58 / 0.59 | 2.89 / 2.95 / 3.00 |
+| hover | 0.03 / 0.03 / 0.03 | 0.33 / 0.34 / 0.35 | 1.77 / 1.79 / 1.80 |
+| completion | 0.01 / 0.01 / 0.01 | 0.01 / 0.02 / 0.02 | 0.03 / 0.03 / 0.03 |
+| code_action | 0.24 / 0.26 / 0.27 | 2.88 / 2.91 / 2.97 | 16.28 / 16.51 / 16.66 |
+
+The first cell measured (diagnostics, small) pays a warm-up in a cold run (p99
+0.68 ms once); the row shows a warm re-run. Diagnostics @ avg p99 ranged 5.03–5.66
+ms over three runs.
 
 **Representative bar (what musicians actually edit).** On small **and** avg inputs,
 every request — including the two heaviest, `diagnostics` and `semantic_tokens` —
 clears the leg-E release ceiling of **p99 < 50 ms** with a wide margin: the worst
-real-size cell is diagnostics @ avg = **4.76 ms p99**, ~10× under the bar. The leg-E
+real-size cell is diagnostics @ avg = **≤ 5.7 ms p99**, ~9× under the bar. The leg-E
 gate asserts this ceiling on small+avg and is retained, so leg E stays a gate, not
 just a measurement.
 
 **Large is a synthetic stress bucket.** 1000 lines is **4× the 244-line maximum real
-corpus file**; no real input reaches it. Here `diagnostics` measures **62.77 ms
+corpus file**; no real input reaches it. Here `diagnostics` measures **63.60 ms
 p99** because it runs the full ABC→MusicXML export (see
 [§6](#6-finding-diagnostics--export-super-linearity)); this is over the 50 ms *real-size*
 ceiling but well under the documented **150 ms backstop** for the stress bucket, and
@@ -172,7 +185,7 @@ directories" warning is benign). tree-sitter CLI 0.26.9.
 
 **Amortized steady state (clean headline).** A 419,940-byte input built by repeating
 the largest clean real file (parses with **zero ERROR nodes**) measures
-**~8,500–8,940 bytes/ms ≈ 8.5–8.9 MB/s** steady-state — the honest per-byte rate
+**~9,010–9,180 bytes/ms ≈ 9.0–9.2 MB/s** steady-state (five runs, 2026-10-07) — the honest per-byte rate
 once fixed per-file setup is amortized away.
 
 > *Aside:* a 445,717-byte concatenation of 400 diverse corpus files measures higher
@@ -191,12 +204,14 @@ once fixed per-file setup is amortized away.
 | reader XML→Score (micro, avg) | 3.5 ms · 210.7 MiB/s (XML-input bytes) |
 | formatter (micro, avg) | 613 µs · 14.4 MiB/s |
 | auto_fixer (micro, avg) | 2.9 ms · 3.03 MiB/s |
-| corpus parse (10k, in-proc) | 43,247 files/s · 23.9 MB/s |
-| corpus export (10k, in-proc) | 7,081 files/s · 3.9 MB/s |
-| corpus fmt (10k, in-proc) | 27,450 files/s · 15.2 MB/s |
-| LSP diagnostics p99 (real-size: small/avg) | 0.31 / 4.76 ms |
-| LSP semantic_tokens p99 (real-size: small/avg) | 0.05 / 0.62 ms |
-| grammar (clean steady state) | ~8.5–8.9 MB/s |
+| corpus parse (10k, in-proc) | 50,391 files/s · 27.9 MB/s |
+| corpus export (10k, in-proc) | 7,007 files/s · 3.9 MB/s |
+| corpus fmt (10k, in-proc) | 32,139 files/s · 17.8 MB/s |
+| LSP diagnostics p99 (real-size: small/avg) | 0.31 / ≤ 5.7 ms |
+| LSP semantic_tokens p99 (real-size: small/avg) | 0.05 / 0.49 ms |
+| grammar (clean steady state) | ~9.0–9.2 MB/s |
+
+The micro rows are the June 2026 (`cb9c099`) measurement; the rest are 2026-10-07.
 
 ---
 
@@ -207,8 +222,8 @@ LSP `diagnostics` request (`analyze_document`) — is **super-linear** in input 
 
 | input | export-bearing measurement | rate |
 | --- | --- | --- |
-| avg ≈ 200 lines | writer 4.1 ms · LSP diagnostics 4.76 ms p99 | ~2.1 MiB/s |
-| large ≈ 1000 lines | writer 54.1 ms · LSP diagnostics 62.77 ms p99 | ~0.84 MiB/s |
+| avg ≈ 200 lines | writer 4.1 ms · LSP diagnostics 5.05 ms p99 | ~2.1 MiB/s |
+| large ≈ 1000 lines | writer 54.1 ms · LSP diagnostics 63.60 ms p99 | ~0.84 MiB/s |
 
 ~5× the input → ~13× the time (and auto_fix, which formats then re-exports, shows the
 same downward slope). The parser, formatter, and reader stay **flat** in MB/s across
@@ -216,7 +231,7 @@ the same size sweep, so the non-linearity is localized to the MusicXML export st
 not parsing or formatting.
 
 **Impact: none for real use.** The corpus maximum is 244 lines, where export stays a
-few ms (largest real file ≈ a few ms; avg diagnostics 4.76 ms p99). The effect only
+few ms (largest real file ≈ a few ms; avg diagnostics ≈ 5 ms p99). The effect only
 appears on the synthetic 1000-line stress bucket (4× the largest real file), and even
 there it sits under the 150 ms LSP backstop. Per the epic's **measure-don't-fix**
 rule, this is **recorded as a low-priority perf-backlog item**, not fixed here. A
