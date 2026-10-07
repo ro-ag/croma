@@ -107,6 +107,18 @@ let xml = abc_to_musicxml("X:1\nT:Scale\nM:4/4\nL:1/8\nK:C\nC D E F G A B c|\n")
 The MusicXML reader's only dependency (`roxmltree`) is opt-in via the
 `musicxml-reader` feature and ships on the CLI binary, never the library default.
 
+### API stability (1.x)
+
+Within 1.x, the conversion entry points (`abc_to_musicxml`, `export_musicxml`,
+`export_musicxml_with_options`, `parse_document`, `lower_score`,
+`write_musicxml`, `write_abc`, `read_musicxml`) and the builder methods on the
+option types keep compiling. The public data types — the score model, syntax
+and parse trees, diagnostics, and the option structs' fields — are **not**
+covered: a minor release may add struct fields and enum variants, as 1.1–1.3
+did. Build options from `Default` plus the builder methods rather than struct
+literals, and give `match`es on croma enums a wildcard arm. 2.0 will mark these
+types `#[non_exhaustive]` so the compiler enforces it.
+
 ## Workspace
 
 ```text
