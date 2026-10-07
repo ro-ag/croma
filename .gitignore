@@ -42,3 +42,9 @@ __pycache__/
 
 # ptrack live project database (never track)
 /.ptrack/
+
+# macOS Finder metadata
+.DS_Store
+
+# Local copy of the GitHub wiki pages (they live in the croma.wiki repo, #228)
+/wiki/
