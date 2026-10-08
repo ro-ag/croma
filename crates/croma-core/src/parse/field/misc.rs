@@ -5,7 +5,8 @@
 use super::meter::{default_unit_note_length_for_meter, ensure_default_unit_note_length};
 use super::voice::upsert_voice_definition;
 use super::*;
-use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
+pub(super) use crate::escape::is_escaped;
 use crate::options::{AbcSpecVersion, ParseMode};
 use crate::source::SourceText;
 
@@ -86,38 +87,11 @@ pub(super) fn trim_quoted_value_span(value: &str, start_offset: usize) -> Spanne
         let inner_start = trimmed.span.start + 1;
         let inner_end = trimmed.span.end.saturating_sub(1);
         return Spanned::new(
-            unescape_text(&trimmed.value[1..trimmed.value.len() - 1]),
+            crate::escape::unescape_quoted(&trimmed.value[1..trimmed.value.len() - 1]),
             Span::new(inner_start, inner_end),
         );
     }
     trimmed
-}
-
-pub(super) fn unescape_text(value: &str) -> String {
-    let mut output = String::new();
-    let mut chars = value.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\'
-            && let Some(next) = chars.next()
-        {
-            output.push(next);
-        } else {
-            output.push(ch);
-        }
-    }
-    output
-}
-
-pub(super) fn is_escaped(text: &str, offset: usize) -> bool {
-    let mut slash_count = 0;
-    for byte in text[..offset].bytes().rev() {
-        if byte == b'\\' {
-            slash_count += 1;
-        } else {
-            break;
-        }
-    }
-    slash_count % 2 == 1
 }
 
 pub(super) fn split_assignment(value: Spanned<String>) -> (Spanned<String>, Spanned<String>) {
@@ -257,10 +231,7 @@ pub(super) fn invalid_field_warning(code: &'static str, field: &str, span: Span)
     ))
 }
 
-pub(super) fn abc_field_reference() -> SpecReference {
-    SpecReference::new("ABC 2.1 information fields")
-        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
-}
+pub(super) use crate::lower::abc_field_reference;
 
 impl<'source> FieldParser<'source> {
     pub(super) fn apply_field_state(&mut self, field_index: usize) {

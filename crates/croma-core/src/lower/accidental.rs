@@ -1,6 +1,6 @@
 use crate::diagnostic::Span;
 use crate::lower::{LoweringState, key_fifths, lowered_timed_note};
-use crate::model::{Accidental, LoweredEventAtomKind};
+use crate::model::{Accidental, FLAT_ORDER, LoweredEventAtomKind, SHARP_ORDER};
 use crate::parse::field::{AccidentalSign, KeySignature};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub(crate) fn key_accidental_policy_from_model(
 ) -> Vec<KeyAccidentalPolicy> {
     let key_span = key.source_span;
     let mut accidentals: Vec<KeyAccidentalPolicy> = if key.fifths > 0 {
-        ['F', 'C', 'G', 'D', 'A', 'E', 'B']
+        SHARP_ORDER
             .into_iter()
             .take(key.fifths as usize)
             .map(|step| KeyAccidentalPolicy {
@@ -61,7 +61,7 @@ pub(crate) fn key_accidental_policy_from_model(
             })
             .collect()
     } else if key.fifths < 0 {
-        ['B', 'E', 'A', 'D', 'G', 'C', 'F']
+        FLAT_ORDER
             .into_iter()
             .take(key.fifths.unsigned_abs() as usize)
             .map(|step| KeyAccidentalPolicy {
@@ -95,7 +95,7 @@ fn key_signature_accidentals(key: &KeySignature) -> Vec<KeyAccidentalPolicy> {
     let fifths = key_fifths(key);
     let key_span = Span::new(0, 0);
     if fifths > 0 {
-        ['F', 'C', 'G', 'D', 'A', 'E', 'B']
+        SHARP_ORDER
             .into_iter()
             .take(fifths as usize)
             .map(|step| KeyAccidentalPolicy {
@@ -105,7 +105,7 @@ fn key_signature_accidentals(key: &KeySignature) -> Vec<KeyAccidentalPolicy> {
             })
             .collect()
     } else if fifths < 0 {
-        ['B', 'E', 'A', 'D', 'G', 'C', 'F']
+        FLAT_ORDER
             .into_iter()
             .take(fifths.unsigned_abs() as usize)
             .map(|step| KeyAccidentalPolicy {

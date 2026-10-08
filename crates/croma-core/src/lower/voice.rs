@@ -1,6 +1,8 @@
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span};
 use crate::lower::accidental::{KeyAccidentalPolicy, MeasureAccidental, key_accidental_policy};
-use crate::lower::{abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference};
+use crate::lower::{
+    abc_broken_rhythm_reference, abc_chord_reference, abc_slur_reference, duration_overflow_warning,
+};
 use crate::model::{
     Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind,
     DecorationAttachment, DecorationSourceKind, Event, EventAttachments, Fraction, GraceEvent,
@@ -9,6 +11,7 @@ use crate::model::{
     SlurAttachment, SlurRole, TextAttachment, TupletAttachment, TupletRole, VoiceId,
     VoicePropertiesModel,
 };
+use crate::musicxml::notation::decoration_notation;
 use crate::parse::field::KeySignature;
 use crate::syntax::{
     AnnotationPlacement, AttachmentBundle, BrokenRhythmDirection, BrokenRhythmSyntax, ChordSyntax,
@@ -86,6 +89,9 @@ pub(crate) struct LoweringState {
     /// current voice, like abc2xml; a standalone `M:` line updates every
     /// voice). Drives multi-measure-rest expansion.
     pub(crate) meter_duration: Option<Fraction>,
+    /// Whether that meter is compound (see `meter_is_compound`), which sets the
+    /// default `q` of a bare `(5`, `(7` or `(9` tuplet.
+    pub(crate) compound_meter: bool,
     pub(crate) lowered: Vec<LoweredEvent>,
     pub(crate) time_groups: Vec<Vec<usize>>,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -240,6 +246,7 @@ impl LoweringState {
         unit: Fraction,
         key: Option<&KeySignature>,
         meter_duration: Option<Fraction>,
+        compound_meter: bool,
     ) -> Self {
         let source_span = id.span;
         Self {
@@ -251,6 +258,7 @@ impl LoweringState {
             initial_meter: None,
             unit,
             meter_duration,
+            compound_meter,
             lowered: Vec::new(),
             time_groups: Vec::new(),
             diagnostics: Vec::new(),
@@ -454,7 +462,7 @@ impl LoweringState {
 
         let mut remaining_decorations = Vec::new();
         for decoration in self.pending_decorations.drain(..) {
-            if decoration_binds_to_barline(decoration.name.as_str()) {
+            if decoration_binds_to_barline(&decoration) {
                 direction_span = Some(merge_spans(direction_span, decoration.span));
                 attachments.decorations.push(decoration);
             } else {
@@ -499,6 +507,11 @@ impl LoweringState {
             written_accidental,
             note.accidental.map(|accidental| accidental.span),
         );
+        let duration = self.scaled_duration(
+            self.unit,
+            length_multiplier(note.length.as_ref()),
+            note.span,
+        );
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -511,9 +524,7 @@ impl LoweringState {
                         chord: false,
                         span: note.span,
                     },
-                    duration: self
-                        .unit
-                        .checked_mul(length_multiplier(note.length.as_ref())),
+                    duration,
                 },
                 true,
                 attachments,
@@ -530,6 +541,11 @@ impl LoweringState {
         source_order: u32,
     ) {
         let attachments = self.take_timed_attachments(&rest.attachments);
+        let duration = self.scaled_duration(
+            self.unit,
+            length_multiplier(rest.length.as_ref()),
+            rest.span,
+        );
         self.push_time_group(
             vec![(
                 LoweredEventAtom {
@@ -538,9 +554,7 @@ impl LoweringState {
                         multiple_rest: None,
                         span: rest.span,
                     },
-                    duration: self
-                        .unit
-                        .checked_mul(length_multiplier(rest.length.as_ref())),
+                    duration,
                 },
                 false,
                 attachments,
@@ -652,8 +666,12 @@ impl LoweringState {
                 written_accidental,
                 member.note.accidental.map(|accidental| accidental.span),
             );
-            let member_multiplier =
-                length_multiplier(member.note.length.as_ref()).checked_mul(outer_multiplier);
+            let member_multiplier = self.scaled_duration(
+                length_multiplier(member.note.length.as_ref()),
+                outer_multiplier,
+                member.note.span,
+            );
+            let duration = self.scaled_duration(self.unit, member_multiplier, member.note.span);
             events.push((
                 LoweredEventAtom {
                     kind: LoweredEventAtomKind::Note {
@@ -665,7 +683,7 @@ impl LoweringState {
                         chord: index > 0,
                         span: member.note.span,
                     },
-                    duration: self.unit.checked_mul(member_multiplier),
+                    duration,
                 },
                 index == 0,
                 attachments,
@@ -730,10 +748,11 @@ impl LoweringState {
         }
 
         self.finish_pending_tie_if_group_is_not_note(&events);
-        let (group_multiplier, pending_broken) = self.consume_group_multiplier();
+        let group_span = events[0].0.span();
+        let (group_multiplier, pending_broken) = self.consume_group_multiplier(group_span);
         let start_index = self.lowered.len();
         for (mut event, alignable, attachments) in events {
-            event.duration = event.duration.checked_mul(group_multiplier);
+            event.duration = self.scaled_duration(event.duration, group_multiplier, event.span());
             self.lowered.push(LoweredEvent::Timed(LoweredTimedEvent {
                 event,
                 line_index,
@@ -755,19 +774,41 @@ impl LoweringState {
         self.broken_left_available = true;
     }
 
-    fn consume_group_multiplier(&mut self) -> (Fraction, Option<PendingBrokenRhythm>) {
-        let mut multiplier = Fraction::one();
+    /// The broken-rhythm and tuplet factors that scale the next group. A factor
+    /// whose product with the others is not representable is dropped, with a
+    /// warning at `span` (the group being scaled).
+    fn consume_group_multiplier(&mut self, span: Span) -> (Fraction, Option<PendingBrokenRhythm>) {
         let pending_broken = self.pending_broken.take();
-        if let Some(pending) = &pending_broken {
-            multiplier = multiplier.checked_mul(pending.right_multiplier);
-        }
-
-        for tuplet in &self.active_tuplets {
-            if tuplet.remaining > 0 {
-                multiplier = multiplier.checked_mul(tuplet.multiplier);
-            }
+        let factors = pending_broken
+            .iter()
+            .map(|pending| pending.right_multiplier)
+            .chain(
+                self.active_tuplets
+                    .iter()
+                    .filter(|tuplet| tuplet.remaining > 0)
+                    .map(|tuplet| tuplet.multiplier),
+            )
+            .collect::<Vec<_>>();
+        let mut multiplier = Fraction::one();
+        for factor in factors {
+            multiplier = self.scaled_duration(multiplier, factor, span);
         }
         (multiplier, pending_broken)
+    }
+
+    /// `base × factor` for a duration taken from the source. When the exact
+    /// product is not representable, warn at `span` and keep `base`: the length
+    /// modifier, broken rhythm or tuplet that overflowed is ignored.
+    pub(crate) fn scaled_duration(
+        &mut self,
+        base: Fraction,
+        factor: Fraction,
+        span: Span,
+    ) -> Fraction {
+        base.checked_mul(factor).unwrap_or_else(|| {
+            self.diagnostics.push(duration_overflow_warning(span));
+            base
+        })
     }
 
     pub(crate) fn apply_broken_rhythm(&mut self, marker: BrokenRhythmSyntax) {
@@ -801,10 +842,18 @@ impl LoweringState {
         pending: &PendingBrokenRhythm,
         right_group: &[usize],
     ) {
+        let mut overflowed = false;
         for index in &pending.left_group {
             if let Some(LoweredEvent::Timed(timed)) = self.lowered.get_mut(*index) {
-                timed.event.duration = timed.event.duration.checked_mul(pending.left_multiplier);
+                match timed.event.duration.checked_mul(pending.left_multiplier) {
+                    Some(duration) => timed.event.duration = duration,
+                    None => overflowed = true,
+                }
             }
+        }
+        if overflowed {
+            self.diagnostics
+                .push(duration_overflow_warning(pending.span));
         }
         if right_group.is_empty() {
             self.diagnostics
@@ -1061,7 +1110,7 @@ impl LoweringState {
             .rev()
             .take_while(|event| !matches!(event, LoweredEvent::Untimed(Event::Barline { .. })))
             .fold(Fraction::zero(), |total, event| match event {
-                LoweredEvent::Timed(timed) => total.checked_add(timed.event.duration),
+                LoweredEvent::Timed(timed) => total.saturating_add(timed.event.duration),
                 _ => total,
             });
         !elapsed.less_than(expected)
@@ -1590,43 +1639,14 @@ fn quoted_text_may_be_harmony(text: &str) -> bool {
     matches!(text.trim_start().chars().next(), Some('A'..='G'))
 }
 
-fn decoration_binds_to_barline(name: &str) -> bool {
-    !matches!(
-        name,
-        "." | "staccato"
-            | ">"
-            | "accent"
-            | "emphasis"
-            | "tenuto"
-            | "wedge"
-            | "marcato"
-            | "breath"
-            | "fermata"
-            | "invertedfermata"
-            | "trill"
-            | "mordent"
-            | "lowermordent"
-            | "uppermordent"
-            | "pralltriller"
-            | "turn"
-            | "invertedturn"
-            | "upbow"
-            | "downbow"
-            | "open"
-            | "thumb"
-            | "snap"
-            | "+"
-            | "plus"
-            | "0"
-            | "1"
-            | "2"
-            | "3"
-            | "4"
-            | "5"
-            | "arpeggio"
-            | "slide"
-            | "roll"
-    )
+/// Whether a decoration still pending at a bar line belongs to the bar line (a
+/// dynamic, text or other direction) rather than waiting for the next note.
+/// Note-bound decorations are exactly those the MusicXML writer renders as a
+/// notation, plus `roll` (`~`), a note ornament the writer suppresses. Sharing
+/// the writer's list means a note decoration (`!caesura!|G`) can no longer be
+/// bound to the bar line and dropped there.
+fn decoration_binds_to_barline(decoration: &DecorationAttachment) -> bool {
+    decoration.name != "roll" && decoration_notation(decoration).is_none()
 }
 
 pub(crate) fn decoration_attachment_model(decoration: &DecorationSyntax) -> DecorationAttachment {
@@ -1748,26 +1768,39 @@ fn lowered_octave(note: &NoteSyntax) -> i8 {
 pub(crate) fn voice_octave_shift(properties: &VoicePropertiesModel) -> i8 {
     let mut shift: i32 = 0;
     if let Some(clef) = properties.clef.as_ref() {
-        let clef = clef.text.as_str();
-        if clef.contains("-15") {
-            shift -= 2;
-        } else if clef.contains("+15") {
-            shift += 2;
-        } else if clef.contains("-8") {
-            shift -= 1;
-        } else if clef.contains("+8") {
-            shift += 1;
-        }
+        shift += i32::from(clef_octave_shift(clef.text.as_str()));
     }
-    if let Some(octave) = properties.octave.as_ref()
-        && let Ok(value) = octave.text.trim().parse::<i64>()
-    {
-        shift += value.clamp(-9, 9) as i32;
-    }
+    shift += voice_octave_param(properties);
     if let Some(middle) = properties.middle.as_ref() {
         shift += i32::from(middle_octave_shift(middle.text.as_str()));
     }
     shift.clamp(-12, 12) as i8
+}
+
+/// The octave shift a clef name's `±8`/`±15` suffix declares on its own. The
+/// MusicXML writer prints it as `<clef-octave-change>`, and the ABC writer
+/// compensates a mid-tune clef change against it.
+pub(crate) fn clef_octave_shift(clef: &str) -> i8 {
+    if clef.contains("-15") {
+        -2
+    } else if clef.contains("+15") {
+        2
+    } else if clef.contains("-8") {
+        -1
+    } else if clef.contains("+8") {
+        1
+    } else {
+        0
+    }
+}
+
+/// The voice's `octave=` modifier as the parser reads it (clamped to ±9), or 0.
+pub(crate) fn voice_octave_param(properties: &VoicePropertiesModel) -> i32 {
+    properties
+        .octave
+        .as_ref()
+        .and_then(|octave| octave.text.trim().parse::<i64>().ok())
+        .map_or(0, |value| value.clamp(-9, 9) as i32)
 }
 
 /// Octave shift declared by a `middle=<pitch>` clef modifier, replicating

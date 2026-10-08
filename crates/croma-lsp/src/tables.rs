@@ -1,8 +1,7 @@
 //! Static documentation tables for hover and completion, sourced from the ABC
 //! 2.1 standard and **grounded in what `croma-core` actually recognises** — not
-//! invented. Per the promotion spec (decision 4, "hover/completion are static
-//! tables"), these are pure presentation over the core's existing taxonomy: no
-//! new spec, no core change.
+//! invented. By design (static tables), these are pure presentation over the
+//! core's existing taxonomy: no new spec, no core change.
 //!
 //! Two tables:
 //!
@@ -10,12 +9,12 @@
 //!   one-line doc + spec reference). Cross-checked against the field kinds
 //!   `croma_core::parse::field` recognises (`X T C O A M L Q P Z N G H K R B D F
 //!   S I U V W w m r s`).
-//! - [`DECORATIONS`] — the decoration names croma maps to MusicXML, drawn from
-//!   `croma_core`'s `decoration_notation` (notations: staccato, accent, tenuto,
-//!   marcato, fermata, trill, mordent, …), `direction` (dynamics p/f/mf/…, coda,
-//!   segno, crescendo/diminuendo hairpins), and the single-char shorthands in
-//!   `parse::music::shorthand_canonical_name` (`~ H L M O P S T u v`). Each entry
-//!   names the meaning and any shorthand. Cited to ABC 2.1 §4.14.
+//! - [`DECORATIONS`] — one row per name in
+//!   `croma_core::musicxml::DECORATION_NAMES` (every decoration the MusicXML
+//!   writer maps: notations, dynamics, coda/segno, hairpins, `roll`), aliases
+//!   included; a test keeps the two in step. Each entry names the meaning and any
+//!   single-char shorthand from `parse::music::shorthand_canonical_name`
+//!   (`~ H L M O P S T u v`). Cited to ABC 2.1 §4.14.
 //!
 //! The doc strings are short Markdown so they render in an LSP `MarkupContent`
 //! hover and a `CompletionItem.documentation`.
@@ -257,13 +256,10 @@ impl Decoration {
     }
 }
 
-/// The decorations croma recognises and maps to MusicXML, grouped by their
-/// `croma_core` source: articulations/ornaments/technical/fermata/arpeggio from
-/// `musicxml::notation::decoration_notation`, dynamics + coda/segno + hairpins
-/// from `musicxml::direction`, and the single-char shorthands from
-/// `parse::music::shorthand_canonical_name`. Names are the canonical spelling the
-/// parser stores; the `shorthand` column records the §4.14 single-char form where
-/// one exists. (Kept in a single flat list so completion can offer them all.)
+/// The decorations croma maps to MusicXML: exactly the names in
+/// `croma_core::musicxml::DECORATION_NAMES`, with a description and the §4.14
+/// single-char shorthand where one exists. Names are the canonical spelling the
+/// parser stores. (Kept in a single flat list so completion can offer them all.)
 pub const DECORATIONS: &[Decoration] = &[
     // Articulations.
     Decoration {
@@ -272,9 +268,24 @@ pub const DECORATIONS: &[Decoration] = &[
         shorthand: None,
     },
     Decoration {
+        name: ".",
+        doc: "Staccato dot, the `.` spelling of `!staccato!`.",
+        shorthand: None,
+    },
+    Decoration {
         name: "accent",
         doc: "Accent (`>`) — emphasise the note.",
         shorthand: Some('L'),
+    },
+    Decoration {
+        name: ">",
+        doc: "Accent, the `>` spelling of `!accent!`.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "emphasis",
+        doc: "Emphasis — the same mark as `!accent!`.",
+        shorthand: None,
     },
     Decoration {
         name: "tenuto",
@@ -294,6 +305,26 @@ pub const DECORATIONS: &[Decoration] = &[
     Decoration {
         name: "breath",
         doc: "Breath mark — a short break between notes.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "caesura",
+        doc: "Caesura — a full break (railroad tracks) after the note.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "detached-legato",
+        doc: "Detached legato (portato) — tenuto and staccato together.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "falloff",
+        doc: "Fall-off — the pitch drops away after the note (jazz).",
+        shorthand: None,
+    },
+    Decoration {
+        name: "doit",
+        doc: "Doit — the pitch scoops upward after the note (jazz).",
         shorthand: None,
     },
     Decoration {
@@ -380,6 +411,11 @@ pub const DECORATIONS: &[Decoration] = &[
         shorthand: None,
     },
     Decoration {
+        name: "+",
+        doc: "Left-hand pizzicato, the `+` spelling of `!plus!`.",
+        shorthand: None,
+    },
+    Decoration {
         name: "arpeggio",
         doc: "Arpeggio — roll the notes of a chord.",
         shorthand: None,
@@ -461,6 +497,91 @@ pub const DECORATIONS: &[Decoration] = &[
         doc: "Dynamic — sforzando (a sudden strong accent).",
         shorthand: None,
     },
+    Decoration {
+        name: "pppppp",
+        doc: "Pianississississimo — the softest dynamic croma maps.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "ppppp",
+        doc: "Pianissississimo — softer than `pppp`.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "pppp",
+        doc: "Pianississimo — softer than `ppp`.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "ffff",
+        doc: "Fortississimo — louder than `fff`.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "fffff",
+        doc: "Fortissississimo — louder than `ffff`.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "ffffff",
+        doc: "Fortississississimo — the loudest dynamic croma maps.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "sf",
+        doc: "Sforzando — a sudden strong accent.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "sfp",
+        doc: "Sforzando-piano — a strong accent, then soft.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "sfpp",
+        doc: "Sforzando-pianissimo — a strong accent, then very soft.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "fp",
+        doc: "Forte-piano — loud, then immediately soft.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "rf",
+        doc: "Rinforzando — a sudden reinforcement.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "rfz",
+        doc: "Rinforzando — a sudden reinforcement.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "sffz",
+        doc: "Sforzatissimo — a stronger sforzando.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "fz",
+        doc: "Forzando — a forced accent.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "n",
+        doc: "Niente — fade to nothing.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "pf",
+        doc: "Piano-forte — soft, then loud.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "sfzp",
+        doc: "Sforzando-piano — a strong accent, then soft.",
+        shorthand: None,
+    },
     // Directions.
     Decoration {
         name: "coda",
@@ -479,8 +600,18 @@ pub const DECORATIONS: &[Decoration] = &[
         shorthand: None,
     },
     Decoration {
+        name: "<(",
+        doc: "Crescendo hairpin start, the `<(` spelling of `!crescendo(!`.",
+        shorthand: None,
+    },
+    Decoration {
         name: "crescendo)",
         doc: "End of a crescendo hairpin.",
+        shorthand: None,
+    },
+    Decoration {
+        name: "<)",
+        doc: "Crescendo hairpin end, the `<)` spelling of `!crescendo)!`.",
         shorthand: None,
     },
     Decoration {
@@ -489,8 +620,18 @@ pub const DECORATIONS: &[Decoration] = &[
         shorthand: None,
     },
     Decoration {
+        name: ">(",
+        doc: "Diminuendo hairpin start, the `>(` spelling of `!diminuendo(!`.",
+        shorthand: None,
+    },
+    Decoration {
         name: "diminuendo)",
         doc: "End of a diminuendo hairpin.",
+        shorthand: None,
+    },
+    Decoration {
+        name: ">)",
+        doc: "Diminuendo hairpin end, the `>)` spelling of `!diminuendo)!`.",
         shorthand: None,
     },
     // The Irish roll: recognised shorthand `~`, normalised to `roll`.
@@ -550,36 +691,20 @@ mod tests {
     }
 
     #[test]
-    fn decorations_are_grounded_in_core_recognised_names() {
-        // Spot-check the high-value decorations the spec calls out.
-        for name in [
-            "staccato",
-            "accent",
-            "tenuto",
-            "marcato",
-            "fermata",
-            "trill",
-            "mordent",
-            "lowermordent",
-            "uppermordent",
-            "turn",
-            "upbow",
-            "downbow",
-            "open",
-            "thumb",
-            "snap",
-            "arpeggio",
-            "slide",
-            "roll",
-            "coda",
-            "segno",
-            "crescendo(",
-        ] {
+    fn decorations_cover_every_name_the_core_maps() {
+        // The table is built from croma_core::musicxml::DECORATION_NAMES: every
+        // name the writer maps gets hover and completion. A name added to the
+        // core list without a row here fails this test.
+        for name in croma_core::musicxml::DECORATION_NAMES {
             assert!(decoration(name).is_some(), "missing decoration {name}");
         }
-        // Dynamics + fingerings.
-        for name in ["p", "f", "mf", "ppp", "fff", "sfz", "0", "5"] {
-            assert!(decoration(name).is_some(), "missing decoration {name}");
+        // And nothing is advertised that the core does not map.
+        for d in DECORATIONS {
+            assert!(
+                croma_core::musicxml::DECORATION_NAMES.contains(&d.name),
+                "{} is not a core decoration",
+                d.name
+            );
         }
         // No duplicate names.
         let mut seen = std::collections::HashSet::new();

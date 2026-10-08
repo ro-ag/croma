@@ -41,7 +41,7 @@ genuine abc2midi/MusicXML semantics and does **not** mimic those quirks.
 | `%%MIDI control 7 <n>` | `<midi-instrument><volume>` | MIDI CC7 (channel volume); `<volume>` = `n / 1.27` (abc2xml parity). |
 | `%%MIDI control 10 <n>` | `<midi-instrument><pan>` | MIDI CC10 (pan); `<pan>` = `n / 127 * 180 - 90`. All other controllers are playback-only and ignored. |
 | `%%MIDI transpose <n>` | `<attributes><transpose><chromatic>n` | A signed semitone shift declaring written-vs-sounding pitch; emitted in the scoped part's first-measure `<attributes>` and does **not** shift the written notes. The ABC `transpose=` voice property (ABC 2.1) takes precedence when both are present. `n` parsed as `i16`. |
-| Inline `[I: MIDI=program N]` (and `channel`/`control`/`transpose`) | same as the line-start forms | The inline music-line form is projected identically (scoped to the voice active at that source position); `[I:...]` still also emits its generic `inline_instruction_ignored` diagnostic. |
+| Inline `[I: MIDI=program N]` (and `channel`/`control`/`transpose`) | same as the line-start forms | The inline music-line form is projected identically (scoped to the voice active at that source position); `[I:...]` still also emits its generic `abc.field.inline_ignored` diagnostic. |
 
 **Per-voice scoping is load-bearing** (`project_voice_midi` in `lower/mod.rs`): a
 directive attaches to the voice of the nearest preceding `V:` declaration

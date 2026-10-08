@@ -7,12 +7,14 @@ description = "ABC music notation support for Zed: tree-sitter highlighting, fol
 repository = "https://github.com/ro-ag/croma"
 
 # The ABC grammar lives in the croma monorepo under `tree-sitter-abc/`, pinned to
-# the G1 merge commit that committed it. `path` selects the grammar subdirectory
-# within the repo — this requires a reasonably recent Zed that supports the
-# `path` key in `[grammars.*]` (older Zed expects the grammar at the repo root).
+# the latest commit that changed it (#170, on main). Re-pin when the grammar
+# changes; the commit must stay reachable from a branch. `path` selects the
+# grammar subdirectory within the repo — this requires a reasonably recent Zed
+# that supports the `path` key in `[grammars.*]` (older Zed expects the grammar
+# at the repo root).
 [grammars.abc]
 repository = "https://github.com/ro-ag/croma"
-commit = "59fc859e24215c4f65c80a50a9f99a1a2122fabc"
+commit = "cdb0708914ea9d335c52111edb6bb7aa45dfaf1f"
 path = "tree-sitter-abc"
 
 # Launch the croma-lsp stdio server for ABC buffers. The binary is resolved at

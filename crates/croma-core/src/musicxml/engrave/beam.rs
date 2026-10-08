@@ -125,12 +125,12 @@ fn table_nodes(meter: Meter) -> Option<Vec<GroupNode>> {
 
 /// The grouping table for `meter`, falling back to MuseScore's `Groups::endings`
 /// synthesis (a full break at every denominator beat) for meters not in the table.
-fn group_nodes(meter: Meter) -> Vec<GroupNode> {
+fn group_nodes(meter: Meter, last_tick: i64) -> Vec<GroupNode> {
     if let Some(nodes) = table_nodes(meter) {
         return nodes;
     }
     // pos step, in 1/32 units, for one denominator beat
-    let step = match meter.denominator {
+    let step: i64 = match meter.denominator {
         2 => 16,
         4 => 8,
         8 => 4,
@@ -138,11 +138,13 @@ fn group_nodes(meter: Meter) -> Vec<GroupNode> {
         32 => 1,
         _ => return Vec::new(),
     };
-    (1..meter.numerator as i32)
-        .map(|i| GroupNode {
-            pos: step * i,
-            action: 0x111,
-        })
+    // A node only matters if a note can land on it, so stop at the last note: a
+    // huge numerator (M:4294967295/4) then neither overflows `pos` nor builds one
+    // node per beat.
+    let last_beat = (last_tick / (step * D32)).min(i64::from(meter.numerator) - 1);
+    (1..=last_beat)
+        .map_while(|i| i32::try_from(step * i).ok())
+        .map(|pos| GroupNode { pos, action: 0x111 })
         .collect()
 }
 
@@ -301,7 +303,15 @@ fn beat_minimums(notes: &[BeamInput], meter: Meter) -> Vec<i64> {
     if meter.denominator != 4 {
         return Vec::new();
     }
-    let beats = meter.numerator as usize + 1;
+    // Lookups past the end read as i64::MAX (no minimum), so size by the last
+    // beat a note starts in rather than the numerator, which may be huge.
+    let last_beat = notes
+        .iter()
+        .map(|note| note.rtick / DIVISION)
+        .max()
+        .unwrap_or(0);
+    let beats =
+        (meter.numerator as usize + 1).min(usize::try_from(last_beat).unwrap_or(usize::MAX));
     let mut mins = vec![i64::MAX; beats + 1];
     for note in notes {
         if note.is_rest {
@@ -332,7 +342,8 @@ pub(crate) fn plan(notes: &[BeamInput], meter: Meter) -> BeamPlan {
             groups: Vec::new(),
         };
     }
-    let nodes = group_nodes(meter);
+    let last_tick = notes.iter().map(|note| note.rtick).max().unwrap_or(0);
+    let nodes = group_nodes(meter, last_tick);
     let beat_min = beat_minimums(notes, meter);
     let modes: Vec<BeamMode> = (0..notes.len())
         .map(|i| actual_beam_mode(&nodes, notes, i, meter, &beat_min))

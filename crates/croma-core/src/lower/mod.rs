@@ -15,6 +15,12 @@ pub(crate) use crate::lower::voice::{
     lowered_timed_note, note_signature,
 };
 
+/// Upper bound on the measures one `Z<n>` multi-measure rest expands into. Each
+/// measure is lowered and written individually, so an absurd count
+/// (`Z4294967295`) would otherwise hang lowering. Ten thousand measures is far
+/// beyond any real tacet.
+pub(crate) const MAX_MULTI_MEASURE_REST: u32 = 10_000;
+
 use crate::diagnostic::{Diagnostic, Span};
 use crate::lower::accidental::{accidental_from_field_sign, key_accidental_policy_from_model};
 use crate::lower::align::{align_lyrics, align_symbols};
@@ -25,14 +31,14 @@ use std::collections::BTreeMap;
 
 use crate::lower::timeline::build_voice_timeline;
 use crate::model::{
-    Accidental, AccidentalPolicy, AccidentalScope, AlignedLyric, AnnotationPlacementModel,
-    BarlineKind, ClefChangeModel, Event, EventAttachments, Fraction, HarmonyKindText,
-    KeyAccidentalModel, KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, LyricControl,
-    MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part,
-    PartId, PreservedDirective, RestVisibility, Score, ScoreDirectiveModel,
-    ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff,
-    StaffId, StemDirectionModel, TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind,
-    TupletRole, VoiceId, VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, lcm,
+    Accidental, AccidentalPolicy, AlignedLyric, AnnotationPlacementModel, BarlineKind,
+    ClefChangeModel, Event, EventAttachments, Fraction, HarmonyKindText, KeyAccidentalModel,
+    KeySignatureModel, LoweredEventAtom, LoweredEventAtomKind, LyricControl, MeterModel,
+    MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, Part, PartId,
+    PreservedDirective, RestVisibility, Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel,
+    ScoreDirectiveTokenModel, ScoreMetadata, SlurRole, Staff, StaffId, StemDirectionModel,
+    TempoBeat, TempoBeatRole, TempoModel, TextLine, TimelineEventKind, TupletRole, VoiceId,
+    VoicePropertiesModel, VoiceTimeline, XVOICE_SLUR_PAIR_ID_BASE, checked_lcm,
 };
 use crate::parse::ParseReport;
 use crate::parse::field::{
@@ -87,8 +93,18 @@ pub(crate) fn lower_tune_music(
         .iter()
         .flat_map(|voice| voice.lowered.iter())
         .collect::<Vec<_>>();
+    // An event whose requirement would push the shared divisions past u32 keeps
+    // the current value instead; its duration is then rounded, with a warning.
+    let mut divisions_overflow = None;
     let divisions = all_lowered.iter().fold(8, |divisions, event| match event {
-        LoweredEvent::Timed(timed) => lcm(divisions, timed.event.duration.divisions_requirement()),
+        LoweredEvent::Timed(timed) => {
+            checked_lcm(divisions, timed.event.duration.divisions_requirement()).unwrap_or_else(
+                || {
+                    divisions_overflow.get_or_insert(timed.event.span());
+                    divisions
+                },
+            )
+        }
         LoweredEvent::Untimed(_)
         | LoweredEvent::Overlay(_)
         | LoweredEvent::VariantEnding(_)
@@ -100,6 +116,9 @@ pub(crate) fn lower_tune_music(
         | LoweredEvent::SectionLabel { .. }
         | LoweredEvent::MeasureNumber { .. } => divisions,
     });
+    if let Some(span) = divisions_overflow {
+        diagnostics.push(divisions_overflow_warning(span));
+    }
     let events = all_lowered
         .into_iter()
         .filter_map(|event| match event {
@@ -169,6 +188,8 @@ struct MultiVoiceLowering {
     /// Header meter duration used to seed each voice when its stream first
     /// appears. Body `M:` changes update only the current voice.
     meter_duration: Option<Fraction>,
+    /// Whether the header meter is compound; seeds each voice like `meter_duration`.
+    compound_meter: bool,
     voices: Vec<LoweringState>,
     current_voice: String,
     source_order: u32,
@@ -216,6 +237,10 @@ impl MultiVoiceLowering {
                 .meter
                 .as_ref()
                 .and_then(|meter| meter_duration(&meter.value)),
+            compound_meter: field_state
+                .meter
+                .as_ref()
+                .is_some_and(|meter| meter_is_compound(&meter.value)),
             voices: Vec::new(),
             current_voice: String::new(),
             source_order: 0,
@@ -334,6 +359,7 @@ impl MultiVoiceLowering {
         let voice = self.current_state();
         voice.finish_open_tuplets_at_boundary();
         voice.meter_duration = duration;
+        voice.compound_meter = meter_is_compound(&meter.value);
         // Record the change at the current voice's position so exporters can
         // reproduce it. A change to the voice's already-effective meter
         // (header included) records nothing: interleaved sources restate
@@ -607,6 +633,7 @@ impl MultiVoiceLowering {
                 if let Some(meter) = parse_initial_meter_instruction(value, inline.value.span) {
                     let state = self.current_state();
                     state.meter_duration = meter.duration;
+                    state.compound_meter = meter_is_compound(&parse_meter(&meter.display));
                     state.initial_meter = Some(meter);
                     return;
                 }
@@ -764,7 +791,13 @@ impl MultiVoiceLowering {
                         .push_rest_group(rest, line.line_index, source_order);
                 }
                 MusicItem::MultiMeasureRest(rest) => {
-                    let count = rest.count.map(|count| count.value).unwrap_or(1).max(1);
+                    let requested = rest.count.map(|count| count.value).unwrap_or(1).max(1);
+                    if requested > MAX_MULTI_MEASURE_REST {
+                        self.current_state()
+                            .diagnostics
+                            .push(multirest_too_long_warning(rest.span, requested));
+                    }
+                    let count = requested.min(MAX_MULTI_MEASURE_REST);
                     let voice_meter = self.current_state().meter_duration;
                     if let Some(meter_duration) = voice_meter {
                         let source_order = self.next_source_order();
@@ -807,7 +840,12 @@ impl MultiVoiceLowering {
                         self.current_state()
                             .diagnostics
                             .push(free_meter_multirest_warning(rest.span));
-                        let duration = self.unit.checked_mul_u32(count);
+                        let unit = self.unit;
+                        let duration = self.current_state().scaled_duration(
+                            unit,
+                            Fraction::new(count, 1),
+                            rest.span,
+                        );
                         let source_order = self.next_source_order();
                         let attachments = self
                             .current_state()
@@ -1029,6 +1067,7 @@ impl MultiVoiceLowering {
             self.unit,
             self.key.as_ref(),
             self.meter_duration,
+            self.compound_meter,
         );
         self.voices.push(state);
         self.voices.len() - 1
@@ -1553,12 +1592,7 @@ pub(crate) fn build_score_model(input: ScoreModelInput<'_>) -> Score {
         diagnostics: input.diagnostics.to_vec(),
         divisions: input.divisions,
         source_span: input.source_span,
-        accidental_policy: AccidentalPolicy {
-            preserve_explicit_accidentals: true,
-            reset_at_barlines: true,
-            scope: AccidentalScope::PitchAndOctave,
-            source_span: input.source_span,
-        },
+        accidental_policy: AccidentalPolicy::abc_default(input.source_span),
     }
 }
 
@@ -2430,7 +2464,7 @@ fn parse_initial_key_accidentals(value: &str, span: Span) -> Vec<KeyAccidentalMo
             let (step, alter) = item.split_once(':')?;
             let step = step.trim().chars().next()?.to_ascii_uppercase();
             let alter = alter.trim().parse::<i8>().ok()?;
-            let accidental = accidental_from_alter(alter)?;
+            let accidental = Accidental::from_alter(alter)?;
             Some(KeyAccidentalModel {
                 step,
                 accidental,
@@ -2438,17 +2472,6 @@ fn parse_initial_key_accidentals(value: &str, span: Span) -> Vec<KeyAccidentalMo
             })
         })
         .collect()
-}
-
-fn accidental_from_alter(alter: i8) -> Option<Accidental> {
-    match alter {
-        -2 => Some(Accidental::DoubleFlat),
-        -1 => Some(Accidental::Flat),
-        0 => Some(Accidental::Natural),
-        1 => Some(Accidental::Sharp),
-        2 => Some(Accidental::DoubleSharp),
-        _ => None,
-    }
 }
 
 fn parse_croma_i8(fields: &BTreeMap<String, String>, key: &str) -> Option<i8> {
@@ -2482,27 +2505,7 @@ fn parse_croma_u8(fields: &BTreeMap<String, String>, key: &str) -> Option<u8> {
 }
 
 fn parse_croma_hex_utf8(value: &str) -> Option<String> {
-    let value = value.trim();
-    if !value.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(value.len() / 2);
-    let mut chars = value.bytes();
-    while let (Some(hi), Some(lo)) = (chars.next(), chars.next()) {
-        let hi = hex_nibble(hi)?;
-        let lo = hex_nibble(lo)?;
-        bytes.push((hi << 4) | lo);
-    }
-    String::from_utf8(bytes).ok()
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    crate::hex::decode_hex_utf8(value.trim())
 }
 
 fn parse_croma_key_values(value: &str) -> BTreeMap<String, String> {
@@ -2544,19 +2547,18 @@ fn parse_croma_key_values(value: &str) -> BTreeMap<String, String> {
         }
         let mut field_value = String::new();
         if chars.next_if(|(_, ch)| *ch == '"').is_some() {
+            // Collect up to the closing unescaped quote, then undo the writer's
+            // escapes in one place.
+            let mut raw = String::new();
             let mut escaped = false;
             for (_, ch) in chars.by_ref() {
-                if escaped {
-                    field_value.push(ch);
-                    escaped = false;
-                } else if ch == '\\' {
-                    escaped = true;
-                } else if ch == '"' {
+                if !escaped && ch == '"' {
                     break;
-                } else {
-                    field_value.push(ch);
                 }
+                escaped = !escaped && ch == '\\';
+                raw.push(ch);
             }
+            field_value = crate::escape::unescape_quoted(&raw);
         } else {
             while let Some((_, ch)) = chars.peek().copied() {
                 if ch.is_whitespace() {
@@ -2706,7 +2708,7 @@ fn complex_meter_duration(raw: &str) -> Option<Fraction> {
             total = total.checked_add(Fraction::new(
                 numerator.trim().parse().ok()?,
                 denominator.trim().parse().ok()?,
-            ));
+            ))?;
             saw_part = true;
         }
         return saw_part.then_some(total);
@@ -2761,9 +2763,21 @@ fn barline_lowering_kinds_with_kind(
     vec![kind]
 }
 
-pub(crate) fn default_tuplet_q(p: u32) -> u32 {
+/// A meter is compound when its literal numerator is a multiple of three above
+/// three (6/8, 9/8, 12/8, but also 6/4 or 9/16), whatever the denominator. ABC
+/// 2.1 §4.13 names 6/8, 9/8 and 12/8 as examples; `C`, `C|`, free and additive
+/// meters are not compound.
+pub(crate) fn meter_is_compound(meter: &Meter) -> bool {
+    matches!(meter.kind, MeterKind::Fraction { numerator, .. } if numerator > 3 && numerator % 3 == 0)
+}
+
+/// The `q` of a tuplet written without one (ABC 2.1 §4.13): `(2`, `(4`, `(8`
+/// take 3; `(3`, `(6` take 2; `(5`, `(7`, `(9` take 3 in compound meter and 2
+/// otherwise.
+pub(crate) fn default_tuplet_q(p: u32, compound_meter: bool) -> u32 {
     match p {
         2 | 4 | 8 => 3,
+        5 | 7 | 9 if compound_meter => 3,
         _ => 2,
     }
 }

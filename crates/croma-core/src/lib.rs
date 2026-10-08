@@ -1,11 +1,25 @@
-//! Croma core library.
+//! Croma core library: the ABC 2.1 parser, score model, and ABC <-> MusicXML
+//! conversion. The CLI, formatter, and language server call this library
+//! rather than reparsing ABC.
 //!
-//! The first stable product surface is ABC -> MusicXML. CLI, formatter, and
-//! language-server crates should call this library rather than reparsing ABC.
+//! # Stability (1.x)
+//!
+//! Within 1.x, the conversion entry points ([`abc_to_musicxml`],
+//! [`export_musicxml`], [`export_musicxml_with_options`], [`parse_document`],
+//! [`lower_score`], [`write_musicxml`], [`write_abc`], and `read_musicxml` with
+//! the `musicxml-reader` feature) and the builder methods on the option types
+//! keep compiling. The public data types — the score model, syntax and parse
+//! trees, diagnostics, and the option structs' fields — are not covered: a minor
+//! release may add struct fields and enum variants. Build options from
+//! `Default` plus the builder methods rather than struct literals, and give
+//! `match`es on croma enums a wildcard arm. 2.0 will mark these types
+//! `#[non_exhaustive]`.
 
 pub mod agent;
 pub mod diagnostic;
 pub mod error;
+mod escape;
+mod hex;
 mod lower;
 pub mod model;
 pub mod musicxml;
@@ -39,10 +53,11 @@ pub use syntax::{
 };
 pub use to_abc::{AbcWriteOptions, write_abc};
 
-/// Experimental MusicXML -> [`Score`] reader (the inverse of [`write_musicxml`]).
+/// MusicXML -> [`Score`] reader (the inverse of [`write_musicxml`]).
 ///
-/// Feature-gated behind `musicxml-reader`; the default build never compiles it
-/// nor its sole optional dependency (`roxmltree`). See
+/// Behind the `musicxml-reader` feature (on in the `croma` CLI); the default
+/// library build never compiles it nor its sole optional dependency
+/// (`roxmltree`). See
 /// [`musicxml::read::read_musicxml`].
 #[cfg(feature = "musicxml-reader")]
 pub use musicxml::read::read_musicxml;
@@ -126,6 +141,10 @@ pub fn export_musicxml_with_options(
         diagnostics,
     })
 }
+
+#[cfg(test)]
+#[path = "totality_tests.rs"]
+mod totality_tests;
 
 #[cfg(test)]
 mod tests {

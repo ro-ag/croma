@@ -1,6 +1,7 @@
 //! Diagnostic and spec-reference builders for the lowering stage.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+use crate::lower::MAX_MULTI_MEASURE_REST;
 use crate::model::{BarlineKind, Fraction};
 
 pub(crate) fn invalid_tuplet_warning(span: Span) -> Diagnostic {
@@ -60,6 +61,47 @@ pub(crate) fn free_meter_multirest_warning(span: Span) -> Diagnostic {
     .with_spec_reference(abc_rest_reference())
     .with_recovery_note(RecoveryNote::new(
         "The rest count was preserved and each measure was lowered as one unit note length.",
+    ))
+}
+
+pub(crate) fn duration_overflow_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.duration_overflow",
+        "Duration is too long or too finely divided to represent; its length modifier was ignored",
+        span,
+    )
+    .with_spec_reference(abc_note_length_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The note or rest kept its duration from before the overflowing length, broken rhythm or tuplet factor.",
+    ))
+}
+
+pub(crate) fn divisions_overflow_warning(span: Span) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.divisions_overflow",
+        "Durations need more divisions per quarter note than MusicXML can carry; some durations were rounded",
+        span,
+    )
+    .with_spec_reference(abc_note_length_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The divisions value was kept at the largest common value that fits, and durations it cannot express exactly were rounded down.",
+    ))
+}
+
+pub(crate) fn multirest_too_long_warning(span: Span, requested: u32) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Warning,
+        "abc.music.multirest.too_long",
+        format!(
+            "Multi-measure rest of {requested} measures exceeds the supported {MAX_MULTI_MEASURE_REST}; recovered as {MAX_MULTI_MEASURE_REST}"
+        ),
+        span,
+    )
+    .with_spec_reference(abc_rest_reference())
+    .with_recovery_note(RecoveryNote::new(
+        "The rest was lowered as the maximum supported number of measures.",
     ))
 }
 
@@ -235,6 +277,11 @@ pub(crate) fn key_tonic_trailing_junk_ignored_warning(span: Span) -> Diagnostic 
 
 pub(crate) fn abc_barline_reference() -> SpecReference {
     SpecReference::new("ABC 2.1 section 4.8 repeat/bar symbols")
+        .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
+}
+
+pub(crate) fn abc_note_length_reference() -> SpecReference {
+    SpecReference::new("ABC 2.1 section 4.3 note lengths")
         .with_url("https://abcnotation.com/wiki/abc:standard:v2.1")
 }
 

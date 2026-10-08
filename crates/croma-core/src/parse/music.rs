@@ -3,6 +3,7 @@
 //! The lowering half (text-AST -> model) remains in `crate::lower`.
 
 use crate::diagnostic::{Diagnostic, RecoveryNote, Severity, Span, SpecReference};
+pub(super) use crate::escape::is_escaped;
 use crate::lower::{abc_field_reference, music_code_span};
 use crate::model::RestVisibility;
 use crate::parse::ParseReport;
@@ -11,8 +12,8 @@ use crate::parse::directive::{
     parse_preserved_stylesheet_directive, parse_score_stylesheet_directive,
 };
 use crate::parse::field::{
-    DialectState, InterpretationField, ParsedAbcFields, ParsedFieldKind, ScoreDirective, Spanned,
-    parse_voice_for_music,
+    DialectState, InterpretationField, ParsedAbcFields, ParsedField, ParsedFieldKind,
+    ScoreDirective, Spanned, parse_voice_for_music,
 };
 use crate::parse::lyric::{parse_lyric_line, parse_symbol_line};
 use crate::source::SourceText;
@@ -23,6 +24,7 @@ use crate::syntax::{
     ParsedMusicDocument, ParsedTuneMusic, QuotedTextKind, ScoreDirectiveSyntax, SlurDirection,
     SpacerSyntax, UnsupportedSyntax, UnsupportedSyntaxKind,
 };
+use std::collections::HashMap;
 
 pub(crate) fn parse_music_document(
     source: &SourceText,
@@ -31,6 +33,16 @@ pub(crate) fn parse_music_document(
 ) -> ParseReport<ParsedMusicDocument> {
     let mut diagnostics = Vec::new();
     let diagnostic_options = fields.file_header.dialect.diagnostics;
+    // Index the fields by line once: a linear search per line made parsing
+    // quadratic in the number of field lines (16k `w:` lines took ~0.2 s, and
+    // doubling them quadrupled it). The first field on a line wins, as the
+    // linear `find` did.
+    let mut field_by_line: HashMap<usize, &ParsedField> = HashMap::new();
+    for field in &fields.fields {
+        field_by_line.entry(field.line_index).or_insert(field);
+    }
+    let field_for =
+        |line: &crate::syntax::tune::ClassifiedLine| field_by_line.get(&line.index).copied();
     let mut tunes = surface
         .line_map
         .tunes
@@ -51,7 +63,7 @@ pub(crate) fn parse_music_document(
         let LineContext::TuneBody { tune_index } = line.context else {
             if matches!(line.context, LineContext::TuneHeader { .. })
                 && line.kind == LineKind::InformationField
-                && let Some(field_line) = music_field_for_line(fields, line)
+                && let Some(field_line) = music_field_for_line(field_for(line), line)
                 && let Some(tune_index) = tune_index_for_line_context(line.context)
                 && let Some(tune) = tunes.iter_mut().find(|tune| tune.tune_index == tune_index)
             {
@@ -107,8 +119,8 @@ pub(crate) fn parse_music_document(
         };
 
         if line.kind == LineKind::InformationField {
-            if let Some(field_line) = music_field_for_line(fields, line) {
-                let same_line_voice_music = same_line_voice_music(fields, line);
+            if let Some(field_line) = music_field_for_line(field_for(line), line) {
+                let same_line_voice_music = same_line_voice_music(field_for(line));
                 match &field_line.kind {
                     MusicFieldLineKind::Lyric(lyric) => {
                         tune.lyric_lines.push(lyric.clone());
@@ -144,7 +156,7 @@ pub(crate) fn parse_music_document(
                         tune.lines.push(parsed_line.line);
                     }
                 } else {
-                    push_discarded_voice_text_warnings(source, fields, line, &mut diagnostics);
+                    push_discarded_voice_text_warnings(source, field_for(line), &mut diagnostics);
                     tune.body_fields.push(field_line);
                 }
             }
@@ -291,14 +303,8 @@ fn parse_music_code_line(
     })
 }
 
-fn same_line_voice_music(
-    fields: &ParsedAbcFields,
-    line: &crate::syntax::tune::ClassifiedLine,
-) -> Option<(MusicFieldLine, Span)> {
-    let field = fields
-        .fields
-        .iter()
-        .find(|field| field.line_index == line.index)?;
+fn same_line_voice_music(field: Option<&ParsedField>) -> Option<(MusicFieldLine, Span)> {
+    let field = field?;
     let ParsedFieldKind::Voice(voice) = &field.kind else {
         return None;
     };
@@ -339,15 +345,10 @@ fn is_voice_parameter_token(token: &str) -> bool {
 /// discarding it silently.
 fn push_discarded_voice_text_warnings(
     source: &SourceText,
-    fields: &ParsedAbcFields,
-    line: &crate::syntax::tune::ClassifiedLine,
+    field: Option<&ParsedField>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let Some(field) = fields
-        .fields
-        .iter()
-        .find(|field| field.line_index == line.index)
-    else {
+    let Some(field) = field else {
         return;
     };
     let ParsedFieldKind::Voice(voice) = &field.kind else {
@@ -452,13 +453,10 @@ fn looks_like_same_line_music(value: &str) -> bool {
 }
 
 fn music_field_for_line(
-    fields: &ParsedAbcFields,
+    field: Option<&ParsedField>,
     line: &crate::syntax::tune::ClassifiedLine,
 ) -> Option<MusicFieldLine> {
-    let field = fields
-        .fields
-        .iter()
-        .find(|field| field.line_index == line.index)?;
+    let field = field?;
     let value = match &field.kind {
         ParsedFieldKind::Meter(value) => Spanned::new(value.value.raw.clone(), value.span),
         ParsedFieldKind::UnitNoteLength(value) => Spanned::new(
@@ -1137,18 +1135,6 @@ pub(super) fn user_symbol_canonical_name(replacement: &str) -> Option<String> {
         return Some(canonical);
     }
     Some(inner.to_string())
-}
-
-pub(super) fn is_escaped(text: &str, offset: usize) -> bool {
-    let mut slash_count = 0;
-    for byte in text[..offset].bytes().rev() {
-        if byte == b'\\' {
-            slash_count += 1;
-        } else {
-            break;
-        }
-    }
-    slash_count % 2 == 1
 }
 
 pub(super) fn classify_quoted_text(text: &str) -> QuotedTextKind {

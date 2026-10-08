@@ -23,8 +23,8 @@ workspace = true
 [dependencies]
 croma-core = { path = "../croma-core", version = "1.3.0" }
 # `croma-fmt` is itself zero-external-dep (path dep on croma-core only), so it
-# introduces no third-party crate; it backs `textDocument/formatting` (R2) and
-# the future `source.fixAll` code action (R3). Nothing flows into croma-core.
+# introduces no third-party crate; it backs `textDocument/formatting` and
+# the `source.fixAll` code action. Nothing flows into croma-core.
 croma-fmt = { path = "../croma-fmt", version = "1.3.0" }
 lsp-server = "0.10"
 lsp-types = "0.97"

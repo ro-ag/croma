@@ -1,9 +1,9 @@
 //! `textDocument/formatting` as a single whole-document replace.
 //!
-//! Per the promotion spec (decision 3, "codeAction = whole-document replace")
-//! and promotion-bar leg B, the LSP never formats independently: it calls the
-//! proven [`croma_fmt::format`] (idempotent + lossless, 10000/0 over the corpus)
-//! and returns one full-document [`lsp_types::TextEdit`] carrying its output.
+//! By design (whole-document replace, and promotion-bar leg B), the LSP never
+//! formats independently: it calls the proven [`croma_fmt::format`] (idempotent
+//! and lossless, 10000/0 over the corpus) and returns one full-document
+//! [`lsp_types::TextEdit`] carrying its output.
 //! If formatting is a no-op (`format(text) == text`) we return `vec![]` so the
 //! client makes no edit. Because the single edit replaces the whole buffer with
 //! `format`'s output verbatim, applying it reproduces `croma_fmt::format` exactly

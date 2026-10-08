@@ -168,3 +168,19 @@ fn reported_compact_names_are_recognised_as_croma_carriers() {
     )));
     assert!(!is_croma_carrier_name(&unknown_directive_name("cr")));
 }
+
+#[test]
+fn legend_lists_exactly_the_registered_codes() {
+    // `--legend` keeps its own table of display lines; it must name every
+    // compact code the reader accepts and nothing else.
+    use std::collections::BTreeSet;
+    let registry: BTreeSet<&str> = super::COMPACT_CARRIERS
+        .iter()
+        .map(|(code, _)| *code)
+        .collect();
+    let legend: BTreeSet<&str> = crate::to_abc::LEGEND_LINES
+        .iter()
+        .map(|(code, _)| *code)
+        .collect();
+    assert_eq!(legend, registry);
+}

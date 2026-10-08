@@ -1,19 +1,19 @@
-//! Experimental MusicXML -> [`Score`] reader: the inverse of croma's own
-//! writer ([`super::write_score_partwise`]).
+//! MusicXML -> [`Score`] reader: the inverse of croma's own writer
+//! ([`super::write_score_partwise`]).
 //!
-//! **Status: gated + experimental** (behind `musicxml-reader`), exactly like the
-//! LSP, until it has corpus round-trip evidence comparable to the formatter's.
-//! The writer is the spec; this reader inverts *croma's* dialect only and never
-//! mirrors an abc2xml-ism (see `docs/musicxml-reader.md` and the design doc
-//! `docs/superpowers/specs/2026-06-15-musicxml-reader-design.md`).
+//! Behind the `musicxml-reader` feature, which the `croma` CLI enables. The
+//! writer is the spec; this reader inverts *croma's* dialect only and never
+//! mirrors an abc2xml-ism (see `docs/musicxml-reader.md`; the design decisions
+//! live in the private croma-test repo under `specs/`).
 //!
 //! # Totality
 //! [`read_musicxml`] is **total and non-panicking**: an unparseable document
 //! yields a minimal [`Score`] plus a diagnostic, and unknown elements are
-//! ignored (optionally with a diagnostic). There is no `unwrap`/`expect`/
-//! `panic`/`todo` and no index that can panic anywhere in this module tree.
+//! ignored (optionally with a diagnostic). Panics are not expected anywhere in
+//! this module tree (the few remaining `expect` calls guard invariants checked
+//! just above them); the corpus totality tests verify this.
 //!
-//! # Stages S1–S2 (this module)
+//! # Stages (this module)
 //! **S1:** `<score-partwise>` -> parts -> measures -> `<note>`
 //! (`<pitch>`/`<rest>`, `<duration>`/`<type>`/`<dot>`), `<backup>`/`<forward>`,
 //! plus the work-title/composer/credit metadata the writer reads back.
@@ -98,18 +98,17 @@
 
 use crate::diagnostic::{Diagnostic, Severity, Span};
 use crate::model::{
-    Accidental, AccidentalMark, AccidentalPolicy, AccidentalScope, AlignedLyric,
-    AnnotationPlacementModel, BarlineKind, ChordEvent, ChordMemberEvent, ClefChangeModel,
-    DecorationAttachment, DecorationSourceKind, EventAttachments, Fraction, GraceEvent,
-    GraceEventKind, GraceGroupAttachment, GraceNoteEvent, HarmonyKindText, KeyAccidentalModel,
-    KeySignatureModel, LyricControl, Measure, MeasureBarline, MeasureId, MeterModel,
-    MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel, NoteEvent, Part,
-    PartId, Pitch, RepeatEndingCloseLocation, RepeatEndingCloseModel, RepeatEndingCloseType,
-    RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility, Score,
-    ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel, ScoreMetadata,
-    SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel, TextAttachment,
-    TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment, TupletRole,
-    Voice, VoiceId, VoicePropertiesModel,
+    Accidental, AccidentalMark, AlignedLyric, AnnotationPlacementModel, BarlineKind, ChordEvent,
+    ChordMemberEvent, ClefChangeModel, DecorationAttachment, DecorationSourceKind,
+    EventAttachments, Fraction, GraceEvent, GraceEventKind, GraceGroupAttachment, GraceNoteEvent,
+    HarmonyKindText, KeyAccidentalModel, KeySignatureModel, LyricControl, Measure, MeasureBarline,
+    MeasureId, MeterModel, MidiInstrumentModel, MusicXmlInstrumentRef, MusicXmlPartInstrumentModel,
+    NoteEvent, Part, PartId, Pitch, RepeatEndingCloseLocation, RepeatEndingCloseModel,
+    RepeatEndingCloseType, RepeatEndingModel, RepeatEndingPartModel, RestEvent, RestVisibility,
+    Score, ScoreDirectiveModel, ScoreDirectiveTokenKindModel, ScoreDirectiveTokenModel,
+    ScoreMetadata, SlurAttachment, SlurRole, Staff, StaffId, TempoBeat, TempoBeatRole, TempoModel,
+    TextAttachment, TextLine, TieAttachment, TieRole, TimedEvent, TimedEventKind, TupletAttachment,
+    TupletRole, Voice, VoiceId, VoicePropertiesModel,
 };
 use crate::parse::ParseReport;
 
@@ -166,44 +165,7 @@ pub fn read_musicxml(xml: &str) -> ParseReport<Score> {
 /// A minimal [`Score`] with documented defaults for every field the writer
 /// reads. Used for the empty/error case and as the base the reader fills in.
 fn empty_score(diagnostics: Vec<Diagnostic>) -> Score {
-    Score {
-        metadata: empty_metadata(),
-        parts: Vec::new(),
-        diagnostics,
-        divisions: 1,
-        source_span: READER_SPAN,
-        accidental_policy: AccidentalPolicy {
-            // Matches the lowering's default so a reconstructed score's writer
-            // behaviour (which consults `preserve_explicit_accidentals`) agrees
-            // with a freshly lowered one.
-            preserve_explicit_accidentals: true,
-            reset_at_barlines: true,
-            scope: AccidentalScope::PitchAndOctave,
-            source_span: READER_SPAN,
-        },
-    }
-}
-
-fn empty_metadata() -> ScoreMetadata {
-    ScoreMetadata {
-        // `reference` (ABC `X:`) is never emitted by the writer, so it is
-        // invisible to the idempotence gate; a blank line is the documented
-        // default.
-        reference: TextLine {
-            text: String::new(),
-            span: READER_SPAN,
-        },
-        title: None,
-        composers: Vec::new(),
-        tempo: None,
-        tempo_model: None,
-        meter: None,
-        key: None,
-        directives: Vec::new(),
-        preserved_directives: Vec::new(),
-        post_tune_lyrics: Vec::new(),
-        source_span: READER_SPAN,
-    }
+    Score::empty(READER_SPAN, diagnostics)
 }
 
 #[derive(Default)]
@@ -362,7 +324,7 @@ impl Reader {
                     if let Some(step) = pending_step {
                         let accidental = node_text(child)
                             .and_then(|name| self.accidental_from_name(name))
-                            .or_else(|| pending_alter.and_then(accidental_from_alter))
+                            .or_else(|| pending_alter.and_then(Accidental::from_alter))
                             .unwrap_or(Accidental::Natural);
                         explicit_accidentals.push(KeyAccidentalModel {
                             step,
@@ -669,9 +631,10 @@ impl Reader {
         };
 
         let mut entries: Vec<PartListEntry> = Vec::new();
-        // Each active group: (number, symbol, accumulated part_ids).
-        let mut open_groups: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
-        // Completed groups, in close order.
+        // Each active group: (number, symbol, accumulated part_ids, start order).
+        let mut open_groups: Vec<(String, Option<String>, Vec<String>, usize)> = Vec::new();
+        let mut groups_started = 0usize;
+        // Completed groups, in close order (sorted into start order below).
         let mut groups: Vec<PartGroupEntry> = Vec::new();
 
         for child in element_children(part_list) {
@@ -681,7 +644,7 @@ impl Reader {
                     let name = child_text(child, "part-name").map(str::to_owned);
                     let instruments = self.read_part_instruments(child);
                     // Add this part id to every open group (outer → inner).
-                    for (_, _, ids) in &mut open_groups {
+                    for (_, _, ids, _) in &mut open_groups {
                         ids.push(id.clone());
                     }
                     entries.push(PartListEntry {
@@ -696,22 +659,28 @@ impl Reader {
                     match type_attr {
                         "start" => {
                             let symbol = child_text(child, "group-symbol").map(str::to_owned);
-                            open_groups.push((number, symbol, Vec::new()));
+                            open_groups.push((number, symbol, Vec::new(), groups_started));
+                            groups_started += 1;
                         }
                         "stop" => {
                             // Find the matching open group by number (innermost
                             // match, per the MusicXML nesting model).
                             if let Some(pos) =
-                                open_groups.iter().rposition(|(n, _, _)| n == &number)
+                                open_groups.iter().rposition(|(n, _, _, _)| n == &number)
                             {
-                                let (_, symbol_opt, part_ids) = open_groups.remove(pos);
+                                let (_, symbol_opt, part_ids, start_order) =
+                                    open_groups.remove(pos);
                                 let symbol = match symbol_opt.as_deref().unwrap_or_default() {
                                     "brace" => '{',
                                     "bracket" | "square" => '[',
                                     _ => '\0', // "line" or absent → no delimiter
                                 };
                                 if !part_ids.is_empty() {
-                                    groups.push(PartGroupEntry { symbol, part_ids });
+                                    groups.push(PartGroupEntry {
+                                        symbol,
+                                        part_ids,
+                                        start_order,
+                                    });
                                 }
                             }
                         }
@@ -724,7 +693,7 @@ impl Reader {
 
         // Fix 2: any group still open (no matching `stop`) is unbalanced.
         // Emit a warning for each rather than silently dropping it.
-        for (number, _, _) in &open_groups {
+        for (number, _, _, _) in &open_groups {
             self.warn(
                 "musicxml.read.unbalanced_part_group",
                 format!(
@@ -1319,7 +1288,7 @@ impl Reader {
                         attachments,
                     });
 
-                    cursor = cursor.checked_add(parsed.duration);
+                    cursor = cursor.saturating_add(parsed.duration);
                     state.cursor = cursor;
                     state.max_cursor = max_fraction(state.max_cursor, state.cursor);
                 }
@@ -1442,7 +1411,7 @@ impl Reader {
                 "forward" => {
                     if let Some(duration) = self.read_duration(child, divisions) {
                         let from = cursor;
-                        cursor = cursor.checked_add(duration);
+                        cursor = cursor.saturating_add(duration);
                         let state = voice_state(&mut voices, &current_voice);
                         mark_clef_cursor_restore_for_abc(
                             &mut state.events,
@@ -2157,7 +2126,7 @@ impl Reader {
                 Fraction::new(1, 8)
             });
         let dots = children_named(note_node, "dot").count();
-        dotted_fraction(base, dots)
+        base.dotted(dots)
     }
 
     /// S6c: fold a `<chord/>` member note into the previous main event, inverting
@@ -2823,6 +2792,17 @@ impl Reader {
                 .attribute("number")
                 .and_then(|raw| raw.trim().parse::<u32>().ok())
                 .unwrap_or(1);
+            if verse > MAX_LYRIC_VERSE {
+                // ABC numbers verses by position, so verse N needs N `w:` lines;
+                // one `number="65536"` would expand into 65,535 placeholders.
+                self.warn(
+                    "musicxml.read.lyric_number_out_of_range",
+                    format!(
+                        "<lyric number=\"{verse}\"> is above the supported {MAX_LYRIC_VERSE} verses; not reconstructed"
+                    ),
+                );
+                continue;
+            }
 
             let text_node = child_element(lyric, "text");
             if text_node.is_none() && child_element(lyric, "extend").is_some() {
@@ -3102,7 +3082,7 @@ impl Reader {
             if let Some(text) = node_text(element) {
                 out.push(named_decoration(&format!(
                     "musicxml-tech-fingering-hex-{}",
-                    hex_utf8(text)
+                    crate::hex::encode_hex_utf8(text)
                 )));
             } else {
                 self.warn(
@@ -3179,7 +3159,7 @@ impl Reader {
             && number.bytes().all(|byte| byte.is_ascii_digit())
         {
             let text = node_text(element)
-                .map(|text| format!("-hex-{}", hex_utf8(text)))
+                .map(|text| format!("-hex-{}", crate::hex::encode_hex_utf8(text)))
                 .unwrap_or_default();
             out.push(named_decoration(&format!(
                 "musicxml-{tag}-{spanner_type}-{line_type}-{number}{text}"
@@ -3314,6 +3294,11 @@ struct PartListEntry {
     instruments: Vec<MusicXmlPartInstrumentModel>,
 }
 
+/// The highest `<lyric number>` read back as a verse. Real scores number verses
+/// in single digits; ABC spells verse N as the Nth `w:` line, so a larger
+/// number would only add empty placeholder lines.
+const MAX_LYRIC_VERSE: u32 = 100;
+
 /// P1a: one `<part-group>` span recovered from the `<part-list>`.
 ///
 /// `symbol` drives the ABC grouping delimiters:
@@ -3328,6 +3313,9 @@ struct PartListEntry {
 struct PartGroupEntry {
     symbol: char,
     part_ids: Vec<String>,
+    /// Position of the group's `start` among all `<part-group>` starts. Two
+    /// groups over the same parts nest by it: the earlier start is outer.
+    start_order: usize,
 }
 
 /// The full `<part-list>` read result: the ordered `<score-part>` entries
@@ -3484,18 +3472,9 @@ fn part_score_block_text(part_id: &str, part_score_blocks: &[PartScoreBlock]) ->
 /// - `brace` → `{P1 P2}`
 /// - `line`/absent → `P1 P2` (no delimiters)
 ///
-/// **Nested groups.** When multiple groups are present (nested or sequential), the
-/// directive text is built by rendering each group with its delimiters in the order
-/// they were encountered, then deduplicating consecutive ids to avoid repeating a
-/// part that the outer group already emitted. The nesting logic:
-/// - Groups are sorted by decreasing `part_ids.len()` so that enclosing groups are
-///   rendered before the inner groups they contain.
-/// - Parts already emitted by a sub-group are NOT repeated at the enclosing level;
-///   instead the sub-group's bracketed token block is inserted where those ids were.
-///
-/// **Single-group fast path.** When there is exactly one group, we emit the simple
-/// `[id1 id2 …]` or `{id1 id2}` form directly, which covers the vast majority of
-/// corpus files.
+/// **Nested groups.** Groups nest by part containment (see [`build_score_text`]):
+/// an inner group's block is substituted where its parts sit in the enclosing
+/// group, at any depth, and groups over identical parts nest in start order.
 ///
 /// **Fix 3 — ungrouped parts.** `all_part_ids` is the full `<score-part>` list
 /// in document order. When ≥1 group exists AND ≥1 part is outside every group, the
@@ -3544,164 +3523,104 @@ fn synthesize_score_directive(
 /// not covered by any group are emitted as bare voice-id tokens at their
 /// document-order positions (Fix 3 — ungrouped-part fidelity).
 ///
-/// **Algorithm.**
-///
-/// 1. Identify *top-level* groups — groups whose `part_ids` are NOT a strict
-///    subset of any other group in the list.  Sibling groups are both top-level;
-///    an enclosing wrapper is top-level while its inner groups are not.
-///
-/// 2. Sort top-level groups by the position of their first `part_id` in the
-///    global ordered part list (a union of all part ids in document order).
-///    This preserves document order for sibling groups.
-///
-/// 3. For each top-level group, render it using `render_group_with_subs`, which
-///    substitutes any inner sub-group blocks inline.
-///
-/// 4. Walk `all_part_ids` in document order.  For each id that is the first id
-///    of a top-level group, emit that group's rendered block and skip the
-///    remaining ids of the group.  For each id that belongs to no group at all,
-///    emit it as a bare token.  Skip ids that are non-first members of a
-///    top-level group (they were consumed by the group block in step 4).
-///
-/// 5. Join all collected tokens with `" "`.
+/// **Algorithm.** The groups form a containment tree (see [`group_parents`]):
+/// each group's parent is the smallest group that contains it, and two groups
+/// over the same parts nest in start order (a bracket and a brace over
+/// P1 P2 give `[{P1 P2}]`).  Walk `all_part_ids` in document order: an id that
+/// starts a top-level group emits that group, rendered recursively with its
+/// children substituted in place; an id in no group is a bare token; ids
+/// consumed by a group block are skipped.
 fn build_score_text(
     groups: &[PartGroupEntry],
     all_part_ids: &[&str],
     part_score_blocks: &[PartScoreBlock],
 ) -> String {
-    if groups.is_empty() {
-        return all_part_ids
-            .iter()
-            .map(|id| part_score_block_text(id, part_score_blocks))
-            .collect::<Vec<_>>()
-            .join(" ");
-    }
-
-    // Step 1: find top-level groups — not a strict subset of any other group.
-    // A group G is top-level iff there is no other group H such that every
-    // part_id in G is also in H (i.e. G ⊆ H strictly).
-    let top_level_indices: Vec<usize> = (0..groups.len())
-        .filter(|&i| {
-            let g = &groups[i];
-            // G is NOT contained in any OTHER group H.
-            !groups.iter().enumerate().any(|(j, h)| {
-                j != i
-                    && !h.part_ids.is_empty()
-                    && g.part_ids.iter().all(|id| h.part_ids.contains(id))
-            })
-        })
-        .collect();
-
-    // Fast path: single top-level group AND no ungrouped parts → the pre-fix
-    // simple form; avoids rebuilding the document-order walk for the common case.
-    let all_grouped: bool = all_part_ids
-        .iter()
-        .all(|&id| groups.iter().any(|g| g.part_ids.iter().any(|p| p == id)));
-    if top_level_indices.len() == 1 && all_grouped {
-        let idx = top_level_indices[0];
-        if groups.len() == 1 {
-            return render_group(&groups[idx], part_score_blocks);
-        }
-        return render_group_with_subs(&groups[idx], groups, idx, part_score_blocks);
-    }
-
-    // Step 2: stable document order for top-level groups.  Build a global part
-    // order from all part_ids across all groups (union, first-seen), augmented
-    // with any ungrouped ids from `all_part_ids`.
-    let mut global_order: Vec<&str> = Vec::new();
-    for &id in all_part_ids {
-        if !global_order.contains(&id) {
-            global_order.push(id);
-        }
-    }
-    for g in groups {
-        for id in &g.part_ids {
-            if !global_order.contains(&id.as_str()) {
-                global_order.push(id.as_str());
-            }
-        }
-    }
-    let position_of = |id: &str| -> usize {
-        global_order
-            .iter()
-            .position(|&s| s == id)
-            .unwrap_or(usize::MAX)
+    let parents = group_parents(groups);
+    let children_of = |parent: Option<usize>| -> Vec<usize> {
+        (0..groups.len())
+            .filter(|&i| !groups[i].part_ids.is_empty() && parents[i] == parent)
+            .collect()
     };
 
-    let mut sorted_top: Vec<usize> = top_level_indices;
-    sorted_top.sort_by_key(|&i| {
-        groups[i]
-            .part_ids
-            .first()
-            .map_or(usize::MAX, |id| position_of(id))
-    });
-
-    // Step 3: render each top-level group with its sub-group substitutions.
-    // Build a map: first_id → (rendered_block, set of all ids consumed by that group).
-    let mut top_by_first: std::collections::HashMap<&str, (String, &[String])> = Default::default();
-    for &idx in &sorted_top {
-        let g = &groups[idx];
-        if let Some(first) = g.part_ids.first() {
-            let block = if groups.len() == 1 {
-                render_group(g, part_score_blocks)
-            } else {
-                render_group_with_subs(g, groups, idx, part_score_blocks)
-            };
-            top_by_first.insert(first.as_str(), (block, &g.part_ids));
-        }
-    }
-
-    // Step 4: walk all_part_ids in document order, emitting group blocks or bare tokens.
+    let top_level = children_of(None);
     let mut result_tokens: Vec<String> = Vec::new();
     let mut skip_ids: std::collections::HashSet<&str> = Default::default();
     for &id in all_part_ids {
         if skip_ids.contains(id) {
             continue;
         }
-        if let Some((block, consumed_ids)) = top_by_first.get(id) {
-            result_tokens.push(block.clone());
-            // Mark all ids in this top-level group as consumed so we don't
-            // emit them again as bare tokens.
-            for cid in *consumed_ids {
-                skip_ids.insert(cid.as_str());
+        let starting = top_level
+            .iter()
+            .copied()
+            .filter(|&i| groups[i].part_ids.first().is_some_and(|first| first == id))
+            .max_by_key(|&i| groups[i].part_ids.len());
+        if let Some(index) = starting {
+            result_tokens.push(render_group_tree(
+                index,
+                groups,
+                &parents,
+                part_score_blocks,
+            ));
+            for consumed in &groups[index].part_ids {
+                skip_ids.insert(consumed.as_str());
             }
         } else {
-            // Ungrouped part: emit as bare voice-id token.
             result_tokens.push(part_score_block_text(id, part_score_blocks));
         }
     }
-
-    // Step 5: join all collected tokens.
     result_tokens.join(" ")
 }
 
-/// Render one group, substituting any inner sub-groups (groups whose `part_ids`
-/// are a strict subset of this group) inline at the position of their first part.
-fn render_group_with_subs(
-    group: &PartGroupEntry,
-    all_groups: &[PartGroupEntry],
-    self_idx: usize,
+/// The parent of each group in the containment tree: the smallest other group
+/// whose parts include all of this group's parts, or `None` for a top-level
+/// group.  Groups with identical part sets chain in start order (the first
+/// started is outermost), so neither is lost and the relation stays a tree.  Empty
+/// groups have no parent and are never rendered.
+fn group_parents(groups: &[PartGroupEntry]) -> Vec<Option<usize>> {
+    let contains = |outer: &PartGroupEntry, inner: &PartGroupEntry| {
+        inner.part_ids.iter().all(|id| outer.part_ids.contains(id))
+    };
+    (0..groups.len())
+        .map(|i| {
+            let group = &groups[i];
+            if group.part_ids.is_empty() {
+                return None;
+            }
+            (0..groups.len())
+                .filter(|&j| {
+                    let candidate = &groups[j];
+                    j != i
+                        && contains(candidate, group)
+                        && (candidate.part_ids.len() > group.part_ids.len()
+                            // Same parts: only a group started earlier encloses.
+                            || candidate.start_order < group.start_order)
+                })
+                // Smallest enclosing group; among identical sets, the latest
+                // earlier start, so a run of identical groups nests as a chain.
+                .min_by_key(|&j| {
+                    (
+                        groups[j].part_ids.len(),
+                        std::cmp::Reverse(groups[j].start_order),
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Render group `index` with its children in the containment tree substituted
+/// inline at the position of their first part, recursively, so every nesting
+/// level survives (bracket > brace > line keeps all three).
+fn render_group_tree(
+    index: usize,
+    groups: &[PartGroupEntry],
+    parents: &[Option<usize>],
     part_score_blocks: &[PartScoreBlock],
 ) -> String {
-    // Build a map: first part_id of each sub-group → (rendered block, all sub ids).
-    let mut sub_blocks: std::collections::HashMap<&str, (String, &[String])> = Default::default();
-    for (i, g) in all_groups.iter().enumerate() {
-        if i == self_idx || g.part_ids.is_empty() {
-            continue;
-        }
-        // Sub-group: all of g's parts are in `group`, AND g is not the group itself.
-        let is_sub = g.part_ids.iter().all(|id| group.part_ids.contains(id));
-        if is_sub {
-            sub_blocks.insert(
-                g.part_ids[0].as_str(),
-                (render_group(g, part_score_blocks), &g.part_ids),
-            );
-        }
-    }
+    let group = &groups[index];
+    let children: Vec<usize> = (0..groups.len())
+        .filter(|&i| !groups[i].part_ids.is_empty() && parents[i] == Some(index))
+        .collect();
 
-    // Walk this group's part_ids, substituting sub-group blocks in place.
-    let open = open_char(group.symbol);
-    let close = close_char(group.symbol);
     let mut tokens: Vec<String> = Vec::new();
     let mut skip_remaining: usize = 0;
     for id in &group.part_ids {
@@ -3709,35 +3628,28 @@ fn render_group_with_subs(
             skip_remaining -= 1;
             continue;
         }
-        if let Some((block, sub_ids)) = sub_blocks.get(id.as_str()) {
-            skip_remaining = sub_ids.len().saturating_sub(1);
-            tokens.push(block.clone());
+        // Children are disjoint in well-formed input; if two overlapping ones
+        // start on the same part, the larger wins (the smaller cannot be
+        // expressed in `%%score`).
+        let child = children
+            .iter()
+            .copied()
+            .filter(|&i| groups[i].part_ids.first() == Some(id))
+            .max_by_key(|&i| groups[i].part_ids.len());
+        if let Some(child) = child {
+            skip_remaining = groups[child].part_ids.len().saturating_sub(1);
+            tokens.push(render_group_tree(child, groups, parents, part_score_blocks));
         } else {
             tokens.push(part_score_block_text(id, part_score_blocks));
         }
     }
     let inner = tokens.join(" ");
+    let open = open_char(group.symbol);
+    let close = close_char(group.symbol);
     if open == '\0' {
         inner
     } else {
         format!("{open}{inner}{close}")
-    }
-}
-
-/// Render one group as its bracketed string, e.g. `[P1 P2 P3]` or `{P1 P2}`.
-fn render_group(group: &PartGroupEntry, part_score_blocks: &[PartScoreBlock]) -> String {
-    let open = open_char(group.symbol);
-    let close = close_char(group.symbol);
-    let ids = group
-        .part_ids
-        .iter()
-        .map(|id| part_score_block_text(id, part_score_blocks))
-        .collect::<Vec<_>>()
-        .join(" ");
-    if open == '\0' {
-        ids
-    } else {
-        format!("{open}{ids}{close}")
     }
 }
 
@@ -3985,7 +3897,7 @@ impl GraceGroupBuilder {
     /// one), matching the writer's `grace_base_unit` selector.
     fn finish(mut self) -> GraceGroupAttachment {
         let note_count = u32::try_from(self.events.len()).unwrap_or(u32::MAX);
-        let base_unit = grace_base_unit(note_count);
+        let base_unit = super::grace::grace_base_unit(note_count);
         for event in &mut self.events {
             match &mut event.kind {
                 GraceEventKind::Note(note) => {
@@ -4254,7 +4166,7 @@ fn patch_inner_tuplet_ratio(
     if den == 0 {
         return;
     }
-    let g = super::gcd_u64(num, den);
+    let g = crate::model::gcd_u64(num, den);
     let inner_actual = num / g;
     let inner_normal = den / g;
     // Only patch if the result fits in u32.
@@ -4282,20 +4194,6 @@ fn patch_inner_tuplet_ratio(
 /// S6c: the writer's count-based grace base unit ([`MusicXmlWriter`]'s
 /// `grace_base_unit`): 1/8 for a single-element grace group, 1/16 otherwise. A
 /// grace note's display duration is this scaled by its `length_multiplier`.
-fn grace_base_unit(note_count: u32) -> Fraction {
-    if note_count <= 1 {
-        Fraction {
-            numerator: 1,
-            denominator: 8,
-        }
-    } else {
-        Fraction {
-            numerator: 1,
-            denominator: 16,
-        }
-    }
-}
-
 /// `left / right` (exact rational division). Used to recover a grace note's
 /// `length_multiplier = display_duration / base_unit`. A zero/degenerate divisor
 /// yields zero (never a panic); the writer never emits a zero base unit.
@@ -4363,16 +4261,6 @@ fn note_type_fraction(name: &str) -> Option<Fraction> {
 
 /// S6c: a base note value plus `dots` augmentation dots, the inverse of the
 /// writer's `dotted_fraction` (each dot adds half the previous increment).
-fn dotted_fraction(base: Fraction, dots: usize) -> Fraction {
-    let mut duration = base;
-    let mut dot = base;
-    for _ in 0..dots {
-        dot = Fraction::new(dot.numerator, dot.denominator.saturating_mul(2));
-        duration = duration.checked_add(dot);
-    }
-    duration
-}
-
 /// A [`DecorationAttachment`] with the canonical [`DecorationSourceKind::Named`]
 /// source. The reconstructed `name` is chosen so the writer's
 /// `decoration_notation` re-emits the identical MusicXML element; `Named` (the
@@ -4610,17 +4498,6 @@ fn subtract_fraction(left: Fraction, right: Fraction) -> Fraction {
 /// Map a numeric `<key-alter>` back to an [`Accidental`] (the fallback inverse
 /// when `<key-accidental>` is absent or unrecognised). Mirrors
 /// [`Accidental::alter`].
-fn accidental_from_alter(alter: i8) -> Option<Accidental> {
-    match alter {
-        -2 => Some(Accidental::DoubleFlat),
-        -1 => Some(Accidental::Flat),
-        0 => Some(Accidental::Natural),
-        1 => Some(Accidental::Sharp),
-        2 => Some(Accidental::DoubleSharp),
-        _ => None,
-    }
-}
-
 /// S6a: the inverse of [`MusicXmlWriter::write_barline`]'s `bar-style` map,
 /// disambiguated by `location` and the `<repeat>` direction. The forward map is
 /// many-to-one on `bar-style` alone (`heavy-light` ← both `Initial` and
@@ -4849,16 +4726,6 @@ fn node_text<'a>(node: Node<'a, '_>) -> Option<&'a str> {
 /// for an empty element like `<creator type="composer"></creator>`.
 fn raw_text<'a>(node: Node<'a, '_>) -> &'a str {
     node.text().unwrap_or("")
-}
-
-fn hex_utf8(text: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(text.len() * 2);
-    for byte in text.as_bytes() {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    out
 }
 
 /// The trimmed text of the first `name` child element of `node`.
@@ -5264,7 +5131,7 @@ fn complete_note_accidental_for_abc(
             .copied()
             .unwrap_or_else(|| key_signature_alter(current_key, step));
         if implied_alter != pitch.alter
-            && let Some(kind) = accidental_from_alter(pitch.alter)
+            && let Some(kind) = Accidental::from_alter(pitch.alter)
         {
             *written_accidental = Some(AccidentalMark {
                 kind,
@@ -5292,8 +5159,7 @@ fn key_signature_alter(key: Option<&KeySignatureModel>, step: char) -> i8 {
     {
         return explicit.accidental.alter();
     }
-    const SHARPS: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
-    const FLATS: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+    use crate::model::{FLAT_ORDER as FLATS, SHARP_ORDER as SHARPS};
     if key.fifths > 0 {
         let count = usize::from(key.fifths.unsigned_abs()).min(SHARPS.len());
         if SHARPS[..count].contains(&step) {
@@ -5455,7 +5321,7 @@ fn preserve_voice_onset_gaps_for_abc(voice: &mut Voice) {
             }
 
             if abc_event_advances_cursor(&event.kind) {
-                cursor = event.onset.checked_add(event.duration);
+                cursor = event.onset.saturating_add(event.duration);
             } else if abc_event_has_position(&event.kind) {
                 cursor = max_fraction(cursor, event.onset);
             }
@@ -6012,26 +5878,12 @@ fn key_display_for_abc(key: &KeySignatureModel) -> String {
     let mut display = tonic;
     for accidental in &key.explicit_accidentals {
         display.push(' ');
-        display.push_str(key_accidental_sign_token(accidental.accidental));
+        display.push_str(accidental.accidental.abc_sign());
         // The step is stored uppercase; the parser uppercases the note letter, so
         // a lowercase token (the common ABC spelling) re-parses identically.
         display.push(accidental.step.to_ascii_lowercase());
     }
     display
-}
-
-/// P3: the ABC accidental-sign prefix for a key accidental, the inverse of the
-/// parser's `<sign><note>` accidental tokens (ABC 2.1 §3.1.14): `^`/`_`/`=` and
-/// the doubles `^^`/`__`.
-#[cfg(feature = "musicxml-reader")]
-fn key_accidental_sign_token(accidental: Accidental) -> &'static str {
-    match accidental {
-        Accidental::DoubleFlat => "__",
-        Accidental::Flat => "_",
-        Accidental::Natural => "=",
-        Accidental::Sharp => "^",
-        Accidental::DoubleSharp => "^^",
-    }
 }
 
 /// Canonical ABC `K:` display for a major key with the given circle-of-fifths

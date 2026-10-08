@@ -6441,3 +6441,159 @@ fn additive_extension_header_meter_exports_composite_time() {
     assert!(xml.contains("<beats>2</beats>"));
     assert_eq!(count(&xml, "<beat-type>4</beat-type>"), 2);
 }
+
+#[test]
+fn divisions_conversion_does_not_overflow_for_extreme_fractions() {
+    // `numerator * 4 * divisions` can exceed u64 when both factors sit near
+    // u32::MAX; the conversion clamps to u32::MAX instead of panicking.
+    let huge = crate::model::Fraction::new(u32::MAX, 1);
+    assert_eq!(huge.to_divisions(u32::MAX), u32::MAX);
+}
+
+#[test]
+fn extreme_durations_export_without_panicking() {
+    // Thirty `>` compound a broken rhythm past any u32 ratio; a 4294967295-fold
+    // note against a 1/4294967295 one does the same with plain lengths; and a
+    // one-in-499999999 unit length overflows the divisions of a voice backup.
+    let long_broken = format!("X:1\nK:C\nA{}B\n", ">".repeat(30));
+    for source in [
+        long_broken.as_str(),
+        "X:1\nK:C\nA4294967295B/4294967295\n",
+        "X:1\nL:1/499999999\nK:C\nC2D2&E2\n",
+    ] {
+        assert!(export_musicxml(source).is_ok(), "{source:?}");
+    }
+}
+
+#[test]
+fn bare_odd_tuplets_take_q_from_the_meter() {
+    // ABC 2.1 §4.13: `(5`, `(7` and `(9` mean n notes in the time of 3 in a
+    // compound meter and of 2 otherwise. Compound here is a literal numerator
+    // that is a multiple of three above three, whatever the denominator.
+    let normal_notes = |meter: &str, music: &str| {
+        let source = format!("X:1\nM:{meter}\nL:1/8\nK:C\n{music}\n");
+        let export = export_musicxml(&source).expect("tuplet should export");
+        let xml = export.musicxml;
+        let start = xml.find("<normal-notes>").expect("time-modification") + "<normal-notes>".len();
+        xml[start..start + 1].to_owned()
+    };
+    for meter in ["6/8", "9/8", "12/8", "6/4", "9/16"] {
+        assert_eq!(normal_notes(meter, "(5ABcde f|"), "3", "M:{meter}");
+        assert_eq!(normal_notes(meter, "(7ABcdefg|"), "3", "M:{meter}");
+    }
+    for meter in ["2/4", "3/4", "4/4", "3/8", "C", "C|"] {
+        assert_eq!(normal_notes(meter, "(5ABcde f|"), "2", "M:{meter}");
+    }
+    // Fixed defaults and explicit q ignore the meter.
+    assert_eq!(normal_notes("6/8", "(3ABc d|"), "2");
+    assert_eq!(normal_notes("6/8", "(5:2ABcde f|"), "2");
+    // An inline meter change applies to the tuplets after it.
+    assert_eq!(normal_notes("2/4", "[M:6/8](5ABcde f|"), "3");
+}
+
+#[test]
+fn hex_text_carriers_cannot_inject_non_xml_characters() {
+    // `[I:cr ht text-hex=41014200]` decodes to "A\u{1}B\u{0}". The lowering
+    // decoder lacked the XML-character filter its MusicXML twin had, so the
+    // export carried raw control characters: ill-formed XML. The carrier is now
+    // rejected like any other malformed hex.
+    let export = export_musicxml("X:1\nK:C\n[I:cr ht text-hex=41014200]\"C\"C|\n")
+        .expect("score should export");
+    assert_balanced_xml(&export.musicxml);
+    assert!(
+        !export
+            .musicxml
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t' | '\r')),
+        "control characters leaked into MusicXML"
+    );
+}
+
+#[test]
+fn note_decorations_before_a_barline_wait_for_the_next_note() {
+    // A decoration written just before `|` precedes the next note. Lowering
+    // kept its own copy of the note-decoration list, missing caesura,
+    // detached-legato, falloff and doit, so those were bound to the bar line
+    // and silently dropped. They now reach the next note like `!tenuto!|`.
+    for (decoration, element) in [
+        ("caesura", "<caesura"),
+        ("detached-legato", "<detached-legato"),
+        ("falloff", "<falloff"),
+        ("doit", "<doit"),
+        ("tenuto", "<tenuto"),
+    ] {
+        let source = format!("X:1\nM:4/4\nL:1/4\nK:C\nCDEF!{decoration}!|G4|\n");
+        let export = export_musicxml(&source).expect("score should export");
+        assert!(
+            export.musicxml.contains(element),
+            "!{decoration}! before a bar line was dropped:\n{}",
+            export.musicxml
+        );
+    }
+}
+
+#[test]
+fn every_listed_decoration_name_is_mapped_by_the_writer() {
+    // DECORATION_NAMES is the public list tools (the LSP) build on, so each
+    // entry must really reach a notation, direction, hairpin or deliberate
+    // no-op rather than the unsupported-decoration warning.
+    for name in DECORATION_NAMES {
+        let source = format!("X:1\nL:1/4\nK:C\n!{name}!C D|\n");
+        let export = export_musicxml(&source).expect("score should export");
+        assert!(
+            !export
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "abc.musicxml.decoration.unsupported"),
+            "!{name}! is listed but not mapped: {:?}",
+            export.diagnostics
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    assert!(
+        DECORATION_NAMES.iter().all(|name| seen.insert(name)),
+        "duplicate name"
+    );
+}
+
+#[test]
+fn score_brackets_and_braces_emit_part_groups() {
+    // `%%score` brackets and braces group parts on the page; the writer used to
+    // drop them, so XML -> ABC -> XML lost the grouping the reader recovers.
+    let part_list = |score: &str, voices: &[&str]| {
+        let body: String = voices.iter().map(|v| format!("V:{v}\nC4|\n")).collect();
+        let source = format!("X:1\n%%score {score}\nL:1/4\nK:C\n{body}");
+        let xml = export_musicxml(&source)
+            .expect("score should export")
+            .musicxml;
+        let start = xml.find("<part-list>").expect("part-list");
+        let end = xml.find("</part-list>").expect("part-list end");
+        xml[start..end]
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                line.starts_with("<part-group")
+                    || line.starts_with("<group-symbol")
+                    || line.starts_with("<score-part ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    assert_eq!(
+        part_list("[V1 V2] V3", &["V1", "V2", "V3"]),
+        "<part-group number=\"1\" type=\"start\">\n<group-symbol>bracket</group-symbol>\n\
+         <score-part id=\"P1\">\n<score-part id=\"P2\">\n<part-group number=\"1\" type=\"stop\"/>\n\
+         <score-part id=\"P3\">"
+    );
+    // Nested: the bracket opens first and closes last.
+    assert_eq!(
+        part_list("[{A B} C]", &["A", "B", "C"]),
+        "<part-group number=\"1\" type=\"start\">\n<group-symbol>bracket</group-symbol>\n\
+         <part-group number=\"2\" type=\"start\">\n<group-symbol>brace</group-symbol>\n\
+         <score-part id=\"P1\">\n<score-part id=\"P2\">\n<part-group number=\"2\" type=\"stop\"/>\n\
+         <score-part id=\"P3\">\n<part-group number=\"1\" type=\"stop\"/>"
+    );
+    // A one-part group and parentheses emit nothing.
+    assert!(!part_list("[A] (B C)", &["A", "B", "C"]).contains("part-group"));
+}

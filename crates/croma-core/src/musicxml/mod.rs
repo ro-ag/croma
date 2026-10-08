@@ -7,18 +7,107 @@ use crate::model::{
 use crate::options::MusicXmlWriteOptions;
 use crate::parse::ParseReport;
 
-mod attributes;
+pub(crate) mod attributes;
 mod barline;
 mod direction;
 mod engrave;
 mod grace;
 mod harmony;
 mod lyric;
-mod notation;
+pub(crate) mod notation;
 mod note;
 #[cfg(feature = "musicxml-reader")]
 pub mod read;
 mod score;
+
+/// Every decoration name (the text between `!…!`, in the spelling the parser
+/// stores, aliases included) that the MusicXML writer maps: to a notation, a
+/// dynamic or other direction, a hairpin, or a deliberate no-op (`roll`).
+/// Croma's private `croma-*`/`musicxml-*` carrier names are not listed. Tools
+/// such as the LSP build their hover and completion tables from this list.
+pub const DECORATION_NAMES: &[&str] = &[
+    // Articulations.
+    ".",
+    "staccato",
+    ">",
+    "accent",
+    "emphasis",
+    "tenuto",
+    "wedge",
+    "marcato",
+    "breath",
+    "caesura",
+    "detached-legato",
+    "falloff",
+    "doit",
+    "slide",
+    // Fermatas.
+    "fermata",
+    "invertedfermata",
+    // Ornaments.
+    "trill",
+    "mordent",
+    "lowermordent",
+    "uppermordent",
+    "pralltriller",
+    "turn",
+    "invertedturn",
+    "arpeggio",
+    "roll",
+    // Technical marks and fingerings.
+    "upbow",
+    "downbow",
+    "open",
+    "thumb",
+    "snap",
+    "+",
+    "plus",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    // Dynamics.
+    "pppppp",
+    "ppppp",
+    "pppp",
+    "ppp",
+    "pp",
+    "p",
+    "mp",
+    "mf",
+    "f",
+    "ff",
+    "fff",
+    "ffff",
+    "fffff",
+    "ffffff",
+    "sf",
+    "sfp",
+    "sfpp",
+    "fp",
+    "rf",
+    "rfz",
+    "sfz",
+    "sffz",
+    "fz",
+    "n",
+    "pf",
+    "sfzp",
+    // Navigation symbols.
+    "coda",
+    "segno",
+    // Hairpins.
+    "crescendo(",
+    "<(",
+    "crescendo)",
+    "<)",
+    "diminuendo(",
+    ">(",
+    "diminuendo)",
+    ">)",
+];
 
 pub fn write_score_partwise(score: &Score) -> ParseReport<String> {
     write_score_partwise_with_options(score, MusicXmlWriteOptions::default())
@@ -112,8 +201,9 @@ impl<'score> MusicXmlWriter<'score> {
 
     fn duration_to_divisions(&mut self, duration: Fraction, span: Span) -> u32 {
         let divisions = self.score.divisions.max(1);
-        let numerator = u64::from(duration.numerator) * 4 * u64::from(divisions);
-        let denominator = u64::from(duration.denominator.max(1));
+        // u128: `u32 * 4 * u32` can exceed u64. Results past u32 clamp.
+        let numerator = u128::from(duration.numerator) * 4 * u128::from(divisions);
+        let denominator = u128::from(duration.denominator.max(1));
         if numerator % denominator != 0 {
             self.diagnostics.push(non_integral_duration_warning(span));
         }
@@ -502,7 +592,7 @@ impl TimeModification {
                 continue;
             }
             seen_pairs.push(tuplet.pair_id);
-            let Some(product) = checked_ratio_product(
+            let Some(product) = crate::model::checked_ratio_product(
                 actual_notes,
                 normal_notes,
                 tuplet.actual_notes,
@@ -524,37 +614,6 @@ impl TimeModification {
             }),
         )
     }
-}
-
-fn checked_ratio_product(
-    actual: u32,
-    normal: u32,
-    factor_actual: u32,
-    factor_normal: u32,
-) -> Option<(u32, u32)> {
-    let actual = u64::from(actual) * u64::from(factor_actual);
-    let normal = u64::from(normal) * u64::from(factor_normal);
-    ratio_to_u32(actual, normal)
-}
-
-fn ratio_to_u32(actual: u64, normal: u64) -> Option<(u32, u32)> {
-    if actual <= u64::from(u32::MAX) && normal <= u64::from(u32::MAX) {
-        return Some((actual as u32, normal as u32));
-    }
-    let gcd = gcd_u64(actual, normal);
-    let actual = actual / gcd;
-    let normal = normal / gcd;
-    (actual <= u64::from(u32::MAX) && normal <= u64::from(u32::MAX))
-        .then_some((actual as u32, normal as u32))
-}
-
-fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
-    while right != 0 {
-        let remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-    left.max(1)
 }
 
 #[derive(Debug, Clone, Copy)]

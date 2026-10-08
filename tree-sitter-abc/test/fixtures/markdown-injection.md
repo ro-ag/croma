@@ -1,6 +1,6 @@
 # Markdown ` ```abc ` injection fixture
 
-This file exercises `queries/markdown-injection.scm`: a Markdown consumer that
+This file exercises `markdown-injection.scm` (in this directory): a Markdown consumer that
 loads that injection query should parse the fenced block below with the
 `tree-sitter-abc` grammar and highlight it as ABC.
 

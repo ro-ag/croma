@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{
     BarlineKind, Fraction, Measure, MeasureBarline, MeasureId, MidiInstrumentModel, Part,
-    RepeatEndingCloseLocation, RepeatEndingCloseType, RepeatEndingPartModel, Score, TimedEventKind,
-    TimelineEventKind,
+    RepeatEndingCloseLocation, RepeatEndingCloseType, RepeatEndingPartModel, Score,
+    ScoreDirectiveTokenKindModel, TimedEventKind, TimelineEventKind,
 };
 
 use super::{
@@ -45,14 +45,46 @@ impl<'score> MusicXmlWriter<'score> {
     }
 
     pub(crate) fn write_part_list(&mut self) {
+        let groups = score_part_groups(self.score);
         self.xml.start("part-list", &[]);
         for (index, part) in self.score.parts.iter().enumerate() {
+            // Groups opening here, outermost first.
+            let mut opening: Vec<&PartGroupSpan> =
+                groups.iter().filter(|group| group.first == index).collect();
+            opening.sort_by_key(|group| (std::cmp::Reverse(group.last), group.number));
+            for group in opening {
+                let number = group.number.to_string();
+                self.xml.start(
+                    "part-group",
+                    &[("number", number.as_str()), ("type", "start")],
+                );
+                self.xml.text_element("group-symbol", group.symbol);
+                self.xml.end("part-group");
+            }
+
             let id = part_xml_id(part, index);
             self.xml.start("score-part", &[("id", id.as_str())]);
             self.xml
                 .text_element("part-name", part_name(part, self.score).as_str());
             self.write_part_instruments(part, &id);
             self.xml.end("score-part");
+
+            // Groups closing here, innermost first.
+            let mut closing: Vec<&PartGroupSpan> =
+                groups.iter().filter(|group| group.last == index).collect();
+            closing.sort_by_key(|group| {
+                (
+                    std::cmp::Reverse(group.first),
+                    std::cmp::Reverse(group.number),
+                )
+            });
+            for group in closing {
+                let number = group.number.to_string();
+                self.xml.empty(
+                    "part-group",
+                    &[("number", number.as_str()), ("type", "stop")],
+                );
+            }
         }
         self.xml.end("part-list");
     }
@@ -317,6 +349,77 @@ impl<'score> MusicXmlWriter<'score> {
             first = false;
         }
     }
+}
+
+/// One `%%score`/`%%staves` bracket or brace as a `<part-group>`: the run of
+/// parts `first..=last` it encloses, and its number (unique, in opening order).
+struct PartGroupSpan {
+    symbol: &'static str,
+    first: usize,
+    last: usize,
+    number: usize,
+}
+
+/// The `<part-group>`s for the score's grouping directive (the same one
+/// `part_layouts` laid the parts out from: the last with a voice in it). A
+/// `[ ]` is a bracket and a `{ }` a brace; parentheses only merge voices onto a
+/// staff. A group is emitted when it spans two or more parts that sit next to
+/// each other in the part list: a brace over the staves of one part is that
+/// part's grand staff, not a group. Bar-line continuation (`|` in the
+/// directive) is not mapped to `<group-barline>`.
+fn score_part_groups(score: &Score) -> Vec<PartGroupSpan> {
+    let Some(directive) = score.metadata.directives.iter().rev().find(|directive| {
+        directive
+            .tokens
+            .iter()
+            .any(|token| matches!(token.kind, ScoreDirectiveTokenKindModel::Voice(_)))
+    }) else {
+        return Vec::new();
+    };
+    let part_of = |id: &str| {
+        score
+            .parts
+            .iter()
+            .position(|part| part.voices.iter().any(|voice| voice.id.value == id))
+    };
+
+    // Open groups: (symbol, opening order, parts seen so far).
+    let mut open: Vec<(char, usize, BTreeSet<usize>)> = Vec::new();
+    let mut opened = 0usize;
+    let mut groups = Vec::new();
+    for token in &directive.tokens {
+        match &token.kind {
+            ScoreDirectiveTokenKindModel::GroupStart(symbol @ ('[' | '{')) => {
+                opened += 1;
+                open.push((*symbol, opened, BTreeSet::new()));
+            }
+            ScoreDirectiveTokenKindModel::GroupEnd(']' | '}') => {
+                let Some((symbol, number, parts)) = open.pop() else {
+                    continue;
+                };
+                let (Some(&first), Some(&last)) = (parts.first(), parts.last()) else {
+                    continue;
+                };
+                if first < last && parts.len() == last - first + 1 {
+                    groups.push(PartGroupSpan {
+                        symbol: if symbol == '{' { "brace" } else { "bracket" },
+                        first,
+                        last,
+                        number,
+                    });
+                }
+            }
+            ScoreDirectiveTokenKindModel::Voice(id) => {
+                if let Some(part) = part_of(id) {
+                    for (_, _, parts) in &mut open {
+                        parts.insert(part);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    groups
 }
 
 fn part_xml_id(part: &Part, index: usize) -> String {

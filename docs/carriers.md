@@ -227,7 +227,7 @@ So the file stays a valid, playable ABC tune everywhere; only croma reads the ca
 **croma-vs-croma forward compatibility is *not* automatic.** An inline `[I:croma-*]` (or
 `[I:cr <code>]`) that the current croma does not recognise falls through
 `apply_inline_field` (`lower/mod.rs`, the `'I'` arm tail) and is **dropped with an
-`inline_instruction_ignored` diagnostic** — it is *not* preserved verbatim. So an older
+`abc.field.inline_ignored` diagnostic** — it is *not* preserved verbatim. So an older
 croma reading a tune written by a newer croma loses any newer carrier (and an older
 croma that predates compact spelling drops every `[I:cr …]` it meets, long-spelling
 fallback notwithstanding). If a future need requires cross-version preservation, that
@@ -282,8 +282,8 @@ the carrier's spelling.
 6. **Test** — a TDD round-trip test (see `musicxml/read/mod_tests.rs` `foreign_*` helpers
    and `musicxml/mod_tests.rs` export tests); if coded, also a `carrier_tests.rs` /
    `croma-fmt` migration test for the new code.
-7. **Gates** — reader self-loop must stay at its baseline (currently **135** structural
-   diffs over the 10k ABC corpus), fmt-lossless **0 not-idempotent / 0 notes-changed**,
+7. **Gates** — reader self-loop must stay at its recorded baseline (a handful of
+   structural diffs over the 10k ABC corpus; croma-test tracks the current figure), fmt-lossless **0 not-idempotent / 0 notes-changed**,
    no new PDMX regression (uncapped record diff). A forward-writer change re-proves both
    corpus gates; a reader-only change only needs PDMX + the unit suite.
 

@@ -2,18 +2,18 @@
 //! the document store and dispatches each request/notification to the
 //! transport-free analysis layer in [`croma_lsp`].
 //!
-//! No business logic lives here (spec: "no business logic in the transport").
-//! Every handler is wrapped so that a malformed or garbage message can never
-//! panic the loop — diagnostics are computed from clamped, total functions and
-//! decode failures are logged and skipped. There is no `unwrap`/`expect`/
-//! `panic!`/indexing-that-panics/`debug_assert!` anywhere in this file.
+//! No business logic lives here. Decode failures are logged and skipped, and
+//! every analysis call (requests and published diagnostics) runs under
+//! [`contain`], so a panic in croma-core is logged and answered with a `null`
+//! result or an internal-error diagnostic while the loop keeps serving. This
+//! file itself has no `unwrap`/`expect`/`panic!` outside its tests.
 
 use std::error::Error;
 
 use croma_lsp::position::PositionEncoding;
 use croma_lsp::{
-    DocumentStore, code_actions, completion, diagnostics, document_symbols, folding_ranges,
-    formatting, hover, legend, semantic_tokens,
+    DocumentStore, code_actions, completion, contain, diagnostics, document_symbols,
+    folding_ranges, formatting, hover, internal_error_diagnostic, legend, semantic_tokens,
 };
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
@@ -132,7 +132,9 @@ fn main_loop(connection: &Connection, encoding: PositionEncoding) {
                     Ok(false) => {
                         // Dispatch to an R2 request handler, or reply `null` for
                         // anything unsupported so the client never hangs.
-                        let response = handle_request(&store, encoding, request);
+                        let id = request.id.clone();
+                        let response = contain(|| handle_request(&store, encoding, request))
+                            .unwrap_or_else(|| null_ok(id));
                         send_response(connection, response);
                     }
                     Err(error) => {
@@ -361,7 +363,8 @@ fn handle_notification(
 /// Compute and publish diagnostics for `uri` from its current stored text.
 fn publish(connection: &Connection, store: &DocumentStore, encoding: PositionEncoding, uri: &Uri) {
     let text = store.get(uri).unwrap_or("");
-    let diags = diagnostics(text, encoding);
+    let diags = contain(|| diagnostics(text, encoding))
+        .unwrap_or_else(|| vec![internal_error_diagnostic()]);
     publish_diagnostics(connection, uri, diags);
 }
 

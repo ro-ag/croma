@@ -1,8 +1,8 @@
 //! `textDocument/documentSymbol` and `textDocument/foldingRange`: one entry per
 //! tune.
 //!
-//! Per the promotion spec (R2 scope), both views are derived from the parser's
-//! tune extents ([`ParsedTuneMusic::span`]) plus the header fields:
+//! Both views are derived from the parser's tune extents
+//! ([`ParsedTuneMusic::span`]) plus the header fields:
 //!
 //! - **Document symbols** — one [`DocumentSymbol`] per tune, named after the
 //!   tune's `T:` title (falling back to `X:<n>` and then `tune <index>`), with

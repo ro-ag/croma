@@ -1,7 +1,8 @@
 //! Command-line surface for `croma`, defined with clap's derive API.
 //!
 //! This module only describes argument parsing. The actual pipeline logic lives
-//! in `main.rs`; the structs here lower into the existing `CliOptions` plumbing.
+//! in `main.rs`; the structs here lower into the core option types
+//! (`ParseOptions`, `ExportOptions`, ...).
 
 use std::path::PathBuf;
 
@@ -41,16 +42,16 @@ pub enum Command {
     /// `croma agent` lists the topics; `croma agent <topic>` shows one with a
     /// copy-paste example.
     Agent(AgentArgs),
-    /// Read a MusicXML file back into a Score and project it (experimental).
+    /// Read a MusicXML file back into a Score and project it.
     ///
-    /// Inverts croma's own MusicXML writer. Gated behind the `musicxml-reader`
-    /// feature; absent from the default build.
+    /// Inverts croma's own MusicXML writer. Built on the `musicxml-reader`
+    /// feature, which the CLI enables.
     #[cfg(feature = "musicxml-reader")]
     Read(ReadArgs),
     /// Convert a MusicXML file to ABC (read MusicXML -> Score -> write ABC).
     ///
-    /// A discoverable alias for `read --format abc`. Gated behind the
-    /// `musicxml-reader` feature; absent from the default build.
+    /// A discoverable alias for `read --format abc`. Built on the
+    /// `musicxml-reader` feature, which the CLI enables.
     #[cfg(feature = "musicxml-reader")]
     Musicxml2abc(Musicxml2abcArgs),
 }

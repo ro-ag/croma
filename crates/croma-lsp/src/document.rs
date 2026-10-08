@@ -1,7 +1,7 @@
 //! The in-memory document store backing the server's incremental sync.
 //!
-//! Per the promotion spec (decision: incremental sync), the store keeps one
-//! `String` per open document URI. Each `textDocument/didChange`
+//! To support incremental sync, the store keeps one `String` per open document
+//! URI. Each `textDocument/didChange`
 //! [`TextDocumentContentChangeEvent`] is applied against the **current** text:
 //!
 //! - with a `range`: the range is converted to byte offsets (clamped — never

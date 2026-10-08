@@ -44,7 +44,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # Experimental, feature-gated MusicXML reader (default build stays dep-free).
+      # The MusicXML reader feature (the default library build stays dep-free).
       - run: cargo test -p croma-core --features musicxml-reader
       - run: cargo clippy -p croma-core --all-targets --features musicxml-reader -- -D warnings
       - name: croma-core default build stays zero-dep
@@ -68,6 +68,6 @@ jobs:
       - run: nix develop --command cargo fmt --all --check
       - run: nix develop --command cargo test --workspace
       - run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
-      # Experimental, feature-gated MusicXML reader (default build stays dep-free).
+      # The MusicXML reader feature (the default library build stays dep-free).
       - run: nix develop --command cargo test -p croma-core --features musicxml-reader
       - run: nix develop --command cargo clippy -p croma-core --all-targets --features musicxml-reader -- -D warnings

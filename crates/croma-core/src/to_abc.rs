@@ -7,6 +7,12 @@ use crate::model::{
     HarmonyKindText, KeySignatureModel, Measure, MeterModel, SlurRole, TempoBeatRole, TempoModel,
     TieRole, TupletAttachment, TupletRole,
 };
+// The written->stored octave shift for a voice's `clef=` (`±8`/`±15`),
+// `octave=` and `middle=` modifiers is the parser's own
+// (`lower::voice::voice_octave_shift`). Stored pitches already carry it, so the
+// writer SUBTRACTS it to recover the written octave (the re-parse re-applies
+// the echoed modifiers).
+use crate::lower::voice::{clef_octave_shift, voice_octave_param, voice_octave_shift};
 use crate::{Accidental, BarlineKind, Pitch, Rational, RestVisibility, Score, TimedEventKind};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -21,7 +27,7 @@ pub struct AbcWriteOptions {
 /// One entry per compact carrier code the writer can emit, in the order the
 /// legend lists them. Only codes that actually occur in the produced ABC are
 /// included in the emitted legend (see [`used_carrier_codes`]).
-const LEGEND_LINES: [(&str, &str); 8] = [
+pub(crate) const LEGEND_LINES: [(&str, &str); 8] = [
     (
         "dp",
         "[I:cr dp=<a|b>]                  direction placement (above/below)",
@@ -180,7 +186,7 @@ fn sound_tempo_instruction(tempo: &TempoModel) -> Option<String> {
     );
     if let Some(text) = &tempo.text {
         if needs_hex_inline_carrier(text) {
-            out.push_str(&format!(" text-hex={}", hex_utf8(text)));
+            out.push_str(&format!(" text-hex={}", crate::hex::encode_hex_utf8(text)));
         } else {
             out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
         }
@@ -199,7 +205,7 @@ fn tempo_instruction(tempo: &TempoModel) -> Option<String> {
     let mut out = format!("croma-tempo role={role}");
     if let Some(text) = &tempo.text {
         if needs_hex_inline_carrier(text) {
-            out.push_str(&format!(" text-hex={}", hex_utf8(text)));
+            out.push_str(&format!(" text-hex={}", crate::hex::encode_hex_utf8(text)));
         } else {
             out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(text)));
         }
@@ -225,7 +231,10 @@ fn harmony_text_instruction(kind_text: &HarmonyKindText) -> Option<String> {
         HarmonyKindText::Textless => Some("cr htx".to_owned()),
         HarmonyKindText::Text(value) => {
             if needs_hex_inline_carrier(value) {
-                Some(format!("cr ht text-hex={}", hex_utf8(value)))
+                Some(format!(
+                    "cr ht text-hex={}",
+                    crate::hex::encode_hex_utf8(value)
+                ))
             } else {
                 Some(format!("cr ht text=\"{}\"", abc_carrier_quoted(value)))
             }
@@ -251,7 +260,10 @@ fn lyric_extend_instruction(verse: u32) -> String {
 fn lyric_duplicate_instruction(lyric: &AlignedLyric) -> String {
     let mut out = format!("croma-lyric-duplicate verse={}", lyric.verse);
     if needs_hex_inline_carrier(&lyric.text) {
-        out.push_str(&format!(" text-hex={}", hex_utf8(&lyric.text)));
+        out.push_str(&format!(
+            " text-hex={}",
+            crate::hex::encode_hex_utf8(&lyric.text)
+        ));
     } else {
         out.push_str(&format!(" text=\"{}\"", abc_carrier_quoted(&lyric.text)));
     }
@@ -263,16 +275,6 @@ fn lyric_duplicate_instruction(lyric: &AlignedLyric) -> String {
 
 fn needs_hex_inline_carrier(text: &str) -> bool {
     text.chars().any(|c| c == ']' || c == '%' || c.is_control())
-}
-
-fn hex_utf8(text: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(text.len() * 2);
-    for byte in text.as_bytes() {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 fn meter_restatement_instruction() -> &'static str {
@@ -331,7 +333,10 @@ fn clef_cursor_instruction(clef: &ClefChangeModel) -> Option<String> {
     let cursor_back = clef.musicxml_cursor_back?;
     let mut out = String::from("croma-clef-cursor");
     if needs_hex_inline_carrier(&clef.clef.text) {
-        out.push_str(&format!(" clef-hex={}", hex_utf8(&clef.clef.text)));
+        out.push_str(&format!(
+            " clef-hex={}",
+            crate::hex::encode_hex_utf8(&clef.clef.text)
+        ));
     } else {
         out.push_str(&format!(
             " clef=\"{}\"",
@@ -601,7 +606,10 @@ fn initial_meter_carrier(score: &Score, meter: &MeterModel) -> Option<String> {
 fn measure_number_instruction(display_number: &str) -> String {
     let mut out = "croma-measure-number".to_owned();
     if needs_hex_inline_carrier(display_number) {
-        out.push_str(&format!(" n-hex={}", hex_utf8(display_number)));
+        out.push_str(&format!(
+            " n-hex={}",
+            crate::hex::encode_hex_utf8(display_number)
+        ));
     } else if display_number.chars().any(char::is_whitespace) {
         out.push_str(&format!(" n=\"{}\"", abc_carrier_quoted(display_number)));
     } else {
@@ -837,54 +845,6 @@ fn abc_carrier_quoted(text: &str) -> String {
         .replace('"', "\\\"")
 }
 
-/// Replicates the parser's written->stored octave shift for a voice's
-/// `clef=` (`±8`/`±15`), `octave=` and `middle=` modifiers. Stored pitches
-/// already carry the shift, so the writer SUBTRACTS it to recover the written
-/// octave (the re-parse re-applies the echoed modifiers).
-///
-/// MUST stay value-for-value identical to `lower::voice::voice_octave_shift`
-/// (same clamps: `octave=` to ±9, total to ±12) or every `octave=`/`clef±`
-/// voice breaks round-trip.
-fn voice_octave_shift(properties: &crate::model::VoicePropertiesModel) -> i8 {
-    let mut shift: i32 = 0;
-    if let Some(clef) = properties.clef.as_ref() {
-        shift += clef_octave_shift(clef.text.as_str());
-    }
-    shift += voice_octave_param(properties);
-    if let Some(middle) = properties.middle.as_ref() {
-        shift += i32::from(crate::lower::voice::middle_octave_shift(
-            middle.text.as_str(),
-        ));
-    }
-    shift.clamp(-12, 12) as i8
-}
-
-/// The written->stored octave shift a `clef=` token contributes on its own
-/// (`±8`/`±15`), split out of [`voice_octave_shift`] so a mid-tune clef change
-/// can be compensated against the voice's baked-in shift.
-fn clef_octave_shift(clef: &str) -> i32 {
-    if clef.contains("-15") {
-        -2
-    } else if clef.contains("+15") {
-        2
-    } else if clef.contains("-8") {
-        -1
-    } else if clef.contains("+8") {
-        1
-    } else {
-        0
-    }
-}
-
-/// The voice's `octave=` modifier as the parser reads it (clamped to ±9), or 0.
-fn voice_octave_param(properties: &crate::model::VoicePropertiesModel) -> i32 {
-    properties
-        .octave
-        .as_ref()
-        .and_then(|octave| octave.text.trim().parse::<i64>().ok())
-        .map_or(0, |value| value.clamp(-9, 9) as i32)
-}
-
 /// A pitch moved back to its written octave for emission. Saturating, like
 /// the lowering-side addition, so a boundary-saturated stored octave cannot
 /// overflow back out of i8.
@@ -912,7 +872,7 @@ fn write_voice(
         .properties
         .clef
         .as_ref()
-        .map_or(0, |clef| clef_octave_shift(clef.text.as_str()));
+        .map_or(0, |clef| i32::from(clef_octave_shift(clef.text.as_str())));
     let baseline_octave_param = voice_octave_param(&voice.properties);
     let mut effective_octave_param = baseline_octave_param;
     // Overlay segments (`&`) grouped by the measure they belong to; spliced
@@ -1166,8 +1126,8 @@ fn write_voice(
                     // MusicXML reader reconstructs, which never has cursor
                     // metadata) is an ordinary ABC inline clef field. Without this
                     // the event emitted nothing at all and the change was lost.
-                    let required =
-                        baseline_octave_param + baseline_clef_shift - clef_octave_shift(text);
+                    let required = baseline_octave_param + baseline_clef_shift
+                        - i32::from(clef_octave_shift(text));
                     if required == effective_octave_param {
                         out.push_str(&format!("[K:clef={text}] "));
                     } else if (-9..=9).contains(&required) {
@@ -1324,44 +1284,14 @@ fn tuplet_layout(events: &[crate::TimedEvent]) -> (TupletMarkers, TupletScales) 
 fn multiply_tuplet_scale(slot: &mut Option<TupletScale>, actual: u32, normal: u32) {
     match slot {
         Some(TupletScale::Ratio(active_actual, active_normal)) => {
-            *slot = checked_ratio_product(*active_actual, *active_normal, actual, normal)
-                .map(|(actual, normal)| TupletScale::Ratio(actual, normal))
-                .or(Some(TupletScale::Overflow));
+            *slot =
+                crate::model::checked_ratio_product(*active_actual, *active_normal, actual, normal)
+                    .map(|(actual, normal)| TupletScale::Ratio(actual, normal))
+                    .or(Some(TupletScale::Overflow));
         }
         Some(TupletScale::Overflow) => {}
         None => *slot = Some(TupletScale::Ratio(actual, normal)),
     }
-}
-
-fn checked_ratio_product(
-    actual: u32,
-    normal: u32,
-    factor_actual: u32,
-    factor_normal: u32,
-) -> Option<(u32, u32)> {
-    let actual = u64::from(actual) * u64::from(factor_actual);
-    let normal = u64::from(normal) * u64::from(factor_normal);
-    ratio_to_u32(actual, normal)
-}
-
-fn ratio_to_u32(numerator: u64, denominator: u64) -> Option<(u32, u32)> {
-    if numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX) {
-        return Some((numerator as u32, denominator as u32));
-    }
-    let gcd = gcd_u64(numerator, denominator);
-    let numerator = numerator / gcd;
-    let denominator = denominator / gcd;
-    (numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX))
-        .then_some((numerator as u32, denominator as u32))
-}
-
-fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
-    while right != 0 {
-        let remainder = left % right;
-        left = right;
-        right = remainder;
-    }
-    left.max(1)
 }
 
 /// Attachments emitted BEFORE a note/rest head.
@@ -1782,22 +1712,12 @@ fn barline_str(kind: BarlineKind) -> &'static str {
 }
 
 /// ABC glyph for an explicitly written accidental.
-fn accidental_glyph(kind: Accidental) -> &'static str {
-    match kind {
-        Accidental::DoubleFlat => "__",
-        Accidental::Flat => "_",
-        Accidental::Natural => "=",
-        Accidental::Sharp => "^",
-        Accidental::DoubleSharp => "^^",
-    }
-}
-
 /// Accidental prefix for a note: the originally written accidental's glyph,
 /// or nothing. Every other alter (key signature, measure carry, tie carry
 /// across barlines) is reproduced by the parser's own accidental propagation
 /// on re-parse, so no synthesized glyph is ever needed.
 fn note_accidental(written: Option<Accidental>) -> &'static str {
-    written.map(accidental_glyph).unwrap_or("")
+    written.map(Accidental::abc_sign).unwrap_or("")
 }
 
 /// Render one `&` overlay segment: `& ` plus its events, grouping consecutive
@@ -2015,7 +1935,7 @@ fn notated_duration(duration: Rational, tuplet: Option<TupletScale>) -> Rational
 fn scaled_rational(duration: Rational, actual: u32, normal: u32) -> Option<Rational> {
     let numerator = u64::from(duration.numerator) * u64::from(actual);
     let denominator = u64::from(duration.denominator) * u64::from(normal);
-    ratio_to_u32(numerator, denominator)
+    crate::model::ratio_to_u32(numerator, denominator)
         .map(|(numerator, denominator)| Rational::new(numerator, denominator))
 }
 

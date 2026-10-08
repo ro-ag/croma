@@ -80,12 +80,25 @@ fn lyric_line_contexts<'a>(
     let mut previous_line = None;
     let mut verse = 1u32;
     let mut contexts = Vec::new();
+    // How many leading refs sit on lines before the current lyric line. Lyric
+    // lines arrive in source order, so this is a running count rather than a
+    // rescan per line (which made alignment quadratic); it restarts if a line
+    // ever goes backwards.
+    let mut refs_before = 0usize;
+    let mut counted_to_line = 0usize;
 
     for line in lyric_lines {
-        let available_end = refs
-            .iter()
-            .take_while(|reference| reference.line_index < line.line_index)
-            .count();
+        if line.line_index < counted_to_line {
+            refs_before = 0;
+        }
+        while refs
+            .get(refs_before)
+            .is_some_and(|reference| reference.line_index < line.line_index)
+        {
+            refs_before += 1;
+        }
+        counted_to_line = line.line_index;
+        let available_end = refs_before;
         let adjacent = previous_line.is_some_and(|previous| previous + 1 == line.line_index);
         let (start, end, line_verse) = if adjacent {
             verse = verse.saturating_add(1);

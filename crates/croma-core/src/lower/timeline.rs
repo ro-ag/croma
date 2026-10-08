@@ -464,14 +464,15 @@ impl VoiceTimelineBuilder {
         if let Some(overlay) = &mut self.active_overlay {
             if !chord_member {
                 overlay.last_group_onset = event.onset;
-                overlay.actual_duration = overlay.actual_duration.checked_add(timed.event.duration);
+                overlay.actual_duration =
+                    overlay.actual_duration.saturating_add(timed.event.duration);
             }
             overlay.span = extend_span(overlay.span, span);
             overlay.events.push(event);
         } else {
             if !chord_member {
                 self.last_group_onset = event.onset;
-                self.onset = self.onset.checked_add(timed.event.duration);
+                self.onset = self.onset.saturating_add(timed.event.duration);
             }
             self.current_measure_mut().span = extend_span(self.current_measure_mut().span, span);
             self.current_measure_mut().events.push(event);
@@ -631,7 +632,7 @@ fn timeline_measure_actual_duration(measure: &VoiceMeasureTimeline) -> Fraction 
             event.kind,
             TimelineEventKind::Note { .. } | TimelineEventKind::Rest { .. }
         ) {
-            let end = event.onset.checked_add(event.duration);
+            let end = event.onset.saturating_add(event.duration);
             if actual.less_than(end) {
                 actual = end;
             }

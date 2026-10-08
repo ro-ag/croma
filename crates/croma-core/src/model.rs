@@ -29,6 +29,21 @@ pub struct Score {
     pub accidental_policy: AccidentalPolicy,
 }
 
+impl Score {
+    /// A score with no parts: what a tune that fails to lower, or an empty
+    /// MusicXML document, produces.
+    pub(crate) fn empty(span: Span, diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            metadata: ScoreMetadata::empty(span),
+            parts: Vec::new(),
+            diagnostics,
+            divisions: 1,
+            source_span: span,
+            accidental_policy: AccidentalPolicy::abc_default(span),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScoreMetadata {
     pub reference: TextLine,
@@ -43,6 +58,28 @@ pub struct ScoreMetadata {
     pub preserved_directives: Vec<PreservedDirective>,
     pub post_tune_lyrics: Vec<TextLine>,
     pub source_span: Span,
+}
+
+impl ScoreMetadata {
+    /// No title, tempo, meter, key or directives; a blank `X:` reference.
+    pub(crate) fn empty(span: Span) -> Self {
+        Self {
+            reference: TextLine {
+                text: String::new(),
+                span,
+            },
+            title: None,
+            composers: Vec::new(),
+            tempo: None,
+            tempo_model: None,
+            meter: None,
+            key: None,
+            directives: Vec::new(),
+            preserved_directives: Vec::new(),
+            post_tune_lyrics: Vec::new(),
+            source_span: span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +190,19 @@ pub struct AccidentalPolicy {
     pub reset_at_barlines: bool,
     pub scope: AccidentalScope,
     pub source_span: Span,
+}
+
+impl AccidentalPolicy {
+    /// ABC's rule: explicit accidentals are kept and last to the end of the
+    /// bar, per pitch and octave.
+    pub(crate) fn abc_default(span: Span) -> Self {
+        Self {
+            preserve_explicit_accidentals: true,
+            reset_at_barlines: true,
+            scope: AccidentalScope::PitchAndOctave,
+            source_span: span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -861,6 +911,29 @@ pub enum Accidental {
 }
 
 impl Accidental {
+    /// The accidental for a semitone alteration in -2..=2, if any.
+    pub(crate) fn from_alter(alter: i8) -> Option<Self> {
+        match alter {
+            -2 => Some(Self::DoubleFlat),
+            -1 => Some(Self::Flat),
+            0 => Some(Self::Natural),
+            1 => Some(Self::Sharp),
+            2 => Some(Self::DoubleSharp),
+            _ => None,
+        }
+    }
+
+    /// The ABC sign written before a note or a key step: `__ _ = ^ ^^`.
+    pub(crate) fn abc_sign(self) -> &'static str {
+        match self {
+            Self::DoubleFlat => "__",
+            Self::Flat => "_",
+            Self::Natural => "=",
+            Self::Sharp => "^",
+            Self::DoubleSharp => "^^",
+        }
+    }
+
     pub(crate) fn alter(self) -> i8 {
         match self {
             Self::DoubleFlat => -2,
@@ -925,6 +998,14 @@ pub(crate) enum LoweredEventAtomKind {
 }
 
 impl LoweredEventAtom {
+    pub(crate) fn span(&self) -> Span {
+        match self.kind {
+            LoweredEventAtomKind::Note { span, .. }
+            | LoweredEventAtomKind::Rest { span, .. }
+            | LoweredEventAtomKind::Spacer { span } => span,
+        }
+    }
+
     pub(crate) fn into_event(self, divisions: u32) -> Event {
         let duration = self.duration.to_divisions(divisions);
         match self.kind {
@@ -986,24 +1067,55 @@ impl Fraction {
         }
     }
 
-    pub(crate) fn checked_mul(self, other: Self) -> Self {
-        Self::new(
-            self.numerator.saturating_mul(other.numerator),
-            self.denominator.saturating_mul(other.denominator),
+    /// The largest representable duration; what the saturating operations clamp to.
+    pub(crate) const MAX: Self = Self {
+        numerator: u32::MAX,
+        denominator: 1,
+    };
+
+    /// The exact product, or `None` when the reduced result does not fit u32/u32.
+    pub(crate) fn checked_mul(self, other: Self) -> Option<Self> {
+        Self::reduced_wide(
+            u128::from(self.numerator) * u128::from(other.numerator),
+            u128::from(self.denominator) * u128::from(other.denominator),
         )
     }
 
-    pub(crate) fn checked_mul_u32(self, value: u32) -> Self {
-        Self::new(self.numerator.saturating_mul(value), self.denominator)
+    /// The exact sum, or `None` when the reduced result does not fit u32/u32.
+    pub(crate) fn checked_add(self, other: Self) -> Option<Self> {
+        Self::reduced_wide(
+            u128::from(self.numerator) * u128::from(other.denominator)
+                + u128::from(other.numerator) * u128::from(self.denominator),
+            u128::from(self.denominator) * u128::from(other.denominator),
+        )
     }
 
-    pub(crate) fn checked_add(self, other: Self) -> Self {
-        let numerator = self
-            .numerator
-            .saturating_mul(other.denominator)
-            .saturating_add(other.numerator.saturating_mul(self.denominator));
-        let denominator = self.denominator.saturating_mul(other.denominator);
-        Self::new(numerator, denominator)
+    /// For running totals (onsets, cursors): the exact sum, or [`Fraction::MAX`]
+    /// when it does not fit. Lowering diagnoses an unrepresentable duration where
+    /// it is formed, so a total that still overflows only clamps.
+    pub(crate) fn saturating_add(self, other: Self) -> Self {
+        self.checked_add(other).unwrap_or(Self::MAX)
+    }
+
+    fn reduced_wide(numerator: u128, denominator: u128) -> Option<Self> {
+        let denominator = denominator.max(1);
+        let divisor = gcd_u128(numerator, denominator);
+        Some(Self {
+            numerator: u32::try_from(numerator / divisor).ok()?,
+            denominator: u32::try_from(denominator / divisor).ok()?,
+        })
+    }
+
+    /// This value with `dots` augmentation dots, each adding half the previous
+    /// increment.
+    pub(crate) fn dotted(self, dots: usize) -> Self {
+        let mut duration = self;
+        let mut dot = self;
+        for _ in 0..dots {
+            dot = Self::new(dot.numerator, dot.denominator.saturating_mul(2));
+            duration = duration.saturating_add(dot);
+        }
+        duration
     }
 
     pub(crate) fn less_than(self, other: Self) -> bool {
@@ -1019,21 +1131,27 @@ impl Fraction {
     }
 
     pub(crate) fn to_divisions(self, divisions: u32) -> u32 {
-        let numerator = u64::from(self.numerator) * 4 * u64::from(divisions);
-        let denominator = u64::from(self.denominator);
+        // u128: `u32 * 4 * u32` can exceed u64. Results past u32 clamp.
+        let numerator = u128::from(self.numerator) * 4 * u128::from(divisions);
+        let denominator = u128::from(self.denominator.max(1));
         let value = numerator / denominator;
         u32::try_from(value.max(1)).unwrap_or(u32::MAX)
     }
 }
 
-pub(crate) fn lcm(left: u32, right: u32) -> u32 {
+/// Key-signature order of sharps and flats (ABC 2.1 §3.1.14).
+pub(crate) const SHARP_ORDER: [char; 7] = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+pub(crate) const FLAT_ORDER: [char; 7] = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+
+/// The least common multiple, or `None` when it does not fit u32.
+pub(crate) fn checked_lcm(left: u32, right: u32) -> Option<u32> {
     if left == 0 || right == 0 {
-        return left.max(right).max(1);
+        return Some(left.max(right).max(1));
     }
-    (left / gcd(left, right)).saturating_mul(right)
+    (left / gcd(left, right)).checked_mul(right)
 }
 
-fn gcd(mut left: u32, mut right: u32) -> u32 {
+pub(crate) fn gcd(mut left: u32, mut right: u32) -> u32 {
     while right != 0 {
         let remainder = left % right;
         left = right;
@@ -1042,7 +1160,7 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
     left.max(1)
 }
 
-fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
+pub(crate) fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
         left = right;
@@ -1050,3 +1168,43 @@ fn gcd_u64(mut left: u64, mut right: u64) -> u64 {
     }
     left.max(1)
 }
+
+/// The ratio `actual:normal` scaled by `factor_actual:factor_normal`, kept
+/// unreduced when it fits u32 (tuplet ratios are written as given) and reduced
+/// only when it must be; `None` when even the reduced ratio does not fit.
+pub(crate) fn checked_ratio_product(
+    actual: u32,
+    normal: u32,
+    factor_actual: u32,
+    factor_normal: u32,
+) -> Option<(u32, u32)> {
+    let actual = u64::from(actual) * u64::from(factor_actual);
+    let normal = u64::from(normal) * u64::from(factor_normal);
+    ratio_to_u32(actual, normal)
+}
+
+/// `numerator:denominator` as u32s: unchanged when both fit, else reduced, else
+/// `None`.
+pub(crate) fn ratio_to_u32(numerator: u64, denominator: u64) -> Option<(u32, u32)> {
+    if numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX) {
+        return Some((numerator as u32, denominator as u32));
+    }
+    let gcd = gcd_u64(numerator, denominator);
+    let numerator = numerator / gcd;
+    let denominator = denominator / gcd;
+    (numerator <= u64::from(u32::MAX) && denominator <= u64::from(u32::MAX))
+        .then_some((numerator as u32, denominator as u32))
+}
+
+fn gcd_u128(mut left: u128, mut right: u128) -> u128 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left.max(1)
+}
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

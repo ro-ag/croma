@@ -210,7 +210,7 @@ normalization candidates rather than active Croma parser/export bugs.
 - The octave=/clef±8/middle= written→stored pitch shift is *not* a bug — the
   writer compensates (`voice_octave_shift` replica in `to_abc.rs`); the two
   implementations must stay value-for-value identical (clamps included).
-- `barline_lowering_kinds` splits `||:`→[Double,RepeatStart] and
+- `barline_lowering_kinds_with_kind` splits `||:`→[Double,RepeatStart] and
   `[|:`→[Initial,RepeatStart] sharing one span; the writer's re-join detects
   span equality. A refactor that rewrites barline spans breaks that detection
   (unit tests cover both directions).
@@ -221,14 +221,12 @@ normalization candidates rather than active Croma parser/export bugs.
   [`docs/midi-directives.md`](midi-directives.md): the score-meaningful
   `%%MIDI program`/`channel` are forward-translated to MusicXML `<part-list>`
   `<score-instrument>`/`<midi-instrument>` (per-voice scoped), while all
-  directives stay preserved verbatim for round-trip/`croma fmt`. Deferred
-  items (transpose, channel-only, inline `[I:MIDI]`) and the abc2xml-isms not
-  mimicked (visible `prog:` words, drummap percussion) are tabled there, along
+  directives stay preserved verbatim for round-trip/`croma fmt`. The abc2xml-isms
+  not mimicked (visible `prog:` words, drummap percussion) are tabled there, along
   with the writer-side projection-coverage gap.
 - **MusicXML → Score reader** (the reverse direction, closing the
   forward/reverse loop) is documented in
-  [`docs/musicxml-reader.md`](musicxml-reader.md): a feature-gated
-  (`musicxml-reader`), experimental, non-panicking `read_musicxml` that inverts
-  croma's writer, staged S1–S6 and proven by an XML re-emission idempotence gate
-  over the 10k. Stage S1 (parts/measures/notes/durations/metadata) has landed;
-  S2 (`<key>`/`<time>`/`<clef>`/`<transpose>`) is the next gate-driven target.
+  [`docs/musicxml-reader.md`](musicxml-reader.md): a non-panicking
+  `read_musicxml` (behind the `musicxml-reader` feature, enabled by the CLI) that
+  inverts croma's writer, built in stages S1–S6 and proven by an XML re-emission
+  idempotence gate over the 10k. It ships as `croma read` / `croma musicxml2abc`.

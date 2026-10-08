@@ -1,6 +1,6 @@
-//! Stage-S1 reader tests.
+//! Reader tests.
 //!
-//! Two layers, mirroring the design's verification plan:
+//! Two layers:
 //!
 //! 1. **Per-element unit tests** (hard asserts): each TDD'd against one element
 //!    class, asserting BOTH the XML re-emission idempotence
@@ -5569,9 +5569,20 @@ fn corpus_idempotence_measurement() {
         eprintln!("  {tag}: {count}");
     }
 
-    // No hard count for S1 — most files use later-stage elements. We only
-    // require the loop to be total (no panic) over the whole corpus.
+    // The loop must be total (no panic) over the whole corpus. The pass count
+    // depends on the corpus, which lives in croma-test, so the floor comes from
+    // there: `READER_SELFLOOP_MIN` (set by croma-test's bootstrap to the
+    // recorded baseline) turns a drop below it into a failure.
     assert!(exported > 0, "expected at least one corpus file to export");
+    if let Some(min) = std::env::var("READER_SELFLOOP_MIN")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    {
+        assert!(
+            idempotent >= min,
+            "reader self-loop regressed: {idempotent}/{exported} round-trip, baseline {min}"
+        );
+    }
 }
 
 // --- Totality fuzz (design §6: read_musicxml must not panic on any file) -----
@@ -8954,7 +8965,7 @@ fn corpus_abc_reemission_through_xml() {
 // in `metadata.directives`, and that `write_abc` emits the expected line.
 //
 // Self-loop-neutral: croma's own writer never emits `<part-group>`, so the
-// synthesis fires only on foreign XML and the self-loop 9935/9935 is
+// synthesis fires only on foreign XML and the self-loop 9933/9935 is
 // unchanged by construction.
 
 /// Minimal part XML: one measure, one C quarter note, at `<divisions>4</divisions>`.
@@ -10148,4 +10159,126 @@ fn legend_lists_only_the_codes_the_document_uses() {
             .musicxml,
         export_musicxml(&plain).expect("plain ABC exports").musicxml,
     );
+}
+
+/// The `%%score` text the reader synthesises for a `<part-list>` body (the
+/// groups and `<score-part>`s between `<part-list>` tags) over parts P1..Pn.
+fn score_text_for_part_list(part_list: &str, part_count: usize) -> String {
+    let parts: String = (1..=part_count)
+        .map(|n| minimal_part(&format!("P{n}")))
+        .collect();
+    let xml = format!(
+        "<?xml version=\"1.0\"?>\n<score-partwise>\n  <part-list>\n{part_list}  </part-list>\n\
+         {parts}</score-partwise>\n"
+    );
+    let score = read_musicxml(&xml).value;
+    assert_eq!(score.metadata.directives.len(), 1, "one %%score directive");
+    score.metadata.directives[0].value.text.clone()
+}
+
+fn group_start(number: u32, symbol: &str) -> String {
+    format!(
+        "    <part-group number=\"{number}\" type=\"start\"><group-symbol>{symbol}</group-symbol></part-group>\n"
+    )
+}
+
+fn group_stop(number: u32) -> String {
+    format!("    <part-group number=\"{number}\" type=\"stop\"/>\n")
+}
+
+fn score_part(id: &str) -> String {
+    format!("    <score-part id=\"{id}\"><part-name/></score-part>\n")
+}
+
+#[test]
+fn part_groups_over_identical_parts_nest_in_start_order() {
+    // A bracket and a brace both spanning P1 P2 used to cancel out (each counted
+    // as inside the other, so neither was top-level) and gave `P1 P2`. Both
+    // survive, the one started first outermost, whichever stops first.
+    for (first_stop, second_stop) in [(2, 1), (1, 2)] {
+        let part_list = [
+            group_start(1, "bracket"),
+            group_start(2, "brace"),
+            score_part("P1"),
+            score_part("P2"),
+            group_stop(first_stop),
+            group_stop(second_stop),
+        ]
+        .concat();
+        assert_eq!(score_text_for_part_list(&part_list, 2), "[{P1 P2}]");
+    }
+}
+
+#[test]
+fn three_level_part_group_nesting_keeps_every_level() {
+    // bracket{P1-P4} > brace{P1-P3} > bracket{P1-P2}: sub-groups were keyed by
+    // their first part and rendered one level deep, so the innermost group
+    // (sharing P1 with the brace) was lost. Every level must survive.
+    let part_list = [
+        group_start(1, "bracket"),
+        group_start(2, "brace"),
+        group_start(3, "bracket"),
+        score_part("P1"),
+        score_part("P2"),
+        group_stop(3),
+        score_part("P3"),
+        group_stop(2),
+        score_part("P4"),
+        group_stop(1),
+    ]
+    .concat();
+    assert_eq!(score_text_for_part_list(&part_list, 4), "[{[P1 P2] P3} P4]");
+}
+
+#[test]
+fn huge_lyric_numbers_are_dropped_instead_of_expanding_into_empty_verses() {
+    // Verse N is the Nth `w:` line in ABC, so `<lyric number="65536">` used to
+    // write 65,535 `w:*` placeholders. Numbers above MAX_LYRIC_VERSE are now
+    // dropped with a warning; ordinary numbers still read.
+    let lyric_part = |number: &str| {
+        format!(
+            "<?xml version=\"1.0\"?>\n<score-partwise>\n  <part-list>\n\
+             <score-part id=\"P1\"><part-name/></score-part>\n  </part-list>\n\
+             <part id=\"P1\"><measure number=\"1\">\
+             <attributes><divisions>4</divisions></attributes>\
+             <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration>\
+             <voice>1</voice><type>quarter</type>\
+             <lyric number=\"{number}\"><syllabic>single</syllabic><text>la</text></lyric>\
+             </note></measure></part>\n</score-partwise>\n"
+        )
+    };
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+
+    let report = read_musicxml(&lyric_part("65536"));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "musicxml.read.lyric_number_out_of_range")
+    );
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.lines().filter(|line| line.starts_with("w:")).count() <= 1,
+        "{abc}"
+    );
+
+    let report = read_musicxml(&lyric_part("2"));
+    let abc = write_abc(&report.value, AbcWriteOptions::default());
+    assert!(
+        abc.contains("w:*\nw:la"),
+        "verse 2 keeps its position:\n{abc}"
+    );
+}
+
+#[test]
+fn score_grouping_survives_abc_to_xml_to_abc() {
+    // The writer now emits `<part-group>` for `%%score` brackets and braces, and
+    // the reader turns them back into `%%score`, so grouping round-trips.
+    use crate::to_abc::{AbcWriteOptions, write_abc};
+    let source = "X:1\n%%score [{V1 V2} V3] V4\nL:1/4\nK:C\n\
+                  V:V1\nC4|\nV:V2\nD4|\nV:V3\nE4|\nV:V4\nF4|\n";
+    let xml = crate::export_musicxml(source).expect("export").musicxml;
+    let score = read_musicxml(&xml).value;
+    let abc = write_abc(&score, AbcWriteOptions::default());
+    assert!(abc.contains("%%score [{P1 P2} P3] P4\n"), "{abc}");
 }

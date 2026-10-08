@@ -1,10 +1,10 @@
 //! `textDocument/semanticTokens/full`: highlight the music token stream.
 //!
-//! Per the promotion spec (R2 scope, leg D) the LSP walks the parser's flat,
-//! per-line `MusicToken` stream and maps each token's [`MusicTokenKind`] to an
-//! index in a fixed [`SemanticTokensLegend`]. `Whitespace` tokens are skipped
-//! (they carry no highlight). The result is the LSP delta-encoding: tokens
-//! ordered by (line, start), each stored as a delta from its predecessor.
+//! The LSP walks the parser's flat, per-line `MusicToken` stream and maps each
+//! token's [`MusicTokenKind`] to an index in a fixed [`SemanticTokensLegend`].
+//! `Whitespace` tokens are skipped (they carry no highlight). The result is the
+//! LSP delta-encoding: tokens ordered by (line, start), each stored as a delta
+//! from its predecessor.
 //!
 //! **Non-overlap (a protocol requirement).** The flat stream is *not* strictly
 //! non-overlapping: container constructs emit BOTH a span for the whole
@@ -22,9 +22,8 @@
 //! server advertises the *same* [`legend()`] in its capabilities, so the indices
 //! a client decodes match what it was told.
 //!
-//! Header-field highlighting is intentionally deferred (spec: "header-field
-//! highlighting is optional/deferred"): R2 scopes semantic tokens to the music
-//! body, where the rich token stream lives.
+//! Header-field highlighting is intentionally deferred: semantic tokens are
+//! scoped to the music body, where the rich token stream lives.
 //!
 //! ## `MusicTokenKind` -> `SemanticTokenType` mapping
 //!

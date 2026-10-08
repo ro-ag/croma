@@ -298,41 +298,10 @@ fn parse_tune_report_with_fields(
             score_directives,
             preserved_directives,
             post_tune_lyrics,
-            score: score.unwrap_or_else(|| empty_score(tune.span, diagnostics.clone())),
+            score: score.unwrap_or_else(|| Score::empty(tune.span, diagnostics.clone())),
         }),
         diagnostics,
     )
-}
-
-fn empty_score(span: Span, diagnostics: Vec<Diagnostic>) -> Score {
-    Score {
-        metadata: crate::model::ScoreMetadata {
-            reference: TextLine {
-                text: String::new(),
-                span,
-            },
-            title: None,
-            composers: Vec::new(),
-            tempo: None,
-            tempo_model: None,
-            meter: None,
-            key: None,
-            directives: Vec::new(),
-            preserved_directives: Vec::new(),
-            post_tune_lyrics: Vec::new(),
-            source_span: span,
-        },
-        parts: Vec::new(),
-        diagnostics,
-        divisions: 1,
-        source_span: span,
-        accidental_policy: crate::model::AccidentalPolicy {
-            preserve_explicit_accidentals: true,
-            reset_at_barlines: true,
-            scope: crate::model::AccidentalScope::PitchAndOctave,
-            source_span: span,
-        },
-    }
 }
 
 fn source_level_diagnostics(source: &SourceText) -> Vec<Diagnostic> {

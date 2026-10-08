@@ -1,8 +1,8 @@
 //! `textDocument/hover`: explain the field key or decoration under the cursor.
 //!
-//! Per the promotion spec (decision 4, "hover/completion are static tables"),
-//! hover is pure presentation over [`crate::tables`] — the ABC 2.1 §3.1 field set
-//! and the §4.14 decoration names croma recognises. It never reparses or invents
+//! By design hover and completion are static tables, so hover is pure
+//! presentation over [`crate::tables`] — the ABC 2.1 §3.1 field set and the §4.14
+//! decoration names croma recognises. It never reparses or invents
 //! meaning: it locates the token under the position in the parsed document and
 //! looks its doc up in the static table.
 //!

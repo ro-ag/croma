@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "zed_croma_abc"
-version = "0.0.1"
+version = "1.0.0"
 dependencies = [
  "zed_extension_api",
 ]

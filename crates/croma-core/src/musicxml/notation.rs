@@ -616,34 +616,9 @@ fn decimal_technical_text(name: &'static str, text: &str) -> Option<NotationKind
     })
 }
 
+/// A decoration-name hex suffix: the shared carrier decoder, but never empty.
 fn decode_hex_utf8(hex: &str) -> Option<String> {
-    if hex.is_empty() || !hex.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut bytes = Vec::with_capacity(hex.len() / 2);
-    for chunk in hex.as_bytes().chunks_exact(2) {
-        let hi = hex_digit(chunk[0])?;
-        let lo = hex_digit(chunk[1])?;
-        bytes.push((hi << 4) | lo);
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    text.chars().all(is_xml_char).then_some(text)
-}
-
-fn hex_digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn is_xml_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{9}' | '\u{A}' | '\u{D}' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}'
-    )
+    crate::hex::decode_hex_utf8(hex).filter(|text| !text.is_empty())
 }
 
 fn tremolo_notation(name: &str) -> Option<NotationKind> {

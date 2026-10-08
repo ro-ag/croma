@@ -7,7 +7,7 @@
 //! Each fixture is valid ABC that both parses with zero errors and exports
 //! cleanly to MusicXML, so the parser / writer / reader benches all get real
 //! input. Size is controlled by the body-line count after a fixed 7-line header,
-//! adapted from the proven `synthetic_abc_200()` generator in
+//! adapted from the proven `synthetic_abc` generator in
 //! `croma-lsp`'s `corpus_proof` (a representative cycle of notes, chords, grace
 //! groups, decorations, tuplets, chord symbols, barlines, and accidentals).
 //!

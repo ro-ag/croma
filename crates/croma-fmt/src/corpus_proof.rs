@@ -1,17 +1,19 @@
 //! Corpus-scale proof of the formatter's two core invariants — **idempotence**
 //! and **losslessness** — over the external 10k ABC corpus.
 //!
-//! This is the evidence that promotes `croma fmt` out of the gated tier: for
+//! This is the evidence behind `croma fmt`'s promotion to a default feature: for
 //! every real corpus file we assert that plain `format` is a lossless fixed
 //! point and that `auto_fix` preserves the score and likewise settles to a fixed
 //! point. It runs **in-process**, reusing the crate's own `engine`/`verify`, so
 //! the full sweep takes seconds rather than 10k subprocess spawns.
 //!
 //! Env-gated: it runs only when `ABC_ROOT` points at the corpus directory, so a
-//! normal `cargo test` (which has no corpus) skips it cleanly. Drive it with:
+//! normal `cargo test` (which has no corpus) skips it cleanly. The corpus lives
+//! in the private croma-test repo and `ABC_ROOT` must be an absolute path.
+//! Drive it with:
 //!
 //! ```sh
-//! ABC_ROOT=docs/untracked/corpus/zenodo-10k/abc \
+//! ABC_ROOT=$PWD/croma-test/docs/untracked/corpus/zenodo-10k/abc \
 //!   cargo test -p croma-fmt --release corpus_proof -- --nocapture
 //! ```
 //!
