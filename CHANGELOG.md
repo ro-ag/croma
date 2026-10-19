@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `--engrave` rules (beam grouping, tuplet brackets, stem direction,
+  multi-voice rests, slur and tie placement) were rewritten clean-room from
+  published engraving references (mainly Gould, *Behind Bars*); the rules and
+  their sources are in `docs/engraving/rules.md`. The previous implementation
+  was a port of MuseScore's engraving code. `--engrave` output changes in about
+  30% of corpus files, mostly beaming (in 2/4 a bar of four eighths is now one
+  beam), and multi-voice rests now sit on the outer staff lines. The default
+  export is unchanged.
 - Parsing and lyric alignment are linear in the number of lines; tunes with
   thousands of `w:` lines were quadratic.
 - crates.io publishing and binary releases run only after a fmt/clippy/test

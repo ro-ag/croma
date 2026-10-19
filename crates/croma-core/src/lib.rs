@@ -199,12 +199,14 @@ mod tests {
 
     #[test]
     fn engrave_multivoice_rest_placement_and_parity() {
-        // Overlay = two voices on one staff: upper voice stems up with its rest raised,
-        // lower voice stems down with its rest lowered.
+        // Overlay = two voices on one staff: upper voice stems up with its rest on
+        // the top staff line (F5), lower voice stems down with its rest on the
+        // bottom line (E4) — docs/engraving/rules.md §4.
         let xml = engrave("X:1\nM:4/4\nL:1/4\nK:C\nc2 z2 & E2 z2|\n");
-        assert!(xml.contains("<display-step>D</display-step>"), "{xml}");
+        assert!(xml.contains("<display-step>F</display-step>"), "{xml}");
         assert!(xml.contains("<display-octave>5</display-octave>"));
-        assert!(xml.contains("<display-step>G</display-step>"));
+        assert!(xml.contains("<display-step>E</display-step>"));
+        assert!(xml.contains("<display-octave>4</display-octave>"));
         assert!(xml.contains("<stem>up</stem>"));
         assert!(xml.contains("<stem>down</stem>"));
     }

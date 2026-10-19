@@ -41,26 +41,27 @@ them all on.
 
 ## Algorithm
 
-The rules are ported from [MuseScore](https://github.com/musescore/MuseScore)'s
-engraving core so the output matches a mainstream editor's defaults:
+The rules are croma's own, written from published engraving references (mainly
+Elaine Gould, *Behind Bars*) and the MusicXML 4.0 reference. They are specified,
+with a citation for each rule, in [`engraving/rules.md`](engraving/rules.md), and
+the module boundary is fixed by [`engraving/contract.md`](engraving/contract.md).
+The module was written clean-room from that specification, without reference to
+any notation program's code.
 
-- Beam grouping follows MuseScore's per-meter break table (`noteGroups[]` in
-  `groups.cpp`) plus the `baseBeamMode`/`actualBeamMode` decision: a note breaks the
-  beam at a strong beat, rests and quarter-or-longer notes are never beamed, and x/4
-  meters adapt the break to the shortest note in the beat. Meters not in the table
-  fall back to a full break at every denominator beat.
-- Per-level `<beam>` text is the MuseScore `writeBeam` mapping from each note's
-  previous/next beam counts, with the table's secondary-break codes fed in (so
-  sub-beat 16th/32nd breaks are correct — an improvement over MuseScore's own
-  MusicXML exporter, which leaves that as a TODO).
-- Tuplet bracket follows `Tuplet::calcHasBracket` (the `AUTO_BRACKET` default).
-- Stem direction is `Chord::computeUp` / `computeAutoStemDirection` (outermost-pair
-  rule) with the `track % 2` voice-parity override; beam direction is the same rule
-  over the whole beam's notes.
-- Rest placement, slur placement, and tie orientation follow MuseScore's rest/slur/tie
-  layout. Note MuseScore's *own* MusicXML exporter emits these only for hand-edited
-  positions; croma emits the computed defaults, so a renderer that would otherwise
-  guess gets a fully-specified document.
+- **Beam grouping** follows the beat: the meter's beat (a dotted value in compound
+  meters, groups of two and three in irregular x/8 meters) decides where beams
+  break; eighths may join across beats in 2/4 and 3/4 bars and in 4/4 half-bars,
+  never across the middle of a 4/4 bar; rests and quarter-or-longer notes are never
+  beamed; secondary beams break at the beat's subdivisions; a lone shorter note in
+  a group gets a hook pointing to the note it belongs with.
+- **Tuplet bracket:** number only when the tuplet is exactly one beam group,
+  bracketed otherwise.
+- **Stem direction:** below the middle line up, on or above it down; for a chord or
+  a beam group the note farthest from the middle line decides; on a staff with
+  several voices, the first voice's stems go up and the second's down.
+- **Rests, slurs and ties:** on multi-voice staves each voice's rests move to its
+  side of the staff and slurs/ties follow the voice; in a single voice, slurs and
+  ties go on the notehead side, opposite the stem.
 
 ## Library API
 
@@ -86,5 +87,5 @@ let xml = export_musicxml_with_options(source, opts)?.musicxml;
 
 Shipped: beam grouping, default tuplet display, stem direction, multi-voice rest
 placement, and slur/tie orientation. Accidentals are already handled by the writer's
-explicit-accidental preservation (croma emits the source's accidentals and MuseScore
-has no automatic courtesy-accidental rule), so they are out of scope for this mode.
+explicit-accidental preservation (croma emits the source's accidentals and adds no
+courtesy accidentals), so they are out of scope for this mode.

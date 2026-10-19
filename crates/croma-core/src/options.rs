@@ -117,7 +117,8 @@ impl ExportOptions {
 /// [`MusicXmlWriteOptions::default`] reproduces the writer's byte-for-byte round-trip
 /// output; the reader self-loop and the abc2xml whitelist depend on that default.
 ///
-/// Ported from MuseScore's engraving rules. See `docs/engraving-export.md`.
+/// The rules are croma's own, written from published engraving references; see
+/// `docs/engraving-export.md` and `docs/engraving/rules.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MusicXmlWriteOptions {
     /// Emit `<beam>` grouping computed from meter + note durations.
@@ -166,8 +167,8 @@ pub enum TupletDisplay {
     /// Emit only what the source encoded (current behaviour — a bare `<tuplet>`).
     #[default]
     AsEncoded,
-    /// Emit the convention default (MuseScore `calcHasBracket`): number-only, no
-    /// bracket, for a fully-beamed tuplet; bracketed otherwise.
+    /// Emit the engraving default (`docs/engraving/rules.md` §2): number-only, no
+    /// bracket, for a tuplet that is exactly one beam group; bracketed otherwise.
     EngravingDefault,
 }
 
