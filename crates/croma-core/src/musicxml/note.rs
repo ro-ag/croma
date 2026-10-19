@@ -42,8 +42,8 @@ impl EventEngrave<'_> {
     };
 }
 
-/// MusicXML ticks (MuseScore convention: quarter = 480, whole = 1920) for a
-/// whole-note-unit fraction. Used by the beam engine's grouping table.
+/// Engraving ticks (quarter = 480, whole = 1920, the engrave module's unit) for
+/// a whole-note-unit fraction.
 fn frac_ticks(f: Fraction) -> i64 {
     i64::from(f.numerator) * 1920 / i64::from(f.denominator.max(1))
 }

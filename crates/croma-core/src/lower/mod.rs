@@ -155,7 +155,7 @@ pub(crate) fn lower_tune_music(
         .iter()
         .filter_map(|field| match &field.kind {
             MusicFieldLineKind::PostTuneText(text) => Some(TextLine {
-                text: text.value.clone(),
+                text: crate::text::decode_text_string(&text.value),
                 span: text.span,
             }),
             _ => None,
@@ -326,7 +326,7 @@ impl MultiVoiceLowering {
         self.current_state()
             .lowered
             .push(LoweredEvent::SectionLabel {
-                label: label.value.clone(),
+                label: crate::text::decode_text_string(&label.value),
                 span: label.span,
             });
     }
@@ -1212,26 +1212,14 @@ fn merge_voice_properties(existing: &mut VoicePropertiesModel, incoming: VoicePr
 
 fn voice_properties_model(voice: &VoiceDefinition) -> VoicePropertiesModel {
     VoicePropertiesModel {
-        name: voice
-            .parsed_properties
-            .name
-            .as_ref()
-            .map(text_line_from_spanned),
-        nm: voice
-            .parsed_properties
-            .nm
-            .as_ref()
-            .map(text_line_from_spanned),
+        name: voice.parsed_properties.name.as_ref().map(text_string_line),
+        nm: voice.parsed_properties.nm.as_ref().map(text_string_line),
         subname: voice
             .parsed_properties
             .subname
             .as_ref()
-            .map(text_line_from_spanned),
-        snm: voice
-            .parsed_properties
-            .snm
-            .as_ref()
-            .map(text_line_from_spanned),
+            .map(text_string_line),
+        snm: voice.parsed_properties.snm.as_ref().map(text_string_line),
         clef: voice
             .parsed_properties
             .clef
@@ -1284,6 +1272,15 @@ fn key_clef_change_model(properties: &VoiceProperties) -> Option<ClefChangeModel
         musicxml_cursor_pre_backup: None,
         musicxml_cursor_back: None,
     })
+}
+
+/// A voice name (`name=`, `nm=`, `subname=`, `snm=`) is an ABC 2.1 §8.2 text
+/// string: decode its mnemonics and entities.
+fn text_string_line(value: &Spanned<String>) -> TextLine {
+    TextLine {
+        text: crate::text::decode_text_string(&value.value),
+        span: value.span,
+    }
 }
 
 fn text_line_from_spanned(value: &Spanned<String>) -> TextLine {

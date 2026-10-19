@@ -110,8 +110,8 @@ struct ChordDegree {
     alter: i8,
 }
 
-/// Chord-quality token table, mirroring abc2xml's `compChordTab`
-/// (`docs/.../abc2xml.py`). Ordered longest-token-first so a greedy prefix
+/// Chord-quality token table, mirroring abc2xml's `compChordTab` (abc2xml.py,
+/// Willem G. Vree, LGPL; credited in THIRD_PARTY_NOTICES.md). Ordered longest-token-first so a greedy prefix
 /// match consumes the maximal quality (e.g. `maj7` before `m`/`ma`). The first
 /// matched token determines `<kind>`; this is the closed MusicXML kind enum
 /// that ABC commonly uses. Anything not listed falls back to `major`, matching

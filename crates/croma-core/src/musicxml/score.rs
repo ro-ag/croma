@@ -497,7 +497,8 @@ fn gm_program_name(program: u8) -> &'static str {
 }
 
 /// General MIDI Level 1 instrument names, indexed by 0-based program number.
-/// Spelling follows abc2xml's `inst_tb` for parity with reference output.
+/// Spelling follows abc2xml's `inst_tb` for parity with reference output
+/// (abc2xml.py, Willem G. Vree, LGPL; credited in THIRD_PARTY_NOTICES.md).
 const GM_PROGRAM_NAMES: [&str; 128] = [
     "acoustic_grand_piano",
     "bright_acoustic_piano",

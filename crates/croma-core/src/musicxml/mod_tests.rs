@@ -6597,3 +6597,42 @@ fn score_brackets_and_braces_emit_part_groups() {
     // A one-part group and parentheses emit nothing.
     assert!(!part_list("[A] (B C)", &["A", "B", "C"]).contains("part-group"));
 }
+
+#[test]
+fn abc_text_strings_decode_into_musicxml_text() {
+    // ABC 2.1 §8.2: mnemonics, named entities and \u escapes in titles,
+    // composers, part names, tempo text, annotations, section labels, lyrics
+    // and post-tune words all reach MusicXML as plain characters.
+    let source = concat!(
+        "X:1\n",
+        "T:Caf\\'e\n",
+        "C:J. M\\\"uller\n",
+        "M:4/4\n",
+        "L:1/4\n",
+        "Q:\"Mod\\'er\\'e\" 1/4=90\n",
+        "V:1 name=\"Fl\\^ute &amp; Basse\"\n",
+        "K:C\n",
+        "V:1\n",
+        "P:\\uA\n",
+        "\"^D\\'emarche\"C D E F|\n",
+        "w:\\cca ga\\ss&eacute; \\u00e9 l\\`a\n",
+        "W:Fin &copy; 50\\%\n",
+    );
+    let xml = export_musicxml(source).expect("exports").musicxml;
+    for expected in [
+        "<work-title>Café</work-title>",
+        "J. Müller",
+        "Flûte &amp; Basse",
+        "Modéré",
+        "Démarche",
+        ">Ă</rehearsal>",
+        "<text>ça</text>",
+        "<text>gaßé</text>",
+        "<text>é</text>",
+        "<text>là</text>",
+        "Fin © 50%",
+    ] {
+        assert!(xml.contains(expected), "missing {expected:?}:\n{xml}");
+    }
+    assert!(!xml.contains("\\'"), "an undecoded mnemonic leaked:\n{xml}");
+}

@@ -1611,7 +1611,8 @@ pub(crate) fn chord_symbol_attachment_model(
 
 pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttachment {
     TextAttachment {
-        text: text.text.clone(),
+        // Annotation text is an ABC 2.1 §8.2 text string.
+        text: crate::text::decode_text_string(&text.text),
         span: text.span,
         placement: match text.kind {
             QuotedTextKind::Annotation(AnnotationPlacement::Above) => {
@@ -1806,6 +1807,7 @@ pub(crate) fn voice_octave_param(properties: &VoicePropertiesModel) -> i32 {
 /// Octave shift declared by a `middle=<pitch>` clef modifier, replicating
 /// abc2xml's `gtrans` computation (a single pitch letter `[A-Ga-g]` optionally
 /// followed by octave marks `,`/`'`). Returns 0 for malformed input.
+/// (abc2xml.py, Willem G. Vree, LGPL; credited in THIRD_PARTY_NOTICES.md.)
 pub(crate) fn middle_octave_shift(text: &str) -> i8 {
     let text = text.trim();
     let mut chars = text.chars();

@@ -47,13 +47,31 @@ fn parse_lyric_tokens(value: &str, offset: usize) -> Vec<LyricTokenSyntax> {
         match ch {
             '\\' => {
                 let escape_start = index;
-                index += ch.len_utf8();
-                if let Some(next) = value[index..].chars().next() {
-                    if syllable_start.is_none() {
-                        syllable_start = Some(escape_start);
+                if syllable_start.is_none() && value.len() > index + 1 {
+                    syllable_start = Some(escape_start);
+                }
+                // An ABC 2.1 §8.2 text-string escape (`\'e`, `\u00e9`, `\%`, ...)
+                // decodes to its character; any other `\x` is the lyric escape for
+                // a literal `x` (`\-`, `\_`, `\*`, `\~`, `\|`).
+                if let Some((decoded, consumed)) = crate::text::decode_escape_at(&value[index..]) {
+                    syllable_text.push(decoded);
+                    index += consumed;
+                } else {
+                    index += ch.len_utf8();
+                    if let Some(next) = value[index..].chars().next() {
+                        syllable_text.push(next);
+                        index += next.len_utf8();
                     }
-                    syllable_text.push(next);
-                    index += next.len_utf8();
+                }
+            }
+            '&' if crate::text::decode_entity_at(&value[index..]).is_some() => {
+                // A named or numeric entity (`&eacute;`) is one character of text.
+                if let Some((decoded, consumed)) = crate::text::decode_entity_at(&value[index..]) {
+                    if syllable_start.is_none() {
+                        syllable_start = Some(index);
+                    }
+                    syllable_text.push(decoded);
+                    index += consumed;
                 }
             }
             '-' => {

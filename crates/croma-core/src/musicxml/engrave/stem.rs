@@ -1,147 +1,159 @@
-//! Stem direction, multi-voice rest placement, and slur/tie orientation — a port of
-//! MuseScore's engraving rules. All work in a diatonic staff-step coordinate: a
-//! note's signed distance from the staff's middle line drives auto stem direction,
-//! and voice parity overrides it when a staff carries multiple voices.
+//! Staff positions, stem direction, multi-voice rest placement, and slur/tie
+//! placement.
+//!
+//! Implements `docs/engraving/rules.md` §3 (`abs_step` §3.1,
+//! `middle_distance` §3.2, `note_type_has_stem` §3.3, `stem_up` §3.4), §4
+//! (`rest_display`) and §5 (`slur_placement`, `tie_orientation`). The Rust
+//! boundary is fixed by `docs/engraving/contract.md`; the staff a clef implies
+//! always comes from [`clef_model`], never from parsing clef names here.
 
 use crate::musicxml::attributes::clef_model;
 
-/// Diatonic step index of a pitch letter (C = 0 … B = 6).
-fn step_index(step: char) -> i32 {
-    match step.to_ascii_uppercase() {
-        'C' => 0,
-        'D' => 1,
-        'E' => 2,
-        'F' => 3,
-        'G' => 4,
-        'A' => 5,
-        'B' => 6,
-        _ => 0,
-    }
-}
+/// Diatonic step of the treble staff's middle line, B4 (rules.md S2).
+const TREBLE_MIDDLE: i32 = 41;
 
-/// Absolute diatonic step of a pitch: `7 * (octave + 1) + step_index`. Middle C
-/// (C4) = 35, matching MuseScore's `absStep`.
+/// Step letters by diatonic index, C = 0 (rules.md §3.1, §4.2).
+const STEP_LETTERS: [char; 7] = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+
+/// The diatonic staff position `7 * (octave + 1) + index` (middle C = 35),
+/// case-insensitive in the step letter (rules.md §3.1).
 pub(crate) fn abs_step(step: char, octave: i8) -> i32 {
-    7 * (i32::from(octave) + 1) + step_index(step)
+    // rules.md §3.1 [choice]: an unknown letter counts as C, keeping the result
+    // inside the octave the caller gave.
+    let index = STEP_LETTERS
+        .iter()
+        .position(|&letter| letter == step.to_ascii_uppercase())
+        .unwrap_or(0);
+    // index < 7, and the i8 octave keeps the whole expression far inside i32.
+    7 * (i32::from(octave) + 1) + index as i32
 }
 
-/// Absolute diatonic step of the pitch sitting on a clef's middle staff line:
-/// treble = B4, bass = D3, alto = C4, tenor = A3. Unknown clefs default to treble.
-fn middle_abs_step(clef_text: Option<&str>) -> i32 {
-    match clef_family(clef_text) {
-        ClefFamily::Treble => abs_step('B', 4),
-        ClefFamily::Bass => abs_step('D', 3),
-        ClefFamily::Alto => abs_step('C', 4),
-        ClefFamily::Tenor => abs_step('A', 3),
-    }
+/// The diatonic step of the middle staff line for a clef's MusicXML `sign`
+/// and `line` (rules.md S0–S4).
+fn middle_step_for(sign: &str, line: &str) -> i32 {
+    // rules.md S1/S4: the pitch each sign fixes and its standard line.
+    let (reference, standard_line) = match sign {
+        "G" => (39, 2),
+        "F" => (31, 4),
+        "C" => (35, 3),
+        // rules.md S3: percussion reads as treble whatever its line; S4: an
+        // unknown sign is treble.
+        _ => return TREBLE_MIDDLE,
+    };
+    // rules.md S4 [choice]: a line other than "1".."5" uses the standard line.
+    let line = match line {
+        "1" => 1,
+        "2" => 2,
+        "3" => 3,
+        "4" => 4,
+        "5" => 5,
+        _ => standard_line,
+    };
+    // rules.md S2: lines are two steps apart and line 3 is the middle.
+    reference + 2 * (3 - line)
 }
 
-/// Absolute diatonic step of a clef's top staff line (MuseScore `pitchOffset`):
-/// treble = F5, bass = A3, alto = G4, tenor = F4. Used for rest placement.
-fn top_line_abs_step(clef_text: Option<&str>) -> i32 {
-    match clef_family(clef_text) {
-        ClefFamily::Treble => abs_step('F', 5),
-        ClefFamily::Bass => abs_step('A', 3),
-        ClefFamily::Alto => abs_step('G', 4),
-        ClefFamily::Tenor => abs_step('F', 4),
-    }
+/// The middle line's diatonic step for an ABC clef name (`None` = treble).
+/// rules.md S5: octave-transposing clefs are not adjusted.
+fn middle_step(clef_text: Option<&str>) -> i32 {
+    let model = clef_model(clef_text);
+    middle_step_for(model.sign, model.line)
 }
 
-enum ClefFamily {
-    Treble,
-    Bass,
-    Alto,
-    Tenor,
-}
-
-/// The staff the stem and rest rules assume, taken from the clef the writer
-/// actually prints (`clef_model`), so the two cannot disagree: `clef=F` is not
-/// an ABC clef name, prints as treble, and so gets treble stems.
-fn clef_family(clef_text: Option<&str>) -> ClefFamily {
-    let clef = clef_model(clef_text);
-    match (clef.sign, clef.line) {
-        ("F", _) => ClefFamily::Bass,
-        ("C", "4") => ClefFamily::Tenor,
-        ("C", _) => ClefFamily::Alto,
-        // G clef and the percussion clef share the treble staff positions.
-        _ => ClefFamily::Treble,
-    }
-}
-
-/// Signed distance of a pitch from the staff middle line, in diatonic steps
-/// (`> 0` = below the middle line → stem tends up). Equals MuseScore's
-/// `noteLine - middleLine`.
+/// The signed diatonic distance from the staff's middle line to the note:
+/// positive below the middle line, negative above (rules.md S6).
 pub(crate) fn middle_distance(clef_text: Option<&str>, step: char, octave: i8) -> i32 {
-    middle_abs_step(clef_text) - abs_step(step, octave)
+    middle_step(clef_text) - abs_step(step, octave)
 }
 
-/// MuseScore `computeAutoStemDirection`: pair the outermost notes inward; the first
-/// non-zero sum decides (`> 0` → up). All-balanced (e.g. a single note on the middle
-/// line) → down.
-pub(crate) fn auto_stem_up(distances: &[i32]) -> bool {
-    let mut sorted = distances.to_vec();
-    sorted.sort_unstable();
-    let mut left = 0usize;
-    let mut right = sorted.len().saturating_sub(1);
-    while left <= right {
-        let sum = sorted[left] + sorted[right];
-        if sum != 0 {
-            return sum > 0;
-        }
-        if left == right {
-            break;
-        }
-        left += 1;
-        right -= 1;
-    }
-    false
+/// Whether a MusicXML note type carries a stem: half and shorter do; whole,
+/// breve, long, maxima and anything unrecognised do not (rules.md N1–N3).
+pub(crate) fn note_type_has_stem(note_type: &str) -> bool {
+    // rules.md N3 [choice]: exact, case-sensitive match on the MusicXML values.
+    matches!(
+        note_type,
+        "half"
+            | "quarter"
+            | "eighth"
+            | "16th"
+            | "32nd"
+            | "64th"
+            | "128th"
+            | "256th"
+            | "512th"
+            | "1024th"
+    )
 }
 
-/// Resolve a note/chord's stem direction. Multi-voice staves force voice parity
-/// (slot 0/2 up, 1/3 down); otherwise a beamed unit takes the whole beam's auto
-/// direction and a lone unit takes its own.
+/// The stem direction (`true` = up) of one note or chord (rules.md §3.4).
+///
+/// `own_distances` are its notes' middle distances; `beam_distances` those of
+/// every note in its beam group (`None` when unbeamed). On a multi-voice staff
+/// the voice slot decides, not the pitch.
 pub(crate) fn stem_up(
     own_distances: &[i32],
     beam_distances: Option<&[i32]>,
     multivoice: bool,
     voice_slot: usize,
 ) -> bool {
+    // rules.md D6 [choice]: even slots are upper parts (stems up), odd lower.
     if multivoice {
         return voice_slot.is_multiple_of(2);
     }
-    match beam_distances {
-        Some(distances) => auto_stem_up(distances),
-        None => auto_stem_up(own_distances),
+    // rules.md D5: a beamed note follows its whole group, so every member of
+    // the group gets the same answer; an empty group list falls back to `own`.
+    let distances = match beam_distances {
+        Some(group) if !group.is_empty() => group,
+        _ => own_distances,
+    };
+    // Widen to i64 so `-i32::MIN` cannot overflow (rules.md §0.3).
+    let (Some(lowest), Some(highest)) = (
+        distances.iter().map(|&d| i64::from(d)).max(),
+        distances.iter().map(|&d| i64::from(d)).min(),
+    ) else {
+        // rules.md §3.4 step 3: nothing to judge → as if on the middle line.
+        return false;
+    };
+    // rules.md D1/D3: the note farthest from the middle line decides.
+    let below = lowest.max(0);
+    let above = (-highest).max(0);
+    if below != above {
+        return below > above;
     }
+    // rules.md D4: equidistant outer notes → majority side; a full balance (and
+    // the middle line itself, D2) → down.
+    let below_count = distances.iter().filter(|&&d| d > 0).count();
+    let above_count = distances.iter().filter(|&&d| d < 0).count();
+    below_count > above_count
 }
 
-/// Whether a written note type carries a stem at all (whole notes and longer do not).
-pub(crate) fn note_type_has_stem(note_type: &str) -> bool {
-    !matches!(note_type, "whole" | "breve" | "long" | "maxima")
-}
-
-/// Display step + octave for a multi-voice rest, offset off the middle line so it
-/// clears the other voice: slot 0/2 one space above, slot 1/3 one space below.
+/// The `<display-step>`/`<display-octave>` of a rest on a multi-voice staff:
+/// two staff spaces above the middle line for even (upper) slots, two below
+/// for odd (lower) slots (rules.md §4.2, R3, R4).
 pub(crate) fn rest_display(clef_text: Option<&str>, voice_slot: usize) -> (char, i8) {
-    const NATURAL_LINE: i32 = 2; // middle line, in whole-space units
-    let voice_offset = if voice_slot.is_multiple_of(2) { -1 } else { 1 };
-    // 2 diatonic steps per space, measured down from the top line; then MuseScore's
-    // -7 octave correction.
-    let mut po = top_line_abs_step(clef_text) - 2 * (NATURAL_LINE + voice_offset) - 7;
-    po = po.clamp(0, 69);
-    let octave = (po / 7) as i8;
-    let step = ['C', 'D', 'E', 'F', 'G', 'A', 'B'][(po % 7) as usize];
-    (step, octave)
+    let middle = middle_step(clef_text);
+    // rules.md R3 [choice]: the top or bottom staff line, ±4 diatonic steps.
+    let target = if voice_slot.is_multiple_of(2) {
+        middle + 4
+    } else {
+        middle - 4
+    };
+    // rules.md §4.2 step 3: Euclidean split into octave and step index.
+    let octave = target.div_euclid(7) - 1;
+    let index = usize::try_from(target.rem_euclid(7)).unwrap_or(0);
+    let letter = STEP_LETTERS.get(index).copied().unwrap_or('C');
+    // Middle lines are 29..=43 for every clef model, so this never saturates.
+    let octave = i8::try_from(octave).unwrap_or(if octave < 0 { i8::MIN } else { i8::MAX });
+    (letter, octave)
 }
 
-/// MusicXML `placement` for a slur attached at a note with the given stem direction:
-/// multi-voice puts it on the stem side (slot 0 above, else below); otherwise it goes
-/// opposite the stem (the notehead side).
+/// The `placement` of a slur starting on a note (rules.md §5.1).
 pub(crate) fn slur_placement(
     stem_up: Option<bool>,
     multivoice: bool,
     voice_slot: usize,
 ) -> &'static str {
+    // rules.md L2: on a shared staff, each part's slurs sit on its outer side.
     if multivoice {
         return if voice_slot.is_multiple_of(2) {
             "above"
@@ -150,23 +162,24 @@ pub(crate) fn slur_placement(
         };
     }
     match stem_up {
+        // rules.md L1: opposite the stem, on the notehead side.
         Some(true) => "below",
-        Some(false) | None => "above",
+        Some(false) => "above",
+        // rules.md L3 [choice]: a stemless note is treated as stem-down.
+        None => "above",
     }
 }
 
-/// MusicXML `orientation` for a tie at a note: multi-voice puts it on the stem side,
-/// otherwise opposite the stem.
+/// The `orientation` of a tie (rules.md §5.2).
 pub(crate) fn tie_orientation(stem_up: Option<bool>, multivoice: bool) -> &'static str {
-    if multivoice {
-        return match stem_up {
-            Some(false) => "under",
-            _ => "over",
-        };
-    }
-    match stem_up {
-        Some(true) => "under",
-        Some(false) | None => "over",
+    match (multivoice, stem_up) {
+        // rules.md K2: on a shared staff, ties go on the stem side.
+        (true, Some(false)) => "under",
+        (true, _) => "over",
+        // rules.md K1: in a single voice, ties curve away from the stem.
+        (false, Some(true)) => "under",
+        // rules.md K3 [choice]: stemless → over, as the stem-down default.
+        (false, _) => "over",
     }
 }
 

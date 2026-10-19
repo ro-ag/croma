@@ -7390,7 +7390,8 @@ mod abc_completion {
         let score = completed_from_xml(xml);
         let abc = write_abc(&score, AbcWriteOptions::default());
         assert!(
-            abc.contains("Q:\"(robot and elaborated melody for \\\"funky town\\\" on D.C)\""),
+            // ABC 2.1 §8.2 spells a quote inside quoted text as `&quot;`.
+            abc.contains("Q:\"(robot and elaborated melody for &quot;funky town&quot; on D.C)\""),
             "ABC projection must escape embedded tempo quotes:\n{abc}"
         );
         let roundtrip =
@@ -10281,4 +10282,42 @@ fn score_grouping_survives_abc_to_xml_to_abc() {
     let score = read_musicxml(&xml).value;
     let abc = write_abc(&score, AbcWriteOptions::default());
     assert!(abc.contains("%%score [{P1 P2} P3] P4\n"), "{abc}");
+}
+
+#[test]
+fn text_with_abc_special_characters_survives_xml_to_abc_to_xml() {
+    // The ABC writer encodes `%` (comment), `\` (escape), `&` (entity) and a
+    // quote inside quoted text per ABC 2.1 §8.2, so the re-parse decodes back
+    // to the same characters.
+    let xml = concat!(
+        "<?xml version=\"1.0\"?>\n",
+        "<score-partwise>\n",
+        "  <work><work-title>50% off: A\\B &amp; C&amp;D \"live\"</work-title></work>\n",
+        "  <part-list><score-part id=\"P1\"><part-name>T</part-name></score-part></part-list>\n",
+        "  <part id=\"P1\">\n",
+        "    <measure number=\"1\">\n",
+        "      <attributes><divisions>4</divisions></attributes>\n",
+        "      <direction placement=\"above\"><direction-type>",
+        "<words>say \"Ouch\" 100%</words></direction-type></direction>\n",
+        "      <note><pitch><step>C</step><octave>4</octave></pitch>",
+        "<duration>4</duration><voice>1</voice><type>quarter</type>",
+        "<lyric number=\"1\"><syllabic>single</syllabic><text>R&amp;B%</text></lyric></note>\n",
+        "    </measure>\n",
+        "  </part>\n",
+        "</score-partwise>\n",
+    );
+    let mut score = read_musicxml(xml).value;
+    crate::complete_score_for_abc(&mut score);
+    let abc = crate::to_abc::write_abc(&score, crate::to_abc::AbcWriteOptions::default());
+    let again = crate::export_musicxml(&abc).expect("re-export").musicxml;
+    for expected in [
+        "<work-title>50% off: A\\B &amp; C&amp;D &quot;live&quot;</work-title>",
+        "say &quot;Ouch&quot; 100%",
+        "<text>R&amp;B%</text>",
+    ] {
+        assert!(
+            again.contains(expected),
+            "missing {expected:?}\nABC:\n{abc}\nXML:\n{again}"
+        );
+    }
 }

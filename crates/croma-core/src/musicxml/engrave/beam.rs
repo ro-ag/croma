@@ -1,40 +1,53 @@
-//! Beam-grouping engine — a Rust port of MuseScore's automatic beaming.
+//! Beam grouping and tuplet-bracket decisions for one voice of one measure.
 //!
-//! MuseScore drives beaming from a per-meter break table (`noteGroups[]` in
-//! `groups.cpp`) plus a per-note `BeamMode`, then turns those modes into per-level
-//! `<beam>` segments (`writeBeam` in its MusicXML exporter). This module reproduces
-//! that pipeline over a flat list of [`BeamInput`] (one entry per time-advancing
-//! event in a voice/measure) and returns, per input, the `<beam>` segments to emit.
+//! Implements `docs/engraving/rules.md` §1 (`plan`: the meter's beat grid §1.2,
+//! the subdivision chain and beam spans §1.3, the grouping and output rules
+//! B1–B12 §1.4, in the order of the decision procedure §1.5) and §2
+//! (`tuplet_shows_bracket`). The Rust boundary is fixed by
+//! `docs/engraving/contract.md`.
 //!
-//! Ticks use MuseScore's convention: `DIVISION = 480` ticks per quarter note, so a
-//! whole note is `1920` and a 1/32 note is `60`. All positions and durations are in
-//! those units. See `docs/engraving-export.md`.
+//! Everything is computed arithmetically per note (rules.md §0.3): nothing is
+//! allocated per beat or per bar, so a meter numerator of `u32::MAX` costs the
+//! same as 4/4, and all tick arithmetic is `i64` with floor (Euclidean)
+//! division so overfull measures and negative onsets stay well defined.
 
-/// One time-advancing event (note, chord head, or rest) in beat order within a
-/// single voice and measure. Chord *members* are not represented — a chord beams as
-/// its head. Written flag count [`beams`](BeamInput::beams) comes from the note's
-/// *written* (de-tupletted) type, so a triplet eighth carries `beams = 1`.
+/// Ticks in a whole note; a quarter is 480 (rules.md §0.1).
+const WHOLE: i64 = 1920;
+
+/// The deepest beam level MusicXML can number: 1 (eighth) .. 8 (1024th)
+/// (rules.md §0.2).
+const MAX_LEVEL: u8 = 8;
+
+/// Bound on the subdivision chain's length (rules.md §1.3, §0.3).
+const MAX_CHAIN: usize = 64;
+
+/// One event of a voice-measure as the beam planner sees it. A chord is a
+/// single input; grace notes and chord members are not listed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BeamInput {
-    /// Position within the measure, in ticks (whole = 1920).
+    /// Onset within the measure, in ticks from the barline.
     pub rtick: i64,
     /// Written duration, in ticks.
     pub dur: i64,
-    /// Written beam/flag count: eighth = 1, 16th = 2, 32nd = 3, ... quarter+ = 0.
+    /// Flag count of the written note type (eighth = 1, 16th = 2, …; quarter
+    /// or longer = 0).
     pub beams: u8,
+    /// Whether the event is a rest.
     pub is_rest: bool,
-    /// Innermost tuplet pair id the event belongs to, for boundary handling.
+    /// The innermost tuplet this event belongs to, if any.
     pub tuplet_id: Option<u32>,
 }
 
-/// A single `<beam number="N">text</beam>` to emit on a note.
+/// One `<beam number="level">text</beam>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BeamSegment {
-    /// MusicXML beam level (1 = primary/eighth beam, 2 = 16th, ...).
+    /// 1 = primary (eighth) beam, 2 = 16th beam, 3 = 32nd, …
     pub level: u8,
+    /// The MusicXML beam value at that level.
     pub text: BeamText,
 }
 
+/// The MusicXML `beam-value` vocabulary (rules.md §0.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BeamText {
     Begin,
@@ -45,422 +58,531 @@ pub(crate) enum BeamText {
 }
 
 impl BeamText {
+    /// The `<beam>` element text for this value.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            BeamText::Begin => "begin",
-            BeamText::Continue => "continue",
-            BeamText::End => "end",
-            BeamText::ForwardHook => "forward hook",
-            BeamText::BackwardHook => "backward hook",
+            Self::Begin => "begin",
+            Self::Continue => "continue",
+            Self::End => "end",
+            Self::ForwardHook => "forward hook",
+            Self::BackwardHook => "backward hook",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BeamMode {
-    Auto,
-    None,
-    Begin,
-    Begin16,
-    Begin32,
-    Mid,
-}
-
-/// The unreduced meter fraction (`6/8`, not `3/4`) — the grouping table is keyed on
-/// the literal signature.
+/// The literal time signature of the measure (6/8 stays 6/8; `C` arrives as
+/// 4/4 and `C|` as 2/2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Meter {
     pub numerator: u32,
     pub denominator: u32,
 }
 
-const DIVISION: i64 = 480; // ticks per quarter
-const D32: i64 = DIVISION / 8; // ticks per 1/32 note = 60
-
-/// One entry of a meter's break table: a 1/32-note position and a packed action.
-///
-/// `action` is three nibbles `0xABC`: nibble 0 (low) = rule for an eighth landing
-/// here, nibble 4 = for a 16th, nibble 8 = for a 32nd-and-shorter. Nibble value
-/// `0` = continue, `1` = full break, `2` = break 16th-and-shorter sub-beams,
-/// `3` = break 32nd-and-shorter.
-#[derive(Debug, Clone, Copy)]
-struct GroupNode {
-    pos: i32, // in 1/32-note units
-    action: u16,
-}
-
-/// MuseScore's built-in `noteGroups[]` table (`groups.cpp`), verbatim.
-fn table_nodes(meter: Meter) -> Option<Vec<GroupNode>> {
-    macro_rules! g {
-        ($($pos:expr => $act:expr),* $(,)?) => {
-            vec![$(GroupNode { pos: $pos, action: $act }),*]
-        };
-    }
-    let nodes = match (meter.numerator, meter.denominator) {
-        (2, 2) => g![4=>0x200, 8=>0x110, 12=>0x200, 16=>0x111, 20=>0x200, 24=>0x110, 28=>0x200],
-        (3, 2) => g![4=>0x200, 8=>0x110, 12=>0x200, 16=>0x111, 20=>0x200, 24=>0x110, 28=>0x200,
-                     32=>0x111, 36=>0x200, 40=>0x110, 44=>0x200],
-        (4, 2) => g![4=>0x200, 8=>0x110, 12=>0x200, 16=>0x111, 20=>0x200, 24=>0x110, 28=>0x200,
-                     32=>0x111, 36=>0x200, 40=>0x110, 44=>0x200, 48=>0x111, 52=>0x200, 56=>0x110,
-                     60=>0x200],
-        (2, 4) => g![4=>0x200, 8=>0x111, 12=>0x200],
-        (3, 4) => g![4=>0x200, 8=>0x111, 12=>0x200, 16=>0x111, 20=>0x200],
-        (4, 4) => g![4=>0x200, 8=>0x110, 12=>0x200, 16=>0x111, 20=>0x200, 24=>0x110, 28=>0x200],
-        (5, 4) => g![4=>0x200, 8=>0x110, 12=>0x200, 16=>0x110, 20=>0x200, 24=>0x111, 28=>0x200,
-                     32=>0x110, 36=>0x200],
-        (6, 4) => g![4=>0x200, 8=>0x110, 12=>0x200, 16=>0x110, 20=>0x200, 24=>0x111, 28=>0x200,
-                     32=>0x110, 36=>0x200, 40=>0x110, 44=>0x200],
-        (3, 8) => g![4=>0x200, 8=>0x200],
-        (5, 8) => g![4=>0x200, 8=>0x200, 12=>0x111, 16=>0x200],
-        (6, 8) => g![4=>0x200, 8=>0x200, 12=>0x111, 16=>0x200, 20=>0x200],
-        (7, 8) => g![4=>0x200, 8=>0x200, 12=>0x111, 16=>0x200, 20=>0x111, 24=>0x200],
-        (9, 8) => g![4=>0x200, 8=>0x200, 12=>0x111, 16=>0x200, 20=>0x200, 24=>0x111, 28=>0x200,
-                     32=>0x200],
-        (12, 8) => g![4=>0x200, 8=>0x200, 12=>0x111, 16=>0x200, 20=>0x200, 24=>0x111, 28=>0x200,
-                      32=>0x200, 36=>0x111, 40=>0x200, 44=>0x200],
-        _ => return None,
-    };
-    Some(nodes)
-}
-
-/// The grouping table for `meter`, falling back to MuseScore's `Groups::endings`
-/// synthesis (a full break at every denominator beat) for meters not in the table.
-fn group_nodes(meter: Meter, last_tick: i64) -> Vec<GroupNode> {
-    if let Some(nodes) = table_nodes(meter) {
-        return nodes;
-    }
-    // pos step, in 1/32 units, for one denominator beat
-    let step: i64 = match meter.denominator {
-        2 => 16,
-        4 => 8,
-        8 => 4,
-        16 => 2,
-        32 => 1,
-        _ => return Vec::new(),
-    };
-    // A node only matters if a note can land on it, so stop at the last note: a
-    // huge numerator (M:4294967295/4) then neither overflows `pos` nor builds one
-    // node per beat.
-    let last_beat = (last_tick / (step * D32)).min(i64::from(meter.numerator) - 1);
-    (1..=last_beat)
-        .map_while(|i| i32::try_from(step * i).ok())
-        .map(|pos| GroupNode { pos, action: 0x111 })
-        .collect()
-}
-
-/// The nibble shift for a note whose written flag count is `beams`
-/// (eighth = shift 0, 16th = 4, 32nd-and-shorter = 8). `None` for quarter+.
-fn beams_shift(beams: u8) -> Option<u32> {
-    match beams {
-        1 => Some(0),
-        2 => Some(4),
-        3.. => Some(8),
-        0 => None,
-    }
-}
-
-/// The nibble shift for a *tick length* (used for MuseScore's `bigBeatDuration`
-/// "by position" lookup): eighth (240) = 0, 16th (120) = 4, 32nd-or-shorter = 8.
-fn ticks_shift(ticks: i64) -> Option<u32> {
-    match ticks {
-        240 => Some(0),          // eighth
-        120 => Some(4),          // 16th
-        t if t <= 60 => Some(8), // 32nd or shorter
-        _ => None,               // quarter+ or dotted → no break rule
-    }
-}
-
-/// Look up the break mode for a note of the given `shift` (duration level) landing
-/// exactly on `tick`. Positions between nodes → `Auto`.
-fn beam_mode_at(nodes: &[GroupNode], tick: i64, shift: u32) -> BeamMode {
-    for node in nodes {
-        let node_tick = node.pos as i64 * D32;
-        if node_tick < tick {
-            continue;
-        }
-        if node_tick > tick {
-            break;
-        }
-        let action = (node.action >> shift) & 0xf;
-        return match action {
-            1 => BeamMode::Begin,
-            2 => BeamMode::Begin16,
-            3 => BeamMode::Begin32,
-            _ => BeamMode::Auto,
-        };
-    }
-    BeamMode::Auto
-}
-
-/// MuseScore's `bigBeatDuration`: the coarsest power-of-two tick length (starting at
-/// an eighth) that both is ≤ the local max note length and divides `rtick`.
-fn big_beat_shift(rtick: i64, cur_dur: i64, prev_dur: i64) -> Option<u32> {
-    let max_len = cur_dur.max(prev_dur);
-    let mut smallest = 240i64; // eighth
-    loop {
-        if smallest <= max_len && rtick % smallest == 0 {
-            break;
-        }
-        smallest /= 2;
-        if smallest < D32 {
-            smallest = cur_dur;
-            break;
-        }
-    }
-    ticks_shift(smallest)
-}
-
-/// MuseScore `Groups::baseBeamMode` — table lookup by duration and position with the
-/// tuplet-boundary and hole corrections.
-fn base_beam_mode(nodes: &[GroupNode], notes: &[BeamInput], i: usize) -> BeamMode {
-    let cur = notes[i];
-    let prev = i.checked_sub(1).map(|p| notes[p]);
-    let tick = cur.rtick;
-
-    let by_type = beams_shift(cur.beams)
-        .map(|shift| beam_mode_at(nodes, tick, shift))
-        .unwrap_or(BeamMode::Auto);
-    let by_pos = big_beat_shift(tick, cur.dur, prev.map_or(0, |p| p.dur))
-        .map(|shift| beam_mode_at(nodes, tick, shift))
-        .unwrap_or(BeamMode::Auto);
-    let mut val = if by_type == BeamMode::Auto {
-        by_pos
-    } else {
-        by_type
-    };
-
-    if val == BeamMode::Auto
-        && tick != 0
-        && let Some(prev) = prev
-    {
-        // One (not both) endpoints in a tuplet, same written duration: treat as one
-        // level shorter, nudging a break at the tuplet seam.
-        if cur.tuplet_id != prev.tuplet_id && cur.beams == prev.beams && cur.beams >= 1 {
-            val = beam_mode_at(nodes, tick, 4);
-        }
-        // A gap before this note forces a new beam.
-        if prev.tuplet_id.is_none() && prev.rtick + prev.dur < cur.rtick {
-            val = BeamMode::Begin;
-        }
-    }
-    val
-}
-
-/// MuseScore `Groups::actualBeamMode` — final mode after the rest/quarter guards, the
-/// barline-start rule, the x/4 beat-subdivision adaptivity, and `Auto → Mid`.
-fn actual_beam_mode(
-    nodes: &[GroupNode],
-    notes: &[BeamInput],
-    i: usize,
-    meter: Meter,
-    beat_min: &[i64],
-) -> BeamMode {
-    let cur = notes[i];
-    // Rests and quarter-or-longer chords are never auto-beamed.
-    if cur.is_rest || cur.beams == 0 {
-        return BeamMode::None;
-    }
-    let mut bm = base_beam_mode(nodes, notes, i);
-    if bm == BeamMode::Auto {
-        if cur.rtick == 0 {
-            return BeamMode::Begin;
-        }
-        // x/4 meters: on a quarter beat, re-evaluate using the shortest note in this
-        // and the previous beat, so a beat of 16ths splits the eighth beam at the beat.
-        if meter.denominator == 4 && cur.rtick % DIVISION == 0 {
-            let beat = (cur.rtick / DIVISION) as usize;
-            let cur_min = beat_min.get(beat).copied().unwrap_or(i64::MAX);
-            let prev_min = beat.checked_sub(1).and_then(|b| beat_min.get(b)).copied();
-            let min_dur = prev_min.map_or(cur_min, |p| p.min(cur_min));
-            if min_dur != i64::MAX && min_dur < cur.dur {
-                let mut probe = notes.to_vec();
-                probe[i].dur = min_dur;
-                probe[i].beams = beams_for_ticks(min_dur);
-                bm = base_beam_mode(nodes, &probe, i);
-            }
-        }
-    }
-    match bm {
-        BeamMode::Auto => BeamMode::Mid,
-        other => other,
-    }
-}
-
-/// Flag count of a power-of-two tick length (for the beat-subdivision probe).
-fn beams_for_ticks(ticks: i64) -> u8 {
-    match ticks {
-        t if t >= DIVISION => 0, // quarter+
-        120 => 2,
-        60 => 3,
-        30 => 4,
-        15 => 5,
-        _ => 1, // eighth (240) and anything else
-    }
-}
-
-/// Per-quarter-beat minimum written duration in ticks (for the x/4 adaptivity).
-fn beat_minimums(notes: &[BeamInput], meter: Meter) -> Vec<i64> {
-    if meter.denominator != 4 {
-        return Vec::new();
-    }
-    // Lookups past the end read as i64::MAX (no minimum), so size by the last
-    // beat a note starts in rather than the numerator, which may be huge.
-    let last_beat = notes
-        .iter()
-        .map(|note| note.rtick / DIVISION)
-        .max()
-        .unwrap_or(0);
-    let beats =
-        (meter.numerator as usize + 1).min(usize::try_from(last_beat).unwrap_or(usize::MAX));
-    let mut mins = vec![i64::MAX; beats + 1];
-    for note in notes {
-        if note.is_rest {
-            continue;
-        }
-        let beat = (note.rtick / DIVISION) as usize;
-        if beat < mins.len() {
-            mins[beat] = mins[beat].min(note.dur);
-        }
-    }
-    mins
-}
-
-/// The full beam plan for one voice/measure: the per-note `<beam>` segments plus the
-/// beam groups (each a list of indices into `notes`) that produced them. The groups
-/// feed the tuplet-bracket default (a tuplet that is exactly one beam shows no bracket).
+/// The planner's answer for one voice-measure.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BeamPlan {
+    /// One entry per input, in input order; empty = no `<beam>` on that note.
     pub segments: Vec<Vec<BeamSegment>>,
+    /// Each beam group as ascending input indices (2 or more members), in
+    /// ascending order of first index.
     pub groups: Vec<Vec<usize>>,
 }
 
-/// Plan the `<beam>` segments and beam grouping for one voice/measure.
+/// How the meter divides a bar into beats (rules.md §1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Grid {
+    /// G0: quarter-note beats from the barline, for meters that do not fit the
+    /// tick grid.
+    Quarter,
+    /// G1–G4: `n` units of `unit` ticks per bar of `bar` ticks.
+    Metered {
+        shape: Shape,
+        n: i64,
+        unit: i64,
+        bar: i64,
+    },
+}
+
+/// Which of the metered rules G1–G4 applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// G1: dotted beats of three units.
+    Compound,
+    /// G2: one beat per unit (quarter or longer).
+    LongUnit,
+    /// G3: short unit, numerator 1 to 4.
+    Short,
+    /// G4: short unit, irregular numerator (2s with a final 3 when odd).
+    Irregular,
+}
+
+/// Where an onset falls on the beat grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Place {
+    /// Bar index `k` (floor division, so negative onsets land in bar -1).
+    bar: i64,
+    /// Beat start `bs` within the bar for G1–G4, or the beat index for G0;
+    /// with `bar` it identifies the beat.
+    beat: i64,
+    /// Beat length `B`.
+    len: i64,
+    /// The beat's first division `d1` (2 or 3).
+    d1: i64,
+    /// `tl - bs`: the onset's distance from the beat start.
+    offset: i64,
+}
+
+impl Place {
+    fn same_beat(self, other: Self) -> bool {
+        self.bar == other.bar && self.beat == other.beat
+    }
+
+    /// The level-`level` cell `floor((tl - bs) / S_L)` (rules.md §1.3).
+    fn cell(self, level: u8) -> i64 {
+        self.offset.div_euclid(span(self.len, self.d1, level))
+    }
+}
+
+/// The per-input facts the planner needs (rules.md §1.5 step 3).
+#[derive(Debug, Clone, Copy)]
+struct Facts {
+    beamable: bool,
+    /// `min(beams, 8)` (rules.md §0.2).
+    beams: u8,
+    place: Place,
+}
+
+/// Classify the meter once (rules.md §1.2).
+fn grid(meter: Meter) -> Grid {
+    let n = i64::from(meter.numerator);
+    let d = i64::from(meter.denominator);
+    // rules.md G0: a zero meter or a denominator that does not divide the whole
+    // note's ticks cannot be put on the grid.
+    if n == 0 || d == 0 || WHOLE % d != 0 {
+        return Grid::Quarter;
+    }
+    let unit = WHOLE / d;
+    let shape = if n >= 6 && n % 3 == 0 {
+        Shape::Compound
+    } else if unit > 240 {
+        Shape::LongUnit
+    } else if n <= 4 {
+        Shape::Short
+    } else {
+        Shape::Irregular
+    };
+    // n <= u32::MAX and unit <= 1920, so the bar length fits in i64 (≈ 8.2e12).
+    Grid::Metered {
+        shape,
+        n,
+        unit,
+        bar: n * unit,
+    }
+}
+
+/// Place onset `t` on the grid: bar index, beat, beat length, first division
+/// and offset in the beat (rules.md §1.2 G0–G4). O(1), no per-beat tables.
+fn locate(grid: Grid, t: i64) -> Place {
+    let Grid::Metered {
+        shape,
+        n,
+        unit,
+        bar,
+    } = grid
+    else {
+        // rules.md G0: beat index = floor(t / 480). The offset comes from the
+        // Euclidean remainder rather than `t - index * 480`, which could
+        // overflow at the ends of the i64 range.
+        return Place {
+            bar: 0,
+            beat: t.div_euclid(480),
+            len: 480,
+            d1: 2,
+            offset: t.rem_euclid(480),
+        };
+    };
+    let bar_index = t.div_euclid(bar);
+    // 0 <= local < bar, so every product below stays inside the bar.
+    let local = t.rem_euclid(bar);
+    let p = local / unit;
+    let (len, d1, start) = match shape {
+        // rules.md G1: dotted beats of three units.
+        Shape::Compound => (3 * unit, 3, local - local % (3 * unit)),
+        // rules.md G2: the unit is the beat.
+        Shape::LongUnit => (unit, 2, p * unit),
+        // rules.md G3: 1, 2 and 3 units make one whole-bar beat; 4 is 2+2.
+        Shape::Short => {
+            let (len, d1) = match n {
+                1 => (unit, 2),
+                3 => (3 * unit, 3),
+                _ => (2 * unit, 2),
+            };
+            (len, d1, local - local % len)
+        }
+        // rules.md G4: pairs of units, and a final 3-unit beat when n is odd.
+        // `n - 3` is used directly so a huge numerator costs nothing extra.
+        Shape::Irregular => {
+            if n % 2 == 0 || p < n - 3 {
+                (2 * unit, 2, (p - p % 2) * unit)
+            } else {
+                (3 * unit, 3, (n - 3) * unit)
+            }
+        }
+    };
+    Place {
+        bar: bar_index,
+        beat: start,
+        len,
+        d1,
+        offset: local - start,
+    }
+}
+
+/// The level-`level` span `S_L`: the largest element of the beat's
+/// subdivision chain that is `<= 2880 >> level`, else the chain's smallest
+/// element (rules.md §1.3). The chain is walked, never stored.
+fn span(beat_len: i64, d1: i64, level: u8) -> i64 {
+    let limit = 2880_i64 >> level.min(MAX_LEVEL);
+    // rules.md §1.3: c0 = B; c1 = B / d1 when it divides; then halve while
+    // the previous element is even. The chain is strictly decreasing, so the
+    // first element under the limit is the largest one.
+    let mut element = beat_len.max(1);
+    if element <= limit {
+        return element;
+    }
+    let mut next = (d1 > 0 && element % d1 == 0).then(|| element / d1);
+    for _ in 1..MAX_CHAIN {
+        let Some(candidate) = next.filter(|&candidate| candidate >= 1) else {
+            break;
+        };
+        element = candidate;
+        if element <= limit {
+            return element;
+        }
+        next = (element % 2 == 0).then_some(element / 2);
+    }
+    element
+}
+
+/// Plan the beams of one voice-measure (rules.md §1.5).
 pub(crate) fn plan(notes: &[BeamInput], meter: Meter) -> BeamPlan {
-    let mut segments = vec![Vec::new(); notes.len()];
-    if notes.len() < 2 {
+    let mut segments: Vec<Vec<BeamSegment>> = vec![Vec::new(); notes.len()];
+    if notes.is_empty() {
         return BeamPlan {
             segments,
             groups: Vec::new(),
         };
     }
-    let last_tick = notes.iter().map(|note| note.rtick).max().unwrap_or(0);
-    let nodes = group_nodes(meter, last_tick);
-    let beat_min = beat_minimums(notes, meter);
-    let modes: Vec<BeamMode> = (0..notes.len())
-        .map(|i| actual_beam_mode(&nodes, notes, i, meter, &beat_min))
+    let grid = grid(meter);
+    let facts: Vec<Facts> = notes
+        .iter()
+        .map(|note| {
+            let beams = note.beams.min(MAX_LEVEL);
+            Facts {
+                // rules.md B1: a rest or a flagless value is never beamed.
+                beamable: !note.is_rest && beams >= 1,
+                beams,
+                place: locate(grid, note.rtick),
+            }
+        })
         .collect();
 
-    // Group consecutive non-`None` events into beams, splitting at `Begin`.
-    let mut current: Vec<usize> = Vec::new();
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    let flush = |current: &mut Vec<usize>, groups: &mut Vec<Vec<usize>>| {
-        if current.len() >= 2 {
-            groups.push(std::mem::take(current));
-        } else {
-            current.clear();
-        }
-    };
-    for (i, &mode) in modes.iter().enumerate() {
-        match mode {
-            BeamMode::None => flush(&mut current, &mut groups),
-            BeamMode::Begin => {
-                flush(&mut current, &mut groups);
-                current.push(i);
-            }
-            _ => current.push(i),
-        }
-    }
-    flush(&mut current, &mut groups);
+    let provisional = provisional_groups(notes, &facts);
+    let merged = merge_eighth_beats(provisional, notes, &facts, grid);
+    // rules.md B7: a lone note keeps its flag.
+    let groups: Vec<Vec<usize>> = merged.into_iter().filter(|g| g.len() >= 2).collect();
 
     for group in &groups {
-        emit_beam(group, notes, &modes, &mut segments);
+        emit_group(group, notes, &facts, &mut segments);
     }
     BeamPlan { segments, groups }
 }
 
-/// Whether a tuplet should show a bracket under MuseScore's `AUTO_BRACKET` default:
-/// the bracket is **hidden** (number only) exactly when the tuplet's members are all
-/// beamed chords of uniform beam count with no rests, forming a single beam group the
-/// tuplet exactly spans; otherwise the bracket is **shown**.
+/// Whether adjacent beamable inputs `a` then `b` may share a beam (rules.md
+/// B3–B5).
+fn joins(a: (&BeamInput, &Facts), b: (&BeamInput, &Facts)) -> bool {
+    // rules.md B3: an out-of-order onset breaks the beam.
+    if b.0.rtick < a.0.rtick {
+        return false;
+    }
+    match (a.0.tuplet_id, b.0.tuplet_id) {
+        // rules.md B4: same beat and same level-1 cell, by onsets only.
+        (None, None) => a.1.place.same_beat(b.1.place) && a.1.place.cell(1) == b.1.place.cell(1),
+        // rules.md B5: a tuplet beams as a unit, across beat boundaries.
+        (Some(x), Some(y)) => x == y,
+        // rules.md B5 [choice]: a tuplet never merges with its neighbours.
+        _ => false,
+    }
+}
+
+/// Scan left to right building provisional groups, including one-member ones
+/// (rules.md §1.5 step 4). Rests and flagless values end the current group
+/// and join none (B1, B2).
+fn provisional_groups(notes: &[BeamInput], facts: &[Facts]) -> Vec<Vec<usize>> {
+    let mut groups = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut previous: Option<(&BeamInput, &Facts)> = None;
+    for (index, (note, fact)) in notes.iter().zip(facts).enumerate() {
+        if !fact.beamable {
+            if !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            previous = None;
+            continue;
+        }
+        let continues = previous.is_some_and(|prev| joins(prev, (note, fact)));
+        if !continues && !current.is_empty() {
+            groups.push(std::mem::take(&mut current));
+        }
+        current.push(index);
+        previous = Some((note, fact));
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
+}
+
+/// If `group` is a complete eighth beat (rules.md B6), its `(bar, beat
+/// index)`; the beat index is `bs / unit`.
+fn complete_eighth_beat(
+    group: &[usize],
+    notes: &[BeamInput],
+    facts: &[Facts],
+    unit: i64,
+) -> Option<(i64, i64)> {
+    let [first, second] = group else {
+        return None;
+    };
+    let (a_note, a) = (notes.get(*first)?, facts.get(*first)?);
+    let (b_note, b) = (notes.get(*second)?, facts.get(*second)?);
+    let pure_eighth = |note: &BeamInput, fact: &Facts| {
+        note.tuplet_id.is_none() && fact.beams == 1 && note.dur == 240
+    };
+    let on_the_beat = a.place.same_beat(b.place) && a.place.offset == 0 && b.place.offset == 240;
+    (pure_eighth(a_note, a) && pure_eighth(b_note, b) && on_the_beat)
+        .then(|| (a.place.bar, a.place.beat / unit))
+}
+
+/// rules.md B6: in 2/4 and 3/4 a whole bar, and in 4/4 each half-bar, of
+/// complete eighth beats is beamed as one group. Any other grid is returned
+/// unchanged.
+fn merge_eighth_beats(
+    groups: Vec<Vec<usize>>,
+    notes: &[BeamInput],
+    facts: &[Facts],
+    grid: Grid,
+) -> Vec<Vec<usize>> {
+    let Grid::Metered {
+        shape: Shape::LongUnit,
+        n: n @ 2..=4,
+        unit: 480,
+        ..
+    } = grid
+    else {
+        return groups;
+    };
+    // rules.md B6: 2/4 → {0,1}, 3/4 → {0,1,2}, 4/4 → {0,1} and {2,3}.
+    let span_len: usize = if n == 3 { 3 } else { 2 };
+    let beats: Vec<Option<(i64, i64)>> = groups
+        .iter()
+        .map(|group| complete_eighth_beat(group, notes, facts, 480))
+        .collect();
+
+    let mut out = Vec::with_capacity(groups.len());
+    let mut slots: Vec<Option<Vec<usize>>> = groups.into_iter().map(Some).collect();
+    let mut at = 0;
+    while at < slots.len() {
+        if merges_from(at, span_len, &beats, &slots) {
+            let mut merged = Vec::new();
+            for slot in slots.iter_mut().skip(at).take(span_len) {
+                merged.extend(slot.take().unwrap_or_default());
+            }
+            out.push(merged);
+            at += span_len;
+        } else {
+            if let Some(group) = slots.get_mut(at).and_then(Option::take) {
+                out.push(group);
+            }
+            at += 1;
+        }
+    }
+    out
+}
+
+/// Whether the `span_len` provisional groups starting at `at` form a complete
+/// merge span: each a complete eighth beat of the same bar, beats
+/// `b, b+1, …` with `b` a span start, and consecutive in input order.
+fn merges_from(
+    at: usize,
+    span_len: usize,
+    beats: &[Option<(i64, i64)>],
+    slots: &[Option<Vec<usize>>],
+) -> bool {
+    let Some(Some((bar, first_beat))) = beats.get(at).copied() else {
+        return false;
+    };
+    // span_len is 2 or 3, so the cast is exact.
+    if first_beat.rem_euclid(span_len as i64) != 0 {
+        return false;
+    }
+    let mut previous_last: Option<usize> = None;
+    for (expected, index) in (first_beat..).zip(at..at + span_len) {
+        if beats.get(index).copied().flatten() != Some((bar, expected)) {
+            return false;
+        }
+        let Some(Some(group)) = slots.get(index) else {
+            return false;
+        };
+        if let Some(last) = previous_last
+            && group.first().copied() != last.checked_add(1)
+        {
+            return false;
+        }
+        previous_last = group.last().copied();
+    }
+    true
+}
+
+/// Emit every level's `<beam>` segments for one group (rules.md B8–B11).
+fn emit_group(
+    group: &[usize],
+    notes: &[BeamInput],
+    facts: &[Facts],
+    segments: &mut [Vec<BeamSegment>],
+) {
+    let Some(last) = group.len().checked_sub(1) else {
+        return;
+    };
+    let beams_of = |index: usize| facts.get(index).map_or(0, |fact| fact.beams);
+    let mut push = |index: usize, level: u8, text: BeamText| {
+        if let Some(list) = segments.get_mut(index) {
+            list.push(BeamSegment { level, text });
+        }
+    };
+
+    // rules.md B8: level 1 runs unbroken from the first member to the last.
+    for (pos, &index) in group.iter().enumerate() {
+        let text = if pos == 0 {
+            BeamText::Begin
+        } else if pos == last {
+            BeamText::End
+        } else {
+            BeamText::Continue
+        };
+        push(index, 1, text);
+    }
+
+    // A group is a tuplet group when its members carry a tuplet id; B5 makes
+    // every member share it.
+    let tuplet_group = group
+        .first()
+        .and_then(|&i| notes.get(i))
+        .is_some_and(|note| note.tuplet_id.is_some());
+    // rules.md B10: in a tuplet group a member's position is the sum of the
+    // written durations before it (tuplet onsets are scaled).
+    let mut written_pos = Vec::with_capacity(group.len());
+    let mut running = 0_i64;
+    for &index in group {
+        written_pos.push(running);
+        running = running.saturating_add(notes.get(index).map_or(0, |note| note.dur));
+    }
+    let top = group.iter().map(|&i| beams_of(i)).max().unwrap_or(0);
+
+    for level in 2..=top {
+        // rules.md B9: consecutive members are connected at this level when
+        // both reach it and (outside tuplets) share the beat and level-L cell.
+        let connected = |a: usize, b: usize| {
+            if beams_of(a) < level || beams_of(b) < level {
+                return false;
+            }
+            if tuplet_group {
+                return true;
+            }
+            match (facts.get(a), facts.get(b)) {
+                (Some(x), Some(y)) => {
+                    x.place.same_beat(y.place) && x.place.cell(level) == y.place.cell(level)
+                }
+                _ => false,
+            }
+        };
+        let mut pos = 0;
+        while let Some(&index) = group.get(pos) {
+            if beams_of(index) < level {
+                pos += 1;
+                continue;
+            }
+            let start = pos;
+            while let (Some(&a), Some(&b)) = (group.get(pos), group.get(pos + 1)) {
+                if !connected(a, b) {
+                    break;
+                }
+                pos += 1;
+            }
+            if pos > start {
+                for (run_pos, &member) in group.iter().enumerate().take(pos + 1).skip(start) {
+                    let text = if run_pos == start {
+                        BeamText::Begin
+                    } else if run_pos == pos {
+                        BeamText::End
+                    } else {
+                        BeamText::Continue
+                    };
+                    push(member, level, text);
+                }
+            } else {
+                let position = if tuplet_group {
+                    written_pos.get(pos).copied().unwrap_or(0)
+                } else {
+                    facts.get(index).map_or(0, |fact| fact.place.offset)
+                };
+                push(index, level, hook(pos, last, level, position));
+            }
+            pos += 1;
+        }
+    }
+}
+
+/// The partial-beam direction for a lone member at `pos` of a group whose last
+/// position is `last` (rules.md B10, P7).
+fn hook(pos: usize, last: usize, level: u8, position: i64) -> BeamText {
+    if pos == 0 {
+        return BeamText::ForwardHook;
+    }
+    if pos == last {
+        return BeamText::BackwardHook;
+    }
+    // rules.md B10: v is the value of a note with one beam fewer. A note on a
+    // subdivision start belongs with what follows; otherwise with what precedes.
+    let v = WHOLE >> (level.min(MAX_LEVEL) + 1);
+    if v > 0 && position.rem_euclid(v) == 0 {
+        BeamText::ForwardHook
+    } else {
+        BeamText::BackwardHook
+    }
+}
+
+/// Whether tuplet `pair_id` prints its bracket (`true`) or only its number
+/// (`false`), given the beam groups `plan` returned (rules.md §2.2).
 pub(crate) fn tuplet_shows_bracket(
     notes: &[BeamInput],
     groups: &[Vec<usize>],
     pair_id: u32,
 ) -> bool {
-    let members: Vec<usize> = (0..notes.len())
-        .filter(|&i| notes[i].tuplet_id == Some(pair_id))
+    // rules.md T1: the members, ascending.
+    let members: Vec<usize> = notes
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| note.tuplet_id == Some(pair_id))
+        .map(|(index, _)| index)
         .collect();
-    if members.len() < 2 {
-        return false; // degenerate (single element) → no bracket
+    // rules.md §2.2 step 2 [choice]: no members → bracket (harmless default).
+    if members.is_empty() {
+        return true;
     }
-    let first_beams = notes[members[0]].beams;
-    for &i in &members {
-        if notes[i].is_rest || notes[i].beams == 0 || notes[i].beams != first_beams {
-            return true;
-        }
-    }
-    // Number-only only if the members are exactly one beam group.
-    let member_set: std::collections::BTreeSet<usize> = members.iter().copied().collect();
-    let spans_one_beam = groups.iter().any(|group| {
-        group
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>()
-            == member_set
-    });
-    !spans_one_beam
-}
-
-/// Emit per-level `<beam>` segments for one beam group (MuseScore `writeBeam`).
-fn emit_beam(
-    beam: &[usize],
-    notes: &[BeamInput],
-    modes: &[BeamMode],
-    out: &mut [Vec<BeamSegment>],
-) {
-    for (pos, &i) in beam.iter().enumerate() {
-        let blc = notes[i].beams as i32;
-        let blp = if pos > 0 {
-            notes[beam[pos - 1]].beams as i32
-        } else {
-            -1
-        };
-        let bln = if pos + 1 < beam.len() {
-            notes[beam[pos + 1]].beams as i32
-        } else {
-            -1
-        };
-        let bmc = modes[i];
-        let bmn = beam
-            .get(pos + 1)
-            .map(|&n| modes[n])
-            .unwrap_or(BeamMode::Auto);
-
-        for level in 1..=blc {
-            let secondary_begin =
-                (bmc == BeamMode::Begin16 && level > 1) || (bmc == BeamMode::Begin32 && level > 2);
-            let secondary_end =
-                (bmn == BeamMode::Begin16 && level > 1) || (bmn == BeamMode::Begin32 && level > 2);
-            let text = if (blp < level && bln >= level) || secondary_begin {
-                BeamText::Begin
-            } else if blp < level && bln < level {
-                if bln > 0 {
-                    BeamText::ForwardHook
-                } else if blp > 0 {
-                    BeamText::BackwardHook
-                } else {
-                    continue;
-                }
-            } else if (blp >= level && bln < level) || secondary_end {
-                BeamText::End
-            } else {
-                BeamText::Continue
-            };
-            out[i].push(BeamSegment {
-                level: level as u8,
-                text,
-            });
-        }
-    }
+    // rules.md T2/§2.2 step 3: only a beam covering exactly the tuplet shows its
+    // extent; anything else (T3) needs the bracket.
+    !groups.contains(&members)
 }
 
 #[cfg(test)]
