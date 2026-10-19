@@ -16,7 +16,7 @@ This is a library crate. It backs the `croma fmt` subcommand in
 
 ```toml
 [dependencies]
-croma-fmt = "1.3"
+croma-fmt = "1.4"
 ```
 
 See the [formatter documentation](https://github.com/ro-ag/croma/blob/main/docs/formatter.md)
