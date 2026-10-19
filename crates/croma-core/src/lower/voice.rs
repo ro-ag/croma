@@ -1611,7 +1611,8 @@ pub(crate) fn chord_symbol_attachment_model(
 
 pub(crate) fn annotation_attachment_model(text: &QuotedTextSyntax) -> TextAttachment {
     TextAttachment {
-        text: text.text.clone(),
+        // Annotation text is an ABC 2.1 §8.2 text string.
+        text: crate::text::decode_text_string(&text.text),
         span: text.span,
         placement: match text.kind {
             QuotedTextKind::Annotation(AnnotationPlacement::Above) => {

@@ -1,4 +1,3 @@
-
 use super::*;
 use lsp_types::{Position, Range};
 

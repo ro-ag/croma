@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ABC 2.1 §8.2 text strings are decoded: accent mnemonics (`\'e` → é, `\ss` →
+  ß, the full §14.1 table plus the ABC 2.0 `\,c`/`\oa` spellings), named and
+  numeric entities (`&eacute;`, `&#233;`, `&copy;`), fixed-width unicode
+  (`\u00e9`, `\U000000e9`) and the `\\`, `\%`, `\&` escapes, in titles,
+  composers, part names, tempo text, annotations, section labels, lyrics and
+  `W:` words. The parsed source is untouched (the formatter and the LSP stay
+  lossless). As §8.2 specifies, `\"` before a vowel or `y` is now the umlaut
+  (`\"o` → ö); any other `\"` is still a literal quote. The ABC writer encodes
+  text the same way, writing a quote inside quoted text as `&quot;`.
 - `%%score`/`%%staves` brackets and braces that span two or more parts are
   written as MusicXML `<part-group>`, so grouping survives ABC → MusicXML →
   ABC.
@@ -76,8 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The README and crate docs state what 1.x does and does not promise for
   semver: the conversion entry points and option builders are stable; data
   types may gain fields and variants in minor releases.
-- Corpus figures are restated against all 10,000 files (9,235 match abc2xml,
-  700 adjudicated, 65 without music) and the benchmark headline numbers were
+- Corpus figures are restated against all 10,000 files (9,228 match abc2xml,
+  707 adjudicated, 65 without music) and the benchmark headline numbers were
   re-measured.
 
 ## [1.3.0] - 2026-09-08

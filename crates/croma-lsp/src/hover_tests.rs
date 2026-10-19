@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn pos(line: u32, character: u32) -> Position {

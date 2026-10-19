@@ -27,6 +27,7 @@ pub mod options;
 pub mod parse;
 pub mod source;
 pub mod syntax;
+mod text;
 pub mod to_abc;
 
 pub use agent::{AgentTopic, agent_topics, find_agent_topic};

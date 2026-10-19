@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn in_bounds(source: &str, diags: &[lsp_types::Diagnostic]) {

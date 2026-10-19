@@ -215,16 +215,18 @@ fn parse_tune_report_with_fields(
                         span: value.span,
                     };
                 }
+                // Titles and composers are ABC 2.1 §8.2 text strings: decode
+                // their accent mnemonics and entities for the score model.
                 ParsedFieldKind::Title(value) if title.is_empty() => {
-                    title = value.value.clone();
+                    title = crate::text::decode_text_string(&value.value);
                     title_line = Some(TextLine {
-                        text: value.value.clone(),
+                        text: title.clone(),
                         span: value.span,
                     });
                 }
                 ParsedFieldKind::TextMetadata(metadata) if metadata.code == 'C' => {
                     composers.push(TextLine {
-                        text: metadata.value.value.clone(),
+                        text: crate::text::decode_text_string(&metadata.value.value),
                         span: metadata.value.span,
                     });
                 }

@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// Decode a delta stream back to absolute (line, start, length, type) tuples.

@@ -66,11 +66,13 @@ fn extract_quoted_text(raw: &str) -> (Option<String>, String) {
     let Some(close_rel) = find_unescaped_quote(rest) else {
         // Unterminated quote: treat the remainder as text, leave nothing numeric.
         return (
-            Some(crate::escape::unescape_quoted(rest).trim().to_owned()),
+            Some(crate::text::decode_text_string(rest).trim().to_owned()),
             raw[..open].to_owned(),
         );
     };
-    let text = crate::escape::unescape_quoted(&rest[..close_rel])
+    // Tempo text is an ABC 2.1 §8.2 text string; decoding also undoes the
+    // `\\` and `\"` escapes that keep a quote from closing it.
+    let text = crate::text::decode_text_string(&rest[..close_rel])
         .trim()
         .to_owned();
     let mut remainder = raw[..open].to_owned();

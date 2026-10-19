@@ -143,7 +143,7 @@ capability has a corpus-scale gate that must stay green:
 
 | Capability | Gate | Result (10k corpus) |
 | --- | --- | --- |
-| ABC → MusicXML writer | structural parity vs `abc2xml` (raw comparator) | **9,235 / 10,000** match; the other 765 are 700 adjudicated divergences and 65 files with no music |
+| ABC → MusicXML writer | structural parity vs `abc2xml` (raw comparator) | **9,228 / 10,000** match; the other 772 are 707 adjudicated divergences and 65 files with no music |
 | Formatter | idempotent **and** lossless re-formatting | **10,000 / 10,000** |
 | MusicXML → ABC reader | self-loop XML re-emission | **9,933 / 9,935** |
 | MusicXML → ABC reader | foreign-dialect parity vs music21 | **98.50%** |
@@ -169,9 +169,9 @@ corpus is absent); the full matrix runs from croma-test.
 [`abc2xml`](https://wim.vree.org/svgParse/abc2xml.html) (by Willem Vree) is the
 long-standing reference ABC→MusicXML converter, and it is croma's correctness
 *baseline*: croma is validated against it over the full 10k corpus. Where abc2xml
-is spec-correct, croma matches it (9,235 of the 10,000 files match structurally);
+is spec-correct, croma matches it (9,228 of the 10,000 files match structurally);
 croma diverges only where abc2xml departs from the ABC 2.1 spec, and every such
-case (700 files) is adjudicated and documented. croma is an independent,
+case (707 files) is adjudicated and documented. croma is an independent,
 library-first implementation written from the ABC 2.1 spec (it follows
 abc2xml's conventions in a few small tables, credited in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)), and it improves on the

@@ -1,4 +1,3 @@
-
 //! Scripted-client transport test (promotion-bar leg C, transport half):
 //! drive the real server loop over a `Connection::memory()` pair from a
 //! spawned thread and assert it never hangs (every client `recv` is bounded

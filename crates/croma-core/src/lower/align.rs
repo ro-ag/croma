@@ -372,7 +372,13 @@ fn align_symbol_line(
                         reference,
                         AlignedSymbol {
                             layer,
-                            text: token.text.clone(),
+                            // Only an annotation is a §8.2 text string; chord
+                            // symbols and decorations keep their spelling.
+                            text: if token.kind == SymbolTokenKind::Annotation {
+                                crate::text::decode_text_string(&token.text)
+                            } else {
+                                token.text.clone()
+                            },
                             span: token.span,
                             kind: match token.kind {
                                 SymbolTokenKind::Decoration => AlignedSymbolKind::Decoration,

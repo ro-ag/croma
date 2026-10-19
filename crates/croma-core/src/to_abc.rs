@@ -111,14 +111,20 @@ pub fn write_abc(score: &Score, options: AbcWriteOptions) -> String {
         out.push_str(&format!("%%score {}\n", directive.value.text.trim()));
     }
     if let Some(title) = &meta.title {
-        out.push_str(&format!("T:{}\n", title.text.trim()));
+        out.push_str(&format!(
+            "T:{}\n",
+            crate::text::encode_text_string(title.text.trim(), false)
+        ));
     }
     // `C:` composer field, after `T:` in canonical ABC order. The reader captures
     // `<creator type="composer">` into `composers`, and the ABC parser reads `C:`
     // back into `composers`, so emitting it makes structured composer metadata
     // survive a MusicXML -> ABC -> MusicXML round trip.
     for composer in &meta.composers {
-        out.push_str(&format!("C:{}\n", composer.text.trim()));
+        out.push_str(&format!(
+            "C:{}\n",
+            crate::text::encode_text_string(composer.text.trim(), false)
+        ));
     }
     // `M:` is optional in ABC; a tune without one must not gain a synthetic
     // meter.
@@ -142,7 +148,10 @@ pub fn write_abc(score: &Score, options: AbcWriteOptions) -> String {
     out.push_str(&write_body(score, unit));
     // Post-tune lyrics (`W:`) round-trip to identical <credit> entries.
     for line in &meta.post_tune_lyrics {
-        out.push_str(&format!("W:{}\n", line.text));
+        out.push_str(&format!(
+            "W:{}\n",
+            crate::text::encode_text_string(&line.text, false)
+        ));
     }
     if !out.ends_with('\n') {
         out.push('\n');
@@ -639,11 +648,8 @@ fn carrier_follows_leading_barline(kind: &TimedEventKind, joined: Option<&str>) 
 }
 
 fn abc_quoted_text(text: &str) -> String {
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::text::encode_text_string(&collapsed, true)
 }
 
 /// Unit note length: ABC 2.1 default — measure duration < 3/4 → 1/16, else 1/8.
@@ -1179,9 +1185,15 @@ fn write_voice(
                         out.push_str(&trimmed);
                         out.push('\n');
                     }
-                    out.push_str(&format!("P:{label}\n"));
+                    out.push_str(&format!(
+                        "P:{}\n",
+                        crate::text::encode_text_string(label, false)
+                    ));
                 } else {
-                    out.push_str(&format!("[P:{label}] "));
+                    out.push_str(&format!(
+                        "[P:{}] ",
+                        crate::text::encode_text_string(label, false)
+                    ));
                 }
             }
         }
@@ -1397,7 +1409,7 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
         }
     }
     for annotation in &attachments.annotations {
-        out.push_str(&quoted_str(&annotation.text));
+        out.push_str(&quoted_text_string(&annotation.text));
     }
     for deco in &attachments.decorations {
         if let Some(placement) = deco.placement {
@@ -1416,6 +1428,12 @@ fn event_prefix(attachments: &crate::EventAttachments) -> String {
 /// escaping again would corrupt it.
 fn quoted_str(text: &str) -> String {
     format!("\"{text}\"")
+}
+
+/// A quoted annotation: an ABC 2.1 §8.2 text string, encoded so the parser
+/// decodes it back to `text` (a `"` inside becomes `&quot;`).
+fn quoted_text_string(text: &str) -> String {
+    format!("\"{}\"", crate::text::encode_text_string(text, true))
 }
 
 /// Reconstructed `w:` lyric lines.
@@ -1533,7 +1551,8 @@ fn lyric_lines(events: &[LyricAlignEvent<'_>]) -> Vec<String> {
 /// written `~`, and the token metacharacters are backslash-escaped.
 fn lyric_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
             // A `+:` continuation line stores its join as a newline inside the
             // syllable; a raw newline would re-parse as music. Only ASCII
@@ -1541,9 +1560,16 @@ fn lyric_escape(text: &str) -> String {
             // token separators are space/tab only, so Unicode whitespace (e.g.
             // U+00A0 in mojibake lyrics) is opaque text and passes through.
             c if c.is_ascii_whitespace() || c.is_ascii_control() => out.push('~'),
-            '\\' | '-' | '*' | '_' | '|' | '~' => {
+            '\\' | '-' | '*' | '_' | '|' | '~' | '%' => {
                 out.push('\\');
                 out.push(c);
+            }
+            // An `&` that could start an entity is escaped like any §8.2 text.
+            '&' if chars
+                .peek()
+                .is_some_and(|next| next.is_ascii_alphabetic() || *next == '#') =>
+            {
+                out.push_str("\\&");
             }
             _ => out.push(c),
         }
@@ -1575,7 +1601,7 @@ fn symbol_lines(events: &[LyricAlignEvent<'_>]) -> Vec<String> {
             let token = match symbol.kind {
                 AlignedSymbolKind::ChordSymbol => continue, // inlined
                 AlignedSymbolKind::Decoration => format!("!{}!", symbol.text),
-                AlignedSymbolKind::Annotation => quoted_str(&symbol.text),
+                AlignedSymbolKind::Annotation => quoted_text_string(&symbol.text),
                 AlignedSymbolKind::Raw => symbol.text.clone(),
             };
             layers
