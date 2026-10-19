@@ -101,4 +101,8 @@ CROMA_GRAMMAR_DIR=/path/to/croma/tree-sitter-abc \
 
 ## License
 
-Apache-2.0, as part of croma.
+The grammar, queries and scanner are Apache-2.0, like the rest of croma. The
+tree-sitter runtime files that ship here (`src/tree_sitter/*.h`, emitted by the
+tree-sitter CLI, and the vendored `web/vendor/web-tree-sitter.*`) are MIT,
+Copyright (c) 2018 Max Brunsfeld; see
+[`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for the full notice.
